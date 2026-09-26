@@ -28,7 +28,7 @@ set -euo pipefail
 # `current` to a version directory that did not contain it and left that link
 # dangling -- and `pane`, which reaches the gateway as a sibling executable,
 # lost its whole model catalogue. Measured 2026-09-11, on this machine.
-BINARIES=(glasshouse inference-gateway pane)
+BINARIES=(inference-gateway pane)
 
 PREFIX="${GLASSHOUSE_PREFIX:-$HOME/.local}"
 ROOT="$PREFIX/lib/glasshouse"
@@ -61,7 +61,7 @@ done
 # install is not about "the checkout you are standing in": it produces the
 # artifact you will run everywhere else.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -f "$REPO/crates/glasshouse/Cargo.toml" ] || die "not a Glasshouse checkout: $REPO"
+[ -f "$REPO/crates/pane/Cargo.toml" ] || die "not a Pane checkout: $REPO"
 
 live_version() { [ -L "$CURRENT" ] && basename "$(readlink "$CURRENT")" || true; }
 
@@ -94,11 +94,11 @@ list)
   done
   exit 0 ;;
 uninstall)
-  for l in "${BINARIES[@]}" glasshouse-dev; do
+  for l in "${BINARIES[@]}"; do
     [ -L "$BINDIR/$l" ] && rm -f "$BINDIR/$l"
   done
   rm -rf "$ROOT"
-  echo "removed $ROOT and the ${BINARIES[*]} and glasshouse-dev links in $BINDIR"
+  echo "removed $ROOT and the ${BINARIES[*]} links in $BINDIR"
   exit 0 ;;
 rollback)
   live="$(live_version)"
@@ -131,7 +131,7 @@ DEST="$VERSIONS/$VERSION"
 echo "building $VERSION ($PROFILE) ..."
 BUILD_FLAGS=(--profile "$PROFILE")
 [ "$PROFILE" = debug ] && BUILD_FLAGS=()
-( cd "$REPO" && cargo build "${BUILD_FLAGS[@]}" -p glasshouse -p inference-gateway -p pane )
+( cd "$REPO" && cargo build "${BUILD_FLAGS[@]}" -p inference-gateway -p pane )
 
 BUILT="$REPO/target/$PROFILE"
 for b in "${BINARIES[@]}"; do
@@ -174,18 +174,10 @@ for b in "${BINARIES[@]}"; do
   ln -sfn "$CURRENT/bin/$b" "$BINDIR/$b"
 done
 
-# The development shim keeps its behaviour under its own name. Inside a
-# Glasshouse checkout it resolves to THAT checkout's build, which no installed
-# artifact can do -- a Phase 2C worker once tested the main checkout's binary
-# believing it was its own. It is no longer what `glasshouse` means.
-ln -sfn "$REPO/scripts/dev/glasshouse" "$BINDIR/glasshouse-dev"
-
 echo
 echo "installed $VERSION -> $DEST"
 [ -n "$previous" ] && [ "$previous" != "$VERSION" ] && echo "current:  $previous -> $VERSION"
-echo "glasshouse: $BINDIR/glasshouse"
 echo "pane:       $BINDIR/pane"
-echo "glasshouse-dev: $BINDIR/glasshouse-dev (runs the checkout you stand in)"
 case ":$PATH:" in
   *":$BINDIR:"*) ;;
   *) echo; echo "NOTE: $BINDIR is not on PATH. Add it to your shell profile." ;;

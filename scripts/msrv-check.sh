@@ -74,4 +74,4 @@ echo "  rustc: $RUSTC_BIN"
 
 RUSTC="$RUSTC_BIN" \
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/msrv}" \
-  "$CARGO_BIN" check --locked --workspace --exclude pane --all-targets "$@"
+  "$CARGO_BIN" check --locked -p inference-gateway --all-targets "$@"

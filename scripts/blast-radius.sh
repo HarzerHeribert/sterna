@@ -348,7 +348,7 @@ binary_crate_pkg() {  # <src-file>; echoes <pkg>, or returns 1
   printf '%s\n' "$pkg"
 }
 
-LIB=0; declare -a TESTS=() BINS=() FILTERS=()
+LIB=0; declare -a TESTS=() BINS=() FILTERS=() LIB_PACKAGES=()
 while read -r hit; do
   [ -n "$hit" ] || continue
   # An integration crate is crates/<pkg>/tests/<name>.rs and nothing deeper: a
@@ -374,6 +374,7 @@ while read -r hit; do
       fi
       LIB=1
       pkg="$(echo "$hit" | cut -d/ -f2)"
+      LIB_PACKAGES+=("$pkg")
       # src/gateway/session.rs -> gateway::session ; src/foo.rs -> foo
       m="$(echo "$hit" | sed -E 's#^crates/[^/]+/src/##; s#\.rs$##; s#/mod$##; s#/#::#g')"
       [ "$m" = "lib" ] || FILTERS+=("$pkg:$m")
@@ -389,6 +390,7 @@ done < "$HITS_FILE"
 mapfile -t TESTS < <(printf '%s\n' "${TESTS[@]-}" | sort -u | sed '/^$/d')
 mapfile -t BINS  < <(printf '%s\n' "${BINS[@]-}"  | sort -u | sed '/^$/d')
 mapfile -t FILTERS < <(printf '%s\n' "${FILTERS[@]-}" | sort -u | sed '/^$/d')
+mapfile -t LIB_PACKAGES < <(printf '%s\n' "${LIB_PACKAGES[@]-}" | sort -u | sed '/^$/d')
 
 # ---- targeted (distance-zero) trace, independent of the fan-out above -----
 # --targeted never consults SYMS_FILE/HITS_FILE (the fan-out that finds a
@@ -484,13 +486,8 @@ SKIPPED_FULL_TARGET_COUNT=$(( FULL_TRACE_TARGET_COUNT - TARGETED_MATCHED_COUNT )
 # so the next reader sees WHY each is serial without reconstructing it from a
 # grep:
 KNOWN_SERIAL_TESTS=(
-  pty_smoke               # drives a real PTY end to end
-  events_lifecycle        # spawns via HarnessLaunch/platform::exec -- no literal Command::new of its own
-  handoff_lines           # spawns under a real pty (PtyProcess::spawn)
-  session_supervision     # spawns the built glasshouse binary (CARGO_BIN_EXE) and polls its exit
-  checkpoint_portability  # spawns via HarnessLaunch/platform::exec
-  entitlement_shell_scrub # spawns via HarnessLaunch/platform::exec
-  inbox                   # Runtime/Glasshouse spawn control-door discovery indirectly; its deadline is load-sensitive
+  tui_live                # drives the real pane binary under a PTY
+  lifecycle_cutoff        # spawns pane and times its deadlines
 )
 
 # --lib SPLITS between the lanes. Only the known flaky/process-bound families
@@ -509,9 +506,7 @@ KNOWN_SERIAL_TESTS=(
 # other -- and the assertion right after them still checks it at runtime, in
 # case a future edit reintroduces two copies.
 LIB_SERIAL_FAMILIES=(
-  shell::settings_persistence_tests
-  integrations::version
-  session::api
+  session::ui
 )
 
 # Decompression rule 4 (CLAUDE.md): a red target in a KNOWN load-sensitive
@@ -523,10 +518,7 @@ LIB_SERIAL_FAMILIES=(
 # list held. Nothing outside this union is ever rerun automatically.
 RERUN_ELIGIBLE_FAMILIES=(
   "${KNOWN_SERIAL_TESTS[@]}"
-  shell::settings_persistence_tests
-  integrations::version
-  session::api
-  terminal_loss
+  session::ui
 )
 is_rerun_eligible() {   # is_rerun_eligible <family-or-target-name>
   local f="$1" k
@@ -632,7 +624,7 @@ if [ "$LIST" -eq 1 ]; then
   done
   echo
   printf '  parallel lane: %d target(s), bounded to %d job(s)\n' \
-    "$(( ${#PARALLEL_TESTS[@]} + (LIB) ))" "$PARALLEL_JOBS"
+    "$(( ${#PARALLEL_TESTS[@]} + (LIB ? ${#LIB_PACKAGES[@]} : 0) ))" "$PARALLEL_JOBS"
   printf '  serial lane:   %d target(s) (--lib family filters count individually)\n' \
     "$(( (LIB ? ${#SERIAL_LIB_FILTERS[@]} : 0) + ${#SERIAL_TESTS[@]} + ${#BINS[@]} ))"
 
@@ -699,7 +691,7 @@ if [ "${#FILES[@]}" -gt 0 ]; then
     # 2026-09-06 (`17599f3`). Two minutes here, or a red sweep and a fix-forward.
     if [ "$DRY" -ne 1 ] && rustup target list --installed 2>/dev/null | grep -qx 'x86_64-pc-windows-gnu'; then
       printf '\n\033[1m=== cargo check --tests --target x86_64-pc-windows-gnu (platform-conditional files changed) ===\033[0m\n'
-      if env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY cargo check -p glasshouse --tests --target x86_64-pc-windows-gnu 2>&1 | grep -E '^(error|warning: unused)' ; then
+      if env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY cargo check -p inference-gateway --tests --target x86_64-pc-windows-gnu 2>&1 | grep -E '^(error|warning: unused)' ; then
         printf '\033[31mblast-radius: the Windows target does not build -- fix before pushing\033[0m\n'
         exit 1
       fi
@@ -829,7 +821,9 @@ elif [ "$SERIAL" -eq 1 ]; then
   echo
   printf '\033[1m=== --serial: single lane, original order ===\033[0m\n'
   if [ "$LIB" -eq 1 ]; then
-    run_target glasshouse "cargo test --lib" --lib || rc=1
+    for pkg in "${LIB_PACKAGES[@]}"; do
+      run_target "$pkg" "cargo test --lib" --lib || rc=1
+    done
   fi
   for t in "${TESTS[@]-}"; do
     [ -n "$t" ] || continue
@@ -843,7 +837,7 @@ else
   echo
   printf '\033[1m=== lane counts ===\033[0m\n'
   printf '  parallel lane: %d target(s), bounded to %d job(s)\n' \
-    "$(( ${#PARALLEL_TESTS[@]} + (LIB) ))" "$PARALLEL_JOBS"
+    "$(( ${#PARALLEL_TESTS[@]} + (LIB ? ${#LIB_PACKAGES[@]} : 0) ))" "$PARALLEL_JOBS"
   printf '  serial lane:   %d target(s) (--lib family filters count individually)\n' \
     "$(( (LIB ? ${#SERIAL_LIB_FILTERS[@]} : 0) + ${#SERIAL_TESTS[@]} + ${#BINS[@]} ))"
 
@@ -861,7 +855,9 @@ else
   # ahead of or behind them.
   declare -a _PARALLEL_JOBS=()
   for t in "${PARALLEL_TESTS[@]-}"; do [ -n "$t" ] && _PARALLEL_JOBS+=("test:$t"); done
-  [ "$LIB" -eq 1 ] && _PARALLEL_JOBS+=("libskip")
+  if [ "$LIB" -eq 1 ]; then
+    for pkg in "${LIB_PACKAGES[@]}"; do _PARALLEL_JOBS+=("libskip:$pkg"); done
+  fi
 
   if [ ${#_PARALLEL_JOBS[@]} -gt 0 ]; then
     echo
@@ -885,19 +881,18 @@ else
           t="${job#test:}"
           ( run_target "${t%%:*}" "cargo test --test ${t#*:}" --test "${t#*:}" ) >"$out" 2>&1 &
           ;;
-        libskip)
+        libskip:*)
           # `--skip` is a libtest (test-binary) argument, not a cargo one -- it
           # needs the `--` separator or cargo refuses it with "unexpected
           # argument '--skip' found" before ever reaching the test binary.
           # Measured while testing this packet's own change.
           #
-          # Hardcoded glasshouse: this rest-of-lib invocation is driven by the
-          # LIB flag and the LIB_SERIAL_FAMILIES scan, neither of which is
-          # per-package -- unexercised by pane today (pane has no lib
-          # submodule beyond its root, which never sets a family here).
+          # One rest-of-lib invocation per package whose lib was hit; the
+          # family filters are module paths and a filter naming nothing in a
+          # package skips nothing there.
           declare -a _skip_args=()
           for fam in "${SKIP_LIB_FILTERS[@]}"; do _skip_args+=(--skip "$fam"); done
-          ( run_target glasshouse "cargo test --lib (rest; skip: ${SKIP_LIB_FILTERS[*]})" --lib -- "${_skip_args[@]}" ) >"$out" 2>&1 &
+          ( run_target "${job#libskip:}" "cargo test --lib (rest; skip: ${SKIP_LIB_FILTERS[*]})" --lib -- "${_skip_args[@]}" ) >"$out" 2>&1 &
           ;;
       esac
       _PIDS+=("$!"); _OUTS+=("$out")
@@ -912,8 +907,10 @@ else
   # (its rest already ran above, in the parallel lane); tests and bins are
   # unchanged from today's order.
   if [ "$LIB" -eq 1 ]; then
-    for fam in "${SERIAL_LIB_FILTERS[@]}"; do
-      run_target glasshouse "cargo test --lib $fam" --lib "$fam" || rc=1
+    for pkg in "${LIB_PACKAGES[@]}"; do
+      for fam in "${SERIAL_LIB_FILTERS[@]}"; do
+        run_target "$pkg" "cargo test --lib $fam" --lib "$fam" || rc=1
+      done
     done
   fi
   for t in "${SERIAL_TESTS[@]-}"; do
@@ -944,7 +941,7 @@ fi
 echo
 printf '\033[1m=== cargo doc --no-deps (rustdoc) ===\033[0m\n'
 doc_out="$(mktemp)"
-if RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p glasshouse -p inference-gateway >"$doc_out" 2>&1; then
+if RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p inference-gateway >"$doc_out" 2>&1; then
   echo "  rustdoc: clean"
 else
   rc=1

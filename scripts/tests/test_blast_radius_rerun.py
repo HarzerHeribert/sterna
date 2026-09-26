@@ -2,7 +2,7 @@
 exactly one rerun, alone, before it counts as red.
 
 CLAUDE.md's Decompression rule 4: "A red target in a known load-sensitive
-family (terminal_loss, session_supervision, the pty fixtures) is re-run alone
+family (the pty fixtures: tui_live, lifecycle_cutoff) is re-run alone
 once by the gate and reported flaky-pass, which is not red and gets no
 attribution write-up ... Until GH-GATE-RERUN-ALONE lands, do the one rerun by
 hand and stop there." This is that line landing.
@@ -78,8 +78,7 @@ CARGO_STUB = textwrap.dedent(r"""#!/usr/bin/env bash
     """)
 
 # check-file-sizes.py resolves its own repo root from `__file__`, not cwd, so
-# a fake tree needs its own stub or it would measure the real glasshouse
-# checkout. This test is not about the size ratchet.
+# a fake tree needs its own stub or it would measure the real checkout. This test is not about the size ratchet.
 CHECK_FILE_SIZES_STUB = textwrap.dedent("""\
     #!/usr/bin/env python3
     print("check-file-sizes: ok (stub)")
@@ -123,7 +122,7 @@ class Rerun(unittest.TestCase):
         return int(f.read_text()) if f.exists() else 0
 
     def add_test_target(self, name: str) -> None:
-        p = self.tmp / "crates" / "glasshouse" / "tests" / f"{name}.rs"
+        p = self.tmp / "crates" / "pane" / "tests" / f"{name}.rs"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("#[test]\nfn x() {}\n")
 
@@ -139,34 +138,34 @@ class Rerun(unittest.TestCase):
     # 1. a red in a load-sensitive family that passes on rerun exits 0 and
     # prints flaky-pass, quoting both test result: lines.
     def test_a_flaky_family_that_passes_on_rerun_exits_zero(self):
-        self.add_test_target("pty_smoke")
-        self.set_behavior("pty_smoke", "fail_then_pass")
+        self.add_test_target("tui_live")
+        self.set_behavior("tui_live", "fail_then_pass")
 
         r = self.run_gate()
         out = r.stdout + r.stderr
 
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("flaky-pass", out)
-        self.assertIn("pty_smoke", out)
+        self.assertIn("tui_live", out)
         self.assertIn("test result: FAILED", out)
         self.assertIn("test result: ok", out)
         self.assertIn("1 flaky-pass", out)
-        self.assertEqual(self.call_count("pty_smoke"), 2)
+        self.assertEqual(self.call_count("tui_live"), 2)
 
     # 2. a red in a load-sensitive family that fails on rerun exits non-zero
     # and says the rerun was made -- and is rerun exactly once, not looped.
     def test_a_flaky_family_that_fails_on_rerun_exits_nonzero(self):
-        self.add_test_target("session_supervision")
-        self.set_behavior("session_supervision", "always_fail")
+        self.add_test_target("lifecycle_cutoff")
+        self.set_behavior("lifecycle_cutoff", "always_fail")
 
         r = self.run_gate()
         out = r.stdout + r.stderr
 
         self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("session_supervision", out)
+        self.assertIn("lifecycle_cutoff", out)
         self.assertIn("rerun", out.lower())
         self.assertIn("failed on the rerun too", out)
-        self.assertEqual(self.call_count("session_supervision"), 2)
+        self.assertEqual(self.call_count("lifecycle_cutoff"), 2)
 
     # 3. a red outside those families exits non-zero and is not rerun --
     # the stub is invoked once, not twice. This is also the mutation target:
@@ -182,20 +181,6 @@ class Rerun(unittest.TestCase):
         self.assertNotIn("flaky-pass", out)
         self.assertEqual(self.call_count("ordinary_logic_test"), 1)
 
-    # Rule 4 names terminal_loss explicitly, and neither KNOWN_SERIAL_TESTS
-    # nor the --lib family list held it before this package -- the packet's
-    # own required addition.
-    def test_terminal_loss_is_rerun_eligible(self):
-        self.add_test_target("terminal_loss")
-        self.set_behavior("terminal_loss", "fail_then_pass")
-
-        r = self.run_gate()
-        out = r.stdout + r.stderr
-
-        self.assertEqual(r.returncode, 0, out)
-        self.assertIn("flaky-pass", out)
-        self.assertIn("terminal_loss", out)
-        self.assertEqual(self.call_count("terminal_loss"), 2)
 
 
 if __name__ == "__main__":

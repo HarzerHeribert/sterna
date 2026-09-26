@@ -23,7 +23,7 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "blast-radius.sh"
 REPO = SCRIPT.parents[1]
 # A small test file: few symbols to trace, so the refusal path is reached in
 # a second or two rather than after a minute of grep.
-SMALL = "crates/glasshouse/tests/claude_compaction.rs"
+SMALL = "crates/inference-gateway/tests/boundary.rs"
 
 
 def lock_path():

@@ -29,16 +29,11 @@ NAMED_FIXTURES = [
     ("crates/inference-gateway/src/gateway/conformance.rs", 64),
     ("crates/inference-gateway/src/gateway/ingress.rs", 1454),
     ("crates/inference-gateway/src/gateway/tests.rs", 282),
-    ("crates/glasshouse/src/integrations/providers.rs", 202),
     ("crates/inference-gateway/src/secret/mod.rs", 415),
     ("crates/inference-gateway/src/secret/mod.rs", 636),
     ("crates/inference-gateway/src/secret/mod.rs", 640),
     ("crates/inference-gateway/src/secret/mod.rs", 644),
     ("crates/inference-gateway/src/secret/mod.rs", 693),
-    ("crates/glasshouse/tests/entitlement_pool.rs", 278),
-    ("crates/glasshouse/tests/gateway_translate_cache.rs", 61),
-    ("crates/glasshouse/tests/tracked_knowledge.rs", 362),
-    ("crates/glasshouse/tests/tracked_knowledge.rs", 371),
 ]
 
 

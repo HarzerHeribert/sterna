@@ -1,6 +1,6 @@
 name: Release
 
-# Builds glasshouse and pane in release profile for the five OS/arch targets
+# Builds pane and inference-gateway in release profile for the five OS/arch targets
 # ci-extended.yml already exercises, and publishes them as a GitHub
 # pre-release with a SHA256SUMS file. This workflow never publishes to any
 # package registry -- see docs/product/design-decisions.md, "Steering
@@ -113,7 +113,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p glasshouse -p pane -p inference-gateway
+        run: cargo build --release --locked --target ${{ matrix.target }} -p pane -p inference-gateway
 
       # Proves the binary that will ship actually runs before it is packaged.
       # pane's top-level command has no --version/--help output of its own
@@ -126,7 +126,6 @@ jobs:
         run: |
           set -euo pipefail
           BIN="target/${{ matrix.target }}/release"
-          "$BIN/glasshouse" --version
           "$BIN/inference-gateway" --version
           "$BIN/pane" --help < /dev/null
       - name: Verify binaries (Windows)
@@ -134,8 +133,6 @@ jobs:
         shell: pwsh
         run: |
           $bin = "target/${{ matrix.target }}/release"
-          & "$bin/glasshouse.exe" --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$bin/inference-gateway.exe" --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "" | & "$bin/pane.exe" --help
@@ -150,7 +147,7 @@ jobs:
           STAGE="$RUNNER_TEMP/$NAME"
           BIN="target/${{ matrix.target }}/release"
           mkdir -p "$STAGE"
-          cp "$BIN/glasshouse" "$BIN/pane" "$BIN/inference-gateway" "$STAGE/"
+          cp "$BIN/pane" "$BIN/inference-gateway" "$STAGE/"
           cp README.md release/cliproxyapi.toml "$STAGE/"
           cp LICENSE* "$STAGE/" 2>/dev/null || true
           tar czf "$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
@@ -163,7 +160,6 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP $name
           $bin = "target/${{ matrix.target }}/release"
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item "$bin/glasshouse.exe" $stage
           Copy-Item "$bin/pane.exe" $stage
           Copy-Item "$bin/inference-gateway.exe" $stage
           Copy-Item README.md $stage

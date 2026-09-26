@@ -8,10 +8,10 @@
 # steps and no log, which looks exactly like a broken build and is not one.
 # Until the quota returns, THIS script is the gate. Run it before every commit.
 #
-# It mirrors .github/workflows/ci.yml deliberately and closely — `--locked`,
-# clippy without `--all-features`, and the README progress check — because a
-# local gate that tests something easier than CI is not a gate, it is a
-# rehearsal. If you change ci.yml, change this in the same commit.
+# It mirrors .github/workflows/ci-extended.yml deliberately and closely —
+# `--locked`, clippy without `--all-features` — because a local gate that tests
+# something easier than CI is not a gate, it is a rehearsal. If you change the
+# workflow, change this in the same commit.
 #
 # Warnings are denied by [workspace.lints.rust] in Cargo.toml rather than by
 # RUSTFLAGS here, so every invocation shares one fingerprint namespace --
@@ -21,14 +21,12 @@
 #   lint            ubuntu   -> Linux container
 #   test / msrv     ubuntu   -> Linux container
 #   test / msrv     macOS    -> this machine, natively
-#   test / msrv     WINDOWS  -> only with --windows-vm, and only if the VM is up.
+#   test            WINDOWS  -> the GitHub sweep's windows cells; --windows only compiles.
 #
-# The default run is five of the seven CI jobs, and nothing in it is evidence
-# about Windows. `--windows` adds a cross-compile check, which proves the
-# Windows code path still *compiles* and proves nothing whatever about whether
-# it works. `--windows-vm` is the only mode that runs Windows for real; it is
-# opt-in because the VM has to be booted by hand and costs this machine's CPU
-# and memory. The summary's closing NOTE says which of those three happened.
+# Nothing in the default run is evidence about Windows. `--windows` adds a
+# cross-compile check of the gateway, which proves the Windows code path still
+# *compiles* and nothing about whether it works; the GitHub sweep's windows
+# cells run it for real.
 #
 # HOW LONG IT TAKES, AND WHY (measured 2026-08-29, 12-core M-series)
 #   Warm, the whole default gate is ~2–4 minutes and nearly all of it is test
@@ -47,8 +45,6 @@
 #   scripts/ci-local.sh --macos      # native jobs only, fastest
 #   scripts/ci-local.sh --linux      # container jobs only
 #   scripts/ci-local.sh --windows    # add the compile-only cross check
-#   scripts/ci-local.sh --flake      # measure the pty flake rate (FLAKE_RUNS=10)
-#   scripts/ci-local.sh --windows-vm # real Windows on the ARM64 VM
 set -uo pipefail
 
 ORIG_CWD="$(pwd)"
@@ -92,15 +88,13 @@ cd "$REPO" || exit 1
 # shellcheck source=scripts/lib/accel.sh
 . "$REPO/scripts/lib/accel.sh"
 
-DO_MAC=0; DO_LINUX=0; DO_WIN=0; DO_FLAKE=0; DO_WINVM=0; SCOPED=0
+DO_MAC=0; DO_LINUX=0; DO_WIN=0; SCOPED=0
 if [ $# -eq 0 ]; then DO_MAC=1; DO_LINUX=1; fi
 for a in "$@"; do
   case "$a" in
     --macos)   DO_MAC=1 ;;
     --linux)   DO_LINUX=1 ;;
     --windows) DO_WIN=1 ;;
-    --flake)   DO_FLAKE=1 ;;
-    --windows-vm) DO_WINVM=1 ;;
     --scoped)  SCOPED=1 ;;
     --all)     DO_MAC=1; DO_LINUX=1; DO_WIN=1 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
@@ -114,7 +108,7 @@ done
 # refused wherever the run would otherwise be presented as authoritative --
 # a Linux or Windows leg is a platform claim, and there is no such thing as a
 # platform claim about targets you did not build.
-if [ "$SCOPED" -eq 1 ] && { [ "$DO_LINUX" -eq 1 ] || [ "$DO_WIN" -eq 1 ] || [ "$DO_WINVM" -eq 1 ]; }; then
+if [ "$SCOPED" -eq 1 ] && { [ "$DO_LINUX" -eq 1 ] || [ "$DO_WIN" -eq 1 ]; }; then
   echo "ci-local: --scoped is macOS-only -- it selects targets from the diff, which is not a platform claim." >&2
   echo "          Run 'scripts/ci-local.sh --scoped' for the fast tier, then the full gate before pushing." >&2
   exit 2
@@ -194,7 +188,6 @@ RESULTS=()
 FAILED=0
 # Whether Windows was actually exercised, and how. Both feed the closing NOTE,
 # which must never claim more or less than the run earned.
-WIN_VM_RAN=0
 WIN_CROSS_RAN=0
 
 step() {           # step <label> <command...>
@@ -211,19 +204,11 @@ step() {           # step <label> <command...>
 # --- native macOS jobs -------------------------------------------------------
 if [ "$DO_MAC" -eq 1 ]; then
   step "lint / fmt" "${ENV_SCRUB[@]}" cargo fmt --all -- --check
-  step "lint / clippy" "${ENV_SCRUB[@]}" cargo clippy --locked --workspace --exclude pane --all-targets -- -D warnings
-  step "lint / rustdoc" "${ENV_SCRUB[@]}" env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --exclude pane --no-deps
-  step "lint / README progress" python3 scripts/progress.py --check
+  step "lint / clippy" "${ENV_SCRUB[@]}" cargo clippy --locked --workspace --all-targets -- -D warnings
+  step "lint / rustdoc" "${ENV_SCRUB[@]}" env RUSTDOCFLAGS='-D warnings' cargo doc -p inference-gateway --no-deps
   step "lint / file sizes"      python3 scripts/check-file-sizes.py
   step "lint / secrets"         python3 scripts/check-secrets.py --tree
-  # Free-because-local checks. These never ran on GitHub Actions; they exist
-  # because a local gate can afford questions a metered one could not.
-  step "lint / doc boundary" scripts/check-doc-boundary.sh
-  step "lint / evidence coverage" python3 scripts/check-evidence-coverage.py --strict --strict-consistency
-  # The orchestration scripts have tests and, until 2026-08-27, nothing ran
-  # them. validate_round.py gates every round and worker-watch.sh decides
-  # when a worker is finished; both are cheap to break and expensive to
-  # have wrong.
+  # The gate's own scripts have tests: cheap to break, expensive to have wrong.
   step "lint / script tests" sh -c 'for t in scripts/tests/test_*.py; do python3 "$t" || exit 1; done'
   # The two heaviest steps in the whole gate, and the reason --scoped exists.
   # `--all-targets` is 160 separate integration-test crates: 160 compilations
@@ -240,12 +225,10 @@ if [ "$DO_MAC" -eq 1 ]; then
   if [ "$SCOPED" -eq 1 ]; then
     step "test (macos) / targeted blast radius" scripts/blast-radius.sh --targeted
   else
-    step "test (macos) / build" "${ENV_SCRUB[@]}" cargo build --locked --workspace --exclude pane --all-targets
-    step "test (macos) / test"  env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo test --locked --workspace --exclude pane -- --nocapture < /dev/null'
+    step "test (macos) / gateway build" "${ENV_SCRUB[@]}" cargo build --locked -p inference-gateway --all-targets
+    step "test (macos) / gateway test"  env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo test --locked -p inference-gateway -- --nocapture < /dev/null'
   fi
-  # `pane` is excluded from the workspace runs above and given its own step
-  # here, unconditionally: it is a standalone process gated separately from
-  # `glasshouse`, and it is cheap enough today that --scoped need not skip it.
+  # `pane` gets its own step, unconditionally: --scoped need not skip it.
   step "test (macos) / pane build+test" env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo build --locked -p pane --all-targets && cargo test --locked -p pane -- --nocapture < /dev/null'
   # Call the project's own script rather than `cargo +$MSRV`: its header
   # documents three traps, and `cargo +<v>` needs the rustup shim, which is
@@ -334,118 +317,15 @@ if [ "$DO_LINUX" -eq 1 ]; then
     }
     step "test (ubuntu) / build+test" run_linux \
       'set -e; rustup component add clippy rustfmt >/dev/null 2>&1 || true;
-       cargo build --locked --workspace --exclude pane --all-targets;
+       cargo build --locked -p inference-gateway --all-targets;
        . scripts/lib/secret-service-fixture.sh;
-       secret_service_fixture_run cargo test --locked --workspace --exclude pane -- --nocapture < /dev/null'
+       secret_service_fixture_run cargo test --locked -p inference-gateway -- --nocapture < /dev/null'
     step "lint (ubuntu) / clippy" run_linux \
       'set -e; rustup component add clippy >/dev/null 2>&1 || true;
-       cargo clippy --locked --workspace --exclude pane --all-targets -- -D warnings'
+       cargo clippy --locked -p inference-gateway --all-targets -- -D warnings'
     step "msrv (ubuntu) $MSRV" run_linux \
       "rustup toolchain install $MSRV --profile minimal && scripts/msrv-check.sh"
   fi
-fi
-
-# --- Windows, for real, on the ARM64 VM --------------------------------------
-#
-# The one gap nothing local could close: Windows containers need a Windows
-# kernel, and this host is linux/aarch64. A Windows 11 ARM64 VM is the only
-# local route, and it is the only thing that can close Phase 4's interrupt box
-# — every interrupt test in the suite is `#[cfg(unix)]`, so a green
-# `test (windows-latest)` has always been the absence of evidence wearing the
-# same colour.
-#
-# This drives `glasshouse-windows-ci`, the host helper that owns everything
-# about reaching the VM: it finds the guest's DHCP address, packages the
-# working tree (tracked *and* untracked, so uncommitted work is what gets
-# tested), extracts it to C:\ci\glasshouse, keeps cargo artifacts in
-# C:\ci\target, and returns a CI exit code. This script deliberately knows
-# none of that. An earlier version here did its own rsync-and-ssh against a
-# GLASSHOUSE_WINDOWS_HOST that never existed; two ways to reach one VM is one
-# too many, and the one that had never run was the one to delete.
-#
-# The helper's exit codes are the whole contract:
-#   0  the Windows job passed
-#   2  the helper refused before running anything — no VM, no key, no lease
-#   *  the Windows job ran and failed
-# So a VM that is not booted SKIPs with the helper's own reason. It never
-# fails the gate for being absent, and it never passes for being absent
-# either.
-if [ "$DO_WINVM" -eq 1 ]; then
-  WIN_HELPER="$(command -v glasshouse-windows-ci 2>/dev/null)"
-  WIN_UNAVAILABLE=""
-  if [ -z "$WIN_HELPER" ]; then
-    WIN_UNAVAILABLE="glasshouse-windows-ci is not on PATH"
-  elif grep -q 'GLASSHOUSE_CI_REPO' "$WIN_HELPER"; then
-    # The helper lets its caller choose the tree, so point it at this one.
-    export GLASSHOUSE_CI_REPO="$REPO"
-  else
-    # It does not, so it packages one hardcoded checkout. That is correct in
-    # that checkout and a wrong-green anywhere else: the run would report on
-    # a tree nobody asked about, which is the same trap the Linux leg copies
-    # instead of bind-mounting to avoid. Refuse rather than guess.
-    WIN_HELPER_REPO="$(sed -n 's/^readonly ci_repo="\(.*\)"$/\1/p' "$WIN_HELPER" | head -1)"
-    if [ "$WIN_HELPER_REPO" != "$REPO" ]; then
-      WIN_UNAVAILABLE="glasshouse-windows-ci packages ${WIN_HELPER_REPO:-a checkout it does not name}, not this worktree; make its ci_repo honour \$GLASSHOUSE_CI_REPO"
-    fi
-  fi
-
-  # One Windows job per `step` line, matching ci.yml's own granularity, so a
-  # Windows failure reads the same way in the summary as any other job.
-  win_step() {          # win_step <label> <helper-mode>
-    local label="$1" mode="$2" status err
-    if [ -n "$WIN_UNAVAILABLE" ]; then
-      RESULTS+=("SKIP  $label — $WIN_UNAVAILABLE")
-      return
-    fi
-    printf '\n\033[1m=== %s\033[0m\n' "$label"
-    err="$(mktemp)"
-    glasshouse-windows-ci "$mode" 2>"$err"; status=$?
-    cat "$err" >&2
-    if [ "$status" -eq 0 ]; then
-      WIN_VM_RAN=1
-      RESULTS+=("PASS  $label")
-    elif [ "$status" -eq 2 ]; then
-      # Refused before running anything. Carry the helper's own last words
-      # into the summary and skip the remaining Windows jobs with it, rather
-      # than asking a VM that is not there three more times.
-      WIN_UNAVAILABLE="$(tail -n 1 "$err")"
-      [ -n "$WIN_UNAVAILABLE" ] || WIN_UNAVAILABLE="the VM is not reachable; start it in VMware Fusion"
-      RESULTS+=("SKIP  $label — $WIN_UNAVAILABLE")
-    else
-      WIN_VM_RAN=1
-      RESULTS+=("FAIL  $label")
-      FAILED=1
-    fi
-    rm -f "$err"
-  }
-
-  win_step "test (windows) / build" build
-  win_step "test (windows) / test" test
-  win_step "msrv (windows) $MSRV" msrv
-fi
-
-# --- flake rate: the standing debt needs a number, not a pass ----------------
-#
-# `pty_smoke::a_direct_provider_profile_reaches_a_real_child_and_only_that_child`
-# still fails about once in 37 full-suite runs with the child killed by SIGABRT.
-# One green pass says nothing about it. A local gate can afford to ask how often,
-# which a metered one never could — so this runs the pty-sensitive suites N times
-# and reports failures/attempts rather than a verdict.
-if [ "$DO_FLAKE" -eq 1 ]; then
-  RUNS="${FLAKE_RUNS:-10}"
-  printf '\n\033[1m=== flake rate over %s runs ===\033[0m\n' "$RUNS"
-  fails=0
-  for i in $(seq 1 "$RUNS"); do
-    if cargo test --locked -p glasshouse \
-         --test pty_smoke --test events_lifecycle -- --nocapture < /dev/null >/dev/null 2>&1; then
-      printf '  run %2s/%s ok\n' "$i" "$RUNS"
-    else
-      fails=$((fails + 1))
-      printf '  run %2s/%s \033[31mFAILED\033[0m\n' "$i" "$RUNS"
-    fi
-  done
-  RESULTS+=("RATE  pty flake: $fails failure(s) in $RUNS run(s)")
-  # A rate is a measurement, not a verdict: it never fails the gate on its own.
 fi
 
 # --- Windows: compile-only, and labelled as such -----------------------------
@@ -465,7 +345,7 @@ if [ "$DO_WIN" -eq 1 ]; then
     # RUSTC beside cargo is what makes the target's std visible.
     WIN_TC="$(rustup run stable rustc --print sysroot)/bin"
     step "windows CROSS-CHECK (compiles only, proves nothing about behaviour)" \
-      env RUSTC="$WIN_TC/rustc" "$WIN_TC/cargo" check --locked --workspace --exclude pane --target "$TARGET"
+      env RUSTC="$WIN_TC/rustc" "$WIN_TC/cargo" check --locked -p inference-gateway --target "$TARGET"
     # The earlier note, kept for the history it records: bare `cargo` is
     # Homebrew's, and E0463 reads like a broken dependency (GH-WINDOWS-TEST-BUILD,
     # 2026-09-02).
@@ -487,9 +367,7 @@ if [ "$SCOPED" -eq 1 ]; then
   printf '      what you changed and about nothing else. It is not a CI prediction and it\n'
   printf '      does not replace the pre-push gate: run scripts/ci-local.sh with no flags.\n'
 fi
-if [ "$WIN_VM_RAN" -eq 1 ]; then
-  printf '\n\033[33mNOTE\033[0m  Windows ran for real on the ARM64 VM. Those lines ARE evidence about Windows.\n'
-elif [ "$WIN_CROSS_RAN" -eq 1 ]; then
+if [ "$WIN_CROSS_RAN" -eq 1 ]; then
   printf '\n\033[33mNOTE\033[0m  The Windows check compiles the target; it does not run a single test there.\n'
 else
   printf '\n\033[33mNOTE\033[0m  Windows was not exercised at all. Nothing here is evidence about Windows.\n'

@@ -5,11 +5,8 @@ name: CI (extended)
 # scripts/ci-local.sh is the blocking gate and stays that way: it is faster on
 # the developer's machine than any hosted runner, and it is what every worker
 # runs before reporting. This workflow is the trailing sweep with a matrix one
-# laptop cannot host -- more operating systems, more architectures, more
-# compilers, and the real harnesses installed so the adapters' `Declared`
-# facts are re-verified against live binaries on every run instead of only
-# when a developer remembers to. Wall-clock is not a constraint here; the
-# green tick is.
+# laptop cannot host -- more operating systems, more architectures and more
+# compilers. Wall-clock is not a constraint here; the green tick is.
 #
 # COST, and why the trigger below is still manual: GitHub-hosted standard
 # runners are free for PUBLIC repositories and metered for private ones, with
@@ -31,22 +28,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Everything a runner can answer about the tree: every OS and architecture
-  # GitHub hosts, on the declared compiler and on the MSRV floor. Beta and
-  # nightly ride along on one OS as early warning, allowed to fail.
+  # Pane and the inference gateway on every OS and architecture GitHub hosts,
+  # on the declared compiler; the gateway alone on its MSRV floor (Pane's
+  # floor is its own, 1.96, set by `oxc`, and the declared compiler is above
+  # it). Beta and nightly ride along on one OS as early warning, allowed to
+  # fail.
   test:
     name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     continue-on-error: ${{ matrix.toolchain == 'beta' || matrix.toolchain == 'nightly' }}
-    # Compile cache backed by the Actions cache service. Swatinem/rust-cache
-    # keeps a whole target/ and this workspace's 160 test binaries blow through
-    # the 10 GB per-repository cap in one run; sccache stores per-crate outputs
-    # and survives that. Scoped to THIS job: the first run of this workflow set
-    # RUSTC_WRAPPER at workflow level and the audit job, which never installs
-    # sccache, failed on `could not execute process sccache` before doing
-    # anything -- the same absence-is-not-an-error rule scripts/lib/accel.sh
-    # follows locally, learned again here.
+    # Compile cache backed by the Actions cache service; sccache stores
+    # per-crate outputs and survives the 10 GB per-repository cache cap a
+    # whole target/ would blow through. Scoped to this job: a job that never
+    # installs sccache must not have RUSTC_WRAPPER set.
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
@@ -65,12 +60,18 @@ jobs:
           - { os: ubuntu-latest, toolchain: beta }
           - { os: ubuntu-latest, toolchain: nightly }
     steps:
+      # The ruler cuts a worktree at a task's PARENT commit
+      # (crates/pane/src/ruler/attempt.rs), and its tests do the same at
+      # HEAD^; a depth-1 checkout has no parent.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Both versions are declared once, in Cargo.toml, and read from there
       # the same way scripts/ci-local.sh reads them -- the two cannot drift.
-      - name: Resolve the toolchain for this cell
+      # The MSRV cell tests the crate that declares the workspace floor.
+      - name: Resolve the toolchain and packages for this cell
         id: tc
         shell: bash
         run: |
@@ -80,8 +81,10 @@ jobs:
             *)        v="${{ matrix.toolchain }}" ;;
           esac
           test -n "$v"
+          if [ "${{ matrix.toolchain }}" = msrv ]; then pkgs="-p inference-gateway"; else pkgs="--workspace"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "toolchain for this cell: $v"
+          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
+          echo "toolchain for this cell: $v, packages: $pkgs"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -92,75 +95,25 @@ jobs:
       - name: Compile cache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      # The harnesses, for real. Several adapters state facts about the
-      # installed binary as `Declared::Verified` and a few tests compare those
-      # facts against what is actually on PATH -- session_hook's Codex hook
-      # catalogue, for one. Without the binaries those tests SKIP, which is
-      # honest but proves nothing; with them, a harness release that renames
-      # an event goes red here before it reaches a developer's machine.
-      #
-      # continue-on-error on purpose: an install URL that moves must not turn
-      # every cell red, because the tests skip cleanly when a harness is
-      # absent. A missing harness is a smaller loss than a lost matrix.
-      - name: Install Node (harness installers need it)
-        if: matrix.toolchain == 'declared'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install harnesses
-        if: matrix.toolchain == 'declared'
-        continue-on-error: true
-        shell: bash
-        run: |
-          # Codex is pinned to the version `harness::codex::CATALOGUE_OBSERVED_VERSION`
-          # records -- read from source so the two cannot drift. The provenance
-          # test compares the installed version against that constant; unpinned,
-          # every `declared` cell went red the hour OpenAI published 0.153.4
-          # (2026-09-05, runs 33971282609..33973391507). Build rule 2, applied to
-          # a harness: one declared version, actually used.
-          codex_ver="$(grep -oE 'CATALOGUE_OBSERVED_VERSION: &str = "[^"]+"' crates/glasshouse/src/harness/codex.rs | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-          test -n "$codex_ver"
-          npm install -g @anthropic-ai/claude-code "@openai/codex@$codex_ver" opencode-ai
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            curl -fsS https://cursor.com/install | bash || true
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
-          for h in claude codex opencode cursor-agent; do
-            printf '%-14s ' "$h"; command -v "$h" >/dev/null 2>&1 && "$h" --version 2>/dev/null | head -1 || echo "(absent -- its tests will skip)"
-          done
-
-      # The Linux Secret Service backend (Phase 9E line 442) links libdbus
-      # through `libdbus-sys`, whose build script needs the dev headers and
-      # pkg-config on the build host -- accepted by the user on 2026-09-05.
-      # gnome-keyring and libsecret-tools are the CI fixture's provider and
-      # its proof CLI (GH-SECRET-SERVICE-CI-FIXTURE); dbus is
-      # dbus-run-session, which the fixture uses for a private bus -- these
-      # images ship dbus and pkg-config already but not libdbus-1-dev.
+      # The gateway's Linux Secret Service backend links libdbus through
+      # `libdbus-sys`, whose build script needs the dev headers and pkg-config.
+      # gnome-keyring and libsecret-tools are the CI fixture's provider and its
+      # proof CLI; dbus is dbus-run-session, which the fixture uses for a
+      # private bus.
       - name: Linux build-host packages (libdbus for the Secret Service backend)
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y -q libdbus-1-dev pkg-config dbus gnome-keyring libsecret-tools
 
       - name: Build
-        run: cargo build --locked --workspace --exclude pane --all-targets
+        run: cargo build --locked ${{ steps.tc.outputs.packages }} --all-targets
 
-      # --no-fail-fast: this is the sweep, not the gate. The gate stops at the
-      # first red so a developer gets an answer fast; the sweep runs everything
-      # so one red cannot hide the others -- which is exactly how a Codex
-      # catalogue drift sat behind a pty_smoke failure on 2026-09-05.
-      #
-      # Linux gets its own step so secret_native's round trip (Phase 9E line
-      # 442) runs against a real, unlocked Secret Service instead of skipping
-      # -- the same fixture ci-local.sh's run_linux() sources, so the local
-      # gate and this sweep agree. macOS and Windows are the unchanged step
-      # below; nothing here touches them.
-      # The two Test steps continue-on-error on purpose, and the log they tee
-      # is judged by the "Re-run failures alone" step at the END of the job:
-      # a red test must not stop the doctests, clippy and rustdoc behind it
-      # (user, 2026-09-11 -- a load-flaky pty test was hiding every later
-      # red), and a failed test gets one rerun alone before it counts, the
-      # sweep's form of CLAUDE.md rule 4. The job is red when a test is red
-      # alone too, or when any later step is.
+      # --no-fail-fast: this is the sweep, not the gate -- one red must not
+      # hide the others. The Test steps continue-on-error on purpose, and the
+      # log they tee is judged by the "Re-run failures alone" step at the END
+      # of the job: a red test must not stop the doctests, clippy and rustdoc
+      # behind it (user, 2026-09-11), and a failed test gets one rerun alone
+      # before it counts. Linux runs under a real, unlocked Secret Service, the
+      # fixture ci-local.sh's run_linux() sources.
       - name: Test (Linux, under the Secret Service fixture)
         id: test_linux
         if: runner.os == 'Linux'
@@ -169,7 +122,7 @@ jobs:
         run: |
           set -o pipefail
           . scripts/lib/secret-service-fixture.sh
-          secret_service_fixture_run cargo test --locked --workspace --exclude pane --no-fail-fast -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+          secret_service_fixture_run cargo test --locked ${{ steps.tc.outputs.packages }} --no-fail-fast -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       - name: Test
         id: test
@@ -178,18 +131,20 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked --workspace --exclude pane --no-fail-fast -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+          cargo test --locked ${{ steps.tc.outputs.packages }} --no-fail-fast -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       - name: Doctests
-        run: cargo test --locked --workspace --exclude pane --doc
+        run: cargo test --locked ${{ steps.tc.outputs.packages }} --doc
 
       - name: Clippy
         if: matrix.toolchain == 'declared'
-        run: cargo clippy --locked --workspace --exclude pane --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # The gateway only: pane's docs were never held to -D warnings and
+      # link private items in several places.
       - name: Rustdoc
         if: matrix.toolchain == 'declared'
-        run: cargo doc --workspace --exclude pane --no-deps
+        run: cargo doc -p inference-gateway --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -209,66 +164,8 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  # `crates/pane` is excluded from `test` above so its own future dependencies
-  # (an embedded V8, a tokio stack) never leak into `glasshouse`'s build; it
-  # gets a job of its own instead. Ubuntu and macOS only -- Windows arrives
-  # with 61D's sandbox, and a Windows cell before there is anything
-  # platform-specific to test would buy nothing and cost a cell on every push.
-  pane:
-    name: pane (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      # The ruler cuts a worktree at a task's PARENT commit (crates/pane/src/ruler/
-      # attempt.rs), and its tests do the same at HEAD^; a depth-1 checkout has
-      # no parent, and seven of ruler_run's eleven tests failed on both pane cells
-      # with "fatal: invalid reference: <sha>^" (run 33978067733). Full history,
-      # for this job only.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Resolve the declared toolchain
-        id: tc
-        shell: bash
-        run: |
-          v="$(grep -m1 '^toolchain' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"; test -n "$v"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.tc.outputs.version }}
-      # pane's standalone proof runs the real `inference-gateway` beside its own
-      # binary (crates/pane/tests/session.rs `real_gateway_binary`), and that
-      # crate's Linux keychain backend links libdbus -- the same package the
-      # glasshouse job installs, for the same reason.
-      - name: Linux build-host packages (libdbus for the gateway's Secret Service backend)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q libdbus-1-dev pkg-config
-      - name: Build
-        run: cargo build --locked -p pane --all-targets
-      - name: Build the gateway pane's standalone proof runs
-        if: runner.os != 'Windows'
-        run: cargo build --locked -p inference-gateway --bin inference-gateway
-      # Same shape as the glasshouse job: the log is judged at the end, and a
-      # failed test is rerun alone once before it counts.
-      - name: Test
-        id: test
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo test --locked -p pane --no-fail-fast -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
-      - name: Re-run failures alone, once
-        if: always() && steps.test.outcome == 'failure'
-        shell: bash
-        run: bash scripts/ci/rerun-failed-alone.sh "$RUNNER_TEMP/test.log"
-
-  # The checks that never cost a compiler: formatting, the README progress
-  # block, the file-size ratchet, the doc boundary, evidence coverage, and the
-  # orchestration scripts' own tests.
+  # The checks that never cost a compiler: formatting, the file-size ratchet,
+  # the secret scan and the scripts' own tests.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -289,8 +186,6 @@ jobs:
           components: rustfmt
       - name: Formatting
         run: cargo fmt --all -- --check
-      - name: README progress block
-        run: python3 scripts/progress.py --check
       - name: File-size ratchet
         run: python3 scripts/check-file-sizes.py
       - name: Secrets
@@ -305,15 +200,8 @@ jobs:
           else
             python3 scripts/check-secrets.py --tree
           fi
-      - name: Doc boundary
-        run: scripts/check-doc-boundary.sh
-      - name: Evidence coverage
-        run: python3 scripts/check-evidence-coverage.py --strict --strict-consistency
-      # The orchestration scripts' tests write fixtures under .agent-runtime/,
-      # which is gitignored and exists only in a developer's main checkout --
-      # a runner has no such directory and the tests fail on the first write.
-      # Giving the runner the same shape is the honest fix; teaching every test
-      # to create it is a change to code this workflow should not be making.
+      # Some script tests write fixtures under .agent-runtime/, which is
+      # gitignored and exists only in a developer's main checkout.
       - name: Script tests
         run: |
           mkdir -p .agent-runtime
