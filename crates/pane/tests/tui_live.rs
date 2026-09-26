@@ -2242,20 +2242,25 @@ fn motion_provider() -> (String, mpsc::Sender<()>) {
 /// are printed (`--nocapture`) so the look can be read, not only asserted.
 fn walk_a_turn(bird: bool) {
     let (base, release) = motion_provider();
-    let mut app = App::start_with_helpers(&base, "helper-tier");
+    let colours: &[(&str, &str)] = if bird {
+        &[("COLORTERM", "truecolor")]
+    } else {
+        &[]
+    };
+    let mut app = App::start_in(&base, false, Some("helper-tier"), &[], &|_| {}, colours);
     app.contains("fixture-model");
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
         app.settle(90);
         eprintln!(
             "--- {} · {name} ---\n{}",
-            if bird { "bird" } else { "instrument" },
+            if bird { "parrot" } else { "classic" },
             app.screen.screen().contents()
         );
     };
     if bird {
-        app.send(b"/bird\r");
-        app.contains("Bird look on");
+        app.send(b"/theme amazon\r");
+        app.contains("Theme: amazon");
     }
     app.settle(300);
     frame(&mut app, "idle");
@@ -2288,7 +2293,7 @@ fn the_instrument_moves_where_attention_is_and_the_check_lands_behind_the_answer
 }
 
 #[test]
-fn the_bird_look_walks_the_same_turn() {
+fn a_parrot_theme_walks_the_same_turn() {
     walk_a_turn(true);
 }
 

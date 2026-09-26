@@ -253,6 +253,18 @@ impl Store {
                 let removed = self.read(retired.scope).and_then(|snapshot| {
                     self.save(retired.scope, &snapshot, &[(retired.key.clone(), None)])
                 });
+                if let Some(instead) = registry::retired_key(&retired.key) {
+                    return format!(
+                        "`{} = {}` is no longer a setting{}; {instead}.",
+                        retired.key,
+                        retired.word,
+                        if removed.is_ok() {
+                            ", so it was removed from your settings"
+                        } else {
+                            ""
+                        },
+                    );
+                }
                 let now = retired
                     .key
                     .split('.')
@@ -359,9 +371,11 @@ impl Store {
                 // An unset still names a supported key: removing a key Pane
                 // does not have would quietly "succeed" on a typo.
                 None => {
-                    registry::spec(key).ok_or_else(|| {
-                        format!("settings: `{key}` is not a setting Pane supports")
-                    })?;
+                    if registry::retired_key(key).is_none() {
+                        registry::spec(key).ok_or_else(|| {
+                            format!("settings: `{key}` is not a setting Pane supports")
+                        })?;
+                    }
                     None
                 }
             };
@@ -1189,6 +1203,12 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
         .flat
         .iter()
         .filter_map(|(key, value)| {
+            if registry::retired_key(key).is_some() {
+                let word = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), str::to_string);
+                return Some((key.clone(), word));
+            }
             let spec = registry::spec(key)?;
             let word = value.as_str()?;
             (spec.kind == registry::Kind::Choice && !spec.choices.contains(&word))
@@ -1288,7 +1308,6 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ("ui.statusline", word("full")),
         ("ui.sidebar", word("auto")),
         ("ui.reduced_motion", toml::Value::Boolean(false)),
-        ("ui.look", word(crate::tui::Look::default().name())),
         ("ui.motion", word(crate::tui::Motion::default().name())),
         ("ui.voice", word(crate::tui::Voice::default().name())),
         ("ui.stream", word(crate::tui::Stream::default().name())),

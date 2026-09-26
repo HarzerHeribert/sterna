@@ -164,25 +164,6 @@ impl Workbench {
                 s.note("Usage: /motion full | calm | off");
                 true
             }
-            ["/bird", rest @ ..] if rest.len() <= 1 => {
-                let look = match rest.first().copied() {
-                    None if s.look == crate::tui::Look::Bird => crate::tui::Look::Instrument,
-                    None | Some("on") => crate::tui::Look::Bird,
-                    Some("off") => crate::tui::Look::Instrument,
-                    Some(_) => {
-                        s.note("Usage: /bird, /bird on or /bird off");
-                        return true;
-                    }
-                };
-                s.look = look;
-                self.persist("ui.look", look.name(), s);
-                s.note(if look == crate::tui::Look::Bird {
-                    "Bird look on. /bird again for the instrument."
-                } else {
-                    "Instrument look. /bird brings the bird back."
-                });
-                true
-            }
             ["/stream", word @ ("actions" | "code" | "raw")] => {
                 s.stream = crate::tui::Stream::parse(word).unwrap_or_default();
                 self.persist("ui.stream", word, s);

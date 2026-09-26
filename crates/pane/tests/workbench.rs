@@ -1317,7 +1317,7 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
 #[test]
 fn plain_voice_keeps_every_fact_and_drops_the_remarks() {
     let (c, n, mut s) = fixture();
-    s.look = pane::tui::Look::Bird;
+    s.theme = pane::tui::Theme::Bird(pane::workbench::plumage::Bird::Amazon);
     s.sidebar = pane::tui::SidebarVisibility::Shown;
     let mut u = Workbench::default();
     let playful = text(&draw(&c, &n, &s, &mut u, 140, 40));
@@ -1396,7 +1396,7 @@ fn the_opening_offers_the_projects_own_suggestions_as_chips() {
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(screen.contains("⟨ explore this project ⟩"), "{screen}");
-    s.look = pane::tui::Look::Bird;
+    s.theme = pane::tui::Theme::Bird(pane::workbench::plumage::Bird::Amazon);
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(screen.contains("⟨ show me around ⟩"), "{screen}");
 }
@@ -1433,21 +1433,68 @@ fn the_latest_answer_offers_what_to_do_next() {
     }
 }
 
-/// The bird is decoration: reduced motion holds it still, and the dock's
-/// flap is the only thing that moves on an idle screen.
+/// The rows of the conversation card, from its greeting down.
+fn card_rows(screen: &str, greeting: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains(greeting))
+        .unwrap_or_else(|| panic!("no card greeting `{greeting}`:\n{screen}"));
+    lines[at..(at + 4).min(lines.len())]
+        .iter()
+        .map(|l| l.chars().take(20).collect())
+        .collect()
+}
+
+fn braille(text: &str) -> bool {
+    text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+}
+
+/// **Once the conversation starts, a parrot theme keeps the bird's head
+/// beside the card, in colour**; a classic theme draws no bird of any kind.
+/// No braille songbird is left anywhere on the card.
 #[test]
-fn the_bird_holds_still_under_reduced_motion_and_flaps_otherwise() {
+fn a_parrot_theme_keeps_its_head_on_the_card_and_a_classic_one_has_no_bird() {
     let (c, n, mut s) = fixture();
-    s.look = pane::tui::Look::Bird;
-    s.activity = Activity::Thinking;
+    assert!(!c.messages.is_empty());
+    s.truecolor = true;
+    s.theme = pane::tui::Theme::Bird(pane::workbench::plumage::Bird::Amazon);
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    let card = card_rows(&screen, "Back in the nest");
+    assert!(
+        card.iter()
+            .any(|row| row.contains('▀') || row.contains('▄')),
+        "the parrot's head is on the card:\n{}",
+        card.join("\n")
+    );
+    assert!(!card.iter().any(|row| braille(row)), "{}", card.join("\n"));
+    assert!(u.geometry.hits.iter().any(|(_, a)| *a == Action::Quip));
+
+    s.theme = pane::tui::Theme::default();
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    let card = card_rows(&screen, "What should we build?");
+    for row in &card {
+        assert!(
+            !braille(row) && !row.contains('▀') && !row.contains('▄'),
+            "a bird on a classic card:\n{}",
+            card.join("\n")
+        );
+    }
+    assert!(!u.geometry.hits.iter().any(|(_, a)| *a == Action::Quip));
+}
+
+/// The parrot is decoration: reduced motion holds its head still.
+#[test]
+fn the_parrot_holds_still_under_reduced_motion() {
+    let (c, n, mut s) = fixture();
+    s.truecolor = true;
+    s.theme = pane::tui::Theme::Bird(pane::workbench::plumage::Bird::Amazon);
+    s.reduced_motion = true;
     let mut u = Workbench::default();
     let a = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    s.animation_frame = 3;
-    let b = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert_ne!(a, b, "the flap moves while the session works");
-    s.reduced_motion = true;
-    let a = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    s.animation_frame = 6;
+    s.animation_frame = 23;
     assert_eq!(a, text(&draw(&c, &n, &s, &mut u, 100, 40)));
 }
 
@@ -1502,10 +1549,10 @@ fn changed(a: &Buffer, b: &Buffer) -> usize {
         .count()
 }
 
-/// The default look carries no bird: no face, no nest, no flap, and the
-/// card is not a thing to click for a remark.
+/// A classic theme carries no bird: no face, no nest, and the card is not a
+/// thing to click for a remark. `/bird` is gone -- the parrots are themes.
 #[test]
-fn the_instrument_look_has_no_bird_and_bird_brings_it_back() {
+fn a_classic_theme_has_no_bird_and_bird_is_no_command() {
     let (_, n, mut s) = fixture();
     let c = Conversation::default();
     let mut u = Workbench::default();
@@ -1513,22 +1560,14 @@ fn the_instrument_look_has_no_bird_and_bird_brings_it_back() {
     for bird in ["nest", "bird", "⡔", "⠤⠤⠤"] {
         assert!(
             !screen.contains(bird),
-            "{bird} in the instrument:\n{screen}"
+            "{bird} in a classic theme:\n{screen}"
         );
     }
     assert!(!u.geometry.hits.iter().any(|(_, a)| *a == Action::Quip));
-    assert!(u.local_command("/bird", &mut s, &n));
-    assert_eq!(s.look, pane::tui::Look::Bird);
-    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(screen.contains("⡔"), "the bird's face:\n{screen}");
-    assert!(u.local_command("/bird off", &mut s, &n));
-    assert_eq!(s.look, pane::tui::Look::Instrument);
-    assert!(u.local_command("/bird", &mut s, &n));
     assert!(
-        u.local_command("/bird", &mut s, &n),
-        "a second /bird toggles back"
+        !u.local_command("/bird", &mut s, &n),
+        "/bird is not a workbench command any more"
     );
-    assert_eq!(s.look, pane::tui::Look::Instrument);
 }
 
 /// An idle screen is still between frames but for the heartbeat's one
@@ -1825,6 +1864,34 @@ fn the_theme_sheet_previews_the_chosen_bird() {
     ] {
         assert!(screen.contains(shown), "{shown} is missing:\n{screen}");
     }
+}
+
+/// **Themes come in families**: the sheet heads each one -- Classic, then
+/// Parrots -- with its themes under it, and choosing still steps from theme
+/// to theme, never onto a heading.
+#[test]
+fn the_theme_sheet_groups_themes_under_their_family() {
+    use pane::workbench::plumage::Bird;
+    let (c, n, mut s) = fixture();
+    s.panel = Some(Theme::picker(Theme::Rose));
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    let line = |needle: &str| {
+        screen
+            .lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is missing:\n{screen}"))
+    };
+    let (classic, parrots) = (line("CLASSIC · "), line("PARROTS · "));
+    assert!(classic < line("neon") && line("rose") < parrots, "{screen}");
+    assert!(parrots < line("Amazon") && parrots < line("Sulphur-crested Cockatoo"));
+    // The last classic theme steps straight onto the first parrot.
+    let panel = s.panel.as_ref().unwrap();
+    let next = panel.rows.get(panel.selected + 1).unwrap();
+    assert_eq!(
+        next.command.as_deref(),
+        Some(format!("/theme {}", Theme::Bird(Bird::Amazon).name()).as_str())
+    );
 }
 
 /// **A key pasted into a form is bullets on the screen, never the key**, and

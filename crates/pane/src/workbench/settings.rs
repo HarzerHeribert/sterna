@@ -21,14 +21,13 @@ pub const CATEGORIES: [&str; 6] = [
 /// at all sat under another. Someone opening settings wants the five things
 /// they change; every one of those five is on this list, and everything else
 /// is still exactly one Tab away.
-const EVERYDAY: [&str; 8] = [
+const EVERYDAY: [&str; 7] = [
     "model.parent",
     "session.effort",
     "session.mode",
     "permissions.mode",
     "helpers.enabled",
     "ui.theme",
-    "ui.look",
     "ui.motion",
 ];
 pub struct Preferences {
@@ -197,7 +196,6 @@ impl Preferences {
         match key {
             "ui.theme" => s.theme = resolved.theme,
             "ui.reduced_motion" | "ui.motion" => s.set_motion(resolved.motion),
-            "ui.look" => s.look = resolved.look,
             "ui.statusline" => s.status_line = resolved.status_line,
             "ui.sidebar" => s.sidebar = resolved.sidebar,
             "ui.voice" => s.voice = resolved.voice,
@@ -269,7 +267,6 @@ impl Preferences {
                 match key.as_str() {
                     "ui.theme" => s.theme = resolved.theme,
                     "ui.reduced_motion" | "ui.motion" => s.set_motion(resolved.motion),
-                    "ui.look" => s.look = resolved.look,
                     "ui.statusline" => s.status_line = resolved.status_line,
                     "ui.sidebar" => s.sidebar = resolved.sidebar,
                     "ui.voice" => s.voice = resolved.voice,

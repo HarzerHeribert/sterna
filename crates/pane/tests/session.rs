@@ -7716,6 +7716,46 @@ fn a_choice_an_upgrade_retired_is_removed_and_pane_starts() {
     );
 }
 
+/// `ui.look` and `/bird` are gone -- the parrots are themes. A file that
+/// still says `look = "bird"` starts, is told where the bird went, and
+/// loses the line so the next start is quiet.
+#[test]
+fn a_saved_look_is_removed_and_pane_starts() {
+    let root = scratch_dir("retired-look");
+    fs::create_dir_all(root.join(".pane")).unwrap();
+    let config = root.join(".pane/config.toml");
+    fs::write(&config, "[ui]\nlook = \"bird\"\ntheme = \"amber\"\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pane"))
+        .arg("session")
+        .arg("--root")
+        .arg(&root)
+        .arg("--rollout")
+        .arg(root.join("rollout.jsonl"))
+        .arg("--model")
+        .arg(pane::wire::MODEL)
+        .env("ANTHROPIC_BASE_URL", refused_base_url())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a saved look stopped pane:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("`ui.look = bird` is no longer a setting")
+            && stdout.contains("parrot themes"),
+        "{stdout}"
+    );
+    let saved = fs::read_to_string(&config).unwrap();
+    assert!(!saved.contains("look"), "{saved}");
+    assert!(
+        saved.contains("amber"),
+        "the rest of the file is kept: {saved}"
+    );
+}
+
 /// `/login custom` is one form: the URL, what it speaks, and a key. The
 /// gateway is told to add the endpoint and is handed the key on stdin --
 /// never in argv, where any process could read it.

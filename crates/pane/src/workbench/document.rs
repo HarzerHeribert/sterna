@@ -1114,27 +1114,43 @@ impl Document {
             .collect();
         *next += opening;
         let asking = false;
-        let still = !s.motion_live();
         let face = voice::Face::of(s.activity, asking);
-        if let crate::tui::Theme::Bird(species) = s.theme
-            && s.truecolor
+        // A parrot theme on a terminal that shows its colours: the bird
+        // perches on an empty conversation's card, and once the
+        // conversation starts its head stays beside the greeting. A classic
+        // theme draws no bird at all, only the card's one still mark.
+        let parrot = match s.theme {
+            crate::tui::Theme::Bird(species) if s.truecolor => Some(species),
+            _ => None,
+        };
+        if let Some(species) = parrot
             && c.messages.is_empty()
         {
             self.perched(species, face, s, &startup, width);
             return;
         }
-        let bird = s.look == crate::tui::Look::Bird;
-        // The instrument's card is one still mark and the facts; the bird's
-        // is its face. Either way the card is chrome and holds still.
-        let (art, art_width) = if bird {
-            (
-                voice::face(face, s.animation_frame, still).to_vec(),
-                voice::FACE_WIDTH,
-            )
+        let art: Vec<Vec<(String, Tone)>> = match parrot {
+            Some(species) => super::plumage::head(species, mood(face, s))
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|(glyph, fg, bg)| (glyph.to_string(), Tone::Pixel(fg, bg)))
+                        .collect()
+                })
+                .collect(),
+            None => {
+                let mut marks = vec![vec![(
+                    super::motion::card_mark(face).to_string(),
+                    Tone::Accent,
+                )]];
+                marks.resize(super::plumage::HEAD_HEIGHT, Vec::new());
+                marks
+            }
+        };
+        let art_width = if parrot.is_some() {
+            super::plumage::HEAD_WIDTH
         } else {
-            let mut marks = vec![super::motion::card_mark(face).to_string()];
-            marks.resize(voice::FACE_ROWS, " ".into());
-            (marks, 1)
+            1
         };
         // The header already names the project and the model, so the card
         // says only what the header cannot: a greeting, and what happened
@@ -1156,18 +1172,22 @@ impl Document {
             ),
             (String::new(), Tone::Muted),
         ];
-        for (glyph, (text, tone)) in art.iter().zip(facts) {
-            // The instrument draws no row it has nothing to say on.
-            if !bird && text.is_empty() {
+        for (glyph, (text, tone)) in art.into_iter().zip(facts) {
+            // Without a bird no row is drawn that has nothing to say.
+            if parrot.is_none() && text.is_empty() {
                 continue;
             }
-            // The bird is the row's only target: a click anywhere on it is a
-            // remark, never a surface opening under a stray report.
-            self.line(
-                vec![(format!(" {glyph}  "), Tone::Accent), (text, tone)],
-                bird.then_some(Action::Quip),
-                0,
-            );
+            let mut spans = vec![(" ".to_string(), Tone::Normal)];
+            if glyph.is_empty() {
+                spans.push((" ".repeat(art_width), Tone::Normal));
+            } else {
+                spans.extend(glyph);
+            }
+            spans.push(("  ".to_string(), Tone::Normal));
+            spans.push((text, tone));
+            // The parrot is the row's only target: a click anywhere on it is
+            // a remark, never a surface opening under a stray report.
+            self.line(spans, parrot.map(|_| Action::Quip), 0);
         }
         self.rule(width, 0);
         self.blank(0);
@@ -1182,15 +1202,8 @@ impl Document {
         startup: &[&str],
         width: usize,
     ) {
-        use super::plumage::{Mood, WIDTH, sprite};
-        let mood = match face {
-            voice::Face::Idle if s.motion_live() && s.animation_frame % 24 == 23 => Mood::Blink,
-            voice::Face::Idle => Mood::Idle,
-            voice::Face::Thinking | voice::Face::Asking => Mood::Think,
-            voice::Face::Working => Mood::Work,
-            voice::Face::Done => Mood::Done,
-            voice::Face::Oops => Mood::Oops,
-        };
+        use super::plumage::{WIDTH, sprite};
+        let mood = mood(face, s);
         let plumage = species.plumage();
         let room = width.saturating_sub(WIDTH + 6);
         let mut facts = vec![
@@ -1376,10 +1389,8 @@ impl Document {
         );
     }
     /// What is actually happening inside a running cell, how long it has
-    /// been, and at whose cost -- beside the bird at work, or under the
-    /// instrument's scanner.
+    /// been, and at whose cost, under the scanner.
     fn work(&mut self, s: &ScreenState, v: Option<&CellView>, width: usize, id: usize) {
-        let still = !s.motion_live();
         let helper = v.and_then(|v| v.helpers.last());
         let waiting = helper.is_some_and(|h| !h.outcome.ok && h.outcome.text.is_empty());
         let (label, detail) = voice::working(
@@ -1406,40 +1417,17 @@ impl Document {
                 )
             },
         );
-        if s.look == crate::tui::Look::Instrument {
-            let label = format!("◆ {label}  ");
-            let mut head = vec![(label.clone(), Tone::Accent)];
-            if span_width(&label) + 12 < width {
-                head.extend(super::motion::scanner(s));
-            }
-            self.line(head, None, id);
-            for (text, tone) in [(detail, Tone::Normal), (cost, Tone::Muted)] {
-                self.line(
-                    vec![
-                        ("  ".into(), tone),
-                        (clip(&text, width.saturating_sub(4)), tone),
-                    ],
-                    None,
-                    id,
-                );
-            }
-            return;
+        let label = format!("◆ {label}  ");
+        let mut head = vec![(label.clone(), Tone::Accent)];
+        if span_width(&label) + 12 < width {
+            head.extend(super::motion::scanner(s));
         }
-        let art = voice::face(voice::Face::Working, s.animation_frame, still);
-        for (glyph, (text, tone)) in art.into_iter().zip([
-            (format!("◈ {label}"), Tone::Accent),
-            (detail, Tone::Normal),
-            (cost, Tone::Muted),
-            (String::new(), Tone::Normal),
-        ]) {
-            let text = clip(&text, width.saturating_sub(voice::FACE_WIDTH + 4));
+        self.line(head, None, id);
+        for (text, tone) in [(detail, Tone::Normal), (cost, Tone::Muted)] {
             self.line(
                 vec![
-                    (
-                        format!(" {glyph} "),
-                        if still { Tone::Line } else { Tone::Accent },
-                    ),
-                    (text, tone),
+                    ("  ".into(), tone),
+                    (clip(&text, width.saturating_sub(4)), tone),
                 ],
                 None,
                 id,
@@ -2001,6 +1989,20 @@ fn explanation(m: &Message) -> String {
         }
     }
     out.join("\n")
+}
+
+/// The parrot's mood for the session's state: it blinks now and then while
+/// idle, and holds still when motion does.
+fn mood(face: voice::Face, s: &ScreenState) -> super::plumage::Mood {
+    use super::plumage::Mood;
+    match face {
+        voice::Face::Idle if s.motion_live() && s.animation_frame % 24 == 23 => Mood::Blink,
+        voice::Face::Idle => Mood::Idle,
+        voice::Face::Thinking | voice::Face::Asking => Mood::Think,
+        voice::Face::Working => Mood::Work,
+        voice::Face::Done => Mood::Done,
+        voice::Face::Oops => Mood::Oops,
+    }
 }
 
 #[cfg(test)]

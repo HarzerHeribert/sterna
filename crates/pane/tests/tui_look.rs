@@ -306,9 +306,9 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // discovery pass added `/tool`, `/login` and `/mouse`, which worked and
     // were in no list, and removed a second `/config` that had been listed
     // twice with two different descriptions. `/usage` (2026-09-23) shows
-    // each subscription's limits. `/bird` (2026-09-23) switches the look.
-    // `/setup` (2026-09-25) is the first-start wizard.
-    assert_eq!(slash_matches("/").len(), 37);
+    // each subscription's limits. `/setup` (2026-09-25) is the first-start
+    // wizard. `/bird` (2026-09-23) went on 2026-09-26: the parrots are themes.
+    assert_eq!(slash_matches("/").len(), 36);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();

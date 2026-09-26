@@ -251,6 +251,32 @@ pub type Cell = (char, Option<u32>, Option<u32>);
 
 /// The sprite for `bird` in `mood`, as [`ROWS`] rows of [`WIDTH`] cells.
 pub fn sprite(bird: Bird, mood: Mood) -> Vec<Vec<Cell>> {
+    cells(&pixels(bird, mood))
+}
+
+/// The pixel rows the head is cropped from: crest, eye and hooked beak.
+const HEAD_ROWS: std::ops::RangeInclusive<usize> = 1..=8;
+/// The pixel columns the head is cropped from, fixed for every mood so the
+/// text beside it never shifts: the sweat drop at 4 to the tick at 17.
+const HEAD_COLUMNS: std::ops::RangeInclusive<usize> = 4..=17;
+/// How many cells wide [`head`] is.
+pub const HEAD_WIDTH: usize = 14;
+/// How many rows tall [`head`] is.
+pub const HEAD_HEIGHT: usize = 4;
+
+/// The bird's head alone, at the sprite's own resolution, in `mood`: what
+/// stands beside the conversation's card once the bird has left its perch.
+pub fn head(bird: Bird, mood: Mood) -> Vec<Vec<Cell>> {
+    let grid = pixels(bird, mood);
+    let crop: Vec<Vec<Option<u32>>> = grid[HEAD_ROWS]
+        .iter()
+        .map(|row| row[HEAD_COLUMNS].to_vec())
+        .collect();
+    cells(&crop)
+}
+
+/// One colour or none per pixel, the mood's edits applied.
+fn pixels(bird: Bird, mood: Mood) -> Vec<Vec<Option<u32>>> {
     let plumage = bird.plumage();
     let colour = |letter: char| {
         REGIONS
@@ -299,9 +325,14 @@ pub fn sprite(bird: Bird, mood: Mood) -> Vec<Vec<Cell>> {
             put(5, 4, sweat);
         }
     }
+    grid
+}
+
+/// Pixel rows two at a time as half-block cells.
+fn cells(grid: &[Vec<Option<u32>>]) -> Vec<Vec<Cell>> {
     grid.chunks(2)
         .map(|pair| {
-            (0..WIDTH)
+            (0..pair[0].len())
                 .map(|x| match (pair[0][x], pair[1][x]) {
                     (None, None) => (' ', None, None),
                     (Some(top), None) => ('▀', Some(top), None),

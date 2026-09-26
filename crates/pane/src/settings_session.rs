@@ -42,9 +42,6 @@ pub(crate) fn presentation(state: &mut tui::ScreenState, values: &toml::Value) {
             .and_then(tui::Motion::parse)
             .unwrap_or_default()
     });
-    state.look = word("ui.look")
-        .and_then(tui::Look::parse)
-        .unwrap_or_default();
     state.voice = word("ui.voice")
         .and_then(tui::Voice::parse)
         .unwrap_or_default();

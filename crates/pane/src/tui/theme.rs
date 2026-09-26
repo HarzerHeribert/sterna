@@ -121,21 +121,70 @@ impl Theme {
 /// `/theme`'s sheet: every palette, the one in force selected. The workbench
 /// draws it as a list and a preview.
 impl Theme {
+    /// The family this theme belongs to.
+    #[must_use]
+    pub fn family(self) -> Family {
+        match self {
+            Self::Bird(_) => Family::Parrots,
+            _ => Family::Classic,
+        }
+    }
+    /// What the picker calls this theme.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Bird(bird) => bird.plumage().title,
+            other => other.name(),
+        }
+    }
+    /// Every theme, family by family in [`Family::ALL`]'s order, so the
+    /// picker's rows and its headings agree.
+    pub fn by_family() -> impl Iterator<Item = Theme> {
+        Family::ALL
+            .into_iter()
+            .flat_map(|family| Theme::ALL.into_iter().filter(move |t| t.family() == family))
+    }
     pub fn picker(current: Theme) -> super::Panel {
+        let themes: Vec<Theme> = Theme::by_family().collect();
         super::Panel {
             title: "Themes".into(),
-            selected: Theme::ALL.iter().position(|t| *t == current).unwrap_or(0),
-            rows: Theme::ALL
+            selected: themes.iter().position(|t| *t == current).unwrap_or(0),
+            rows: themes
                 .iter()
                 .map(|t| super::PanelRow {
-                    text: match t {
-                        Theme::Bird(bird) => bird.plumage().title.to_string(),
-                        other => other.name().to_string(),
-                    },
+                    text: format!("{} · {}", t.family().label(), t.title()),
                     command: Some(format!("/theme {}", t.name())),
                 })
                 .collect(),
             ..super::Panel::default()
+        }
+    }
+}
+
+/// The families themes come in. The picker shows one heading per family,
+/// in this order; a new family is one more entry here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// A palette alone.
+    Classic,
+    /// A parrot: its plumage is the palette, and it perches in the card.
+    Parrots,
+}
+impl Family {
+    pub const ALL: [Self; 2] = [Self::Classic, Self::Parrots];
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::Parrots => "Parrots",
+        }
+    }
+    /// One line on what the family is, under its heading.
+    #[must_use]
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Classic => "a palette alone",
+            Self::Parrots => "the bird's plumage, and the bird",
         }
     }
 }

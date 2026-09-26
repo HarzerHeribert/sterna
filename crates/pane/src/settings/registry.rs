@@ -85,7 +85,6 @@ const STATUS_LINES: &[&str] = &["full", "compact", "hidden"];
 const SIDEBAR: &[&str] = &["auto", "show", "hide"];
 const VOICES: &[&str] = &["playful", "plain"];
 const STREAMS: &[&str] = &["actions", "code", "raw"];
-const LOOKS: &[&str] = &["instrument", "bird"];
 const MOTIONS: &[&str] = &["full", "calm", "off"];
 /// The working mode a session starts in. `build` is this file's word for the
 /// runtime's `execute`; both are accepted, and `build` is what is written.
@@ -396,15 +395,6 @@ static SPECS: &[SettingSpec] = &[
         restart: false,
     },
     SettingSpec {
-        key: "ui.look",
-        label: "Look",
-        description: "The instrument, precise and calm, or the bird, with its face, flap and voice. /bird switches between them.",
-        kind: Kind::Choice,
-        choices: LOOKS,
-        basic: true,
-        restart: false,
-    },
-    SettingSpec {
         key: "ui.motion",
         label: "Motion",
         description: "How much moves while Pane works: full, calm (slower, no heartbeat) or off (nothing moves). Only what is changing ever moves.",
@@ -416,7 +406,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "ui.voice",
         label: "Voice",
-        description: "How the bird look talks. Playful greets you, remarks and whispers hints; plain says the same facts and nothing else. The instrument always speaks plainly.",
+        description: "How a parrot theme talks. Playful greets you, remarks and whispers hints; plain says the same facts and nothing else. A classic theme always speaks plainly.",
         kind: Kind::Choice,
         choices: VOICES,
         basic: true,
@@ -1002,6 +992,20 @@ pub fn specs() -> &'static [SettingSpec] {
 /// One key's spec, or `None` for a key this build does not support.
 pub fn spec(key: &str) -> Option<&'static SettingSpec> {
     SPECS.iter().find(|spec| spec.key == key)
+}
+
+/// Settings an upgrade removed outright, with where their job went. A saved
+/// one is read as unset, taken out of its file and reported once, never
+/// refused: the file was true of the version that wrote it.
+const RETIRED_KEYS: &[(&str, &str)] =
+    &[("ui.look", "the bird lives in the parrot themes now: /theme")];
+
+/// Where a removed setting's job went, if `key` is one.
+pub fn retired_key(key: &str) -> Option<&'static str> {
+    RETIRED_KEYS
+        .iter()
+        .find(|(retired, _)| *retired == key)
+        .map(|(_, instead)| *instead)
 }
 
 /// Turns the word a person typed into the value that will be written.

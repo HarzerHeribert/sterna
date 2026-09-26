@@ -70,6 +70,16 @@ pub(super) fn draw_wizard(
 /// `/theme`: the palettes on the left, each by a swatch of its accent, and
 /// the chosen one on the right as the screen will wear it -- a bird theme's
 /// bird, its name and its three colours.
+/// One line of the theme list as drawn.
+enum ThemeLine {
+    /// A family's heading.
+    Heading(crate::tui::Family),
+    /// The space before the next family.
+    Gap,
+    /// A theme, with its row in the picker.
+    Theme(usize, Theme),
+}
+
 pub(super) fn draw_themes(
     f: &mut Frame<'_>,
     g: &mut Geometry,
@@ -87,31 +97,66 @@ pub(super) fn draw_themes(
     };
     let list = (inner.width / 2).clamp(24, 40);
     let rows = inner.height.saturating_sub(4) as usize;
-    let start = panel.selected.saturating_sub(rows.saturating_sub(1));
-    for (i, r) in panel.rows.iter().enumerate().skip(start).take(rows) {
-        let y = inner.y + 2 + (i - start) as u16;
+    // The list as drawn: a heading where the family changes, then its
+    // themes. Selection still counts themes only, so a heading is never
+    // chosen and Up/Down step from theme to theme across families.
+    let mut lines: Vec<ThemeLine> = Vec::new();
+    let mut family = None;
+    for (i, r) in panel.rows.iter().enumerate() {
         let Some(theme) = theme_of(r) else { continue };
-        let name = match theme {
-            Theme::Bird(bird) => bird.plumage().title,
-            other => other.name(),
-        };
-        let swatch = match super::theme::accent(theme) {
-            ratatui::style::Color::Rgb(r, g, b) => {
-                Tone::Pixel(Some(u32::from_be_bytes([0, r, g, b])), None)
+        if family != Some(theme.family()) {
+            if family.is_some() {
+                lines.push(ThemeLine::Gap);
             }
-            _ => Tone::Strong,
-        };
-        row(f, Rect::new(inner.x + 2, y, 2, 1), "██", swatch, t);
-        add(
-            f,
-            g,
-            Rect::new(inner.x + 5, inner.y, list.saturating_sub(5), inner.height),
-            y,
-            &format!("{} {name}", if i == panel.selected { "›" } else { " " }),
-            Action::PanelRow(i),
-            i == panel.selected,
-            t,
-        );
+            family = Some(theme.family());
+            lines.push(ThemeLine::Heading(theme.family()));
+        }
+        lines.push(ThemeLine::Theme(i, theme));
+    }
+    let at = lines
+        .iter()
+        .position(|line| matches!(line, ThemeLine::Theme(i, _) if *i == panel.selected))
+        .unwrap_or(0);
+    let start = at.saturating_sub(rows.saturating_sub(1));
+    for (n, line) in lines.iter().enumerate().skip(start).take(rows) {
+        let y = inner.y + 2 + (n - start) as u16;
+        match line {
+            ThemeLine::Heading(heading) => {
+                let text = format!("{} · {}", heading.label().to_uppercase(), heading.blurb());
+                row(
+                    f,
+                    Rect::new(inner.x + 2, y, list.saturating_sub(2), 1),
+                    &text,
+                    Tone::Muted,
+                    t,
+                );
+            }
+            ThemeLine::Theme(i, theme) => {
+                let (i, theme) = (*i, *theme);
+                let swatch = match super::theme::accent(theme) {
+                    ratatui::style::Color::Rgb(r, g, b) => {
+                        Tone::Pixel(Some(u32::from_be_bytes([0, r, g, b])), None)
+                    }
+                    _ => Tone::Strong,
+                };
+                row(f, Rect::new(inner.x + 4, y, 2, 1), "██", swatch, t);
+                add(
+                    f,
+                    g,
+                    Rect::new(inner.x + 7, inner.y, list.saturating_sub(7), inner.height),
+                    y,
+                    &format!(
+                        "{} {}",
+                        if i == panel.selected { "›" } else { " " },
+                        theme.title()
+                    ),
+                    Action::PanelRow(i),
+                    i == panel.selected,
+                    t,
+                );
+            }
+            ThemeLine::Gap => {}
+        }
     }
     let Some(chosen) = panel.rows.get(panel.selected).and_then(theme_of) else {
         return;
@@ -124,7 +169,7 @@ pub(super) fn draw_themes(
         inner.height.saturating_sub(4),
     );
     let Theme::Bird(bird) = chosen else {
-        label(f, area, area.y, chosen.name(), Tone::Strong, t);
+        label(f, area, area.y, chosen.title(), Tone::Strong, t);
         label(
             f,
             area,

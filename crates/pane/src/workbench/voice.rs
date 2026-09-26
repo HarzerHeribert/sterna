@@ -1,16 +1,17 @@
-//! Every line Pane says, and the bird look's art (`/bird`). The instrument
-//! look speaks the plain voice; the bird speaks whichever `ui.voice` names.
+//! Every line Pane says. A classic theme speaks the plain voice; a parrot
+//! theme speaks whichever `ui.voice` names.
 //!
-//! **The words and the face live in one place so the two voices cannot
-//! drift.** Each line here is written twice, for [`Voice::Playful`] and
-//! [`Voice::Plain`], and both say the same fact; the playful one is allowed
-//! warmth and the odd remark, never a claim the plain one does not make. The
-//! bird is decoration -- reduced motion holds it on its still frame, and
-//! nothing on screen carries state through the bird alone.
+//! **The words live in one place so the two voices cannot drift.** Each
+//! line here is written twice, for [`Voice::Playful`] and [`Voice::Plain`],
+//! and both say the same fact; the playful one is allowed warmth and the
+//! odd remark, never a claim the plain one does not make. The parrot is
+//! decoration -- reduced motion holds it still, and nothing on screen
+//! carries state through the bird alone.
 use crate::tui::{Activity, Voice};
 
-/// Which of the bird's six states to draw. It is read off the session's
-/// activity, never stored, so it cannot go stale.
+/// Which of six states the session is in, for the card's mark and the
+/// parrot's mood. It is read off the session's activity, never stored, so
+/// it cannot go stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Face {
     Idle,
@@ -34,75 +35,6 @@ impl Face {
             Activity::Complete => Self::Done,
             Activity::Failed => Self::Oops,
         }
-    }
-}
-
-// A songbird perched and facing right: 20×16 pixels drawn as four rows of
-// braille -- crown, eye, beak, a wing line across the body, tail feathers
-// and two legs. Each state is one edit of the same bitmap.
-const IDLE: [&str; 4] = ["    ⡔⠩⠉⠢⣀⣀", "⡠⠒⢤⠎ ⣀⣀⡀⠑⡄", "⠑⢤⠊⡰⠉  ⠈⡢⠃", "  ⠑⠣⡄⡀⡤⠊  "];
-const BLINK: [&str; 4] = ["    ⡔⠍⠍⠢⣀⣀", "⡠⠒⢤⠎ ⣀⣀⡀⠑⡄", "⠑⢤⠊⡰⠉  ⠈⡢⠃", "  ⠑⠣⡄⡀⡤⠊  "];
-const THINK: [&str; 4] = ["    ⡔⠉⠋⠢⠤⠆", "⡠⠒⢤⠎ ⣀⣀⡀⠑⡄", "⠑⢤⠊⡰⠉  ⠈⡢⠃", "  ⠑⠣⡄⡀⡤⠊  "];
-const PECK: [&str; 4] = ["    ⡔⢉⠉⠢  ", "⡠⠒⢤⠎ ⣀⣀⡀⠙⡖", "⠑⢤⠊⡰⠉  ⠈⡢⠃", "  ⠑⠣⡄⡀⡤⠊  "];
-const DONE: [&str; 4] = ["    ⡔⠩⠉⢢⣀⣀", "⡠⠒⢤⠎ ⢀⠔⠁⠑⡄", "⠑⢤⠊⡠⠐⠁  ⡠⠃", "  ⠑⠣⡄⡀⡤⠊  "];
-const OOPS: [&str; 4] = ["   ⠈⡜⠩⠉⠫⣀⣀", "⢤⠒⢤⠎ ⣀⣀⡀⠑⡴", "⠐⢤⠊⡰⠉  ⠈⡢⠗", "  ⠑⠣⡄⡀⡤⠊  "];
-/// A bird in flight, three cells wide, for the composer's edge.
-const FLAP: [&str; 4] = ["⠑⠤⠊", "⠢⠤⠔", "⠤⠤⠤", "⠔⠒⠢"];
-/// Every face is padded to this many columns so the text beside it starts
-/// at one x on every frame.
-pub const FACE_WIDTH: usize = 12;
-/// The bird is this many rows tall.
-pub const FACE_ROWS: usize = 4;
-
-/// The bird's three rows for `face`, at `tick`; `still` holds the resting
-/// frame of that state, which is a complete drawing rather than a paused one.
-///
-/// Idle blinks once every few seconds, which changes two cells; thinking is
-/// a pose, not a motion. Together with the flap on the composer's edge that
-/// keeps a live screen inside the three-cell budget `tests/workbench.rs`
-/// holds motion to. Working pecks -- more cells -- and is only ever drawn
-/// inside a running cell, where the old mark turned too.
-pub fn face(face: Face, tick: usize, still: bool) -> [String; FACE_ROWS] {
-    let art = match face {
-        Face::Idle => {
-            if !still && tick % 24 == 23 {
-                BLINK
-            } else {
-                IDLE
-            }
-        }
-        Face::Thinking => THINK,
-        Face::Working => {
-            if !still && (tick / 3) % 2 == 1 {
-                PECK
-            } else {
-                IDLE
-            }
-        }
-        Face::Done => DONE,
-        Face::Asking => THINK,
-        Face::Oops => OOPS,
-    };
-    let mark = match face {
-        Face::Done => " ✓",
-        Face::Asking => " ?",
-        Face::Oops => " ✕",
-        _ => "",
-    };
-    let mut rows = art.map(str::to_string);
-    rows[0].push_str(mark);
-    rows.map(|row| {
-        let w = ratatui::text::Span::raw(row.as_str()).width();
-        format!("{row}{}", " ".repeat(FACE_WIDTH.saturating_sub(w)))
-    })
-}
-/// The flying mark on the composer's edge: wings beating while the session
-/// works, level when it is not.
-pub fn flap(tick: usize, still: bool) -> &'static str {
-    if still {
-        FLAP[2]
-    } else {
-        FLAP[(tick / 3) % FLAP.len()]
     }
 }
 
@@ -462,57 +394,6 @@ pub fn project_suggestions(root: &std::path::Path, voice: Voice) -> Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_face_is_the_same_width_on_every_frame() {
-        for f in [
-            Face::Idle,
-            Face::Thinking,
-            Face::Working,
-            Face::Done,
-            Face::Asking,
-            Face::Oops,
-        ] {
-            for tick in 0..30 {
-                for still in [true, false] {
-                    for row in face(f, tick, still) {
-                        assert_eq!(
-                            ratatui::text::Span::raw(row.as_str()).width(),
-                            FACE_WIDTH,
-                            "{f:?} tick {tick} still {still}: {row:?}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Motion is a budget: a live frame may change at most three cells, and
-    /// the bird's blink stays under it. Working pecks, and is drawn only
-    /// inside a running cell.
-    #[test]
-    fn a_frame_changes_at_most_two_cells_of_the_bird() {
-        for f in [Face::Idle, Face::Thinking] {
-            for tick in 0..30 {
-                let a = face(f, tick, false);
-                let b = face(f, tick + 1, false);
-                let changed: usize = a
-                    .iter()
-                    .zip(&b)
-                    .map(|(x, y)| x.chars().zip(y.chars()).filter(|(p, q)| p != q).count())
-                    .sum();
-                assert!(changed <= 2, "{f:?} at {tick}: {changed}");
-            }
-        }
-    }
-
-    #[test]
-    fn still_frames_are_complete_and_do_not_move() {
-        for f in [Face::Idle, Face::Thinking, Face::Working] {
-            assert_eq!(face(f, 0, true), face(f, 23, true));
-        }
-        assert_eq!(flap(0, true), flap(9, true));
-    }
 
     /// The plain voice states every fact the playful one does, without the
     /// character: nothing a person needs is behind the setting.

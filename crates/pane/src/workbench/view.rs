@@ -232,8 +232,8 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         Tone::Strong,
         s.theme,
     );
-    // Only the bird answers a click on the name; the instrument has no remark.
-    if s.look == crate::tui::Look::Bird {
+    // Only a parrot answers a click on the name; a classic theme has no remark.
+    if matches!(s.theme, crate::tui::Theme::Bird(_)) {
         g.hits
             .push((Rect::new(a.x, a.y, chrome::width(brand), 1), Action::Quip));
     }
@@ -1045,7 +1045,7 @@ fn dock_top(
     let lead = format!(
         "{} {} {} ",
         if boxed { "╭─" } else { "" },
-        super::motion::dock_mark(s, running),
+        super::motion::dock_mark(s),
         status
     );
     let lead = lead.trim_start().to_string();

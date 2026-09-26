@@ -1,5 +1,4 @@
-//! Which look the workbench wears (`ui.look`) and how much of it moves
-//! (`ui.motion`).
+//! How much of the workbench moves (`ui.motion`), and the voice it speaks.
 //!
 //! **Motion is a signal, never decoration.** Something moves only where a
 //! state is changing -- arriving prose, a running cell, a helper or a lane
@@ -8,36 +7,7 @@
 //! its periods from here, so the rate a level promises is the rate drawn.
 use std::time::Duration;
 
-use super::{Activity, ScreenState, Voice};
-
-/// The workbench's look. The instrument is the default; the bird is the
-/// same screen with the bird's face, flap and words, chosen by `/bird`.
-///
-/// **Structure never changes with the look**, exactly as it never changes
-/// with the voice: the same rows, cards, chips and facts are drawn under
-/// both, and only glyphs and wording differ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Look {
-    #[default]
-    Instrument,
-    Bird,
-}
-impl Look {
-    pub const ALL: [Self; 2] = [Self::Instrument, Self::Bird];
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "instrument" => Some(Self::Instrument),
-            "bird" => Some(Self::Bird),
-            _ => None,
-        }
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Instrument => "instrument",
-            Self::Bird => "bird",
-        }
-    }
-}
+use super::{Activity, ScreenState, Theme, Voice};
 
 /// How much moves. `Off` is fully static: every glyph holds a complete
 /// resting frame and no frame is drawn for motion's sake.
@@ -85,13 +55,13 @@ pub const BEAT: Duration = Duration::from_millis(240);
 pub const SETTLE_FRAMES: usize = 6;
 
 impl ScreenState {
-    /// The words Pane speaks in: the instrument always speaks plainly, and
-    /// `ui.voice` chooses between the bird's two voices.
+    /// The words Pane speaks in: a parrot theme speaks as `ui.voice`
+    /// chooses, and a classic theme always plainly.
     #[must_use]
     pub fn speaking(&self) -> Voice {
-        match self.look {
-            Look::Instrument => Voice::Plain,
-            Look::Bird => self.voice,
+        match self.theme {
+            Theme::Bird(_) => self.voice,
+            _ => Voice::Plain,
         }
     }
     /// Sets the motion level and keeps [`ScreenState::reduced_motion`] --
@@ -202,12 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn the_instrument_speaks_plainly_and_the_bird_as_chosen() {
+    fn a_classic_theme_speaks_plainly_and_a_parrot_as_chosen() {
         let mut s = ScreenState::default();
         assert_eq!(s.speaking(), Voice::Plain);
-        s.look = Look::Bird;
+        s.theme = Theme::Bird(crate::workbench::plumage::Bird::Amazon);
         assert_eq!(s.speaking(), Voice::Playful);
         assert_eq!(Motion::parse("on"), Some(Motion::Full));
-        assert_eq!(Look::parse("bird"), Some(Look::Bird));
     }
 }

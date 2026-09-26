@@ -25,8 +25,8 @@ mod lane;
 mod look;
 pub(crate) mod theme;
 pub use form::Form;
-pub use look::{Look, Motion};
-pub use theme::Theme;
+pub use look::Motion;
+pub use theme::{Family, Theme};
 mod markdown;
 mod ribbon;
 mod scroll;
@@ -298,8 +298,6 @@ pub struct ScreenState {
     pub recap: Option<HelperRecord>,
     /// Whether Pane speaks with its character or plainly (`ui.voice`).
     pub voice: Voice,
-    /// The instrument or the bird (`ui.look`, `/bird`).
-    pub look: Look,
     /// How much moves (`ui.motion`); `reduced_motion` is kept equal to `Off`.
     pub motion: Motion,
     /// Work running behind the answer (the checker, the notes writer), by name.
@@ -634,13 +632,12 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 ("/help".to_string(), "show available commands"),
                 ("/sidebar".to_string(), "auto, show or hide telemetry"),
-                ("/theme".to_string(), "choose a palette · eight themes"),
+                ("/theme".to_string(), "choose a palette · classic or parrot"),
                 (
                     "/telemetry".to_string(),
                     "live activity, requests and execution · Ctrl-T",
                 ),
                 ("/motion".to_string(), "full, calm or off · how much moves"),
-                ("/bird".to_string(), "the bird look, on or off"),
                 (
                     "/cells".to_string(),
                     "inspect code and real results by cell",

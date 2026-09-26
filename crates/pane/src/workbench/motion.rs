@@ -1,4 +1,4 @@
-//! Every glyph on the workbench that moves, in both looks.
+//! Every glyph on the workbench that moves.
 //!
 //! **Only what is changing state moves, and each thing moves in one cell or
 //! two.** The dock's mark while a turn runs, the caret on arriving prose,
@@ -6,17 +6,15 @@
 //! the answer -- and nothing else: no border, rule, chip or header ever
 //! takes a frame. Each function here returns a complete resting glyph when
 //! [`ScreenState::motion_live`] is false, so `off` is a whole drawing, not
-//! a paused one. The bird's own art stays in [`super::voice`].
+//! a paused one. The parrot's own art is in [`super::plumage`].
 use super::{Tone, voice};
-use crate::tui::{Activity, Look, Motion, ScreenState};
+use crate::tui::{Activity, Motion, ScreenState};
 
 /// Six frames, so two draws a multiple of four frames apart still differ.
 const ORBIT: [&str; 6] = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"];
 const TURN: [&str; 4] = ["◐", "◓", "◑", "◒"];
 const LEVEL: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const CARET: [&str; 4] = ["▍", "▌", "▋", "▌"];
-/// The bird's one-cell mark for small work: a hop.
-const HOP: [&str; 4] = ["⠄", "⠂", "⠁", "⠂"];
 /// How wide the scanner in a running cell is.
 const SCAN: usize = 10;
 
@@ -24,16 +22,12 @@ fn frame(s: &ScreenState) -> usize {
     s.animation_frame
 }
 
-/// The mark before the dock's status word. The instrument's says which
-/// kind of wait this is -- an orbit while the model thinks, the size of the
-/// last delivery while it streams, a turning disc while a cell runs -- and
-/// at rest a diamond whose one slow heartbeat is the idle screen's only
-/// motion. The bird flaps.
-pub(super) fn dock_mark(s: &ScreenState, running: bool) -> String {
+/// The mark before the dock's status word: which kind of wait this is --
+/// an orbit while the model thinks, the size of the last delivery while it
+/// streams, a turning disc while a cell runs -- and at rest a diamond whose
+/// one slow heartbeat is the idle screen's only motion.
+pub(super) fn dock_mark(s: &ScreenState) -> String {
     let live = s.motion_live();
-    if s.look == Look::Bird {
-        return voice::flap(frame(s), !live || !running).to_string();
-    }
     match s.activity {
         Activity::Complete => "✓".into(),
         Activity::Failed => "✕".into(),
@@ -76,11 +70,10 @@ pub(super) fn caret_moving(s: &ScreenState, moving: bool) -> &'static str {
 /// answer, a cell being written, the checker behind the answer. It holds
 /// its still frame unless this row carries the document's one motion.
 pub(super) fn busy_moving(s: &ScreenState, moving: bool) -> &'static str {
-    match (s.look, moving && s.motion_live()) {
-        (Look::Instrument, true) => ORBIT[frame(s) % ORBIT.len()],
-        (Look::Instrument, false) => "◌",
-        (Look::Bird, true) => HOP[frame(s) % HOP.len()],
-        (Look::Bird, false) => HOP[0],
+    if moving && s.motion_live() {
+        ORBIT[frame(s) % ORBIT.len()]
+    } else {
+        "◌"
     }
 }
 
@@ -107,7 +100,7 @@ pub(super) fn scanner(s: &ScreenState) -> Vec<(String, Tone)> {
     .collect()
 }
 
-/// The instrument's still mark for the session card: what state the
+/// The still mark for the session card: what state the
 /// session is in, in one glyph. The card is chrome, so it never moves.
 pub(super) fn card_mark(face: voice::Face) -> &'static str {
     match face {
@@ -181,20 +174,12 @@ mod tests {
             Activity::Executing,
         ] {
             s.activity = activity;
-            let rest = (
-                dock_mark(&s, true),
-                caret_moving(&s, true),
-                busy_moving(&s, true),
-            );
+            let rest = (dock_mark(&s), caret_moving(&s, true), busy_moving(&s, true));
             for tick in 0..12 {
                 s.animation_frame = tick;
                 assert_eq!(
                     rest,
-                    (
-                        dock_mark(&s, true),
-                        caret_moving(&s, true),
-                        busy_moving(&s, true)
-                    ),
+                    (dock_mark(&s), caret_moving(&s, true), busy_moving(&s, true)),
                     "{activity:?}"
                 );
             }
@@ -208,8 +193,8 @@ mod tests {
             ..ScreenState::default()
         };
         s.pulse.deliveries = vec![80, 10];
-        assert_eq!(dock_mark(&s, true), "▁");
+        assert_eq!(dock_mark(&s), "▁");
         s.pulse.deliveries.push(80);
-        assert_eq!(dock_mark(&s, true), "█");
+        assert_eq!(dock_mark(&s), "█");
     }
 }
