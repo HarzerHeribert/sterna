@@ -1,6 +1,0 @@
-sample,original_estimate,forwarded_estimate,ratio
-duplicate_hits,473,158,0.3340
-repeated_log_progress,1303,54,0.0414
-blank_line_runs,186,173,0.9301
-generated_noise_blob,315,63,0.2000
-all_uncertain,395,395,1.0000

@@ -1,12 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/glasshouse", "crates/inference-gateway", "crates/pane"]
-# `pane` is a workspace member so its own gate job can build and test it, but
-# it must never ride along on a bare `cargo build`/`test`/`run` at the root --
-# it will carry an embedded V8 and a tokio stack, and `glasshouse` deliberately
-# has no async runtime. `default-members` keeps the root commands scoped to
-# `glasshouse` alone regardless of what else joins `members`.
-default-members = ["crates/glasshouse"]
+members = ["crates/inference-gateway", "crates/pane"]
 
 [workspace.package]
 version = "0.1.0"
@@ -78,7 +72,7 @@ hex = "0.4"
 # **mock** store, which accepts and returns credentials in-process and
 # persists nothing. That is precisely the silent degradation Phase 9E line 2
 # forbids, so the backend feature is enabled per target instead — see
-# `crates/glasshouse/Cargo.toml`, where only macOS turns on `apple-native`.
+# `crates/inference-gateway/Cargo.toml`, where only macOS turns on `apple-native`.
 keyring = { version = "3.6", default-features = false }
 # The Linux half of the same boundary, and a **different crate on purpose**.
 # `keyring` 3.6's Secret Service backend reaches the bus through
@@ -88,7 +82,7 @@ keyring = { version = "3.6", default-features = false }
 # to `dbus-secret-service` directly is what makes
 # `connect_with_max_prompt_timeout(_, 0)` reachable, and that is the Linux
 # equivalent of `SecKeychainSetUserInteractionAllowed(0)` — see
-# `crates/glasshouse/src/secret/native.rs`.
+# `crates/inference-gateway/src/secret/native.rs`.
 #
 # `default-features = false` with `crypto-rust`: the crypto feature is what
 # makes `EncryptionType::Dh` exist at all, so a session that would send a
