@@ -16,7 +16,6 @@
 //! instead of passing quietly.
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 // `Access` is only asked for by the resolved-path test, which needs a real
@@ -90,16 +89,8 @@ fn settings() -> String {
     r#"{"permissions":{"allow":["Bash(echo*)","Bash(cat*)"]}}"#.to_string()
 }
 
-fn context<'a>(
-    profile: &'a Profile,
-    glasshouse: &'a Glasshouse,
-    session: &'a SessionId,
-) -> ToolContext<'a> {
-    ToolContext {
-        profile,
-        glasshouse,
-        session,
-    }
+fn context<'a>(profile: &'a Profile, session: &'a SessionId) -> ToolContext<'a> {
+    ToolContext { profile, session }
 }
 
 // --- the declaration ---------------------------------------------------
@@ -241,10 +232,9 @@ fn exec_is_granted_on_the_resolved_binary() {
         let shell = invoke::exec_grant(registry::lookup("bash").unwrap().executable().unwrap());
         let fixture = Fixture::new("exec-grant");
         let profile = fixture.profile();
-        let glasshouse = Glasshouse::None;
         let session = SessionId::new("exec-grant");
         let result = invoke::run(
-            &context(&profile, &glasshouse, &session),
+            &context(&profile, &session),
             "bash",
             &Args::new().with("command", "echo $0"),
         )
@@ -274,11 +264,10 @@ fn a_narrow_bash_call_executes_the_literal_python_it_admitted() {
         python.display()
     );
     let profile = Profile::compile(&fixture.root, Some(&settings));
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("narrow-python");
 
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "bash",
         &Args::new().with("command", command),
     )
@@ -298,7 +287,7 @@ fn a_narrow_bash_call_executes_the_literal_python_it_admitted() {
     );
     let denied_profile = Profile::compile(&fixture.root, Some(&denied_settings));
     let denied = invoke::run(
-        &context(&denied_profile, &glasshouse, &session),
+        &context(&denied_profile, &session),
         "bash",
         &Args::new().with(
             "command",
@@ -326,10 +315,9 @@ fn a_read_deny_keeps_an_admitted_command_binary_out_of_the_os_grant() {
             }}"#,
         ),
     );
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("denied-command-binary");
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "bash",
         &Args::new().with("command", "/bin/echo denied-binary-ran"),
     )
@@ -358,9 +346,8 @@ fn a_tool_runs_confined_and_a_refusal_is_a_value() {
     let inside = fixture.write(&fixture.root.join("inside.txt"), "inside-content\n");
     let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("confined");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     let ok = invoke::run(
         &ctx,
@@ -486,11 +473,9 @@ fn the_resolved_path_reaches_the_child_not_the_original_spelling() {
     let profile = fixture.profile();
     let resolved = profile.check("read", Access::Read, &spelling).unwrap();
     assert_eq!(resolved, profile.root().join("a").join("f.txt"));
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("resolved-path");
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "read",
         &Args::new().with("path", &*spelling.to_string_lossy()),
     )
@@ -500,106 +485,6 @@ fn the_resolved_path_reaches_the_child_not_the_original_spelling() {
 }
 
 // --- the hooks ---------------------------------------------------------
-
-/// A stand-in for the `glasshouse` binary that records every invocation:
-/// one `ARGS` line, then the payload it was given on stdin.
-#[cfg(unix)]
-fn fake_glasshouse(dir: &Path, log: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let script = dir.join("fake-glasshouse.sh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nprintf 'ARGS %s\\n' \"$*\" >> '{log}'\ncat >> '{log}'\nprintf '\\n' >> '{log}'\nexit 0\n",
-            log = log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    script
-}
-
-/// Map line 2463's per-call half: both events fire, once each, and through
-/// `context-firewall hook` rather than the lifecycle `hook`.
-///
-/// The subcommand matters and is not a detail: `PostToolUse` is not in Claude
-/// Code's `REPORTED_EVENTS`, so a tool event sent to plain `hook` reaches no
-/// consumer at all.
-#[cfg(unix)]
-#[test]
-fn pre_and_post_tool_use_fire_once_per_call_to_the_context_firewall() {
-    let fixture = Fixture::new("hooks");
-    let inside = fixture.write(&fixture.root.join("inside.txt"), "hook-content\n");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
-
-    let profile = fixture.profile();
-    let glasshouse = Glasshouse::Command { glasshouse: script };
-    let session = SessionId::new("hook-session");
-    let ctx = context(&profile, &glasshouse, &session);
-
-    let _ = invoke::run(
-        &ctx,
-        "read",
-        &Args::new().with("path", &*inside.to_string_lossy()),
-    );
-
-    let recorded = std::fs::read_to_string(&log).expect("the hook was delivered");
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PostToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert_eq!(
-        recorded
-            .lines()
-            .filter(|line| line.starts_with("ARGS "))
-            .count(),
-        2,
-        "{recorded}"
-    );
-    for line in recorded.lines().filter(|line| line.starts_with("ARGS ")) {
-        assert_eq!(
-            line, "ARGS context-firewall hook --session hook-session",
-            "a tool event went somewhere other than the context firewall"
-        );
-    }
-    // The preview is the observed output, and it is what `PostToolUse`
-    // carries.
-    assert!(recorded.contains("hook-content"), "{recorded}");
-
-    // A refusal is an observed output too: a firewall that only saw
-    // successes would report a probing program as having done nothing.
-    std::fs::write(&log, "").unwrap();
-    let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
-    let _ = invoke::run(
-        &ctx,
-        "read",
-        &Args::new().with("path", &*outside.to_string_lossy()),
-    );
-    let recorded = std::fs::read_to_string(&log).unwrap();
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PostToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert!(recorded.contains("PermissionDenied"), "{recorded}");
-    assert!(
-        !recorded.contains("outside-secret"),
-        "the refused file's contents reached a hook: {recorded}"
-    );
-}
 
 // --- the session -------------------------------------------------------
 
@@ -624,8 +509,6 @@ fn the_profile_is_built_once_per_session() {
         "[permissions]\nallow = [\"Bash(echo*)\", \"Bash(cat*)\"]\n",
     )
     .unwrap();
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
     let path = fixture.root.join("inside.txt");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pane"))
@@ -634,8 +517,6 @@ fn the_profile_is_built_once_per_session() {
         .arg(&fixture.root)
         .arg("--model")
         .arg(pane::wire::MODEL)
-        .arg("--glasshouse")
-        .arg(&script)
         // Attach, so no `inference-gateway` is started: nothing here is a
         // turn, and port 1 is never dialled.
         .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
@@ -687,8 +568,6 @@ fn a_refusal_reaches_the_binary_as_a_value_and_the_session_continues() {
     let fixture = Fixture::new("binary-refusal");
     fixture.write(&fixture.root.join("inside.txt"), "still-here\n");
     let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pane"))
         .arg("session")
@@ -696,8 +575,6 @@ fn a_refusal_reaches_the_binary_as_a_value_and_the_session_continues() {
         .arg(&fixture.root)
         .arg("--model")
         .arg(pane::wire::MODEL)
-        .arg("--glasshouse")
-        .arg(&script)
         // Attach, so no `inference-gateway` is started: nothing here is a
         // turn, and port 1 is never dialled.
         .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
@@ -739,14 +616,9 @@ fn a_refusal_reaches_the_binary_as_a_value_and_the_session_continues() {
 fn an_unregistered_name_is_a_refusal_and_fires_no_hook() {
     let fixture = Fixture::new("unknown");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("unknown");
-    let error = invoke::run(
-        &context(&profile, &glasshouse, &session),
-        "webfetch",
-        &Args::new(),
-    )
-    .expect_err("an unregistered name is refused");
+    let error = invoke::run(&context(&profile, &session), "webfetch", &Args::new())
+        .expect_err("an unregistered name is refused");
     let denied = error.denied().expect("a refusal");
     assert!(
         denied
@@ -812,9 +684,8 @@ fn a_running_call_is_killed_reaped_and_returned_as_a_throw() {
     let fixture = Fixture::new("cancel-running");
     let pid_file = fixture.root.join("child.pid");
     let profile = Profile::compile(&fixture.root, Some(&cancellable_settings()));
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("cancel-running");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     let token = invoke::CancellationToken::new();
     let setter = token.clone();
@@ -873,8 +744,7 @@ fn a_running_call_is_killed_reaped_and_returned_as_a_throw() {
     );
 }
 
-/// A token already set when the call starts: nothing is spawned at all, and
-/// both hook events still fire.
+/// A token already set when the call starts: nothing is spawned at all.
 ///
 /// The marker is the assertion that no child ran, and it is credible only
 /// because `a_running_call_is_killed_reaped_and_returned_as_a_throw` runs the
@@ -887,13 +757,10 @@ fn a_running_call_is_killed_reaped_and_returned_as_a_throw() {
 fn a_token_set_before_the_call_spawns_nothing() {
     let fixture = Fixture::new("cancel-before");
     let marker = fixture.root.join("marker.txt");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
 
     let profile = Profile::compile(&fixture.root, Some(&cancellable_settings()));
-    let glasshouse = Glasshouse::Command { glasshouse: script };
     let session = SessionId::new("cancel-before");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     let token = invoke::CancellationToken::new();
     token.cancel();
@@ -916,35 +783,12 @@ fn a_token_set_before_the_call_spawns_nothing() {
         !marker.exists(),
         "a child ran under a token that was set before the call"
     );
-    // Five seconds, not one: the call's cost here is two executions of the
-    // fake `glasshouse` hook script, freshly written for this test, which
-    // macOS's Gatekeeper scans on first exec (measured 1.39 s, three times in
-    // one evening). The bound only says the call came back promptly; the
-    // marker above is the assertion that nothing spawned.
+    // The bound only says the call came back promptly; the marker above is
+    // the assertion that nothing spawned.
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "the call took long enough to have run something: {elapsed:?}"
     );
-
-    // A cancellation is an observed output, exactly as a refusal is: a
-    // firewall that saw only the calls that ran would report an abandoned
-    // branch as never having been attempted.
-    let recorded = std::fs::read_to_string(&log).expect("the hooks were delivered");
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PostToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert!(recorded.contains("Cancelled"), "{recorded}");
 }
 
 /// Whether `pid` is still addressable. A zombie answers yes, which is the
@@ -1078,9 +922,8 @@ fn a_cancelled_call_leaves_no_process_behind_not_even_a_grandchild() {
     let child_pid = fixture.root.join("child.pid");
     let grandchild_pid = fixture.root.join("grandchild.pid");
     let profile = Profile::compile(&fixture.root, Some(&cancellable_settings()));
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("cancel-grandchild");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     let token = invoke::CancellationToken::new();
     let setter = token.clone();
@@ -1165,9 +1008,8 @@ fn a_cancelled_call_leaves_no_process_behind_not_even_a_grandchild() {
 fn a_cancel_that_races_the_spawn_still_kills() {
     let fixture = Fixture::new("cancel-race");
     let profile = Profile::compile(&fixture.root, Some(&cancellable_settings()));
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("cancel-race");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
     let needle = fixture.root.display().to_string();
 
     let mut ran = 0_u32;
@@ -1242,9 +1084,8 @@ fn a_cancel_that_races_the_spawn_still_kills() {
 fn a_call_that_finishes_first_is_unchanged_by_the_token() {
     let fixture = Fixture::new("cancel-unset");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("cancel-unset");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
     let args = Args::new().with("command", "echo finished-first");
 
     let plain = invoke::run(&ctx, "bash", &args).expect("the command line is admitted");
@@ -1277,14 +1118,13 @@ fn a_call_whose_stdout_exceeds_the_pipe_buffer_completes() {
         &fixture.root,
         Some(r#"{"permissions":{"allow":["Bash(for*)","Bash(do*)"]}}"#),
     );
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("large-stdout");
 
     let (sender, receiver) = std::sync::mpsc::channel();
     let root = fixture.root.clone();
     std::thread::spawn(move || {
         let profile = profile;
-        let ctx = context(&profile, &glasshouse, &session);
+        let ctx = context(&profile, &session);
         let line = "x".repeat(64);
         let result = invoke::run(
             &ctx,
@@ -1349,10 +1189,8 @@ fn write_puts_arbitrary_bytes_on_disk_exactly() {
     let profile = Profile::compile(&fixture.root, Some(&write_settings(&fixture.root)));
     let target = fixture.root.join("nested").join("deep").join("out.txt");
     let content = "EOF\n$HOME `whoami` \"quoted\" 'single'\nlast";
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("write-exact");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
     let result = invoke::run(
         &ctx,
         "write",
@@ -1383,9 +1221,8 @@ fn write_lines_preserve_literal_script_variables_and_add_a_final_newline() {
     let fixture = Fixture::new("write-lines");
     let profile = Profile::compile(&fixture.root, Some(&write_settings(&fixture.root)));
     let target = fixture.root.join("run.sh");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("write-lines");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     invoke::run(
         &ctx,
@@ -1449,9 +1286,8 @@ fn write_requires_exactly_one_content_form_and_mutates_nothing_on_ambiguity() {
     let fixture = Fixture::new("write-exclusive");
     let profile = Profile::compile(&fixture.root, Some(&write_settings(&fixture.root)));
     let target = fixture.root.join("ambiguous.txt");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("write-exclusive");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     for args in [
         Args::new().with("path", &*target.to_string_lossy()),
@@ -1479,9 +1315,8 @@ fn edit_accepts_literal_line_arrays_for_both_sides() {
     let target = fixture.root.join("run.sh");
     let original = "before\nsource=\"${BASH_SOURCE[0]}\"\nafter\n";
     std::fs::write(&target, original).unwrap();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("edit-lines");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     invoke::run(
         &ctx,
@@ -1524,10 +1359,8 @@ fn write_is_refused_outside_the_root_where_only_reading_is_granted() {
     );
     let readable = fixture.outside.join("readable.txt");
     std::fs::write(&readable, "from outside\n").unwrap();
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("write-readonly");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     // The grant is real: `read` reaches it.
     invoke::run(
@@ -1564,10 +1397,8 @@ fn write_cannot_reach_outside_the_project() {
     let fixture = Fixture::new("write-outside");
     let profile = Profile::compile(&fixture.root, Some(&write_settings(&fixture.root)));
     let target = fixture.outside.join("escaped.txt");
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("write-outside");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
     let error = invoke::run(
         &ctx,
         "write",
@@ -1652,9 +1483,8 @@ fn a_confined_child_cannot_read_the_sessions_provider_key() {
             r#"{{"permissions":{{"allow":["Read({root}/**)","Bash"]}}}}"#
         )),
     );
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("env-scrub");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     // SAFETY: `_guard` holds `ENV_LOCK` for the whole test, so no other test
     // in this binary mutates the environment while these are set.
@@ -1693,11 +1523,7 @@ fn an_object_passed_as_content_is_refused_and_writes_no_file() {
         &fixture.root,
         Some(r#"{"permissions":{"allow":["Read(**)","Write(**)"]}}"#),
     );
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("object-content"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("object-content"));
 
     let target = fixture.root.join("report.txt");
     let source = format!(
@@ -1775,9 +1601,8 @@ fn an_absent_search_tool_is_a_returned_refusal_and_not_a_panic() {
     let fixture = Fixture::new("search-absent");
     let json = fixture.write(&fixture.root.join("c.json"), "{\"name\":\"pane\"}\n");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("search-absent");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     let mut exercised = 0;
     for name in ["rg", "fd", "jq"] {
@@ -1817,11 +1642,10 @@ fn rg_returns_matches_with_file_and_line() {
     fixture.write(&fixture.root.join("a.txt"), "alpha beta\nrate limit here\n");
     fixture.write(&fixture.root.join("sub").join("b.txt"), "nothing\n");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("rg");
 
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "rg",
         &Args::new().with("pattern", "rate limit"),
     )
@@ -1851,11 +1675,10 @@ fn fd_lists_the_paths_matching_a_name() {
     fixture.write(&fixture.root.join("a.txt"), "alpha\n");
     fixture.write(&fixture.root.join("sub").join("b.txt"), "nothing\n");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("fd");
 
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "fd",
         &Args::new().with("pattern", r"b\.txt"),
     )
@@ -1886,11 +1709,10 @@ fn jq_extracts_one_field_from_a_json_file() {
         "{\"name\":\"pane\",\"version\":\"0.1\"}\n",
     );
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("jq");
 
     let result = invoke::run(
-        &context(&profile, &glasshouse, &session),
+        &context(&profile, &session),
         "jq",
         &Args::new()
             .with("filter", ".name")
@@ -1944,9 +1766,8 @@ fn no_pure_search_tool_can_write_and_no_flag_shaped_argument_becomes_a_flag() {
     let before_json = std::fs::read(&json).unwrap();
     let pwned = fixture.root.join("PWNED");
     let profile = fixture.profile();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("search-safety");
-    let ctx = context(&profile, &glasshouse, &session);
+    let ctx = context(&profile, &session);
 
     if installed("fd") {
         for pattern in [

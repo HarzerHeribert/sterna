@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use pane::tools::invoke::{self, Args, ToolContext};
 use std::path::{Path, PathBuf};
@@ -34,7 +33,6 @@ impl Fixture {
     }
 
     fn glob(&self, profile: &Profile, pattern: &str, path: Option<&Path>) -> Vec<PathBuf> {
-        let glasshouse = Glasshouse::None;
         let session = SessionId::new("glob-dogfood");
         let mut args = Args::new().with("pattern", pattern);
         if let Some(path) = path {
@@ -43,7 +41,6 @@ impl Fixture {
         invoke::run(
             &ToolContext {
                 profile,
-                glasshouse: &glasshouse,
                 session: &session,
             },
             "glob",

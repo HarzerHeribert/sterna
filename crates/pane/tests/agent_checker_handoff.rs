@@ -8,7 +8,6 @@
 
 use pane::agent::AgentOptions;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -151,7 +150,6 @@ fn checker_and_candidate_are_handed_to_a_later_parent_turn() {
 
     let result = pane::agent::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("checker-handoff"),
         "Implement and verify the requested change.",
         &AgentOptions {
@@ -250,8 +248,6 @@ fn scripted_session_defers_a_same_cell_candidate_until_after_checker_observation
         .arg(pane::wire::MODEL)
         .arg("--task")
         .arg("Implement the change and check it before completing.")
-        .arg("--glasshouse")
-        .arg(fixture.root.join("missing-glasshouse"))
         .env("ANTHROPIC_BASE_URL", base_url)
         .env("XDG_CONFIG_HOME", fixture.root.join("global-config"))
         .env_remove("ANTHROPIC_AUTH_TOKEN")

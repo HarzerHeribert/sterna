@@ -10,7 +10,6 @@ mod ui;
 use std::cell::{Cell, Ref, RefCell};
 use std::fs;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -26,7 +25,7 @@ use crate::contract::{Block, Conversation, Message, ProjectConfig, Role, ServedB
 use crate::events::batch::Batch;
 use crate::events::window::{Window, WindowConfig};
 use crate::gateway::{self, Gateway};
-use crate::glasshouse::{self, Glasshouse, LifecycleEvent, LocalMemory};
+use crate::memory::LocalMemory;
 use crate::project;
 use crate::prompt::{self, Budget, CellResult, ErrorSection, Extracted};
 use crate::rollout::{self, Rollout};
@@ -597,15 +596,7 @@ fn run(mut args: SessionArgs) -> Result<(), String> {
     // concrete choice would make Pane silently spend against a model the
     // person did not select, so a terminal opens the picker instead.
     let requested = startup::requested_model(args.model.as_deref(), &config.borrow(), terminal)?;
-    let glasshouse = match &args.glasshouse {
-        Some(path) => Glasshouse::Command {
-            glasshouse: path.clone(),
-        },
-        None => Glasshouse::Command {
-            glasshouse: PathBuf::from("glasshouse"),
-        },
-    };
-    let gateway = gateway::select(args.gateway.as_deref(), &glasshouse, &args.root);
+    let gateway = gateway::select(args.gateway.as_deref());
     let accounts = startup::served_accounts(&gateway);
     // Jev is the default decision model wherever the gateway can route it:
     // an unset `[decisions] model` with a TypeSafe account served means
@@ -729,16 +720,10 @@ fn run(mut args: SessionArgs) -> Result<(), String> {
         provider_start,
     };
 
-    glasshouse::emit_lifecycle(&glasshouse, &session_id, LifecycleEvent::SessionStart);
-    // Beside the lifecycle hook rather than instead of it: that one runs a
-    // `glasshouse` command and is silent when the binary is absent
-    // (`the_binary_emits_session_start_to_the_hook_command` pins it), while
-    // this one is a line in a file that needs nothing installed.
     observe.session_begin(&rollout_path, &args.root);
 
-    // The local store lives beside the rollout, so a project's notes travel
-    // with the session that made them. `glasshouse.rs` owns the fallback
-    // decision; this only says where the fallback's file goes.
+    // The notes live beside the rollout, so a project's notes travel with
+    // the session that made them.
     let memory = LocalMemory::new(
         rollout_path
             .parent()
@@ -828,17 +813,11 @@ fn run(mut args: SessionArgs) -> Result<(), String> {
         approval_gate,
         ask_gate,
         ladder: Some(ladder.clone()),
-        inbox: RefCell::new(crate::events::inbox::Inbox::discover(
-            &glasshouse,
-            profile.root(),
-        )),
         window: RefCell::new(Window::new(WindowConfig::default())),
-        messages: std::rc::Rc::new(RefCell::new(std::collections::HashMap::new())),
         roster,
         project: &project,
         config: &config,
         profile: &profile,
-        glasshouse: &glasshouse,
         gateway: &gateway,
         id: &session_id,
         memory: &memory,
@@ -870,15 +849,6 @@ fn run(mut args: SessionArgs) -> Result<(), String> {
     bg::shutdown(&session_id);
     ui::farewell(resume::resume_hint(&session_id));
 
-    glasshouse::emit_lifecycle(
-        &glasshouse,
-        &session_id,
-        match &outcome {
-            Ok(()) => LifecycleEvent::Stop,
-            Err(_) => LifecycleEvent::StopFailure,
-        },
-    );
-
     outcome
 }
 
@@ -898,10 +868,7 @@ struct Session<'a> {
     /// The live permission rung, when this session has one. `None` only for
     /// the constructed sessions in tests that never ask anybody anything.
     ladder: Option<crate::permissions::Ladder>,
-    inbox: RefCell<crate::events::inbox::Inbox>,
     window: RefCell<Window>,
-    messages:
-        std::rc::Rc<RefCell<std::collections::HashMap<String, crate::events::inbox::Message>>>,
     ui: Option<&'a ui::LiveUi>,
     model: RefCell<String>,
     /// Capacity explicitly associated with the startup model. A `/model`
@@ -938,9 +905,6 @@ struct Session<'a> {
     /// works (`observe.rs`). `Observer::none()` is a session nobody is
     /// watching and every emit on it is a no-op.
     observe: crate::observe::Observer,
-    /// Memory and hooks only, and optional: a session runs with no
-    /// `glasshouse` binary anywhere.
-    glasshouse: &'a Glasshouse,
     /// Entitlements, subscriptions and routing cost -- the controls that
     /// moved off Glasshouse and onto the standalone gateway.
     gateway: &'a Gateway,
@@ -1288,12 +1252,6 @@ fn run_task_inner(
         ));
         transcript.provider_start = transcript.conversation.messages.len();
     }
-    glasshouse::emit_lifecycle(
-        session.glasshouse,
-        session.id,
-        LifecycleEvent::UserPromptSubmit,
-    );
-
     let mut user_message = Message::text(Role::User, task);
     system::carry_task_context(&mut user_message, task_context);
     user_message
@@ -1314,7 +1272,6 @@ fn run_task_inner(
         .narrowed_to(proposal.narrow_mode, &session.overlay);
     let mut runtime = Runtime::with_limits(
         &request_profile,
-        session.glasshouse,
         session.id,
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(session.config().limits.cell_wall_clock_s),
@@ -1340,7 +1297,6 @@ fn run_task_inner(
     // because the isolate the batch is bound in is, and §5's jobs are
     // cancelled with it below.
     let mut window = session.window.borrow_mut();
-    runtime.set_message_payloads(session.messages.clone());
     transcript.notebook.batches_delivered = 0;
     let mut final_turn = false;
     let mut terminal_failure = None;
@@ -1508,18 +1464,7 @@ fn run_task_inner(
         if let Some(previous) = runtime.take_batch() {
             window.carry_forward(previous.roll());
         }
-        let live_payloads = window.payload_ids();
-        session
-            .messages
-            .borrow_mut()
-            .retain(|id, _| live_payloads.contains(id));
-        if let Some(batch) = next_batch_with(&mut window, session.id, EVENT_WAIT, |window| {
-            session.inbox.borrow_mut().drain_into(
-                session.id,
-                window,
-                &mut session.messages.borrow_mut(),
-            );
-        }) {
+        if let Some(batch) = next_batch(&mut window, session.id, EVENT_WAIT) {
             runtime.deliver_batch(batch);
             for (name, outcome) in runtime.run_handlers() {
                 let _line = session.interrupt.writing();
@@ -1837,11 +1782,6 @@ fn run_task_inner(
     if let Some(previous) = runtime.take_batch() {
         window.carry_forward(previous.roll());
     }
-    let live_payloads = window.payload_ids();
-    session
-        .messages
-        .borrow_mut()
-        .retain(|id, _| live_payloads.contains(id));
     transcript.notebook.inbox_depth = window.depth();
     runtime.end_task();
     transcript.notebook.handlers.clear();
@@ -1904,19 +1844,8 @@ fn run_task_inner(
 /// `budget` is a ceiling on the second state, so a clock that jumps backwards
 /// or a window whose deadline is misconfigured costs a bounded wait rather
 /// than a session that never sends another turn.
-#[cfg(test)]
 fn next_batch(window: &mut Window, session: &SessionId, budget: Duration) -> Option<Batch> {
-    next_batch_with(window, session, budget, |_| {})
-}
-
-fn next_batch_with(
-    window: &mut Window,
-    session: &SessionId,
-    budget: Duration,
-    mut poll: impl FnMut(&mut Window),
-) -> Option<Batch> {
     let started = Instant::now();
-    poll(window);
     loop {
         for event in bg::drain(session) {
             window.accept(event, crate::events::now());
@@ -2684,7 +2613,7 @@ fn answer_command(
         Some(resolved) => match resolved.status {
             CommandStatus::Available => {
                 if name == "memory" {
-                    answer_memory(session.glasshouse, session.memory, argument);
+                    answer_memory(session.memory, argument);
                 } else {
                     let description = match resolved.source {
                         CommandSource::ProjectSkill => "project skill",
@@ -2737,11 +2666,8 @@ fn offer_commands(session: &Session<'_>) {
 /// store `pane` itself owns -- Glasshouse's own memory tool is written to by
 /// Glasshouse's own harness, not by a second writer invented here.
 ///
-/// The readers degrade rather than fail, so a read prints what it found and
-/// says plainly when that was nothing; it never reports an error and never
-/// distinguishes "Glasshouse is absent" from "Glasshouse had nothing", which
-/// is `glasshouse.rs`'s own contract and not this function's to re-decide.
-fn answer_memory(glasshouse: &Glasshouse, memory: &LocalMemory, argument: Option<&str>) {
+/// A read prints what it found and says plainly when that was nothing.
+fn answer_memory(memory: &LocalMemory, argument: Option<&str>) {
     if let Some(text) = argument.filter(|text| !text.is_empty()) {
         match memory.add(text) {
             Ok(()) => session_println!("/memory: saved"),
@@ -2750,7 +2676,11 @@ fn answer_memory(glasshouse: &Glasshouse, memory: &LocalMemory, argument: Option
         return;
     }
 
-    let notes = glasshouse::search_memory(glasshouse, memory, "");
+    let notes: Vec<String> = memory
+        .search("")
+        .into_iter()
+        .map(|note| note.text)
+        .collect();
     if notes.is_empty() {
         session_println!("/memory: no notes");
     } else {
@@ -2758,7 +2688,7 @@ fn answer_memory(glasshouse: &Glasshouse, memory: &LocalMemory, argument: Option
             session_println!("/memory: {note}");
         }
     }
-    match glasshouse::checkpoint(glasshouse, memory) {
+    match memory.latest() {
         Some(checkpoint) => session_println!("/memory checkpoint: {checkpoint}"),
         None => session_println!("/memory checkpoint: none"),
     }
@@ -2911,7 +2841,6 @@ fn answer_tool(rest: &str, session: &Session<'_>) {
             .profile
             .clone()
             .narrowed_to(session.mode.get(), &session.overlay),
-        glasshouse: session.glasshouse,
         session: session.id,
     };
     match invoke::run(&ctx, &tool, &args) {
@@ -3151,7 +3080,7 @@ mod tests {
         dialect: crate::abi::Dialect,
     ) -> Step {
         let session = SessionId::new("admit");
-        let mut runtime = Runtime::new(profile, &Glasshouse::None, &session);
+        let mut runtime = Runtime::new(profile, &session);
         let mut budget = TaskSpend::new(Some(40));
         let mut rollout =
             Rollout::create(&root.join("rollout.jsonl"), session.clone(), "system").unwrap();
@@ -3161,7 +3090,6 @@ mod tests {
             ..ProjectConfig::default()
         };
         let config = RefCell::new(PaneConfig::default());
-        let glasshouse = Glasshouse::None;
         let gateway = crate::gateway::Gateway::Command {
             gateway: root.join("absent-gateway"),
         };
@@ -3173,9 +3101,7 @@ mod tests {
             approval_gate: None,
             ask_gate: None,
             ladder: None,
-            inbox: RefCell::new(crate::events::inbox::Inbox::discover(&glasshouse, root)),
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
-            messages: std::rc::Rc::new(RefCell::new(std::collections::HashMap::new())),
             roster: Vec::new(),
             ui: None,
             model: RefCell::new("test".into()),
@@ -3191,7 +3117,6 @@ mod tests {
             config: &config,
             interrupt: &interrupt,
             profile,
-            glasshouse: &glasshouse,
             gateway: &gateway,
             id: &session,
             memory: &memory,

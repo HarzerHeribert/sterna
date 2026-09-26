@@ -2,7 +2,6 @@
 use pane::{
     config::{AgentsMode, PaneConfig},
     contract::SessionId,
-    glasshouse::Glasshouse,
     runtime::{isolate::Runtime, outcome::CellOutcome},
     sandbox::profile::Profile,
     wire::Effort,
@@ -100,7 +99,7 @@ fn v8_binding_refuses_unconfigured_delegation_before_spawning() {
     std::fs::create_dir_all(&root).unwrap();
     let profile = Profile::compile(&root, None);
     let id = SessionId::new("workbench-denied-favorite");
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &id);
+    let mut runtime = Runtime::new(&profile, &id);
     runtime.set_task_context(0, "main-model");
     for code in [
         "agent.run('work');",
@@ -120,7 +119,7 @@ fn actual_v8_gate_rejects_model_and_effort_escape_from_a_populated_roster() {
     std::fs::create_dir_all(&root).unwrap();
     let profile = Profile::compile(&root, None);
     let id = SessionId::new("workbench-roster-denials");
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &id).with_agents(
+    let mut runtime = Runtime::new(&profile, &id).with_agents(
         config("[agents]\nmode='roster'\n[agents.slots.quick]\nmodel='small-model'\neffort='low'")
             .agents,
     );

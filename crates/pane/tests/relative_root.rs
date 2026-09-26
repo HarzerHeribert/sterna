@@ -15,7 +15,6 @@ use std::sync::Mutex;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use {
     pane::contract::SessionId,
-    pane::glasshouse::Glasshouse,
     pane::sandbox::profile::Access,
     pane::tools::invoke::{self, Args, ToolContext},
     std::path::{Path, PathBuf},
@@ -62,12 +61,9 @@ fn dot_root_is_anchored_and_real_tools_do_not_fail_with_enoent() {
     let profile = Profile::compile(".", Some(settings));
     assert_eq!(profile.root(), std::fs::canonicalize(&root).unwrap());
     assert!(profile.root().is_absolute());
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("relative-root-regression");
     let context = ToolContext {
         profile: &profile,
-        glasshouse: &glasshouse,
         session: &session,
     };
 

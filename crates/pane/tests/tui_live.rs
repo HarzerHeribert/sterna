@@ -123,8 +123,7 @@ impl App {
         } else {
             command.args(["session", "--root"]);
             command.arg(&root);
-            command.args(["--model", "fixture-model", "--glasshouse"]);
-            command.arg(root.join("no-glasshouse"));
+            command.args(["--model", "fixture-model"]);
             command.arg("--gateway");
             command.arg(root.join("no-gateway"));
             // Absent: the base URL below is a loopback host, so this session

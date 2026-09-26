@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use pane::tools::invoke::{self, Args, ToolContext};
 use std::path::{Path, PathBuf};
@@ -50,12 +49,10 @@ impl Fixture {
 
     fn call(&self, tool: &str, args: Args) -> String {
         let profile = Profile::compile(&self.root, None);
-        let glasshouse = Glasshouse::None;
         let session = SessionId::new("search-artifact-test");
         invoke::run(
             &ToolContext {
                 profile: &profile,
-                glasshouse: &glasshouse,
                 session: &session,
             },
             tool,

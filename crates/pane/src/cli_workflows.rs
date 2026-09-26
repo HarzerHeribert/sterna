@@ -190,7 +190,7 @@ pub fn doctor(args: &[String]) -> i32 {
     if let Some((config, origins)) = settings.as_ref() {
         checks.push(inert_settings(config, origins, rung.as_deref(), &profile));
     }
-    for program in ["glasshouse", "inference-gateway", "git", "rg", "fd", "jq"] {
+    for program in ["inference-gateway", "git", "rg", "fd", "jq"] {
         let found = find_executable(program);
         let attached =
             program == "inference-gateway" && std::env::var_os("ANTHROPIC_BASE_URL").is_some();

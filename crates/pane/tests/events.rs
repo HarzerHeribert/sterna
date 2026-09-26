@@ -34,14 +34,14 @@ fn ci_cell_event(cell: &str, source: &str, conclusion: &str, at_ms: i64, summary
     )
 }
 
-fn message_event(message_id: &str, source: &str, at_ms: i64, summary: &str) -> Event {
+fn timer_event(deadline: &str, source: &str, at_ms: i64, summary: &str) -> Event {
     Event::pending(
-        Kind::Message {
-            message_id: message_id.to_string(),
+        Kind::Timer {
+            deadline: deadline.to_string(),
         },
         source,
         Stamp::from_millis(at_ms),
-        PayloadRef::new(format!("payload-{message_id}")),
+        PayloadRef::new(format!("payload-{deadline}")),
         Priority::Batch,
         summary,
     )
@@ -96,7 +96,7 @@ fn accept_kept(window: &mut Window, event: Event, now_ms: i64) {
 }
 
 /// §10's worked turn: 30 `hook.PostToolUse` from one worker's loop, 4
-/// `message`, 3 `ci.cell`, 2 `worker.report`, one failing `ci.run` that
+/// `timer`, 3 `ci.cell`, 2 `worker.report`, one failing `ci.run` that
 /// closes the window 1,204 ms after the first event.
 #[test]
 fn forty_events_in_one_window_are_one_batch_with_the_interrupt_first() {
@@ -129,10 +129,10 @@ fn forty_events_in_one_window_are_one_batch_with_the_interrupt_first() {
         );
     }
 
-    // 4 message events; the first is sample [3].
+    // 4 timer events; the first is sample [3].
     accept_kept(
         &mut window,
-        message_event(
+        timer_event(
             "m1",
             "session/glasshouse-9c",
             time_of_day_millis(16, 58, 33, 402),
@@ -142,17 +142,17 @@ fn forty_events_in_one_window_are_one_batch_with_the_interrupt_first() {
     );
     accept_kept(
         &mut window,
-        message_event("m2", "session/pane-spec", 0, "noise"),
+        timer_event("m2", "session/pane-spec", 0, "noise"),
         0,
     );
     accept_kept(
         &mut window,
-        message_event("m3", "session/glasshouse-9c", 0, "noise"),
+        timer_event("m3", "session/glasshouse-9c", 0, "noise"),
         0,
     );
     accept_kept(
         &mut window,
-        message_event("m4", "session/pane-spec", 0, "noise"),
+        timer_event("m4", "session/pane-spec", 0, "noise"),
         0,
     );
 
@@ -654,7 +654,6 @@ use pane::bg::{self, RunOptions};
 // on no platform, and dead is an error under `[workspace.lints.rust]`'s `-D warnings`.
 use pane::bg::WatchOptions;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -764,7 +763,6 @@ fn bg_run_returns_a_handle_before_the_process_has_done_anything() {
     let started = Instant::now();
     let handle = bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         &command,
         &RunOptions::default(),
@@ -792,7 +790,6 @@ fn a_command_outside_the_grant_is_refused_before_any_handle_exists() {
     let fixture = JobFixture::new("denied");
     let denied = bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "curl https://example.com",
         &RunOptions::default(),
@@ -817,7 +814,6 @@ fn an_option_this_runtime_cannot_honour_is_refused_not_ignored() {
     let fixture = JobFixture::new("options");
     let denied = bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo hello",
         &RunOptions {
@@ -841,7 +837,6 @@ fn cancelling_a_job_that_ignores_sigterm_still_stops_it_and_reports() {
     let marker = "pane-cancel-marker";
     let handle = bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         &format!("trap '' TERM; {}", spinner(marker)),
         &RunOptions::default(),
@@ -888,7 +883,6 @@ fn a_finished_job_reports_through_an_event_whose_payload_is_fetched_by_id() {
     let fixture = JobFixture::new("payload");
     bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo forty-megabytes-worth",
         &RunOptions::default(),
@@ -918,7 +912,6 @@ fn a_watch_emits_per_match_and_stops_when_until_matches() {
     let fixture = JobFixture::new("watch");
     let handle = bg::watch(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo still-building",
         &WatchOptions {
@@ -965,7 +958,6 @@ fn shutdown_leaves_no_job_of_this_session_running() {
         let fixture = JobFixture::new("shutdown");
         bg::run(
             &fixture.profile(),
-            &Glasshouse::None,
             &fixture.session,
             &spinner(marker),
             &RunOptions::default(),
@@ -1010,7 +1002,6 @@ fn a_background_job_is_never_refused_for_want_of_a_confinement() {
     let fixture = JobFixture::new("confinable");
     bg::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo hello",
         &RunOptions::default(),
@@ -1056,7 +1047,6 @@ fn shutdown_pays_no_settle_for_jobs_that_have_already_finished() {
     for _ in 0..COUNT {
         bg::run(
             &fixture.profile(),
-            &Glasshouse::None,
             &fixture.session,
             "echo done",
             &RunOptions::default(),
@@ -1097,7 +1087,6 @@ fn a_watch_faster_than_the_floor_is_refused_rather_than_silently_slowed() {
     let fixture = JobFixture::new("floor");
     let denied = bg::watch(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo tick",
         &WatchOptions {
@@ -1128,7 +1117,6 @@ fn a_watch_faster_than_the_floor_is_refused_rather_than_silently_slowed() {
     // not a second default.
     bg::watch(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "echo tick",
         &WatchOptions {

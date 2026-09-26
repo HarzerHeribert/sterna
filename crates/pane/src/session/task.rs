@@ -788,7 +788,6 @@ impl TaskState {
             // through the one kernel under the session's own profile.
             let ctx = ToolContext {
                 profile: session.profile,
-                glasshouse: session.glasshouse,
                 session: session.id,
             };
             let mut runner = |command: &str| -> Result<(Option<i32>, String), String> {
@@ -1095,7 +1094,6 @@ impl TaskState {
                     ask,
                     model,
                     profile: session.profile.clone(),
-                    glasshouse: session.glasshouse.clone(),
                     session: session.id.clone(),
                 });
             }
@@ -1126,7 +1124,6 @@ impl TaskState {
             model,
             effort,
             profile: session.profile.clone(),
-            glasshouse: session.glasshouse.clone(),
             session: session.id.clone(),
         });
     }

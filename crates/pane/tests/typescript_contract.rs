@@ -9,7 +9,6 @@
 //! a platform.
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::cell::{self, ERASABLE_CONSTRUCTS, NOT_ERASABLE_CONSTRUCTS};
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
@@ -41,7 +40,7 @@ impl Fixture {
             &self.root,
             Some(r#"{"permissions":{"allow":["Bash(echo*)"]}}"#),
         );
-        Runtime::new(&profile, &Glasshouse::None, &SessionId::new(session))
+        Runtime::new(&profile, &SessionId::new(session))
     }
 }
 

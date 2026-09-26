@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::preview::{self, STDOUT_TOKEN_CAP};
 use pane::sandbox::profile::Profile;
@@ -7,7 +6,7 @@ use pane::sandbox::profile::Profile;
 fn run(source: &str) -> pane::runtime::outcome::CellOutcome {
     let root = std::env::temp_dir();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("console-test"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("console-test"));
     runtime.run_cell(source)
 }
 
@@ -73,7 +72,7 @@ fn read_reports_the_admitted_files_actual_mtime_and_does_not_widen_the_root() {
         .unwrap();
     let expected = pane::events::Stamp::from_millis(modified.as_millis() as i64).to_string();
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":["Read"]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("mtime-test"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("mtime-test"));
     let observed = runtime
         .run_cell("const file = await read({path: 'observed.txt'}); console.log(file.mtime);\n");
     assert_eq!(observed.turn().stdout_tail.trim(), expected);

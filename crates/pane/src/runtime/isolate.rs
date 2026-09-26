@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 use crate::contract::SessionId;
 use crate::events::BatchStore;
 use crate::events::batch::Batch;
-use crate::glasshouse::Glasshouse;
 use crate::runtime::bindings::{self, CellTrace};
 use crate::runtime::cell::{self, CompiledCell, LINE_OFFSET};
 use crate::runtime::handles::{self, HandleMeta};
@@ -599,21 +598,19 @@ impl Runtime {
     /// use pane::runtime::isolate::Runtime;
     /// let _: Runtime = Default::default();
     /// ```
-    pub fn new(profile: &Profile, glasshouse: &Glasshouse, session: &SessionId) -> Self {
-        Self::with_heap_limit(profile, glasshouse, session, DEFAULT_HEAP_LIMIT_BYTES)
+    pub fn new(profile: &Profile, session: &SessionId) -> Self {
+        Self::with_heap_limit(profile, session, DEFAULT_HEAP_LIMIT_BYTES)
     }
 
     /// [`Runtime::new`] with an explicit ceiling, so a test can reach the
     /// out-of-memory path without allocating 256 MiB.
     pub fn with_heap_limit(
         profile: &Profile,
-        glasshouse: &Glasshouse,
         session: &SessionId,
         heap_limit_bytes: usize,
     ) -> Self {
         Self::with_limits(
             profile,
-            glasshouse,
             session,
             heap_limit_bytes,
             DEFAULT_CELL_WALL_CLOCK_LIMIT,
@@ -633,13 +630,11 @@ impl Runtime {
     /// nothing at all.
     pub fn for_helper(
         profile: &Profile,
-        glasshouse: &Glasshouse,
         session: &SessionId,
         tools: &'static [&'static str],
     ) -> Self {
         Self::with_limits_and_globals(
             profile,
-            glasshouse,
             session,
             DEFAULT_HEAP_LIMIT_BYTES,
             DEFAULT_CELL_WALL_CLOCK_LIMIT,
@@ -651,14 +646,12 @@ impl Runtime {
     /// without waiting out the default.
     pub fn with_limits(
         profile: &Profile,
-        glasshouse: &Glasshouse,
         session: &SessionId,
         heap_limit_bytes: usize,
         wall_clock_limit: Duration,
     ) -> Self {
         Self::with_limits_and_globals(
             profile,
-            glasshouse,
             session,
             heap_limit_bytes,
             wall_clock_limit,
@@ -670,7 +663,6 @@ impl Runtime {
     /// is the only thing they disagree about.
     fn with_limits_and_globals(
         profile: &Profile,
-        glasshouse: &Glasshouse,
         session: &SessionId,
         heap_limit_bytes: usize,
         wall_clock_limit: Duration,
@@ -724,7 +716,7 @@ impl Runtime {
             Rc::as_ptr(&heap).cast_mut().cast::<c_void>(),
         );
 
-        let state = Rc::new(RuntimeState::new(profile, glasshouse, session).with_globals(globals));
+        let state = Rc::new(RuntimeState::new(profile, session).with_globals(globals));
         isolate.set_slot(state.clone());
 
         let context = {
@@ -1035,14 +1027,6 @@ impl Runtime {
     }
     pub fn take_handler_notices(&mut self) -> Vec<String> {
         self.state.handlers.notices.take()
-    }
-    pub fn set_message_payloads(
-        &mut self,
-        messages: Rc<
-            std::cell::RefCell<std::collections::HashMap<String, crate::events::inbox::Message>>,
-        >,
-    ) {
-        *self.state.messages.borrow_mut() = messages;
     }
 
     pub fn take_batch(&mut self) -> Option<Batch> {

@@ -9,7 +9,6 @@
 
 use pane::config::{DecisionsConfig, HelpersConfig};
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -155,9 +154,8 @@ fn a_cell_asks_for_a_judgement_and_branches_on_the_answer() {
         std::env::set_var("ANTHROPIC_BASE_URL", &url);
     }
     let fixture = Fixture::new("branch");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("judgement-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &glasshouse, &session)
+    let mut runtime = Runtime::new(&fixture.profile(), &session)
         .with_helpers(helpers())
         .with_decisions(decisions(Some("jev-latest")));
 
@@ -191,9 +189,8 @@ fn the_question_and_its_answer_reach_the_cells_record() {
         std::env::set_var("ANTHROPIC_BASE_URL", &url);
     }
     let fixture = Fixture::new("record");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("record-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &glasshouse, &session)
+    let mut runtime = Runtime::new(&fixture.profile(), &session)
         .with_helpers(helpers())
         .with_decisions(decisions(Some("jev-latest")));
 
@@ -229,9 +226,8 @@ fn the_question_and_its_answer_reach_the_cells_record() {
 #[test]
 fn a_session_with_no_decision_model_binds_nothing_and_is_told_of_nothing() {
     let fixture = Fixture::new("unconfigured");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("unconfigured-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &glasshouse, &session)
+    let mut runtime = Runtime::new(&fixture.profile(), &session)
         .with_helpers(helpers())
         .with_decisions(decisions(None));
 
@@ -270,9 +266,8 @@ fn a_question_that_fails_throws_rather_than_answering() {
         std::env::set_var("ANTHROPIC_BASE_URL", &url);
     }
     let fixture = Fixture::new("failed");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("failed-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &glasshouse, &session)
+    let mut runtime = Runtime::new(&fixture.profile(), &session)
         .with_helpers(helpers())
         .with_decisions(decisions(Some("jev-latest")));
 
@@ -302,14 +297,13 @@ fn a_judgement_spends_the_same_per_cell_allowance_a_helper_does() {
         std::env::set_var("ANTHROPIC_BASE_URL", &url);
     }
     let fixture = Fixture::new("allowance");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("allowance-session");
     let ceiling = HelpersConfig {
         model: Some("gpt-5.6-luna".to_string()),
         calls_per_cell: 2,
         ..HelpersConfig::default()
     };
-    let mut runtime = Runtime::new(&fixture.profile(), &glasshouse, &session)
+    let mut runtime = Runtime::new(&fixture.profile(), &session)
         .with_helpers(ceiling)
         .with_decisions(decisions(Some("jev-latest")));
 

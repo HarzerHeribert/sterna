@@ -1652,9 +1652,9 @@ const OPEN_DIFF: &str = "open diff ↗";
 
 /// The runtime's own objects: a call on one of these acts on the world or
 /// on the session, whether or not the program awaits it.
-const ACTING: [&str; 22] = [
+const ACTING: [&str; 21] = [
     "read", "write", "edit", "bash", "fd", "grep", "glob", "fetch", "search", "ssh", "web",
-    "checks", "helper", "agent", "handles", "bg", "decide", "mcp", "send", "print", "ask", "plan",
+    "checks", "helper", "agent", "handles", "bg", "decide", "mcp", "print", "ask", "plan",
 ];
 /// Rows a streaming cell shows before the earlier ones fold into a count.
 const STREAM_ROWS: usize = 12;

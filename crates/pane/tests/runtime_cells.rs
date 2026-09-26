@@ -12,7 +12,6 @@
 //! nothing to do with this package.
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use pane::runtime::outcome::{CellOutcome, HandleRecord};
 use pane::runtime::preview::{self, ErrorValue, Value};
@@ -84,25 +83,8 @@ fn settings() -> String {
     r#"{"permissions":{"allow":["Bash(echo*)","Bash(cat*)"]}}"#.to_string()
 }
 
-/// A stand-in for the `glasshouse` binary that records every invocation.
-#[cfg(unix)]
-fn fake_glasshouse(dir: &Path, log: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let script = dir.join("fake-glasshouse.sh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nprintf 'ARGS %s\\n' \"$*\" >> '{log}'\ncat >> '{log}'\nprintf '\\n' >> '{log}'\nexit 0\n",
-            log = log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    script
-}
-
-fn runtime(fixture: &Fixture, glasshouse: &Glasshouse, session: &SessionId) -> Runtime {
-    Runtime::new(&fixture.profile(), glasshouse, session)
+fn runtime(fixture: &Fixture, session: &SessionId) -> Runtime {
+    Runtime::new(&fixture.profile(), session)
 }
 
 fn returned(outcome: &CellOutcome) -> &Value {
@@ -141,9 +123,8 @@ fn handle<'a>(outcome: &'a CellOutcome, name: &str) -> &'a HandleRecord {
 #[test]
 fn a_top_level_binding_persists_into_the_next_cell_and_a_redeclaration_replaces_it() {
     let fixture = Fixture::new("scope");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("scope-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell("const hits = [1, 2, 3];\nconst other = \"kept\";\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -180,7 +161,7 @@ fn a_named_runner_reexecutes_tools_across_cells_and_keeps_permission_checks() {
     fixture.write(&fixture.root.join("verdict"), "first run\n");
     let profile = fixture.profile_with(r#"{"permissions":{"allow":["Read(**)","Bash(cat*)"]}}"#);
     let session = SessionId::new("named-runner-session");
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let first = runtime.run_cell(
         r#"const verify = async (command = "cat verdict") => {
             const result = await bash({command});
@@ -211,9 +192,8 @@ fn a_named_runner_reexecutes_tools_across_cells_and_keeps_permission_checks() {
 #[test]
 fn structured_returns_continue_and_scalar_or_text_returns_end_the_task() {
     let fixture = Fixture::new("endings");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("endings-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let yielded = runtime.run_cell("const a = 1;\nconst b = a + 1;\n");
     match &yielded {
@@ -252,9 +232,8 @@ fn structured_returns_continue_and_scalar_or_text_returns_end_the_task() {
 #[test]
 fn a_throw_is_a_result_and_keeps_the_bindings_made_before_it() {
     let fixture = Fixture::new("throw");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("throw-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome =
         runtime.run_cell("const before = 41;\nthrow new TypeError(\"boom\");\nconst after = 99;\n");
@@ -296,9 +275,8 @@ fn a_throw_is_a_result_and_keeps_the_bindings_made_before_it() {
 #[test]
 fn a_binding_persists_with_the_value_it_holds_when_the_cell_ends() {
     let fixture = Fixture::new("final-value");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("final-value");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell(
         "let n = 0;\nfor (const i of [1, 2, 3]) n += i;\nlet x = 1;\nx = 2;\nconst box = { hits: 0 };\nbox.hits = 7;\n",
@@ -321,9 +299,8 @@ fn a_binding_persists_with_the_value_it_holds_when_the_cell_ends() {
 #[test]
 fn a_member_assignment_at_top_level_binds_nothing() {
     let fixture = Fixture::new("member");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("member-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "const box = { hits: 0 };\nconst arr = [0];\nbox.hits = 7;\narr[0] = 1;\nbox.nested = { deep: 0 };\nbox.nested.deep = 3;\n",
@@ -348,9 +325,8 @@ fn a_member_assignment_at_top_level_binds_nothing() {
 #[test]
 fn a_throw_keeps_the_latest_value_of_every_binding_made_before_it() {
     let fixture = Fixture::new("throw-latest");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("throw-latest");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "let n = 0;\nn = 5;\nconst seen = [];\nseen.push(\"one\");\nthrow new TypeError(\"boom\");\nlet never = 1;\n",
@@ -376,9 +352,8 @@ fn a_throw_keeps_the_latest_value_of_every_binding_made_before_it() {
 #[test]
 fn destructuring_var_function_and_class_all_persist() {
     let fixture = Fixture::new("shapes");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("shapes-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell(
         "const { a, b: renamed } = { a: 1, b: 2 };\nconst [first, ...rest] = [3, 4, 5];\nvar counted = 0;\nfor (const n of rest) counted += n;\nfunction twice(n) { return n * 2; }\nclass Box { constructor(v) { this.v = v; } }\n",
@@ -402,9 +377,8 @@ fn destructuring_var_function_and_class_all_persist() {
 #[test]
 fn a_name_freed_in_the_cell_that_declared_it_does_not_come_back() {
     let fixture = Fixture::new("free-same-cell");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("free-same-cell");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell("const temp = [1, 2, 3];\nfree(\"temp\");\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -424,9 +398,8 @@ fn a_name_freed_in_the_cell_that_declared_it_does_not_come_back() {
 #[test]
 fn a_return_after_a_mutation_ends_the_task_with_the_bumped_value() {
     let fixture = Fixture::new("return-bumped");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("return-bumped");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("let n = 1;\nfor (const i of [1, 2, 3]) n += i;\nreturn n;\n");
     assert_eq!(returned(&outcome), &Value::Number(7.0), "{outcome:?}");
@@ -440,9 +413,8 @@ fn a_return_after_a_mutation_ends_the_task_with_the_bumped_value() {
 #[test]
 fn the_table_keeps_declaration_order_when_the_epilogue_recaptures_a_name() {
     let fixture = Fixture::new("declaration-order");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("declaration-order");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("let n = 0;\nclass K {}\nn = 1;\n");
     assert!(
@@ -457,9 +429,8 @@ fn the_table_keeps_declaration_order_when_the_epilogue_recaptures_a_name() {
 #[test]
 fn a_cell_that_does_not_compile_is_a_result_too() {
     let fixture = Fixture::new("syntax");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("syntax-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const a = 1;\nconst = ;\n");
     let CellOutcome::Threw { error, .. } = &outcome else {
@@ -474,9 +445,8 @@ fn a_cell_that_does_not_compile_is_a_result_too() {
 #[test]
 fn a_handle_is_never_freed_by_the_runtime() {
     let fixture = Fixture::new("evict");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("evict-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // Enough wide handles that the 2,048-token table cap must drop some
     // from the *rendering*.
@@ -520,9 +490,8 @@ fn a_handle_is_never_freed_by_the_runtime() {
 #[test]
 fn keep_names_a_value_the_model_never_bound() {
     let fixture = Fixture::new("keep");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("keep-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("keep(\"chosen\", [1, 2, 3].map(n => n * 2));\n");
     assert!(
@@ -539,9 +508,8 @@ fn keep_names_a_value_the_model_never_bound() {
 #[test]
 fn console_output_is_capped_to_the_last_512_tokens() {
     let fixture = Fixture::new("console");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("console-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "for (let i = 0; i < 3000; i++) { console.log(\"padding line number \" + i); }\n",
@@ -573,9 +541,8 @@ fn console_output_is_capped_to_the_last_512_tokens() {
 fn a_refused_call_throws_permission_denied_inside_the_program_and_is_catchable() {
     let fixture = Fixture::new("denied");
     let secret = fixture.write(&fixture.outside.join("secret.txt"), "OUTSIDE-SECRET\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("denied-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let program = format!(
         "try {{\n  await read({{ path: {path:?} }});\n  return \"no throw\";\n}} catch (e) {{\n  \
@@ -607,9 +574,8 @@ fn a_tool_result_is_a_live_object_the_program_computes_over() {
         &fixture.root.join("notes.txt"),
         "alpha\nbeta\ngamma\ndelta\n",
     );
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("live-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let program = format!(
         "const doc = await read({{ path: {path:?} }});\n",
@@ -632,69 +598,6 @@ fn a_tool_result_is_a_live_object_the_program_computes_over() {
     assert_eq!(returned(&counted), &Value::Number(3.0));
 }
 
-#[cfg(unix)]
-#[test]
-fn pre_and_post_tool_use_fire_once_per_call_inside_a_program() {
-    let fixture = Fixture::new("hooks");
-    let inside = fixture.write(&fixture.root.join("inside.txt"), "hook-content\n");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
-    let glasshouse = Glasshouse::Command { glasshouse: script };
-    let session = SessionId::new("hook-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
-
-    let program = format!(
-        "const doc = await read({{ path: {path:?} }});\n",
-        path = inside.to_string_lossy()
-    );
-    let _ = runtime.run_cell(&program);
-
-    let recorded = std::fs::read_to_string(&log).expect("the hook was delivered");
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PostToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    for line in recorded.lines().filter(|line| line.starts_with("ARGS ")) {
-        assert_eq!(
-            line, "ARGS context-firewall hook --session hook-session",
-            "a tool event went somewhere other than the context firewall"
-        );
-    }
-
-    // Two calls in one program fire twice, and no more.
-    std::fs::write(&log, "").unwrap();
-    let two = format!(
-        "const a = await read({{ path: {path:?} }});\nconst b = await read({{ path: {path:?} }});\n",
-        path = inside.to_string_lossy()
-    );
-    let _ = runtime.run_cell(&two);
-    let recorded = std::fs::read_to_string(&log).unwrap();
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        2,
-        "{recorded}"
-    );
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PostToolUse""#)
-            .count(),
-        2,
-        "{recorded}"
-    );
-}
-
 /// A guard whose condition is false performs no tool call at all: no child,
 /// no effect, no hook. The paired positive half runs the *same* call with the
 /// *same* grant and must succeed, so a profile that refused everything fails
@@ -703,11 +606,8 @@ fn pre_and_post_tool_use_fire_once_per_call_inside_a_program() {
 #[test]
 fn a_branch_not_taken_performs_no_tool_call() {
     let fixture = Fixture::new("branch");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
-    let glasshouse = Glasshouse::Command { glasshouse: script };
     let session = SessionId::new("branch-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     let marker = fixture.root.join("marker");
 
     let taken = |value: bool| {
@@ -716,30 +616,22 @@ fn a_branch_not_taken_performs_no_tool_call() {
         )
     };
 
-    let _ = runtime.run_cell(&taken(false));
+    let untaken = runtime.run_cell(&taken(false));
     assert!(
         !marker.exists(),
         "a branch that was not taken performed the call"
     );
-    let recorded = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
-        !recorded.contains("PreToolUse"),
-        "a branch that was not taken fired a hook: {recorded}"
+        untaken.turn().record.calls.is_empty(),
+        "a branch that was not taken recorded a call: {untaken:?}"
     );
 
-    let _ = runtime.run_cell(&taken(true));
+    let taken = runtime.run_cell(&taken(true));
     assert!(
         marker.exists(),
         "the paired positive half did not run, so the negative proves nothing"
     );
-    let recorded = std::fs::read_to_string(&log).expect("the hook was delivered");
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
+    assert_eq!(taken.turn().record.calls.len(), 1, "{taken:?}");
 }
 
 /// Every tool result a program binds carries the recorded call that produced
@@ -749,9 +641,8 @@ fn a_branch_not_taken_performs_no_tool_call() {
 fn a_bound_tool_result_carries_its_calls_provenance() {
     let fixture = Fixture::new("provenance");
     let file = fixture.write(&fixture.root.join("one.txt"), "hello\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("provenance-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let program = format!(
         "const doc = await read({{ path: {path:?} }});\n",
@@ -844,10 +735,8 @@ fn the_runtime_cannot_be_built_without_a_profile() {
 #[test]
 fn the_heap_ceiling_fails_the_cell_and_frees_nothing() {
     let fixture = Fixture::new("heap");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("heap-session");
-    let mut runtime =
-        Runtime::with_heap_limit(&fixture.profile(), &glasshouse, &session, 32 * 1024 * 1024);
+    let mut runtime = Runtime::with_heap_limit(&fixture.profile(), &session, 32 * 1024 * 1024);
 
     let first =
         runtime.run_cell("const big = \"b\".repeat(1_000_000);\nconst small = \"s\".repeat(10);\n");
@@ -886,9 +775,8 @@ fn the_heap_ceiling_fails_the_cell_and_frees_nothing() {
 #[test]
 fn an_unsettleable_await_is_answered_not_waited_on() {
     let fixture = Fixture::new("stall");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("stall-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const before = 1;\nawait new Promise(() => {});\n");
     let CellOutcome::Threw { error, .. } = &outcome else {
@@ -904,9 +792,8 @@ fn an_unsettleable_await_is_answered_not_waited_on() {
 #[test]
 fn a_promise_chain_settles_without_an_event_loop() {
     let fixture = Fixture::new("chain");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("chain-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "let n = 0;\nfor (let i = 0; i < 50; i++) { n = await Promise.resolve(n + 1); }\nreturn n;\n",
@@ -919,9 +806,8 @@ fn a_promise_chain_settles_without_an_event_loop() {
 #[test]
 fn typescript_that_cannot_be_erased_is_a_result_with_a_reason() {
     let fixture = Fixture::new("erase");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("erase-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("enum Colour { Red, Green }\n");
     let CellOutcome::Threw { error, .. } = &outcome else {
@@ -943,9 +829,8 @@ fn typescript_that_cannot_be_erased_is_a_result_with_a_reason() {
 #[test]
 fn the_isolate_has_no_ambient_authority() {
     let fixture = Fixture::new("ambient");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("ambient-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let absent = [
         "require",
@@ -994,9 +879,8 @@ fn the_isolate_has_no_ambient_authority() {
 #[test]
 fn a_refusal_carries_the_models_own_line_and_column_and_no_host_frame() {
     let fixture = Fixture::new("no-host-frame");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("no-host-frame");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const secret = await read({ path: \"/etc/passwd\" });\n");
     let CellOutcome::Threw { error, .. } = &outcome else {
@@ -1041,9 +925,8 @@ fn a_rebound_handle_keeps_its_own_previous_cells_provenance() {
     let fixture = Fixture::new("alias");
     let notes = fixture.write(&fixture.root.join("notes.txt"), "alpha\nbeta\ngamma\n");
     let tricky = fixture.write(&fixture.root.join("tricky.txt"), "call foo:12:bar here\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("alias-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell(&format!(
         "const a = await read({{ path: {path:?} }});\n",
@@ -1097,9 +980,8 @@ fn a_rebound_handle_keeps_its_own_previous_cells_provenance() {
 #[test]
 fn an_abstract_member_erases_to_nothing() {
     let fixture = Fixture::new("abstract");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("abstract-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "abstract class Shape {\n  abstract area(): number;\n  describe(): string { return \
@@ -1119,12 +1001,10 @@ fn an_abstract_member_erases_to_nothing() {
 #[test]
 fn a_cell_that_never_yields_is_answered_as_a_timeout_and_the_next_cell_runs() {
     let fixture = Fixture::new("timeout");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("timeout-session");
     let limit = Duration::from_millis(500);
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -1162,12 +1042,10 @@ fn a_cell_that_never_yields_is_answered_as_a_timeout_and_the_next_cell_runs() {
 #[test]
 fn atomics_wait_cannot_block_the_session() {
     let fixture = Fixture::new("atomics");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("atomics-session");
     let limit = Duration::from_millis(500);
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -1194,9 +1072,8 @@ fn atomics_wait_cannot_block_the_session() {
 #[test]
 fn no_door_shadows_deletes_or_redefines_a_host_function() {
     let fixture = Fixture::new("doors");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("doors-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // 1. `keep` — the documented one, and the one a model tidying its table
     //    by a tool's name would reach without trying to break anything.
@@ -1257,9 +1134,8 @@ fn no_door_shadows_deletes_or_redefines_a_host_function() {
 #[test]
 fn an_answer_ends_the_cell_so_a_later_one_cannot_overwrite_it() {
     let fixture = Fixture::new("answer-branch");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("answer-branch-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let branched = runtime.run_cell(
         "const wider = true;\nif (wider) { answer(\"look closer\"); }\nanswer(\"rename only\");\n",
@@ -1290,9 +1166,8 @@ fn an_answer_ends_the_cell_so_a_later_one_cannot_overwrite_it() {
 #[test]
 fn a_forged_epilogue_does_not_turn_a_return_into_a_yield() {
     let fixture = Fixture::new("epilogue");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("epilogue-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let named = runtime.run_cell("__pane_cell.e();\nreturn \"THIS SHOULD END THE TASK\";\n");
     assert!(
@@ -1333,9 +1208,8 @@ fn a_forged_epilogue_does_not_turn_a_return_into_a_yield() {
 #[test]
 fn a_handles_preview_describes_the_value_the_cell_ended_with() {
     let fixture = Fixture::new("preview");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("preview-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const arr = [];\narr.push(1, 2, 3, 4, 5);\n");
     assert!(
@@ -1368,10 +1242,8 @@ fn a_handles_preview_describes_the_value_the_cell_ended_with() {
 #[test]
 fn the_out_of_memory_list_names_the_handle_that_filled_the_heap() {
     let fixture = Fixture::new("oom-rank");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("oom-rank-session");
-    let mut runtime =
-        Runtime::with_heap_limit(&fixture.profile(), &glasshouse, &session, 32 * 1024 * 1024);
+    let mut runtime = Runtime::with_heap_limit(&fixture.profile(), &session, 32 * 1024 * 1024);
 
     let first = runtime.run_cell("const modest = \"m\".repeat(100_000);\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -1404,9 +1276,8 @@ fn the_out_of_memory_list_names_the_handle_that_filled_the_heap() {
 #[test]
 fn declare_erases_to_nothing_and_binds_nothing() {
     let fixture = Fixture::new("declare");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("declare-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     for source in [
         "declare const missing: number;\n",
@@ -1435,9 +1306,8 @@ fn declare_erases_to_nothing_and_binds_nothing() {
 #[test]
 fn handles_mid_cell_includes_the_current_cells_bindings() {
     let fixture = Fixture::new("mid-cell");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("mid-cell-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell("const earlier = 1;\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -1478,9 +1348,8 @@ fn a_grep_line_that_is_not_a_match_has_no_line_number() {
         b"NEEDLE\x00\x01\x02\x00binary\n",
     )
     .unwrap();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("grep-binary-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(&format!(
         "const hits = await grep({{ pattern: \"NEEDLE\", path: {path:?} }});\nconst located = \
@@ -1521,12 +1390,10 @@ fn a_grep_line_that_is_not_a_match_has_no_line_number() {
 #[test]
 fn a_token_set_during_a_call_cancels_it_and_the_cell_is_answered_as_a_throw() {
     let fixture = Fixture::new("cancel");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("cancel-session");
     let token = CancellationToken::new();
     let mut runtime = Runtime::new(
         &fixture.profile_with(r#"{"permissions":{"allow":["Bash(while*)","Bash(do*)"]}}"#),
-        &glasshouse,
         &session,
     )
     .with_token(token.clone());
@@ -1566,9 +1433,8 @@ fn a_token_set_during_a_call_cancels_it_and_the_cell_is_answered_as_a_throw() {
 #[test]
 fn yield_now_ends_the_cell_in_the_yield_slot_and_is_not_an_error() {
     let fixture = Fixture::new("yield-now");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("yield-now-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "const before = 1;\nif (before === 1) {\n  if (true) { try { yieldNow(\"why\"); } catch (e) \
@@ -1615,9 +1481,8 @@ fn yield_now_ends_the_cell_in_the_yield_slot_and_is_not_an_error() {
 #[test]
 fn a_padded_response_is_normalised_rather_than_refused() {
     let fixture = Fixture::new("response-padding");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("response-padding-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     let cap = pane::runtime::isolate::DEFAULT_RESPONSE_BYTE_CAP;
 
     // Just over the cap, and all of the excess is trailing whitespace.
@@ -1656,9 +1521,8 @@ fn a_padded_response_is_normalised_rather_than_refused() {
 #[test]
 fn a_response_over_the_cap_yields_with_the_cap_as_its_reason() {
     let fixture = Fixture::new("response-cap");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("response-cap-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     let cap = pane::runtime::isolate::DEFAULT_RESPONSE_BYTE_CAP;
     assert_eq!(cap, 16_384);
 
@@ -1710,11 +1574,8 @@ fn a_response_over_the_cap_yields_with_the_cap_as_its_reason() {
 #[test]
 fn a_branch_not_taken_performs_no_call() {
     let fixture = Fixture::new("untaken");
-    let log = fixture.root.join("hook.log");
-    let script = fake_glasshouse(&fixture.root, &log);
-    let glasshouse = Glasshouse::Command { glasshouse: script };
     let session = SessionId::new("untaken-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "const ran = await bash({ command: \"echo ran\" });\nif (ran.stdout === \"never\") { await \
@@ -1737,19 +1598,6 @@ fn a_branch_not_taken_performs_no_call() {
         Some("echo ran")
     );
     assert_eq!(calls[0].ended, pane::runtime::outcome::Ended::Ok);
-
-    let recorded = std::fs::read_to_string(&log).expect("the hook was delivered");
-    assert_eq!(
-        recorded
-            .matches(r#""hook_event_name":"PreToolUse""#)
-            .count(),
-        1,
-        "{recorded}"
-    );
-    assert!(
-        !recorded.contains("echo untaken"),
-        "the untaken branch's call reached a hook: {recorded}"
-    );
 }
 
 /// §9.4: every call that ran, in order, with its arguments **as checked**
@@ -1761,9 +1609,8 @@ fn a_branch_not_taken_performs_no_call() {
 fn a_cells_trajectory_names_every_call_that_ran_as_checked() {
     let fixture = Fixture::new("trajectory");
     let file = fixture.write(&fixture.root.join("sub").join("one.txt"), "hello\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("trajectory-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // The program spells the path with a `..` in it; the record carries the
     // path the child was given.
@@ -1825,9 +1672,8 @@ fn a_cells_trajectory_names_every_call_that_ran_as_checked() {
 #[test]
 fn a_getter_that_yields_during_the_refresh_terminates_nothing_later() {
     let fixture = Fixture::new("late-getter");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("late-getter-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // The declaration line's capture reads `y`, so the cell yields there;
     // the refresh after the cell reads `y` again and asks a second time.
@@ -1847,12 +1693,10 @@ fn a_getter_that_yields_during_the_refresh_terminates_nothing_later() {
 #[test]
 fn a_result_whose_getter_never_returns_is_a_timeout_not_a_result() {
     let fixture = Fixture::new("result-getter");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("result-getter-session");
     let limit = Duration::from_millis(500);
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -1916,12 +1760,10 @@ fn a_result_whose_getter_never_returns_is_a_timeout_not_a_result() {
 #[test]
 fn a_cell_that_allocates_forever_is_answered_as_a_timeout_within_the_grace() {
     let fixture = Fixture::new("fill-timeout");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("fill-timeout");
     let limit = Duration::from_millis(500);
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -1972,11 +1814,9 @@ fn a_cell_that_allocates_forever_is_answered_as_a_timeout_within_the_grace() {
 #[test]
 fn a_cell_that_fills_the_heap_is_answered_at_the_configured_ceiling() {
     let fixture = Fixture::new("fill-heap");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("fill-heap");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(20),
@@ -2029,16 +1869,9 @@ fn a_cell_that_fills_the_heap_is_answered_at_the_configured_ceiling() {
 #[test]
 fn a_runtime_that_could_not_stop_a_cell_is_poisoned_and_says_so() {
     let fixture = Fixture::new("poison");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("poison");
     let limit = Duration::from_millis(1);
-    let mut runtime = Runtime::with_limits(
-        &fixture.profile(),
-        &glasshouse,
-        &session,
-        1024 * 1024 * 1024,
-        limit,
-    );
+    let mut runtime = Runtime::with_limits(&fixture.profile(), &session, 1024 * 1024 * 1024, limit);
 
     let outcome = runtime.run_cell("const wall = new Array(30_000_000).fill(\"y\");\n");
     let error = threw(&outcome);
@@ -2092,9 +1925,8 @@ fn a_runtime_that_could_not_stop_a_cell_is_poisoned_and_says_so() {
 #[test]
 fn a_handle_declared_earlier_shows_the_value_it_now_has() {
     let fixture = Fixture::new("refresh-earlier");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("refresh-earlier");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell("const arr = [];\nconst tag = \"kept\";\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -2135,11 +1967,9 @@ fn a_handle_declared_earlier_shows_the_value_it_now_has() {
 #[test]
 fn the_out_of_memory_ranking_counts_a_handle_from_an_earlier_cell() {
     let fixture = Fixture::new("oom-earlier");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("oom-earlier");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(20),
@@ -2174,9 +2004,8 @@ fn the_out_of_memory_ranking_counts_a_handle_from_an_earlier_cell() {
 #[test]
 fn free_then_rebind_in_one_cell_keeps_the_new_binding() {
     let fixture = Fixture::new("free-rebind");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("free-rebind");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell("const big = [1, 2, 3];\nconst w = 0;\n");
     assert!(matches!(first, CellOutcome::Yielded { .. }), "{first:?}");
@@ -2218,11 +2047,10 @@ fn free_then_rebind_in_one_cell_keeps_the_new_binding() {
 #[test]
 fn a_refused_scope_write_is_a_throw_not_a_vanished_handle() {
     let fixture = Fixture::new("frozen-scope");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("frozen-scope");
 
     {
-        let mut runtime = runtime(&fixture, &glasshouse, &session);
+        let mut runtime = runtime(&fixture, &session);
         let outcome = runtime.run_cell("Object.freeze(globalThis);\nconst x = 5;\n");
         let error = threw(&outcome);
         assert_eq!(error.class, "TypeError", "{error:?}");
@@ -2239,7 +2067,7 @@ fn a_refused_scope_write_is_a_throw_not_a_vanished_handle() {
     }
 
     // The quieter variant: a pre-existing non-writable own property.
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     let outcome = runtime.run_cell(
         "Object.defineProperty(globalThis, \"y\", { value: 1, writable: false, configurable: \
          false });\nconst y = 99;\n",
@@ -2265,9 +2093,8 @@ fn a_refused_scope_write_is_a_throw_not_a_vanished_handle() {
 #[test]
 fn a_nested_throw_carries_its_in_program_frames() {
     let fixture = Fixture::new("frames");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("frames");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "function inner() { throw new Error(\"boom\"); }\nfunction outer() { return inner(); \
@@ -2302,9 +2129,8 @@ fn a_nested_throw_carries_its_in_program_frames() {
 #[test]
 fn a_compile_time_refusal_carries_the_span_of_the_declaration() {
     let fixture = Fixture::new("refusal-span");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("refusal-span");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const read = 1;\n");
     let error = threw(&outcome);
@@ -2325,9 +2151,8 @@ fn a_compile_time_refusal_carries_the_span_of_the_declaration() {
 #[test]
 fn a_binding_may_not_take_any_registered_tools_name() {
     let fixture = Fixture::new("shadow-registry");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("shadow-registry");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // The marker is declared *first*, so a cell that ran before being refused
     // leaves it live and a cell refused at compile time cannot.
@@ -2361,9 +2186,8 @@ fn a_binding_may_not_take_any_registered_tools_name() {
 #[test]
 fn a_read_of_a_missing_file_throws_and_never_becomes_a_result() {
     let fixture = Fixture::new("read-missing");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("read-missing-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(&format!(
         "const f = await read({{ path: {path:?} }});\nreturn \"all good: \" + f.text;\n",
@@ -2400,9 +2224,8 @@ fn a_read_of_a_missing_file_throws_and_never_becomes_a_result() {
 #[test]
 fn a_cell_writes_literal_multiline_scripts_without_template_interpolation() {
     let fixture = Fixture::new("literal-script-lines");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("literal-script-lines-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         r##"await write({
@@ -2431,9 +2254,8 @@ return "written";
 fn grep_with_no_match_is_an_empty_array_and_a_bad_pattern_throws() {
     let fixture = Fixture::new("grep-exit");
     fixture.write(&fixture.root.join("hit.txt"), "alpha\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("grep-exit-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // Exit 1: no matches. Still a result, and still an empty array.
     let empty = runtime.run_cell(&format!(
@@ -2483,9 +2305,8 @@ fn ripgrep_returns_the_matches_grep_returns() {
     }
     let fixture = Fixture::new("rg-typed");
     fixture.write(&fixture.root.join("hit.txt"), "alpha\nNEEDLE here\nomega\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("rg-typed-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let found = runtime.run_cell(&format!(
         "const hits = await rg({{ pattern: \"NEEDLE\", path: {path:?} }});\n\
@@ -2520,9 +2341,8 @@ fn fd_returns_a_string_array_of_paths() {
     }
     let fixture = Fixture::new("fd-typed");
     fixture.write(&fixture.root.join("marker-one.txt"), "a\n");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("fd-typed-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let found = runtime.run_cell(&format!(
         "const paths = await fd({{ pattern: \"marker-one\", path: {path:?} }});\n\
@@ -2552,7 +2372,6 @@ fn fd_returns_a_string_array_of_paths() {
 #[test]
 fn an_accessor_that_never_returns_is_stopped_after_the_cell_as_well() {
     let fixture = Fixture::new("epilogue-getter");
-    let glasshouse = Glasshouse::None;
     let limit = Duration::from_millis(500);
     let shapes = [
         "const o = { get spin() { while (true) {} } };\n",
@@ -2566,7 +2385,6 @@ fn an_accessor_that_never_returns_is_stopped_after_the_cell_as_well() {
         let session = SessionId::new(format!("epilogue-getter-{index}"));
         let mut runtime = Runtime::with_limits(
             &fixture.profile(),
-            &glasshouse,
             &session,
             DEFAULT_HEAP_LIMIT_BYTES,
             limit,
@@ -2598,12 +2416,10 @@ fn an_accessor_that_never_returns_is_stopped_after_the_cell_as_well() {
 #[test]
 fn a_getter_a_later_cell_adds_to_an_older_handle_is_stopped_too() {
     let fixture = Fixture::new("epilogue-define");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("epilogue-define");
     let limit = Duration::from_millis(500);
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -2638,11 +2454,9 @@ fn a_getter_a_later_cell_adds_to_an_older_handle_is_stopped_too() {
 #[test]
 fn a_single_allocation_over_the_ceiling_is_answered_and_not_a_process_abort() {
     let fixture = Fixture::new("single-alloc");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("single-alloc");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(30),
@@ -2664,11 +2478,9 @@ fn a_single_allocation_over_the_ceiling_is_answered_and_not_a_process_abort() {
 #[test]
 fn an_array_buffer_over_the_ceiling_is_out_of_memory() {
     let fixture = Fixture::new("external-memory");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("external-memory");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(20),
@@ -2696,11 +2508,9 @@ fn an_array_buffer_over_the_ceiling_is_out_of_memory() {
 #[test]
 fn a_ceiling_the_cell_survived_still_fails_the_cell() {
     let fixture = Fixture::new("survived-ceiling");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("survived-ceiling");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(30),
@@ -2732,11 +2542,9 @@ fn a_ceiling_the_cell_survived_still_fails_the_cell() {
 #[test]
 fn the_ceiling_still_fires_after_a_cell_has_been_granted_a_raise() {
     let fixture = Fixture::new("restore-ceiling");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("restore-ceiling");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(20),
@@ -2773,9 +2581,8 @@ fn the_ceiling_still_fires_after_a_cell_has_been_granted_a_raise() {
 #[test]
 fn a_map_and_a_set_are_previewed_ranked_and_returned_by_what_they_hold() {
     let fixture = Fixture::new("collections");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("collections");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first =
         runtime.run_cell("const s = new Set([1, 2, 3]);\nconst m = new Map([[\"a\", 1]]);\n");
@@ -2804,7 +2611,7 @@ fn a_map_and_a_set_are_previewed_ranked_and_returned_by_what_they_hold() {
     assert_eq!(terminal.render(), "[1,2,3]", "{set:?}");
 
     let map_session = SessionId::new("collections-map");
-    let mut map_runtime = Runtime::new(&fixture.profile(), &glasshouse, &map_session);
+    let mut map_runtime = Runtime::new(&fixture.profile(), &map_session);
     let map = map_runtime.run_cell("return new Map([[\"a\", 1], [\"b\", 2]]);\n");
     let CellOutcome::Returned { terminal, .. } = &map else {
         panic!("expected a return, got {map:?}");
@@ -2824,9 +2631,8 @@ fn a_returned_object_keeps_its_fields_apart_and_an_excerpt_arrives_whole() {
         .map(|n| format!("line {n} of the readme, with enough words to be worth reading\n"))
         .collect();
     let file = fixture.write(&fixture.root.join("README.md"), &body);
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("fields-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     let program = format!(
         "const doc = await read({{ path: {path:?} }});\n\
          return {{ readme: doc.excerpt({{ start: 1, lines: 240 }}), count: doc.lineCount, \
@@ -2891,11 +2697,9 @@ fn a_returned_object_keeps_its_fields_apart_and_an_excerpt_arrives_whole() {
 #[test]
 fn the_out_of_memory_ranking_counts_what_a_map_holds() {
     let fixture = Fixture::new("map-ranking");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("map-ranking");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(20),
@@ -2935,9 +2739,8 @@ fn the_out_of_memory_ranking_counts_what_a_map_holds() {
 #[test]
 fn a_stack_overflow_names_no_position_and_no_zero_frame() {
     let fixture = Fixture::new("overflow");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("overflow");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("function f(n) { return f(n + 1); }\nf(0);\n");
     let error = threw(&outcome);
@@ -2994,9 +2797,8 @@ fn closed_batch(n: u64) -> Batch {
 #[test]
 fn a_delivered_batch_is_the_tables_last_row_and_the_next_one_replaces_it() {
     let fixture = Fixture::new("delivery");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("delivery-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let cell = runtime.run_cell("const one = 1;\nconst two = 2;\nconst three = 3;\n");
     assert!(matches!(cell, CellOutcome::Yielded { .. }), "{cell:?}");
@@ -3040,9 +2842,8 @@ fn a_delivered_batch_is_the_tables_last_row_and_the_next_one_replaces_it() {
 #[test]
 fn the_model_calls_where_ack_and_rest_on_the_batch_it_was_given() {
     let fixture = Fixture::new("batch-api");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("batch-api-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     runtime.deliver_batch(closed_batch(3));
 
     let seen = runtime.run_cell(
@@ -3068,9 +2869,8 @@ fn the_model_calls_where_ack_and_rest_on_the_batch_it_was_given() {
 #[test]
 fn a_bg_run_outside_the_grant_throws_before_any_handle_exists() {
     let fixture = Fixture::new("bg-denied");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("bg-denied-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let before = runtime.handle_names();
     let outcome = runtime.run_cell("const job = bg.run(\"curl https://example.com\");\n");
@@ -3090,9 +2890,8 @@ fn a_bg_run_outside_the_grant_throws_before_any_handle_exists() {
 #[test]
 fn bg_is_a_host_object_a_program_cannot_replace() {
     let fixture = Fixture::new("bg-fixed");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("bg-fixed-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let shape =
         runtime.run_cell("return `${typeof bg.run}/${typeof bg.watch}/${typeof bg.cancel}`;\n");
@@ -3114,9 +2913,8 @@ fn bg_is_a_host_object_a_program_cannot_replace() {
 #[test]
 fn ending_the_task_frees_the_batch_with_the_rest() {
     let fixture = Fixture::new("batch-end");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("batch-end-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
     runtime.run_cell("const kept = 1;\n");
     runtime.deliver_batch(closed_batch(1));
     assert!(runtime.is_live("batch"));
@@ -3150,9 +2948,8 @@ fn ending_the_task_frees_the_batch_with_the_rest() {
 #[test]
 fn thirty_lazy_accessors_do_not_cost_the_isolate_its_trust() {
     let fixture = Fixture::new("thirty-accessors");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("thirty-accessors");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let mut source = String::new();
     for index in 0..30 {
@@ -3198,11 +2995,9 @@ fn thirty_lazy_accessors_do_not_cost_the_isolate_its_trust() {
 #[test]
 fn a_crossing_the_callback_never_reported_still_fails_that_cell() {
     let fixture = Fixture::new("observed-crossing");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("observed-crossing");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(30),
@@ -3243,11 +3038,9 @@ fn a_crossing_the_callback_never_reported_still_fails_that_cell() {
 #[test]
 fn a_heap_over_the_ceiling_does_not_kill_the_process_on_a_later_cell() {
     let fixture = Fixture::new("no-abort");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("no-abort");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(30),
@@ -3280,7 +3073,6 @@ fn a_heap_over_the_ceiling_does_not_kill_the_process_on_a_later_cell() {
     let session = SessionId::new("no-abort-past-bound");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         16 * 1024 * 1024,
         Duration::from_secs(30),
@@ -3309,11 +3101,9 @@ fn a_heap_over_the_ceiling_does_not_kill_the_process_on_a_later_cell() {
 #[test]
 fn an_over_ceiling_allocation_inside_a_preview_getter_is_answered() {
     let fixture = Fixture::new("getter-ceiling");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("getter-ceiling");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         8 * 1024 * 1024,
         Duration::from_secs(10),
@@ -3342,11 +3132,9 @@ fn an_over_ceiling_allocation_inside_a_preview_getter_is_answered() {
 #[test]
 fn a_buffer_allocated_and_dropped_a_hundred_times_is_not_a_refusal() {
     let fixture = Fixture::new("external-live");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("external-live");
     let mut runtime = Runtime::with_limits(
         &fixture.profile(),
-        &glasshouse,
         &session,
         32 * 1024 * 1024,
         Duration::from_secs(30),
@@ -3394,9 +3182,8 @@ fn a_buffer_allocated_and_dropped_a_hundred_times_is_not_a_refusal() {
 #[test]
 fn every_host_global_is_declared_to_the_model() {
     let fixture = Fixture::new("declared");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("declared-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell(
         "const names = Object.getOwnPropertyNames(globalThis).filter(n => {\n\
@@ -3469,9 +3256,8 @@ fn the_runtime_block_carries_every_non_tool_binding() {
 #[test]
 fn a_plan_written_in_one_cell_is_readable_in_the_next_and_rides_the_turn() {
     let fixture = Fixture::new("plan");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("plan-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let first = runtime.run_cell(
         "todo.write([\n\
@@ -3503,9 +3289,8 @@ fn a_plan_written_in_one_cell_is_readable_in_the_next_and_rides_the_turn() {
 #[test]
 fn an_unknown_status_is_refused_and_leaves_the_previous_plan_standing() {
     let fixture = Fixture::new("plan-refuse");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("plan-refuse-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     runtime.run_cell("todo.write([{text: \"the only step\", status: \"active\"}]);\n");
     let outcome = runtime.run_cell(
@@ -3532,9 +3317,8 @@ fn an_unknown_status_is_refused_and_leaves_the_previous_plan_standing() {
 #[test]
 fn the_plan_is_cleared_when_the_task_ends() {
     let fixture = Fixture::new("plan-task");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("plan-task-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     runtime.run_cell("todo.write([{text: \"first task step\", status: \"active\"}]);\n");
     runtime.end_task();
@@ -3601,14 +3385,12 @@ fn a_project_script_runs_when_every_command_line_is_admitted() {
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
     )
     .unwrap();
-
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("script-exec-session");
     let root = fixture.root.to_string_lossy().replace('\\', "/");
     let profile = fixture.profile_with(&format!(
         r#"{{"permissions":{{"allow":["Read({root}/**)","Write({root}/**)","Bash"]}}}}"#
     ));
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
 
     let outcome = runtime.run_cell(
         "const r = await bash({command: \"./say.sh\"});\nreturn r.stdout.trim() + \" exit=\" + r.exit_code;\n",
@@ -3628,9 +3410,8 @@ fn a_project_script_runs_when_every_command_line_is_admitted() {
 #[test]
 fn an_undefined_name_is_reported_before_the_cell_runs() {
     let fixture = Fixture::new("undefined-name");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("undefined-name-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     let outcome = runtime.run_cell("const n = 1;\nreturn totl + n;\n");
     let error = threw(&outcome);
@@ -3652,9 +3433,8 @@ fn an_undefined_name_is_reported_before_the_cell_runs() {
 #[test]
 fn legal_free_names_are_never_accused() {
     let fixture = Fixture::new("free-names-ok");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("free-names-ok-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session);
+    let mut runtime = runtime(&fixture, &session);
 
     // A non-enumerable built-in. `Set`, `JSON` and `Math` are non-enumerable
     // on `globalThis` by specification, and the first version of this check
@@ -3688,9 +3468,8 @@ fn legal_free_names_are_never_accused() {
 #[test]
 fn a_subagent_may_not_start_a_subagent() {
     let fixture = Fixture::new("agent-depth");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("agent-depth-session");
-    let mut parent = runtime(&fixture, &glasshouse, &session).with_agents(
+    let mut parent = runtime(&fixture, &session).with_agents(
         pane::config::PaneConfig::parse("[agents]\nmodel='claude-sonnet-5'")
             .unwrap()
             .agents,
@@ -3708,7 +3487,7 @@ fn a_subagent_may_not_start_a_subagent() {
     assert!(started.turn().record.calls[0].args["source"].starts_with("agent/"));
 
     // A subagent's own runtime may not.
-    let mut child = Runtime::new(&fixture.profile(), &glasshouse, &session).as_subagent();
+    let mut child = Runtime::new(&fixture.profile(), &session).as_subagent();
     let refused = child.run_cell(
         "try { agent.run(\"and again\"); return \"no throw\"; }\ncatch (e) { return e.name + \": \" + e.message; }\n",
     );
@@ -3725,9 +3504,8 @@ fn a_subagent_may_not_start_a_subagent() {
 #[test]
 fn a_parent_can_look_in_on_a_running_subagent() {
     let fixture = Fixture::new("agent-progress");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("agent-progress-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session).with_agents(
+    let mut runtime = runtime(&fixture, &session).with_agents(
         pane::config::PaneConfig::parse("[agents]\nmodel='claude-sonnet-5'")
             .unwrap()
             .agents,
@@ -3767,9 +3545,8 @@ fn a_parent_can_look_in_on_a_running_subagent() {
 #[test]
 fn a_budget_that_cannot_pay_refuses_the_subagent_before_it_starts() {
     let fixture = Fixture::new("agent-budget");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("agent-budget-session");
-    let mut runtime = runtime(&fixture, &glasshouse, &session).with_agents(
+    let mut runtime = runtime(&fixture, &session).with_agents(
         pane::config::PaneConfig::parse("[agents]\nmodel='claude-sonnet-5'")
             .unwrap()
             .agents,
@@ -3845,10 +3622,9 @@ fn web_broker(config: WebConfig) -> WebBroker {
 #[test]
 fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
     let fixture = Fixture::new("web-bound");
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("web-bound-session");
 
-    let mut bare = runtime(&fixture, &glasshouse, &session);
+    let mut bare = runtime(&fixture, &session);
     assert_eq!(
         returned_string(&bare.run_cell("return typeof web;")),
         "undefined",
@@ -3859,8 +3635,7 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
         enabled: true,
         ..WebConfig::default()
     };
-    let mut still_bare =
-        runtime(&fixture, &glasshouse, &session).with_web_broker(web_broker(unconfigured));
+    let mut still_bare = runtime(&fixture, &session).with_web_broker(web_broker(unconfigured));
     assert_eq!(
         returned_string(&still_bare.run_cell("return typeof web;")),
         "undefined",
@@ -3872,8 +3647,7 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
         allow_domains: vec!["example.com".into()],
         ..WebConfig::default()
     };
-    let mut runtime =
-        runtime(&fixture, &glasshouse, &session).with_web_broker(web_broker(configured));
+    let mut runtime = runtime(&fixture, &session).with_web_broker(web_broker(configured));
     assert_eq!(
         returned_string(&runtime.run_cell("return typeof web;")),
         "object"

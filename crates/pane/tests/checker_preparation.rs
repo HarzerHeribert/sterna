@@ -1,7 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 use pane::config::HelpersConfig;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::sandbox::profile::Profile;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -80,15 +79,11 @@ fn checker_first_request_receives_actual_named_check_then_reuses_unchanged_evide
     unsafe {
         std::env::set_var("ANTHROPIC_BASE_URL", url);
     }
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("checker-prepare"),
-    )
-    .with_helpers(HelpersConfig {
-        model: Some("fixture-helper".into()),
-        ..HelpersConfig::default()
-    });
+    let mut runtime =
+        Runtime::new(&profile, &SessionId::new("checker-prepare")).with_helpers(HelpersConfig {
+            model: Some("fixture-helper".into()),
+            ..HelpersConfig::default()
+        });
     let warmed = runtime
         .run_cell("const verified = await checks.run('tests', true); console.log(verified);");
     let scout = runtime.run_cell("const oriented = await helper.find('Find FIRST-VERIFIED acceptance'); console.log(oriented);");

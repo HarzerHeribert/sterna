@@ -4,7 +4,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::Ended;
 use pane::sandbox::profile::Profile;
@@ -18,11 +17,7 @@ fn typed_tool_failures_and_bash_exit_codes_have_truthful_call_outcomes() {
         &root,
         Some(r#"{"permissions":{"allow":["Read(**)","Bash"]}}"#),
     );
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("tool-call-outcomes"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("tool-call-outcomes"));
 
     let directory = root.join("directory");
     let read = runtime.run_cell(&format!(
@@ -59,11 +54,7 @@ fn a_signal_killed_child_is_not_a_successful_call() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":["Bash"]}}"#));
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("signal-outcome"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("signal-outcome"));
 
     let killed = runtime.run_cell(r#"try { await bash({command:"kill -9 $$"}); } catch (_) {}"#);
     let calls = &killed.turn().record.calls;

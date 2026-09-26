@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::sandbox::profile::Profile;
@@ -30,8 +29,7 @@ impl Fixture {
             &self.root,
             Some(&format!(r#"{{"permissions":{{"allow":{allow}}}}}"#)),
         );
-        Runtime::new(&profile, &Glasshouse::None, &SessionId::new("instructions"))
-            .with_instruction_context()
+        Runtime::new(&profile, &SessionId::new("instructions")).with_instruction_context()
     }
 }
 impl Drop for Fixture {

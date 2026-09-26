@@ -10,7 +10,6 @@
 //! numeric index for a ranking request or `"judge"` for a check.
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::helper_context::{HelperRole, prepare};
 use pane::helpers::{
     HelperCall, HelperContext, HelperJudge, HelperRoute, REDUCER, ScoutCandidate, ScoutRankRoute,
@@ -384,10 +383,6 @@ fn the_ranked_pool_is_prepare_scouts_term_matched_walk() {
 // 2645 -- judging a helper's own result
 // ---------------------------------------------------------------------
 
-fn glasshouse(_root: &std::path::Path) -> Glasshouse {
-    Glasshouse::None
-}
-
 /// [`REDUCER`] is toolless and one-shot, so `run_judged` reaches it through
 /// exactly one `/v1/messages` call -- the simplest vehicle for testing the
 /// judge question without a live agent loop.
@@ -397,7 +392,6 @@ fn call_reducer(fixture: &Fixture, judge: Option<HelperJudge<'_>>) -> HelperCall
     let token = CancellationToken::new();
     let context = HelperContext {
         profile: &profile,
-        glasshouse: &glasshouse(&fixture.root),
         session: &session_id,
         token: &token,
     };

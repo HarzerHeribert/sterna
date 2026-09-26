@@ -29,7 +29,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::contract::{Conversation, Message, Role, SessionId};
-use crate::glasshouse::Glasshouse;
 use crate::prompt::{self, Budget, CellResult, ErrorSection, Extracted};
 use crate::runtime::bindings::HostGlobals;
 use crate::runtime::isolate::Runtime;
@@ -134,6 +133,9 @@ pub type ProgressSink = std::sync::Arc<std::sync::Mutex<AgentProgress>>;
 /// subagent reads with its work in front of it.
 pub type InboxSink = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
+/// The most a message to a subagent may carry, in UTF-8 bytes.
+pub const MESSAGE_BYTES: usize = 65_536;
+
 /// Where a subagent's own rollout is written, and the id its lines carry.
 ///
 /// **In a folder beside the parent's file, not next to it.** `.pane/sessions/`
@@ -231,18 +233,16 @@ impl<'a> NarrowedRun<'a> {
 /// parent isolate.
 pub fn run(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &AgentOptions,
     token: &CancellationToken,
 ) -> AgentResult {
-    run_narrowed(profile, glasshouse, session, task, options, token, None)
+    run_narrowed(profile, session, task, options, token, None)
 }
 
 pub fn run_with_config(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &AgentOptions,
@@ -251,7 +251,6 @@ pub fn run_with_config(
 ) -> AgentResult {
     run_watched(
         profile,
-        glasshouse,
         session,
         task,
         options,
@@ -267,7 +266,6 @@ pub fn run_with_config(
 #[allow(clippy::too_many_arguments)]
 pub fn run_watched(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &AgentOptions,
@@ -277,7 +275,6 @@ pub fn run_watched(
 ) -> AgentResult {
     run_narrowed_metered(
         profile,
-        glasshouse,
         session,
         task,
         options,
@@ -300,7 +297,6 @@ pub fn run_watched(
 /// loop too.
 pub fn run_narrowed(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &AgentOptions,
@@ -309,7 +305,6 @@ pub fn run_narrowed(
 ) -> AgentResult {
     run_narrowed_metered(
         profile,
-        glasshouse,
         session,
         task,
         options,
@@ -323,7 +318,6 @@ pub fn run_narrowed(
 /// from having to construct Pane's private accounting state.
 pub(crate) fn run_narrowed_metered(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &AgentOptions,
@@ -365,8 +359,8 @@ pub(crate) fn run_narrowed_metered(
     let mut journal = Journal::open(record, &conversation.system);
 
     let mut runtime = match globals {
-        HostGlobals::Helper(tools) => Runtime::for_helper(profile, glasshouse, session, tools),
-        HostGlobals::Every => Runtime::new(profile, glasshouse, session),
+        HostGlobals::Helper(tools) => Runtime::for_helper(profile, session, tools),
+        HostGlobals::Every => Runtime::new(profile, session),
     }
     .as_subagent()
     .with_token(token.clone())

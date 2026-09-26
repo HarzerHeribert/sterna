@@ -9,7 +9,6 @@
 
 use pane::abi::{Dialect, lower};
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, Ended};
 use pane::sandbox::profile::Profile;
@@ -38,7 +37,7 @@ impl Fixture {
 
     fn runtime(&self, session: &str, permissions: &str) -> Runtime {
         let profile = Profile::compile(&self.root, Some(permissions));
-        Runtime::new(&profile, &Glasshouse::None, &SessionId::new(session))
+        Runtime::new(&profile, &SessionId::new(session))
     }
 
     fn target(&self) -> String {

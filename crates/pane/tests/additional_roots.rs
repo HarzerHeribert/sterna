@@ -205,7 +205,6 @@ fn macos_text_names_only_the_added_subtree_and_protects_its_configuration() {
 #[cfg(target_os = "macos")]
 fn spawned_shell_can_use_extra_directory_but_cannot_escape_or_write_its_config() {
     use pane::contract::SessionId;
-    use pane::glasshouse::Glasshouse;
     use pane::tools::invoke::{self, Args, ToolContext};
     let fixture = Fixture::new();
     std::fs::create_dir_all(fixture.0.join("extra/.claude")).unwrap();
@@ -216,11 +215,9 @@ fn spawned_shell_can_use_extra_directory_but_cannot_escape_or_write_its_config()
     )
     .with_additional_root("../extra")
     .unwrap();
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("extra-root-subprocess");
     let context = ToolContext {
         profile: &profile,
-        glasshouse: &glasshouse,
         session: &session,
     };
     let args = Args::new().with("command", "printf allowed > ../extra/result; cat ../extra/result; cat ../outside/secret; printf forbidden > ../extra/.claude/settings.json");

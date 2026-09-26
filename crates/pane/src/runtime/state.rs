@@ -18,7 +18,6 @@ use std::sync::{Arc, OnceLock};
 
 use crate::config::HelpersConfig;
 use crate::contract::SessionId;
-use crate::glasshouse::Glasshouse;
 use crate::helpers::{HelperCall, HelperRecord};
 use crate::runtime::handles::{HandleMeta, HandleTable, Provenance};
 use crate::runtime::instructions::{InstructionContext, PendingInstructions};
@@ -180,7 +179,6 @@ pub(crate) struct CellState {
 
 /// What every host callback can reach.
 pub(crate) struct RuntimeState {
-    pub(crate) messages: RefCell<Rc<RefCell<HashMap<String, crate::events::inbox::Message>>>>,
     pub(crate) handlers: Rc<crate::runtime::handlers::Handlers>,
     pub(crate) profile: Profile,
     /// Host-only suspension seam; absent in ordinary sessions and subagents.
@@ -217,7 +215,6 @@ pub(crate) struct RuntimeState {
     pub(crate) shell_checks: RefCell<crate::verification::ShellChecks>,
     pub(crate) agent_templates: crate::project::agents::Catalog,
     pub(crate) effective_config: RefCell<Option<crate::config::PaneConfig>>,
-    pub(crate) glasshouse: Glasshouse,
     pub(crate) session: SessionId,
     pub(crate) cell: std::cell::Cell<u64>,
     pub(crate) table: RefCell<HandleTable>,
@@ -391,9 +388,8 @@ impl RuntimeState {
         self
     }
 
-    pub(crate) fn new(profile: &Profile, glasshouse: &Glasshouse, session: &SessionId) -> Self {
+    pub(crate) fn new(profile: &Profile, session: &SessionId) -> Self {
         Self {
-            messages: RefCell::new(Rc::new(RefCell::new(HashMap::new()))),
             handlers: crate::runtime::handlers::Handlers::new(),
             profile: profile.clone(),
             approval_gate: RefCell::new(None),
@@ -408,7 +404,6 @@ impl RuntimeState {
             agent_templates: crate::project::agents::Catalog::load(profile),
             effective_config: RefCell::new(None),
             shell_checks: RefCell::default(),
-            glasshouse: glasshouse.clone(),
             session: session.clone(),
             cell: std::cell::Cell::new(0),
             table: RefCell::new(HandleTable::new()),
@@ -1232,9 +1227,6 @@ mod tests {
                 std::env::temp_dir(),
                 Some(r#"{"permissions":{"allow":[]}}"#),
             ),
-            &Glasshouse::Command {
-                glasshouse: PathBuf::from("glasshouse"),
-            },
             &SessionId::new("progress"),
         )
     }

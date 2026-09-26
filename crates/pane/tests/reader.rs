@@ -4,7 +4,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 use pane::config::HelpersConfig;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::sandbox::profile::Profile;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -77,7 +76,6 @@ fn git_repo(label: &str) -> std::path::PathBuf {
 fn runtime(root: &std::path::Path) -> Runtime {
     Runtime::new(
         &Profile::compile(root, Some(r#"{"permissions":{"allow":["Read(**)"]}}"#)),
-        &Glasshouse::None,
         &SessionId::new("reader"),
     )
     .with_helpers(HelpersConfig {

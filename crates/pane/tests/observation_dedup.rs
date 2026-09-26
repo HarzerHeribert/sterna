@@ -13,7 +13,6 @@
 
 use pane::config::HelpersConfig;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, Ended};
 use pane::runtime::preview::Value;
@@ -44,7 +43,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 fn runtime(root: &std::path::Path, permissions: &str, session: &str) -> Runtime {
     let profile = Profile::compile(root, Some(permissions));
-    Runtime::new(&profile, &Glasshouse::None, &SessionId::new(session))
+    Runtime::new(&profile, &SessionId::new(session))
 }
 
 fn returned_text(outcome: &CellOutcome) -> String {

@@ -66,18 +66,10 @@ pub struct SessionArgs {
     #[arg(long)]
     pub rollout: Option<PathBuf>,
 
-    /// This session's id: the value every `glasshouse hook --session`
-    /// invocation carries, and the name `--resume` takes. Defaults to a
+    /// This session's id: the name `--resume` takes. Defaults to a
     /// generated one -- `--resume` is why it is no longer the process id.
     #[arg(long)]
     pub session: Option<String>,
-
-    /// The `glasshouse` executable pane's three seams shell out to. Bare
-    /// `"glasshouse"`, absent this flag, resolves through `PATH` exactly as
-    /// `glasshouse.rs`'s own doc comment describes; a test overrides it with
-    /// its own fake script so no test performs a real `PATH` lookup.
-    #[arg(long)]
-    pub glasshouse: Option<PathBuf>,
 
     /// The `inference-gateway` executable this session's provider traffic and
     /// its entitlement, subscription and routing-cost controls go through.

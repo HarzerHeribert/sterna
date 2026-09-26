@@ -661,8 +661,6 @@ fn exec_bounded(root: &Path, endpoint: &str, task: &str, interface: Option<&str>
         root.display().to_string(),
         "--model".to_string(),
         "test/model".to_string(),
-        "--glasshouse".to_string(),
-        root.join("absent-glasshouse").display().to_string(),
     ];
     if let Some(interface) = interface {
         args.push("--interface".to_string());

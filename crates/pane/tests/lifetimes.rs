@@ -15,7 +15,6 @@
 //! - 13 — `helpers.rs::preflight_carries_its_helper_usage_into_the_returned_record`
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::bindings::HostGlobals;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, Terminal};
@@ -50,7 +49,6 @@ fn a_helper_holds_neither_the_helper_roster_nor_the_agent_global() {
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
     let mut helper = Runtime::for_helper(
         &profile,
-        &Glasshouse::None,
         &SessionId::new("lifetimes-helper"),
         &["read", "grep"],
     )
@@ -76,12 +74,7 @@ fn a_helper_holds_neither_the_helper_roster_nor_the_agent_global() {
 fn a_subagent_still_holds_the_helper_roster() {
     let root = root("subagent-helper");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut subagent = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("lifetimes-subagent"),
-    )
-    .as_subagent();
+    let mut subagent = Runtime::new(&profile, &SessionId::new("lifetimes-subagent")).as_subagent();
 
     let listed =
         returned_text(&subagent.run_cell("return \"helper=\" + typeof globalThis[\"helper\"];\n"));
@@ -100,12 +93,7 @@ fn a_subagent_still_holds_the_helper_roster() {
 fn a_subagent_may_not_start_a_subagent() {
     let root = root("no-nested-agent");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut subagent = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("lifetimes-nested"),
-    )
-    .as_subagent();
+    let mut subagent = Runtime::new(&profile, &SessionId::new("lifetimes-nested")).as_subagent();
 
     let outcome = subagent.run_cell(
         "try { agent.run(\"do a thing\", {turns: 1}); return \"started\"; }\n\
@@ -127,14 +115,14 @@ fn a_subagent_may_not_start_a_subagent() {
 #[test]
 fn the_narrowing_withholds_every_global_that_escapes_a_helpers_scope() {
     let helper = HostGlobals::Helper(&["read"]);
-    for global in ["bg", "send", "mcp", "checks", "helper", "agent"] {
+    for global in ["bg", "mcp", "checks", "helper", "agent"] {
         assert!(
             !helper.installs(global),
             "`{global}` must not be installed in a helper's runtime"
         );
     }
     // And an ordinary context keeps all of them.
-    for global in ["bg", "send", "mcp", "checks", "helper", "agent"] {
+    for global in ["bg", "mcp", "checks", "helper", "agent"] {
         assert!(HostGlobals::Every.installs(global));
     }
 }
@@ -157,9 +145,9 @@ fn a_helper_runtime_is_owned_by_its_caller_and_not_by_the_session() {
     // Two helper runtimes for one session are independent values; neither is
     // registered anywhere that outlives this scope, so dropping one cannot
     // leave a background task behind.
-    let first = Runtime::for_helper(&profile, &Glasshouse::None, &session, &["read"]);
+    let first = Runtime::for_helper(&profile, &session, &["read"]);
     drop(first);
-    let mut second = Runtime::for_helper(&profile, &Glasshouse::None, &session, &["read"]);
+    let mut second = Runtime::for_helper(&profile, &session, &["read"]);
     assert_eq!(
         returned_text(&second.run_cell("return \"alive\";\n")),
         "alive",

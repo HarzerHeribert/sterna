@@ -2,7 +2,6 @@
 use pane::contract::SessionId;
 use pane::events::window::{Window, WindowConfig};
 use pane::events::{Event, PayloadRef, Priority, Stamp};
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use pane::runtime::outcome::{CellOutcome, Ended};
 use pane::runtime::preview::Value;
@@ -13,7 +12,6 @@ use std::time::Duration;
 fn runtime(limit: Duration) -> Runtime {
     Runtime::with_limits(
         &Profile::compile(std::env::temp_dir(), None),
-        &Glasshouse::None,
         &SessionId::new("standing-tests"),
         DEFAULT_HEAP_LIMIT_BYTES,
         limit,
@@ -414,29 +412,12 @@ fn handler_panel_reports_real_lifecycle_without_source_or_payloads() {
 
 #[cfg(unix)]
 #[test]
-fn handler_tools_use_the_existing_hook_path_and_rollout_does_not_restore_handlers() {
-    use std::os::unix::fs::PermissionsExt;
+fn handler_tools_run_as_calls_and_rollout_does_not_restore_handlers() {
     let root = std::env::temp_dir().join(format!("pane-standing-hooks-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let log = root.join("hooks.log");
-    let script = root.join("glasshouse");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\ncat >> '{}'\nprintf '\\n' >> '{}'\n",
-            log.display(),
-            log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(root.join("input.txt"), "test\n").unwrap();
     let session = SessionId::new("handler-hook-path");
-    let mut r = Runtime::new(
-        &Profile::compile(&root, None),
-        &Glasshouse::Command { glasshouse: script },
-        &session,
-    );
+    let mut r = Runtime::new(&Profile::compile(&root, None), &session);
     let source =
         "const file = await read({path: 'input.txt'}); batch.ack(batch.rest().map(e => e.id));";
     register(&mut r, "{}", source);
@@ -448,17 +429,7 @@ fn handler_tools_use_the_existing_hook_path_and_rollout_does_not_restore_handler
         "{:?}",
         runs[0]
     );
-    let hooks = std::fs::read_to_string(log).unwrap();
-    assert_eq!(
-        hooks.matches("\"hook_event_name\":\"PreToolUse\"").count(),
-        1,
-        "{hooks}"
-    );
-    assert_eq!(
-        hooks.matches("\"hook_event_name\":\"PostToolUse\"").count(),
-        1,
-        "{hooks}"
-    );
+    assert_eq!(runs[0].1.turn().record.calls.len(), 1, "{:?}", runs[0]);
     let path = root.join("rollout.jsonl");
     let mut rollout = pane::rollout::Rollout::create(&path, session, "system").unwrap();
     rollout
@@ -544,7 +515,6 @@ fn off_uses_the_handle_identity_even_when_a_binding_matches_another_handlers_id(
 fn handler_heap_limit_disables_without_charging_an_ordinary_cell() {
     let mut r = Runtime::with_limits(
         &Profile::compile(std::env::temp_dir(), None),
-        &Glasshouse::None,
         &SessionId::new("handler-heap-limit"),
         8 * 1024 * 1024,
         Duration::from_secs(2),

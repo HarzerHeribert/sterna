@@ -25,7 +25,6 @@ use pane::abi::{Dialect, lower};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use pane::contract::SessionId;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use pane::glasshouse::Glasshouse;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use pane::runtime::isolate::Runtime;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -188,7 +187,6 @@ fn a_direct_call_and_a_cell_call_are_one_capability() {
     let root = fixture("equivalence", "equivalence");
     let target = root.join("target.rs");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let glasshouse = Glasshouse::None;
 
     // The direct form, lowered exactly as a provider call would be.
     let calls = vec![(
@@ -197,7 +195,7 @@ fn a_direct_call_and_a_cell_call_are_one_capability() {
         json!({"file_path": target.to_string_lossy()}),
     )];
     let lowered = lower(Dialect::Anthropic, &calls, 1).unwrap();
-    let mut direct_runtime = Runtime::new(&profile, &glasshouse, &SessionId::new("abi-direct"));
+    let mut direct_runtime = Runtime::new(&profile, &SessionId::new("abi-direct"));
     let direct = direct_runtime.run_cell(&lowered.source);
 
     // The authored form, in pane's own spelling.
@@ -205,7 +203,7 @@ fn a_direct_call_and_a_cell_call_are_one_capability() {
         "const mine = await read({{ path: {:?} }});\n",
         target.to_string_lossy()
     );
-    let mut authored_runtime = Runtime::new(&profile, &glasshouse, &SessionId::new("abi-authored"));
+    let mut authored_runtime = Runtime::new(&profile, &SessionId::new("abi-authored"));
     let authored = authored_runtime.run_cell(&authored_source);
 
     let direct_record = record_of(&direct);
@@ -241,7 +239,7 @@ fn the_familiar_spelling_and_its_parameters_work_inside_a_cell() {
     let root = fixture("in-cell", "in_cell");
     let target = root.join("target.rs");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("abi-in-cell"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("abi-in-cell"));
 
     let source = format!(
         "const viaAlias = await Read({{ file_path: {path:?} }});\n\
@@ -268,7 +266,7 @@ fn dependent_control_flow_branches_on_an_earlier_capability_result() {
     let root = fixture("branch", "legacyAuth");
     let target = root.join("target.rs");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("abi-branch"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("abi-branch"));
 
     // The branch is taken only if the first capability's real result contains
     // the marker, and the second call is a different capability, so the
@@ -303,7 +301,7 @@ fn an_untaken_branch_records_no_call() {
     let root = fixture("untaken", "absent_marker");
     let target = root.join("target.rs");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("abi-untaken"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("abi-untaken"));
 
     let source = format!(
         "const first = await Read({{ file_path: {path:?} }});\n\
@@ -329,7 +327,7 @@ fn independent_direct_calls_fuse_into_one_frame_of_handles() {
     let root = fixture("fusion", "fusion");
     let target = root.join("target.rs");
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("abi-fusion"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("abi-fusion"));
 
     let calls = vec![
         (

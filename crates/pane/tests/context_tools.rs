@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, Ended};
 use pane::sandbox::profile::Profile;
@@ -18,7 +17,7 @@ fn context_and_edit_form_a_versioned_visible_edit_loop() {
     let path = root.join("src/limits.py");
     std::fs::write(&path, "def clamp(value):\n    return value\n").unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("context-edit"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("context-edit"));
 
     let first = runtime.run_cell(&format!(
         "const ctx = await context({{path:{path:?}, symbol:\"clamp\"}});\nconsole.log(`context-symbol=${{ctx.symbol}}`);"
@@ -55,7 +54,7 @@ fn context_cannot_be_used_for_a_semantic_edit_before_it_reaches_the_model() {
     let path = root.join("src/value.py");
     std::fs::write(&path, "value = 1\n").unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("same-cell"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("same-cell"));
     // The rule is unchanged -- a version binds when the model has actually
     // read it, which is the next cell. What changed is that enforcing it
     // costs the call and not the cell: the refusal is the program's to catch,
@@ -98,7 +97,7 @@ fn an_incomplete_context_binds_the_lines_it_showed_and_refuses_the_rest() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, format!("def target():\n{body}")).unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("incomplete"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("incomplete"));
 
     let first = runtime.run_cell(&format!(
         "const ctx = await context({{path:{path:?}, symbol:'target'}});"
@@ -155,7 +154,7 @@ fn a_seen_line_is_still_editable_after_something_else_changed_the_file() {
     let path = root.join("src/value.py");
     std::fs::write(&path, "value = 1\nother = 1\n").unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("moved-on"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("moved-on"));
     runtime.run_cell(&format!("await context({{path:{path:?}}});"));
     // A formatter, a second tool: the other line moves on, this one does not.
     std::fs::write(&path, "value = 1\nother = 2\n").unwrap();
@@ -188,7 +187,7 @@ fn an_edit_from_stale_visible_context_throws_and_writes_nothing() {
     let path = root.join("src/value.py");
     std::fs::write(&path, "value = 1\n").unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("stale-edit"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("stale-edit"));
     runtime.run_cell(&format!("const ctx = await context({{path:{path:?}}});"));
     std::fs::write(&path, "value = 2\n").unwrap();
 
@@ -216,11 +215,7 @@ fn broad_read_of_one_large_stub_is_promoted_to_visible_context() {
     );
     std::fs::write(&path, source).unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("promoted-read"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("promoted-read"));
 
     let first = runtime.run_cell(&format!(
         "const source = await read({{path:{path:?}}});\nconsole.log(source.text);"
@@ -254,7 +249,7 @@ fn related_sources_can_be_inspected_together_then_edited_and_verified_together()
         &root,
         Some(r#"{"permissions":{"allow":["Read(**)","Write(**)","Bash"]}}"#),
     );
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("batch"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("batch"));
     let inspected = runtime
         .run_cell("const a = context({path:'src/a.py'}); const b = context({path:'src/b.py'});");
     assert_eq!(inspected.turn().record.calls.len(), 2, "{inspected:?}");
@@ -317,7 +312,7 @@ fn related_sources_can_be_inspected_together_then_edited_and_verified_together()
         &root,
         Some(r#"{"permissions":{"allow":["Read(**)","Write(**)","Bash"]}}"#),
     );
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("batch"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("batch"));
     let inspected = runtime
         .run_cell("const a = context({path:'src/a.py'}); const b = context({path:'src/b.py'});");
     assert_eq!(inspected.turn().record.calls.len(), 2, "{inspected:?}");
@@ -362,7 +357,7 @@ fn refreshing_changed_source_replaces_the_implicit_edit_version() {
     let path = root.join("src/value.py");
     std::fs::write(&path, "value = 1\n").unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("refresh"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("refresh"));
     runtime.run_cell("context({path:'src/value.py'});");
     runtime.run_cell("edit({path:'src/value.py', old:'value = 1', replacement:'value = 2'});");
     runtime.run_cell("context({path:'src/value.py'});");
@@ -389,7 +384,7 @@ fn a_full_context_batch_preserves_whole_evidence_and_does_not_certify_overflow()
         std::fs::write(root.join(format!("src/{name}.py")), body).unwrap();
     }
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("batch-cap"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("batch-cap"));
     let inspected = runtime.run_cell("console.log('z'.repeat(100000)); const a = await context({path:'src/a.py'}); const b = await context({path:'src/b.py'}); const c = await context({path:'src/c.py'});");
     assert_eq!(inspected.turn().record.calls.len(), 3, "{inspected:?}");
     for marker in ["a-BEGIN", "a-END", "b-BEGIN", "b-END"] {
@@ -516,7 +511,7 @@ fn a_guessed_symbol_does_not_take_its_sibling_context_calls_down() {
     )
     .unwrap();
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("miss-batch"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("miss-batch"));
 
     let cell = runtime.run_cell(
         "const [good, missed] = await Promise.all([\n\
@@ -567,11 +562,7 @@ fn a_context_batch_past_the_feedback_budget_narrows_and_the_cell_runs_on() {
         std::fs::write(root.join(format!("src/{name}.py")), body).unwrap();
     }
     let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("budget-runs-on"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("budget-runs-on"));
 
     let cell = runtime.run_cell(
         "await context({path:'src/a.py'});\nawait context({path:'src/b.py'});\nawait context({path:'src/c.py'});\nconsole.log('reached-the-end');",

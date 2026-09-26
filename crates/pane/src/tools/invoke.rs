@@ -54,14 +54,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::contract::SessionId;
-use crate::glasshouse::{self, Glasshouse};
 use crate::sandbox::profile::{Access, PermissionDenied, Profile};
 use crate::tools::registry::{self, ArgKind, Argv, Tool};
 
@@ -224,24 +223,6 @@ impl Args {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.0.keys().map(String::as_str)
-    }
-
-    /// The call's arguments as the hook protocol's `tool_input`.
-    fn as_json(&self) -> Value {
-        Value::Object(
-            self.0
-                .iter()
-                .map(|(name, value)| {
-                    let value = match value {
-                        Argument::Text(value) => Value::String(value.clone()),
-                        Argument::Lines(lines) => {
-                            Value::Array(lines.iter().cloned().map(Value::String).collect())
-                        }
-                    };
-                    (name.clone(), value)
-                })
-                .collect(),
-        )
     }
 }
 
@@ -503,18 +484,7 @@ impl std::error::Error for ToolError {}
 /// call can be made against.
 pub struct ToolContext<'a> {
     pub profile: &'a Profile,
-    pub glasshouse: &'a Glasshouse,
     pub session: &'a SessionId,
-}
-
-/// One monotonic id per call in this process, so `PreToolUse` and
-/// `PostToolUse` of the same call carry the same `tool_use_id` and two
-/// concurrent calls never share one.
-static CALLS: AtomicU64 = AtomicU64::new(0);
-
-fn next_call_id() -> String {
-    let n = CALLS.fetch_add(1, Ordering::Relaxed);
-    format!("pane-{}-{n}", std::process::id())
 }
 
 /// Runs one tool call and returns its result as a value.
@@ -640,31 +610,22 @@ pub(crate) fn run_traced_pausing(
         };
     };
 
-    let outcome = observed_call(
+    let outcome = checked_call(
         ctx,
-        tool.name(),
-        args.as_json(),
-        || {
-            checked_call(
-                ctx,
-                token,
-                tool,
-                args,
-                &mut checked,
-                Watching {
-                    gate,
-                    stopped,
-                    waiting,
-                },
-            )
+        token,
+        tool,
+        args,
+        &mut checked,
+        Watching {
+            gate,
+            stopped,
+            waiting,
         },
-        |outcome| tool_response(tool.name(), outcome),
     );
     Traced { outcome, checked }
 }
 
-/// The same hook lifecycle for a dynamic MCP call. Arbitrary argument values
-/// never enter the hook payload; the actual result's bounded preview does.
+/// One dynamic MCP call.
 pub(crate) fn run_mcp(
     ctx: &ToolContext<'_>,
     token: &CancellationToken,
@@ -672,127 +633,16 @@ pub(crate) fn run_mcp(
     name: &str,
     arguments: Value,
 ) -> Result<ToolResult, ToolError> {
-    // Only a discovered name is safe to copy into observations. An unknown
-    // caller-supplied name may itself be a credential or other arbitrary text.
-    let observed_name = client
-        .registered_name(name)
-        .unwrap_or("mcp.call")
-        .to_string();
-    observed_call(
-        ctx,
-        &observed_name,
-        json!({"arguments": "[redacted]"}),
-        || client.call(ctx.profile, token, name, arguments),
-        |outcome| tool_response(&observed_name, outcome),
-    )
+    client.call(ctx.profile, token, name, arguments)
 }
 
-/// Discovery can spawn and initialize project code, so it is observed even
-/// though its retained result is a descriptor list rather than a ToolResult.
+/// Discovery: the descriptors of every granted MCP tool.
 pub(crate) fn list_mcp(
     ctx: &ToolContext<'_>,
     token: &CancellationToken,
     client: &mut crate::tools::mcp::Mcp,
 ) -> Result<Vec<crate::tools::mcp::Descriptor>, ToolError> {
-    observed_call(
-        ctx,
-        "mcp.list",
-        json!({}),
-        || client.list(ctx.profile, token),
-        |outcome| {
-            let text = match outcome {
-                Ok(descriptors) => {
-                    serde_json::to_string(descriptors).expect("MCP descriptors contain JSON values")
-                }
-                Err(error) => error.to_string(),
-            };
-            json!({"type":"text", "text":truncate(&text, PREVIEW_BYTES)})
-        },
-    )
-}
-
-/// One correlation id and exactly one pre/post pair, including refusals and
-/// transport failures. Both static and MCP tools use the context-firewall seam.
-fn observed_call<T>(
-    ctx: &ToolContext<'_>,
-    name: &str,
-    input: Value,
-    operation: impl FnOnce() -> Result<T, ToolError>,
-    response: impl FnOnce(&Result<T, ToolError>) -> Value,
-) -> Result<T, ToolError> {
-    let call = next_call_id();
-    emit(
-        ctx,
-        json!({
-            "hook_event_name": "PreToolUse",
-            "session_id": ctx.session.as_str(),
-            "tool_use_id": call,
-            "tool_name": name,
-            "tool_input": input,
-        }),
-    );
-    let outcome = operation();
-    emit(
-        ctx,
-        json!({
-            "hook_event_name": "PostToolUse",
-            "session_id": ctx.session.as_str(),
-            "tool_use_id": call,
-            "tool_name": name,
-            "tool_input": input,
-            "tool_response": response(&outcome),
-        }),
-    );
-    outcome
-}
-
-/// The `tool_response` the `PostToolUse` payload carries.
-///
-/// Two shapes, because the consumer has two: Glasshouse's context-firewall
-/// adapter reads a `bash` result as `{stdout, stderr, interrupted,
-/// exit_code}` and every other tool as `{type: "text", text}`. A refusal
-/// renders in the shape its own tool would have, so the event parses either
-/// way and the refusal is the observed output rather than a missing one.
-fn tool_response(name: &str, outcome: &Result<ToolResult, ToolError>) -> Value {
-    let (stdout, stderr, exit_code) = match outcome {
-        Ok(result) => (
-            result.preview(),
-            truncate(&result.stderr, PREVIEW_BYTES),
-            result.exit_code,
-        ),
-        Err(error) => (
-            String::new(),
-            truncate(&error.to_string(), PREVIEW_BYTES),
-            None,
-        ),
-    };
-    if name.eq_ignore_ascii_case("bash") {
-        json!({
-            "stdout": stdout,
-            "stderr": stderr,
-            "interrupted": false,
-            "exit_code": exit_code,
-        })
-    } else {
-        let text = if stderr.is_empty() {
-            stdout
-        } else if stdout.is_empty() {
-            stderr
-        } else {
-            format!("{stdout}{stderr}")
-        };
-        json!({ "type": "text", "text": text })
-    }
-}
-
-/// Delivers one hook event.
-///
-/// **`context-firewall hook`, not `hook`.** `glasshouse.rs` already fixed
-/// that distinction — `PostToolUse` is not in Claude Code's `REPORTED_EVENTS`,
-/// so a tool event sent to plain `hook` reaches no consumer at all — and this
-/// module inherits it rather than re-deciding it.
-fn emit(ctx: &ToolContext<'_>, payload: Value) {
-    glasshouse::emit_tool_result(ctx.glasshouse, ctx.session, &payload.to_string());
+    client.list(ctx.profile, token)
 }
 
 /// One checked argument, carrying which of §2's two questions answered it.
@@ -2494,7 +2344,6 @@ mod tests {
         let profile = Profile::compile(&root, Some(&settings)).with_os_sandbox_bypass();
         let ctx = ToolContext {
             profile: &profile,
-            glasshouse: &Glasshouse::None,
             session: &SessionId::new("explicit-sandbox-bypass"),
         };
         let result = run(&ctx, "bash", &Args::new().with("command", BYPASS_ECHO)).unwrap();
@@ -2560,7 +2409,6 @@ mod tests {
             };
             let ctx = ToolContext {
                 profile: &profile,
-                glasshouse: &Glasshouse::None,
                 session: &SessionId::new("bypass-reach"),
             };
             run(&ctx, "bash", &Args::new().with("command", &command))
@@ -2618,7 +2466,6 @@ mod tests {
         let profile = Profile::compile(&root, Some(&settings)).with_os_sandbox_bypass();
         let ctx = ToolContext {
             profile: &profile,
-            glasshouse: &Glasshouse::None,
             session: &SessionId::new("explicit-sandbox-bypass"),
         };
         let refusal = run(
@@ -2648,7 +2495,6 @@ mod tests {
         let profile = Profile::compile(&root, Some(&settings));
         let ctx = ToolContext {
             profile: &profile,
-            glasshouse: &Glasshouse::None,
             session: &SessionId::new("stop-glob"),
         };
         let polls = std::cell::Cell::new(0);
@@ -2677,11 +2523,9 @@ mod tests {
     #[test]
     fn an_unknown_tool_name_is_a_refusal_and_not_a_panic() {
         let profile = Profile::compile(std::env::temp_dir(), None);
-        let glasshouse = Glasshouse::None;
         let session = SessionId::new("test");
         let ctx = ToolContext {
             profile: &profile,
-            glasshouse: &glasshouse,
             session: &session,
         };
         let error = run(&ctx, "webfetch", &Args::new()).unwrap_err();

@@ -259,7 +259,6 @@ fn a_value_that_looks_like_a_table_line_cannot_forge_an_entry() {
 #[test]
 fn a_grep_of_122kb_costs_under_300_tokens_and_survives_one_yield() {
     use pane::contract::SessionId;
-    use pane::glasshouse::Glasshouse;
     use pane::runtime::isolate::Runtime;
     use pane::runtime::outcome::CellOutcome;
     use pane::runtime::preview::estimate_tokens;
@@ -315,9 +314,8 @@ fn a_grep_of_122kb_costs_under_300_tokens_and_survives_one_yield() {
     std::fs::write(&adapter, &adapter_body).unwrap();
 
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("acceptance-122kb");
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
 
     // Cell 1 is §6's own two lines, with this tree's paths.
     let cell_one = format!(

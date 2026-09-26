@@ -3,7 +3,6 @@
 //! the cell holds and the model is never told of it, and a helper runtime
 //! never holds it at all.
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -19,7 +18,6 @@ fn an_unconfigured_session_binds_no_web_and_declares_none() {
     let root = std::env::current_dir().unwrap();
     let mut runtime = Runtime::new(
         &Profile::compile(&root, None),
-        &Glasshouse::None,
         &SessionId::new("web-unconfigured"),
     );
     let outcome = runtime.run_cell("return web.fetch('https://example.com').content;");
@@ -102,7 +100,6 @@ fn native_cells_can_search_then_fetch_and_retain_source_provenance() {
     .unwrap();
     let mut runtime = Runtime::new(
         &Profile::compile(&root, None),
-        &Glasshouse::None,
         &SessionId::new("web-integrated"),
     )
     .with_web_broker(broker);

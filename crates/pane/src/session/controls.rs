@@ -86,19 +86,15 @@ pub(super) fn models(session: &Session<'_>) {
         }
     }
     // The gateway owns measurements too; standalone Pane needs no Glasshouse process.
-    let mut scores: std::collections::BTreeMap<String, f64> =
-        crate::models::published(session.gateway)
-            .into_iter()
-            .filter_map(|(id, facts)| {
-                facts
-                    .intelligence
-                    .filter(|n| n.is_finite())
-                    .map(|n| (id, n))
-            })
-            .collect();
-    if scores.is_empty() {
-        scores = crate::glasshouse::intelligence(session.glasshouse);
-    }
+    let scores: std::collections::BTreeMap<String, f64> = crate::models::published(session.gateway)
+        .into_iter()
+        .filter_map(|(id, facts)| {
+            facts
+                .intelligence
+                .filter(|n| n.is_finite())
+                .map(|n| (id, n))
+        })
+        .collect();
     if catalogue.is_none() {
         show(session, unreachable_panel(session, "Models", "/model"));
         return;
@@ -1883,9 +1879,6 @@ mod tests {
                 .unwrap()
                 .as_deref(),
         );
-        let glasshouse = Glasshouse::Command {
-            glasshouse: root.join("absent"),
-        };
         let gateway = crate::gateway::Gateway::Command {
             gateway: root.join("absent-gateway"),
         };
@@ -1899,9 +1892,7 @@ mod tests {
             approval_gate: None,
             ask_gate: None,
             ladder: None,
-            inbox: RefCell::new(crate::events::inbox::Inbox::discover(&glasshouse, &root)),
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
-            messages: std::rc::Rc::new(RefCell::new(std::collections::HashMap::new())),
             roster: Vec::new(),
             ui: None,
             model: RefCell::new("test".into()),
@@ -1917,7 +1908,6 @@ mod tests {
             config: &RefCell::new(config),
             interrupt: &interrupt,
             profile: &profile,
-            glasshouse: &glasshouse,
             gateway: &gateway,
             id: &id,
             memory: &memory,
@@ -1960,9 +1950,6 @@ mod tests {
         let config =
             RefCell::new(PaneConfig::load_profile(root, selected).expect("the fixture parses"));
         let profile = Profile::compile(root, None);
-        let glasshouse = Glasshouse::Command {
-            glasshouse: root.join("absent"),
-        };
         let gateway = crate::gateway::Gateway::Command {
             gateway: root.join("absent-gateway"),
         };
@@ -1976,9 +1963,7 @@ mod tests {
             approval_gate: None,
             ask_gate: None,
             ladder: None,
-            inbox: RefCell::new(crate::events::inbox::Inbox::discover(&glasshouse, root)),
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
-            messages: std::rc::Rc::new(RefCell::new(std::collections::HashMap::new())),
             roster: Vec::new(),
             ui: None,
             model: RefCell::new("opus-5".into()),
@@ -1994,7 +1979,6 @@ mod tests {
             config: &config,
             interrupt: &interrupt,
             profile: &profile,
-            glasshouse: &glasshouse,
             gateway: &gateway,
             id: &id,
             memory: &memory,

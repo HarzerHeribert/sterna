@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::project::agents::{Catalog, Definition};
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
@@ -114,7 +113,7 @@ fn invalid_profile_throws_before_a_background_agent_is_created() {
     let _env = ENV_LOCK.read().unwrap_or_else(|poison| poison.into_inner());
     let fixture = Fixture::new();
     let id = SessionId::new("invalid-custom-profile");
-    let mut runtime = Runtime::new(&fixture.profile(), &Glasshouse::None, &id);
+    let mut runtime = Runtime::new(&fixture.profile(), &id);
     runtime.set_task_context(0, "test/model");
     assert!(matches!(
         runtime.run_cell("agent.run('review', {profile:'unknown'});"),
@@ -144,7 +143,7 @@ fn named_agent_routes_snapshot_instructions_model_and_effort_with_explicit_overr
     effective.helpers.enabled = false;
     // Explicitly authorize both fixture assignments; templates are not authority.
     effective.agents = pane::config::PaneConfig::parse("[agents]\nmode='roster'\n[agents.slots.deep]\nmodel='template-model'\neffort='high'\n[agents.slots.quick]\nmodel='explicit-model'\neffort='low'").unwrap().agents;
-    let mut runtime = Runtime::new(&fixture.profile(), &Glasshouse::None, &id)
+    let mut runtime = Runtime::new(&fixture.profile(), &id)
         .with_config(effective)
         .unwrap();
     runtime.set_task_context(0, "parent-model");

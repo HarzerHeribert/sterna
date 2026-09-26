@@ -722,7 +722,6 @@ pub fn run(
     route: HelperRoute<'_>,
     input: &str,
     profile: &crate::sandbox::profile::Profile,
-    glasshouse: &crate::glasshouse::Glasshouse,
     session: &crate::contract::SessionId,
     token: &crate::tools::invoke::CancellationToken,
 ) -> HelperCall {
@@ -765,7 +764,6 @@ pub fn run(
         route,
         request.as_deref().unwrap_or(input),
         profile,
-        glasshouse,
         session,
         token,
     );
@@ -793,7 +791,6 @@ fn run_unprepared(
     route: HelperRoute<'_>,
     input: &str,
     profile: &crate::sandbox::profile::Profile,
-    glasshouse: &crate::glasshouse::Glasshouse,
     session: &crate::contract::SessionId,
     token: &crate::tools::invoke::CancellationToken,
 ) -> HelperCall {
@@ -840,7 +837,7 @@ fn run_unprepared(
             },
         }
     } else {
-        run_with_tools(spec, route, input, profile, glasshouse, session, token)
+        run_with_tools(spec, route, input, profile, session, token)
     }
 }
 
@@ -974,7 +971,6 @@ pub fn run_with_tools(
     route: HelperRoute<'_>,
     input: &str,
     profile: &crate::sandbox::profile::Profile,
-    glasshouse: &crate::glasshouse::Glasshouse,
     session: &crate::contract::SessionId,
     token: &crate::tools::invoke::CancellationToken,
 ) -> HelperCall {
@@ -1007,14 +1003,12 @@ pub fn run_with_tools(
     // this thread under its hard ceiling, but it retains no session borrow and
     // the post-response token check starts no late tool.
     let profile = profile.clone();
-    let glasshouse = glasshouse.clone();
     let session = session.clone();
     let input = input.to_string();
     let worker_token = token.clone();
     let result = match wait_for_helper(token, move || {
         crate::agent::run_narrowed_metered(
             &profile,
-            &glasshouse,
             &session,
             &input,
             &options,
@@ -1098,7 +1092,6 @@ pub fn preflight(
     input: &str,
     route: HelperRoute<'_>,
     profile: &crate::sandbox::profile::Profile,
-    glasshouse: &crate::glasshouse::Glasshouse,
     session: &crate::contract::SessionId,
     token: &crate::tools::invoke::CancellationToken,
     mut progress: impl FnMut(&HelperRecord),
@@ -1113,7 +1106,7 @@ pub fn preflight(
         ..HelperRecord::default()
     };
     progress(&record);
-    let call = run(spec, route, input, profile, glasshouse, session, token);
+    let call = run(spec, route, input, profile, session, token);
     record.outcome = call.outcome;
     record.turns = call.turns;
     record.looked = call.looked;
@@ -1128,14 +1121,13 @@ pub fn acceptance_list(
     request: &str,
     route: HelperRoute<'_>,
     profile: &crate::sandbox::profile::Profile,
-    glasshouse: &crate::glasshouse::Glasshouse,
     session: &crate::contract::SessionId,
     token: &crate::tools::invoke::CancellationToken,
 ) -> Option<HelperRecord> {
     let spec = HELPERS
         .iter()
         .find(|spec| spec.call_sites.contains(&CallSite::Acceptance))?;
-    let call = run(spec, route, request, profile, glasshouse, session, token);
+    let call = run(spec, route, request, profile, session, token);
     Some(HelperRecord {
         helper: spec.name.to_string(),
         verb: spec.verb.to_string(),
@@ -1501,7 +1493,6 @@ pub fn scout_candidates_from_evidence(
 #[derive(Clone, Copy)]
 pub struct HelperContext<'a> {
     pub profile: &'a crate::sandbox::profile::Profile,
-    pub glasshouse: &'a crate::glasshouse::Glasshouse,
     pub session: &'a crate::contract::SessionId,
     pub token: &'a crate::tools::invoke::CancellationToken,
 }
@@ -1569,7 +1560,6 @@ pub fn run_judged(
         route,
         input,
         context.profile,
-        context.glasshouse,
         context.session,
         context.token,
     );

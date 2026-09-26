@@ -5,7 +5,6 @@ use pane::agent::AgentOptions;
 use pane::bg;
 use pane::contract::SessionId;
 use pane::events::Kind;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -114,7 +113,6 @@ fn child_receives_root_orientation_and_nested_policy_before_nested_write() {
     }
     let _handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "write nested/result.txt after following every applicable instruction",
         &AgentOptions {

@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 // Gated like its only callers: every test that builds a runtime here is
 // macOS/Linux, and on Windows an unused import is an error under
 // `[workspace.lints.rust]`'s denied warnings.
@@ -48,7 +47,6 @@ fn named_checks_reuse_only_successful_unchanged_declared_inputs_and_force_is_fre
     let session = SessionId::new("named-checks");
     let ctx = ToolContext {
         profile: &f.profile,
-        glasshouse: &Glasshouse::None,
         session: &session,
     };
     let token = CancellationToken::new();
@@ -74,7 +72,6 @@ fn failed_checks_are_never_reused_and_configuration_is_not_a_permission_grant() 
     let session = SessionId::new("named-checks");
     let ctx = ToolContext {
         profile: &f.profile,
-        glasshouse: &Glasshouse::None,
         session: &session,
     };
     let token = CancellationToken::new();
@@ -125,7 +122,6 @@ fn cancelled_checks_do_not_execute() {
     let session = SessionId::new("named-checks");
     let ctx = ToolContext {
         profile: &f.profile,
-        glasshouse: &Glasshouse::None,
         session: &session,
     };
     let token = CancellationToken::new();
@@ -143,7 +139,7 @@ fn cancelled_checks_do_not_execute() {
 fn named_check_binding_persists_within_request_but_is_absent_from_helpers() {
     let f = Fixture::new();
     let session = SessionId::new("named-checks");
-    let mut runtime = Runtime::new(&f.profile, &Glasshouse::None, &session);
+    let mut runtime = Runtime::new(&f.profile, &session);
     let first =
         runtime.run_cell("const observed = await checks.run('tests'); console.log(observed);");
     assert!(
@@ -162,11 +158,11 @@ fn named_check_binding_persists_within_request_but_is_absent_from_helpers() {
         "{after_end:?}"
     );
     drop(runtime);
-    let mut helper = Runtime::for_helper(&f.profile, &Glasshouse::None, &session, &["read"]);
+    let mut helper = Runtime::for_helper(&f.profile, &session, &["read"]);
     let absent = helper.run_cell("console.log(typeof globalThis.checks);");
     assert_eq!(absent.turn().stdout_tail.trim(), "undefined");
     drop(helper);
-    let mut fresh = Runtime::new(&f.profile, &Glasshouse::None, &session);
+    let mut fresh = Runtime::new(&f.profile, &session);
     assert!(
         fresh
             .run_cell("console.log(await checks.run('tests'));")
@@ -190,7 +186,6 @@ fn an_incomplete_large_dependency_snapshot_disables_reuse() {
     let session = SessionId::new("bounded-checks");
     let ctx = ToolContext {
         profile: &f.profile,
-        glasshouse: &Glasshouse::None,
         session: &session,
     };
     let mut checks = Verification::default();

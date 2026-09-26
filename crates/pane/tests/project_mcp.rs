@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -196,11 +195,7 @@ fn cancellation_stops_an_unresponsive_stdio_server() {
 #[test]
 fn runtime_keeps_large_results_as_bounded_effectful_handles() {
     let fixture = Fixture::new("huge");
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("mcp"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("mcp"));
     let outcome =
         runtime.run_cell("const tools = mcp.list(); const result = mcp.call(tools[0].name, {});");
     assert!(
@@ -236,11 +231,7 @@ fn runtime_keeps_large_results_as_bounded_effectful_handles() {
 #[test]
 fn tool_error_remains_inspectable_data() {
     let fixture = Fixture::new("error");
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("mcp-error"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("mcp-error"));
     let result =
         runtime.run_cell("const tools = mcp.list(); return mcp.call(tools[0].name, {}).isError;");
     assert!(
@@ -270,9 +261,7 @@ fn encoded_names_cannot_collide_and_invalid_configuration_is_redacted() {
 }
 
 #[test]
-fn runtime_mcp_hooks_observe_success_and_refusal_once_without_argument_values() {
-    use std::os::unix::fs::PermissionsExt;
-
+fn runtime_mcp_gates_discovery_refuses_a_denied_tool_and_never_records_argument_values() {
     let fixture = Fixture::new("huge");
     let server = fixture.root.join("server.sh");
     std::fs::write(
@@ -282,29 +271,10 @@ fn runtime_mcp_hooks_observe_success_and_refusal_once_without_argument_values() 
             .replace("Return nested input", &"d".repeat(4000)),
     )
     .unwrap();
-    let hook = fixture.root.join("glasshouse-hook");
-    std::fs::write(
-        &hook,
-        r#"#!/bin/sh
-root=${0%/*}
-printf '%s\n' "$*" >> "$root/hook-argv"
-cat >> "$root/hook-events"
-printf '\n' >> "$root/hook-events"
-if [ -f "$root/called" ]; then printf 'after\n'; else printf 'before\n'; fi >> "$root/hook-stages"
-if [ -f "$root/server.pid" ]; then printf 'started\n'; else printf 'not-started\n'; fi >> "$root/hook-spawns"
-"#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::create_dir_all(fixture.root.join("nested")).unwrap();
     std::fs::write(fixture.root.join("nested/AGENTS.md"), "nested MCP policy").unwrap();
-    let glasshouse = Glasshouse::Command { glasshouse: hook };
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &glasshouse,
-        &SessionId::new("mcp-hooks"),
-    )
-    .with_instruction_context();
+    let mut runtime =
+        Runtime::new(&fixture.profile(), &SessionId::new("mcp-gate")).with_instruction_context();
     let blocked = runtime.run_cell("const tools = mcp.list();");
     assert!(matches!(blocked, CellOutcome::Yielded { .. }));
     assert!(
@@ -316,39 +286,18 @@ if [ -f "$root/server.pid" ]; then printf 'started\n'; else printf 'not-started\
     );
     assert!(!fixture.root.join("server.pid").exists());
     assert!(!fixture.root.join("called").exists());
-    assert!(!fixture.root.join("hook-events").exists());
     assert!(blocked.turn().record.calls.is_empty());
     runtime.acknowledge_instructions();
     let listed = runtime.run_cell("const tools = mcp.list();");
     assert!(matches!(listed, CellOutcome::Yielded { .. }), "{listed:?}");
-    assert_eq!(
-        std::fs::read_to_string(fixture.root.join("hook-events"))
-            .unwrap()
-            .lines()
-            .count(),
-        2,
-        "discovery must emit exactly one pair"
-    );
     assert_eq!(listed.turn().record.calls.len(), 1);
     assert_eq!(listed.turn().record.calls[0].tool, "mcp.list");
 
     // The advertised-but-denied tool must have no server effect, while its
-    // catchable refusal still completes an observed call.
+    // refusal is still catchable.
     let refused = runtime.run_cell("try { mcp.call('mcp__demo__forbidden', {password:'private-argument-secret'}); } catch (error) { console.log(error.name); }"); // glasshouse:not-a-secret
     assert!(refused.turn().stdout_tail.contains("PermissionDenied"));
     assert!(!fixture.root.join("called").exists());
-    let events = || -> Vec<serde_json::Value> {
-        std::fs::read_to_string(fixture.root.join("hook-events"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
-    };
-    assert_eq!(
-        events().len(),
-        4,
-        "discovery and refusal must each emit one pair"
-    );
 
     let successful = runtime
         .run_cell("const result = mcp.call(tools[0].name, {password:'private-argument-secret'});"); // glasshouse:not-a-secret
@@ -357,57 +306,6 @@ if [ -f "$root/server.pid" ]; then printf 'started\n'; else printf 'not-started\
         "{successful:?}"
     );
     assert!(fixture.root.join("called").exists());
-    let events = events();
-    assert_eq!(events.len(), 6, "success must add exactly one pair");
-    for pair in events.as_chunks::<2>().0 {
-        assert_eq!(pair[0]["hook_event_name"], "PreToolUse");
-        assert_eq!(pair[1]["hook_event_name"], "PostToolUse");
-        assert_eq!(pair[0]["tool_use_id"], pair[1]["tool_use_id"]);
-        assert_eq!(pair[0]["tool_name"], pair[1]["tool_name"]);
-        assert_eq!(pair[0]["session_id"], "mcp-hooks");
-        assert_eq!(
-            pair[0]["tool_input"],
-            if pair[0]["tool_name"] == "mcp.list" {
-                json!({})
-            } else {
-                json!({"arguments":"[redacted]"})
-            }
-        );
-        assert_eq!(pair[1]["tool_response"]["type"], "text");
-    }
-    assert_ne!(events[0]["tool_use_id"], events[2]["tool_use_id"]);
-    assert_ne!(events[2]["tool_use_id"], events[4]["tool_use_id"]);
-    assert_eq!(events[0]["tool_name"], "mcp.list");
-    let descriptor_preview = events[1]["tool_response"]["text"].as_str().unwrap();
-    assert!(descriptor_preview.contains("mcp__demo__echo"));
-    assert!(descriptor_preview.len() < 2200);
-    assert!(
-        events[3]["tool_response"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("PermissionDenied")
-    );
-    assert_eq!(events[4]["tool_name"], mcp_name("demo", "echo"));
-    let preview = events[5]["tool_response"]["text"].as_str().unwrap();
-    assert!(preview.contains("content"));
-    assert!(
-        preview.len() < 2200,
-        "400 KB result must cross the hook only as a bounded preview"
-    );
-    assert_eq!(
-        std::fs::read_to_string(fixture.root.join("hook-stages")).unwrap(),
-        "before\nbefore\nbefore\nbefore\nbefore\nafter\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(fixture.root.join("hook-spawns")).unwrap(),
-        "not-started\nstarted\nstarted\nstarted\nstarted\nstarted\n"
-    );
-    for args in std::fs::read_to_string(fixture.root.join("hook-argv"))
-        .unwrap()
-        .lines()
-    {
-        assert_eq!(args, "context-firewall hook --session mcp-hooks");
-    }
     for outcome in [&listed, &refused, &successful] {
         let record = serde_json::to_string(&outcome.turn().record.calls).unwrap();
         assert!(!record.contains("private-argument-secret"));
@@ -420,11 +318,6 @@ if [ -f "$root/server.pid" ]; then printf 'started\n'; else printf 'not-started\
                 .all(|call| call.args.is_empty())
         );
     }
-    assert!(
-        !serde_json::to_string(&events)
-            .unwrap()
-            .contains("private-argument-secret")
-    );
     let full = runtime.run_cell("return result.content[0].text.length;");
     assert!(matches!(
         full,

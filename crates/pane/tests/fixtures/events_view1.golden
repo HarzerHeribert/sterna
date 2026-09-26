@@ -1,12 +1,12 @@
 batch  Events.Batch  n=40 · window closed on interrupt after 1,204 ms
   !  ci.run   github/ci-extended#4471  16:58:41.204Z  "failure — 1 of 12 cells failed"
      hook.PostToolUse  30   worker/api-routing
-     message            4   session/glasshouse-9c, session/pane-spec
+     timer              4   session/glasshouse-9c, session/pane-spec
      ci.cell            3   github/ci-extended#4471
      worker.report      2   worker/pane-events, worker/board-watch
   [1] worker.report     worker/pane-events   16:58:39.881Z  "report-pane-events.md"
   [2] ci.cell           github/ci-extended#4471  16:58:36.744Z  "ubuntu-24.04 · 1.90.0 — success"
-  [3] message           session/glasshouse-9c  16:58:33.402Z  "61G drafted; the primary appends it"
+  [3] timer             session/glasshouse-9c  16:58:33.402Z  "61G drafted; the primary appends it"
   [4] hook.PostToolUse  worker/api-routing   16:58:31.006Z  "Edit routing/mod.rs"
   [5] worker.report     worker/board-watch   16:58:40.117Z  "report-board-watch.md"
   … and 34 more                                                   preview 214 tok

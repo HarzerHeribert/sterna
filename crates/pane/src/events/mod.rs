@@ -6,7 +6,6 @@
 //! vocabulary and the dedup rule those sections bind.
 
 pub mod batch;
-pub mod inbox;
 pub mod window;
 
 use std::cell::RefCell;
@@ -104,9 +103,6 @@ pub enum Kind {
         emission: String,
     },
     Hook(String),
-    Message {
-        message_id: String,
-    },
     Timer {
         deadline: String,
     },
@@ -125,7 +121,6 @@ impl Kind {
             Kind::BgDone { .. } => "bg.done".to_string(),
             Kind::AgentDone { .. } => "agent.done".to_string(),
             Kind::Hook(name) => format!("hook.{name}"),
-            Kind::Message { .. } => "message".to_string(),
             Kind::Timer { .. } => "timer".to_string(),
         }
     }
@@ -316,7 +311,6 @@ impl Event {
                 self.source,
                 self.tool_call_id.as_deref().unwrap_or("")
             ),
-            Kind::Message { message_id } => format!("message|{}|{message_id}", self.source),
             Kind::Timer { deadline } => format!("timer|{}|{deadline}", self.source),
         }
     }

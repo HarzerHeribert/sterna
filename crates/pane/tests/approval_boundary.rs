@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 
 use pane::approval::{Decision, Gate};
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -40,7 +39,6 @@ impl Fixture {
     fn runtime(&self, settings: Option<&str>) -> Runtime {
         Runtime::new(
             &Profile::compile(&self.0, settings),
-            &Glasshouse::None,
             &SessionId::new("approval-boundary"),
         )
     }
@@ -268,7 +266,6 @@ fn human_approval_wait_pauses_the_cell_clock_and_then_resumes_the_write() {
     });
     let mut runtime = Runtime::with_limits(
         &Profile::compile(&fixture.0, None),
-        &Glasshouse::None,
         &SessionId::new("approval-timeout"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_millis(100),
@@ -301,7 +298,6 @@ fn approval_resumes_remaining_compute_budget_instead_of_resetting_it() {
     });
     let mut runtime = Runtime::with_limits(
         &Profile::compile(&fixture.0, None),
-        &Glasshouse::None,
         &SessionId::new("approval-budget"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_millis(400),
@@ -713,8 +709,7 @@ impl LiveApp {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pane"));
         command.args(["session", "--root"]);
         command.arg(&root);
-        command.args(["--model", "fixture-model", "--glasshouse"]);
-        command.arg(root.join("no-glasshouse"));
+        command.args(["--model", "fixture-model"]);
         command.arg("--gateway");
         command.arg(root.join("no-gateway"));
         command.env("INFERENCE_GATEWAY_BIN", root.join("no-gateway"));

@@ -44,36 +44,21 @@ pub enum Gateway {
     /// lets the OS resolve it from `PATH` (`Command::new` maps to `execvp` on
     /// a bare name); a test passes its own fake script's path instead.
     Command { gateway: PathBuf },
-    /// Attached to a gateway Glasshouse started for this project: the serving
-    /// URL was handed over in the environment. The cost readout goes to
-    /// Glasshouse's own command scoped to `root`, so it describes the ledger
-    /// of the project the session runs in; the account, subscription and
-    /// credential controls go to the gateway binary, which is where that
-    /// state lives whoever started the gateway.
-    Hosted { glasshouse: PathBuf, root: PathBuf },
+    /// Attached to a gateway someone else started: the serving URL was handed
+    /// over in the environment. Every control runs the gateway binary
+    /// [`attached_gateway_binary`] finds, which is where that state lives
+    /// whoever started the gateway.
+    Attached,
 }
 
 impl Gateway {
-    /// The command one control runs, with the executable and the prefix the
-    /// variant needs in front of `args` — every control, streamed or waited
-    /// for, builds its command here so a hosted session's `--scope` cannot
-    /// be forgotten at one call site.
-    ///
-    /// **An account, subscription or credential control runs the gateway
-    /// binary in every variant, and carries no `--scope`**: that state is the
-    /// gateway's, and the gateway has no projects to scope it to. A hosted
-    /// session resolves the binary with [`hosted_gateway_binary`], and `None`
-    /// — no gateway installed anywhere — is what every caller renders as
+    /// The command one control runs. `None` -- no gateway installed anywhere
+    /// for an attached session -- is what every caller renders as
     /// unreachable.
     pub(crate) fn control_command(&self, args: &[&str]) -> Option<Command> {
         let mut command = match self {
             Self::Command { gateway } => Command::new(gateway),
-            Self::Hosted { .. } if is_gateway_state(args) => Command::new(hosted_gateway_binary()?),
-            Self::Hosted { glasshouse, root } => {
-                let mut command = Command::new(glasshouse);
-                command.arg("--scope").arg(root);
-                command
-            }
+            Self::Attached => Command::new(attached_gateway_binary()?),
         };
         command.args(args);
         Some(command)
@@ -240,26 +225,13 @@ impl Gateway {
     }
 }
 
-/// Whether these arguments ask about state the gateway owns — the accounts it
-/// can serve, the subscriptions behind them, the credentials they use, and
-/// what the models it serves measured — rather than about what this project
-/// spent.
-fn is_gateway_state(args: &[&str]) -> bool {
-    args.first().is_some_and(|first| {
-        matches!(
-            *first,
-            "entitlements" | "subscriptions" | "credentials" | "models"
-        )
-    })
-}
-
 /// The file names a gateway executable can have on this platform.
 #[cfg(windows)]
 const GATEWAY_NAMES: &[&str] = &["inference-gateway.exe", "inference-gateway"];
 #[cfg(not(windows))]
 const GATEWAY_NAMES: &[&str] = &["inference-gateway"];
 
-/// The gateway binary a hosted session's account controls run: the one
+/// The gateway binary an attached session's controls run: the one
 /// `INFERENCE_GATEWAY_BIN` names, else one installed beside this executable,
 /// else the first on `PATH`.
 ///
@@ -267,7 +239,7 @@ const GATEWAY_NAMES: &[&str] = &["inference-gateway"];
 /// anywhere" has to be distinguishable from "the gateway refused".** A bare
 /// name handed to `Command::new` would fail at spawn either way, and the
 /// controls would report a reachable gateway that said no.
-fn hosted_gateway_binary() -> Option<PathBuf> {
+fn attached_gateway_binary() -> Option<PathBuf> {
     if let Some(named) = std::env::var_os("INFERENCE_GATEWAY_BIN").filter(|value| !value.is_empty())
     {
         return Some(PathBuf::from(named));
@@ -432,22 +404,12 @@ pub fn handed_a_gateway() -> bool {
 }
 
 /// The handle a session runs its controls through, decided once from the
-/// environment and the flag: handed a gateway, the session is hosted by
-/// Glasshouse and its controls are Glasshouse's, scoped to `root`; otherwise
-/// the gateway named, or `inference-gateway` on `PATH`.
+/// environment and the flag: handed a gateway, the session is attached to it;
+/// otherwise the gateway named, or `inference-gateway` on `PATH`.
 #[must_use]
-pub fn select(
-    named: Option<&Path>,
-    glasshouse: &crate::glasshouse::Glasshouse,
-    root: &Path,
-) -> Gateway {
+pub fn select(named: Option<&Path>) -> Gateway {
     if handed_a_gateway() {
-        return Gateway::Hosted {
-            glasshouse: glasshouse
-                .executable()
-                .map_or_else(|| PathBuf::from("glasshouse"), Path::to_path_buf),
-            root: root.to_path_buf(),
-        };
+        return Gateway::Attached;
     }
     Gateway::Command {
         gateway: named.map_or_else(|| PathBuf::from("inference-gateway"), Path::to_path_buf),
@@ -462,7 +424,7 @@ pub fn start_or_attach(
     named: bool,
     log: &Path,
 ) -> Result<Option<Serving>, String> {
-    if matches!(gateway, Gateway::Hosted { .. }) {
+    if matches!(gateway, Gateway::Attached) {
         return Ok(None);
     }
 

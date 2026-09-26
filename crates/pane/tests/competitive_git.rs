@@ -4,7 +4,6 @@
 #[test]
 fn admitted_git_can_inspect_changes_commit_and_read_history() {
     use pane::contract::SessionId;
-    use pane::glasshouse::Glasshouse;
     use pane::sandbox::profile::Profile;
     use pane::tools::invoke::{self, Args, ToolContext};
     let root = std::env::temp_dir().join(format!(
@@ -21,7 +20,6 @@ fn admitted_git_can_inspect_changes_commit_and_read_history() {
     let session = SessionId::new("git-workflow");
     let context = ToolContext {
         profile: &profile,
-        glasshouse: &Glasshouse::None,
         session: &session,
     };
     let run = |command: &str| {

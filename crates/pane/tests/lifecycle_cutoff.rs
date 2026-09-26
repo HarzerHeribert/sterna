@@ -3,7 +3,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -54,8 +52,6 @@ impl Fixture {
                 "--rollout",
             ])
             .arg(self.root.join("rollout.jsonl"))
-            .arg("--glasshouse")
-            .arg(self.root.join("absent"))
             .env("ANTHROPIC_BASE_URL", base)
             .env("XDG_CONFIG_HOME", self.root.join("global-config"))
             .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -176,7 +172,6 @@ fn a_child_that_outlives_the_compute_limit_is_waited_for_not_reaped() {
     let f = Fixture::new();
     let mut runtime = Runtime::with_limits(
         &f.profile(),
-        &Glasshouse::None,
         &SessionId::new("deadline"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(1),
@@ -223,7 +218,6 @@ fn a_loop_that_only_computes_still_dies_at_the_compute_limit() {
     let f = Fixture::new();
     let mut runtime = Runtime::with_limits(
         &f.profile(),
-        &Glasshouse::None,
         &SessionId::new("runaway"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(1),
@@ -247,7 +241,6 @@ fn a_child_that_hangs_ends_by_its_own_timeout_and_says_so() {
     let f = Fixture::new();
     let mut runtime = Runtime::with_limits(
         &f.profile(),
-        &Glasshouse::None,
         &SessionId::new("hung-child"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(1),
@@ -316,65 +309,6 @@ fn sigterm_cancels_owned_foreground_group_before_exit() {
 }
 
 #[test]
-fn poisoned_runtime_ends_incomplete_before_another_model_or_supervisor_request() {
-    let f = Fixture::new();
-    fs::create_dir_all(f.root.join(".glasshouse")).unwrap();
-    fs::write(f.root.join(".glasshouse/pane.toml"),"[limits]\ncell_wall_clock_s = 1\n[supervisor]\nenabled = true\nevery = 1\nmodel = 'test-supervisor'\n").unwrap();
-    // A real synchronous hook is an acknowledged remaining uninterruptible
-    // host seam. Force it past the hard deadline to prove the session guard,
-    // independently of the fixed foreground process polling.
-    let hook = f.root.join("slow-hook");
-    fs::write(&hook,"#!/bin/sh\nif [ \"$1\" = context-firewall ]; then\n input=$(cat)\n case \"$input\" in *PreToolUse*) sleep 4 ;; esac\nfi\n").unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
-    let (base, bodies) = provider(code(
-        "await bash({command:'printf should-not-run > marker'});",
-    ));
-    let command = f.command(&base);
-    // Override the argument already supplied by the shared helper.
-    let args: Vec<_> = command.get_args().map(|s| s.to_os_string()).collect();
-    let mut actual = Command::new(env!("CARGO_BIN_EXE_pane"));
-    for (index, arg) in args.iter().enumerate() {
-        if index > 0 && args[index - 1] == "--glasshouse" {
-            actual.arg(&hook);
-        } else {
-            actual.arg(arg);
-        }
-    }
-    actual
-        .env("ANTHROPIC_BASE_URL", base)
-        .env("XDG_CONFIG_HOME", f.root.join("global-config"))
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let mut child = actual.spawn().unwrap();
-    let status = wait_exit(&mut child);
-    assert!(
-        !status.success(),
-        "poison fixture did not poison: {}",
-        fs::read_to_string(f.root.join("rollout.jsonl")).unwrap_or_default()
-    );
-    let mut error = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut error)
-        .unwrap();
-    assert!(error.contains("runtime is poisoned"), "{error}");
-    assert_eq!(
-        bodies.lock().unwrap().len(),
-        1,
-        "poison spent further inference"
-    );
-    assert!(
-        !f.root.join("marker").exists(),
-        "effect ran after hook exceeded deadline"
-    );
-}
-
-#[test]
 fn successful_foreground_exit_stops_remaining_writers_with_inherited_or_closed_stdio() {
     for command in [
         "echo $$ > started; (sleep 3; printf late > marker) & printf foreground; exit 7",
@@ -383,7 +317,6 @@ fn successful_foreground_exit_stops_remaining_writers_with_inherited_or_closed_s
         let f = Fixture::new();
         let mut runtime = Runtime::with_limits(
             &f.profile(),
-            &Glasshouse::None,
             &SessionId::new("detached"),
             DEFAULT_HEAP_LIMIT_BYTES,
             Duration::from_secs(2),

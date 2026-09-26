@@ -310,7 +310,6 @@ pub(crate) fn mend(
         },
         &failure.brief(class, message),
         &state.profile,
-        &state.glasshouse,
         &state.session,
         &token,
     );

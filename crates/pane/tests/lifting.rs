@@ -13,7 +13,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, CellRecord};
 use pane::sandbox::profile::Profile;
@@ -45,11 +44,7 @@ fn record(outcome: &CellOutcome) -> &CellRecord {
 /// Runs one shell-shaped call and returns the trajectory it produced.
 fn shell(root: &std::path::Path, permissions: &str, command: &str) -> (String, Option<String>) {
     let profile = Profile::compile(root, Some(permissions));
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("lifting-session"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("lifting-session"));
     let source = format!(
         "await shell({{ command: {} }});\n",
         serde_json::to_string(command).unwrap()
@@ -100,11 +95,7 @@ fn a_read_command_becomes_the_read_capability() {
 fn a_range_read_keeps_exactly_the_range_that_was_asked_for() {
     let root = fixture("range");
     let profile = Profile::compile(&root, Some(ADMITS));
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("lifting-range"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("lifting-range"));
     let command = format!("head -n 2 {}", root.join("target.rs").to_string_lossy());
     // `shell` promises a process result, and a lift must not change that: the
     // range is exact *and* `stdout` still means stdout.
@@ -137,11 +128,7 @@ fn a_command_the_grant_refuses_is_never_lifted_into_one_that_would_be_allowed() 
     // Read is granted; the shell command is not admitted at all.
     let refuses_shell = r#"{"permissions":{"allow":["Read(**)"]}}"#;
     let profile = Profile::compile(&root, Some(refuses_shell));
-    let mut runtime = Runtime::new(
-        &profile,
-        &Glasshouse::None,
-        &SessionId::new("lifting-refused"),
-    );
+    let mut runtime = Runtime::new(&profile, &SessionId::new("lifting-refused"));
     let source = format!(
         "try {{ await shell({{ command: {} }}); return \"ran\"; }}\n\
          catch (e) {{ return \"refused\"; }}\n",
@@ -213,11 +200,11 @@ fn a_direct_call_and_a_cell_call_lift_identically() {
         serde_json::json!({"command": command}),
     )];
     let lowered = pane::abi::lower(pane::abi::Dialect::OpenAi, &calls, 1).unwrap();
-    let mut direct = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("lift-direct"));
+    let mut direct = Runtime::new(&profile, &SessionId::new("lift-direct"));
     let direct_outcome = direct.run_direct_frame(&lowered.source);
 
     // Authored: the model wrote the same call itself.
-    let mut authored = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("lift-cell"));
+    let mut authored = Runtime::new(&profile, &SessionId::new("lift-cell"));
     let authored_outcome = authored.run_cell(&format!(
         "await shell({{ command: {} }});\n",
         serde_json::to_string(&command).unwrap()
@@ -238,7 +225,7 @@ fn a_lifted_call_records_the_capabilitys_own_checked_arguments() {
     let root = fixture("checked");
     let command = format!("rg SessionManager {}", root.to_string_lossy());
     let profile = Profile::compile(&root, Some(ADMITS));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("lift-checked"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("lift-checked"));
     let outcome = runtime.run_cell(&format!(
         "await shell({{ command: {} }});\n",
         serde_json::to_string(&command).unwrap()

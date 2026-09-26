@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use pane::config::HelpersConfig;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::repair::{SOURCE_BYTE_CAP, SyntaxFailure};
@@ -37,7 +36,6 @@ impl Fixture {
     fn runtime(&self) -> Runtime {
         Runtime::new(
             &Profile::compile(&self.0, None),
-            &Glasshouse::None,
             &SessionId::new("cell-repair"),
         )
     }

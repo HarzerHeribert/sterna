@@ -6,7 +6,6 @@
 //! spawns and the file is not gated to a platform.
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::{CellOutcome, Ended};
 use pane::runtime::preview::Value;
@@ -25,7 +24,7 @@ fn fixture(label: &str) -> std::path::PathBuf {
 
 fn runtime(root: &std::path::Path, label: &str) -> Runtime {
     let profile = Profile::compile(root, None);
-    Runtime::new(&profile, &Glasshouse::None, &SessionId::new(label))
+    Runtime::new(&profile, &SessionId::new(label))
 }
 
 fn returned_text(outcome: &CellOutcome) -> String {

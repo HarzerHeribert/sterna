@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::{self, STDOUT_TOKEN_CAP};
@@ -26,11 +25,7 @@ impl Fixture {
 
     fn runtime(&self) -> Runtime {
         let profile = Profile::compile(&self.root, Some(r#"{"permissions":{"allow":["Read"]}}"#));
-        Runtime::new(
-            &profile,
-            &Glasshouse::None,
-            &SessionId::new("bounded-excerpt-test"),
-        )
+        Runtime::new(&profile, &SessionId::new("bounded-excerpt-test"))
     }
 }
 

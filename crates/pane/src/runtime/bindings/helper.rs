@@ -91,7 +91,6 @@ pub(super) fn helper_callback(
             crate::helpers::HelperRoute::new(&model, effort),
             &input,
             &state.profile,
-            &state.glasshouse,
             &state.session,
             &token,
         )
@@ -160,7 +159,6 @@ fn find(
         route(),
         &crate::reader::brief(question, root),
         &state.profile,
-        &state.glasshouse,
         &state.session,
         token,
     );
@@ -177,7 +175,6 @@ fn find(
         route(),
         &format!("{question}\n{listing}"),
         &state.profile,
-        &state.glasshouse,
         &state.session,
         token,
     );

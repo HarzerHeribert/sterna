@@ -3,7 +3,6 @@
 
 use pane::abi::Interface;
 use pane::contract::{Conversation, Message, Role, SessionId};
-use pane::glasshouse::Glasshouse;
 use pane::prompt::{self, Budget, CellResult, ErrorSection, ExhaustedReason, Extracted};
 use pane::runtime::handles::{HandleMeta, HandleTable, render_table};
 use pane::runtime::isolate::Runtime;
@@ -697,7 +696,7 @@ fn a_stack_overflow_renders_no_position_line_and_no_zero_frames() {
     let root = std::env::temp_dir().join(format!("pane-prompt-overflow-{}", std::process::id()));
     std::fs::create_dir_all(root.join(".claude")).unwrap();
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":[]}}"#));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("overflow"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("overflow"));
     let outcome = runtime.run_cell("function f(n) { return f(n + 1); }\nf(0);\n");
     let _ = std::fs::remove_dir_all(&root);
 

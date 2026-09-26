@@ -8,7 +8,6 @@
 
 use pane::config::HelpersConfig;
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::helpers::{CallSite, HelperSpec, REDUCER};
 use pane::prompt::declarations::callable_from_a_cell;
 use pane::runtime::bindings::HostGlobals;
@@ -229,11 +228,7 @@ fn an_unconfigured_helper_refuses_and_makes_no_wire_call() {
         std::env::set_var("ANTHROPIC_BASE_URL", &provider.url);
     }
 
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-unconfigured"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-unconfigured"));
     let outcome = runtime.run_cell(
         "try { await helper.reduce(\"a log line\"); answer(\"no refusal\"); }\n\
          catch (e) { return e.name + \": \" + e.message; }\n",
@@ -274,12 +269,8 @@ fn the_cell_call_ceiling_refuses_the_call_after_it() {
         std::env::set_var("ANTHROPIC_BASE_URL", &provider.url);
     }
 
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-ceiling"),
-    )
-    .with_helpers(configured("test-helper-model", 2));
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-ceiling"))
+        .with_helpers(configured("test-helper-model", 2));
     let outcome = runtime.run_cell(
         "let done = 0;\n\
          for (let i = 0; i < 3; i++) {\n\
@@ -325,12 +316,8 @@ fn a_helper_call_leaves_a_record_that_names_it_and_not_its_payload() {
         std::env::set_var("ANTHROPIC_BASE_URL", &provider.url);
     }
 
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-record"),
-    )
-    .with_helpers(configured("test-helper-model", 8));
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-record"))
+        .with_helpers(configured("test-helper-model", 8));
     // Four distinct lines, one of them a phrase no summary may echo.
     let outcome = runtime.run_cell(
         "const log = [\"warning: unused\", \"SECRET-PAYLOAD-MARKER\", \"error: boom\", \"done\"]\n\
@@ -386,7 +373,6 @@ fn a_one_shot_helper_records_every_reported_token_class() {
     helpers.effort.reduce = pane::wire::Effort::High;
     let mut runtime = Runtime::new(
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-usage-complete"),
     )
     .with_helpers(helpers);
@@ -434,12 +420,8 @@ fn a_helper_with_no_usage_object_records_unknown_coverage_not_zero_usage() {
     let fixture = Fixture::new("usage-missing");
     let provider = provider_with_usage("one failure", serde_json::Value::Null);
     unsafe { std::env::set_var("ANTHROPIC_BASE_URL", &provider.url) };
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-usage-missing"),
-    )
-    .with_helpers(configured("test-helper-model", 8));
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-usage-missing"))
+        .with_helpers(configured("test-helper-model", 8));
 
     let outcome = runtime.run_cell("return await helper.reduce(\"a log line\");\n");
     unsafe { std::env::remove_var("ANTHROPIC_BASE_URL") };
@@ -501,7 +483,6 @@ fn a_multiturn_helper_sums_each_response_once_with_cache_coverage() {
         },
         "inspect this",
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-usage-multiturn"),
         &pane::tools::invoke::CancellationToken::new(),
     );
@@ -588,7 +569,6 @@ fn a_narrowed_loops_turn_is_streamed_with_the_models_own_allowance() {
         },
         "inspect this",
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-narrowed-streams"),
         &pane::tools::invoke::CancellationToken::new(),
     );
@@ -702,7 +682,6 @@ fn cancellation_keeps_completed_usage_and_marks_the_inflight_request_unknown() {
         },
         "inspect this",
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-usage-cancelled"),
         &token,
     );
@@ -748,7 +727,6 @@ fn preflight_carries_its_helper_usage_into_the_returned_record() {
             cap: None,
         },
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-usage-preflight"),
         &pane::tools::invoke::CancellationToken::new(),
         |_| {},
@@ -836,7 +814,6 @@ fn a_helper_runs_past_every_former_ceiling_and_answers() {
         },
         "take as long as you need",
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-patient"),
         &pane::tools::invoke::CancellationToken::new(),
     );
@@ -887,7 +864,6 @@ fn a_helper_that_stops_without_returning_is_not_a_healthy_answer() {
         },
         "answer this",
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-yielding"),
         &pane::tools::invoke::CancellationToken::new(),
     );
@@ -912,12 +888,8 @@ fn a_failed_helper_call_throws_and_is_recorded_as_failed() {
         std::env::set_var("ANTHROPIC_BASE_URL", "http://127.0.0.1:9");
     }
 
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-failed"),
-    )
-    .with_helpers(configured("test-helper-model", 8));
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-failed"))
+        .with_helpers(configured("test-helper-model", 8));
     let outcome = runtime.run_cell("return await helper.reduce(\"a log line\");\n");
 
     unsafe {
@@ -1011,17 +983,13 @@ fn helpers_disabled_with_a_model_configured_still_refuse_and_never_reach_the_wir
         std::env::set_var("ANTHROPIC_BASE_URL", &provider.url);
     }
 
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-disabled"),
-    )
-    .with_helpers(HelpersConfig {
-        model: "a-real-model".to_string().into(),
-        enabled: false,
-        calls_per_cell: 8,
-        ..HelpersConfig::default()
-    });
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-disabled"))
+        .with_helpers(HelpersConfig {
+            model: "a-real-model".to_string().into(),
+            enabled: false,
+            calls_per_cell: 8,
+            ..HelpersConfig::default()
+        });
     let outcome = runtime.run_cell(
         "try { await helper.reduce(\"a log line\"); answer(\"no refusal\"); }\n\
          catch (e) { return e.name + \": \" + e.message; }\n",
@@ -1060,11 +1028,7 @@ fn helpers_disabled_with_a_model_configured_still_refuse_and_never_reach_the_wir
 #[test]
 fn every_declared_helper_is_actually_installed() {
     let fixture = Fixture::new("declared-installed");
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-declared"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-declared"));
 
     let mut expected: Vec<&str> = pane::helpers::HELPERS
         .iter()
@@ -1153,11 +1117,7 @@ fn a_helper_that_may_not_be_called_from_a_cell_is_not_installed() {
 #[test]
 fn a_cell_may_not_shadow_the_helper_global() {
     let fixture = Fixture::new("shadow-helper");
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-shadow"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-shadow"));
     let outcome = runtime.run_cell("const marker = 2;\nconst helper = 1;\n");
     let (class, message) = threw(&outcome);
     assert_eq!(
@@ -1184,11 +1144,7 @@ fn a_cell_may_not_shadow_the_helper_global() {
 #[test]
 fn a_tool_holding_helper_is_callable_and_grants_only_what_it_named() {
     let fixture = Fixture::new("tool-holding-callable");
-    let mut runtime = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-tool-holding"),
-    );
+    let mut runtime = Runtime::new(&fixture.profile(), &SessionId::new("helpers-tool-holding"));
 
     let mut checked = 0;
     for spec in pane::helpers::HELPERS {
@@ -1229,8 +1185,8 @@ fn a_tool_holding_helper_is_callable_and_grants_only_what_it_named() {
 ///
 /// `little-helpers.md` makes the toolset the safety boundary, and that is
 /// true of the registered tools and false of the host globals installed
-/// beside them: `bg.run` executes a command, `send` messages another session,
-/// `mcp.call` reaches a server. Not one of the three is a tool, so narrowing
+/// beside them: `bg.run` executes a command and `mcp.call` reaches a
+/// server. Neither is a tool, so narrowing
 /// `spec.tools` never touched them and a Scout could have shelled out.
 ///
 /// The runtime is built the way `helpers::run_with_tools` builds one, through
@@ -1243,14 +1199,13 @@ fn a_helpers_runtime_holds_no_global_that_can_cause_an_effect() {
     // the three mutating tools. The tools are the half that matters most --
     // `bash` executes, and a helper runs `.as_subagent()`, which skips the
     // approval gate entirely.
-    const PROGRAM: &str = "return [\"bg\", \"send\", \"mcp\", \"bash\", \"write\", \"edit\"]\n\
+    const PROGRAM: &str = "return [\"bg\", \"mcp\", \"bash\", \"write\", \"edit\"]\n\
          \x20 .map(n => n + \"=\" + typeof globalThis[n]).join(\",\");\n";
     let fixture = Fixture::new("narrowed-globals");
 
     // A Scout-shaped toolset: read-only tools only, exactly as its spec names.
     let mut helper = Runtime::for_helper(
         &fixture.profile(),
-        &Glasshouse::None,
         &SessionId::new("helpers-narrowed"),
         &["read", "grep"],
     )
@@ -1258,7 +1213,7 @@ fn a_helpers_runtime_holds_no_global_that_can_cause_an_effect() {
     .with_instruction_context();
     assert_eq!(
         returned_text(&helper.run_cell(PROGRAM)),
-        "bg=undefined,send=undefined,mcp=undefined,bash=undefined,write=undefined,edit=undefined",
+        "bg=undefined,mcp=undefined,bash=undefined,write=undefined,edit=undefined",
         "a helper's runtime must bind nothing that reaches outside the isolate"
     );
     assert_eq!(
@@ -1271,14 +1226,10 @@ fn a_helpers_runtime_holds_no_global_that_can_cause_an_effect() {
         "and it must still bind the tools its spec did name"
     );
 
-    let mut cell = Runtime::new(
-        &fixture.profile(),
-        &Glasshouse::None,
-        &SessionId::new("helpers-ordinary-cell"),
-    );
+    let mut cell = Runtime::new(&fixture.profile(), &SessionId::new("helpers-ordinary-cell"));
     assert_eq!(
         returned_text(&cell.run_cell(PROGRAM)),
-        "bg=object,send=function,mcp=object,bash=function,write=function,edit=function",
+        "bg=object,mcp=object,bash=function,write=function,edit=function",
         "an ordinary cell keeps every host global and tool it had"
     );
 }
@@ -1292,11 +1243,7 @@ fn a_helpers_runtime_holds_no_global_that_can_cause_an_effect() {
 fn a_helper_is_never_declared_a_global_its_runtime_does_not_hold() {
     let every = pane::prompt::render_runtime();
     let helper = pane::prompt::render_runtime_for(HostGlobals::Helper(&["read", "grep"]));
-    for head in [
-        "declare const bg: {",
-        "declare function send(",
-        "declare const mcp: {",
-    ] {
+    for head in ["declare const bg: {", "declare const mcp: {"] {
         assert!(every.contains(head), "`{head}` is what a cell is shown");
         assert!(
             !helper.contains(head),
@@ -1327,7 +1274,7 @@ fn the_narrowed_loop_is_what_asks_for_a_narrowed_runtime() {
     // capability it does not hold, nor hold one it was not told about.
     for named in [
         "HostGlobals::Helper(narrowed.tools)",
-        "Runtime::for_helper(profile, glasshouse, session, tools)",
+        "Runtime::for_helper(profile, session, tools)",
         "prompt::render_system_for(&instructions, &tools, &facts, globals)",
     ] {
         assert!(
@@ -1410,7 +1357,6 @@ fn a_small_command_result_is_untouched_and_costs_no_helper_call() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-small"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1457,7 +1403,6 @@ fn an_oversized_command_result_is_reduced_and_the_full_output_remains() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-big"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1546,7 +1491,6 @@ fn rules_alone_bring_a_test_log_under_the_threshold_and_no_request_is_made() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-ruled"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1610,7 +1554,6 @@ fn the_same_output_is_never_reduced_twice() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-twice"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1674,7 +1617,6 @@ fn an_oversized_result_is_untouched_when_helpers_are_unconfigured() {
     // No `with_helpers`: the default carries no model, which is helpers off.
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-off"),
     );
     let outcome = runtime.run_cell(&report_program(&oversized_command("error: boom")));
@@ -1736,7 +1678,6 @@ fn only_a_command_results_output_is_ever_reduced() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-jq"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1801,7 +1742,6 @@ fn the_cell_ceiling_bounds_reductions_nobody_asked_for() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-ceiling"),
     )
     .with_helpers(configured("test-helper-model", 1));
@@ -1863,7 +1803,6 @@ fn a_pushed_reduction_leaves_slots_for_the_models_own_calls() {
     // The default ceiling, so the reservation has room to bite.
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("pushed-vs-pulled"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1921,7 +1860,6 @@ fn a_partial_reduction_counts_the_marked_lines_the_reducer_never_saw() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-crowded"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -1968,7 +1906,6 @@ fn a_reduction_with_room_to_spare_carries_no_warning() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-roomy"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -2019,7 +1956,6 @@ fn a_truncated_reduction_is_a_failure_and_never_reaches_the_program_as_an_answer
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-truncated"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -2070,7 +2006,6 @@ fn a_filter_written_for_one_shape_answers_every_later_run_of_it() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-shape"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -2140,7 +2075,6 @@ fn a_reductions_evidence_and_its_prose_are_marked_apart() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-prose"),
     )
     .with_helpers(configured("test-helper-model", 8));
@@ -2193,7 +2127,6 @@ fn a_filter_that_writes_its_own_line_is_refused_and_nothing_is_lost() {
 
     let mut runtime = Runtime::new(
         &fixture.profile_with(PRINTF_ONLY),
-        &Glasshouse::None,
         &SessionId::new("post-result-composed"),
     )
     .with_helpers(configured("test-helper-model", 8));

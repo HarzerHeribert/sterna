@@ -780,8 +780,8 @@ fn an_unknown_pattern_kind_grants_nothing() {
 /// The fixture `sandbox-grants.md` §2 names: this repository's own settings
 /// document, compiled **against the root it was written for**.
 ///
-/// It used to be compiled against a throwaway `$TMPDIR` root, which put all
-/// seven `allow` entries outside the project and made the document look like
+/// It used to be compiled against a throwaway `$TMPDIR` root, which put its
+/// `allow` entries outside the project and made the document look like
 /// the reason §4.3 could not be implemented as written. It is not: in
 /// production those paths are inside the checkout, so the project-root
 /// default is what grants them and §4.3 never touches them. The two
@@ -795,8 +795,8 @@ fn the_repositorys_own_settings_document_compiles_to_its_written_grants() {
 
     assert_eq!(
         profile.rule_count(),
-        9,
-        "the fixture carries seven allow and two deny entries"
+        2,
+        "the fixture carries two deny entries"
     );
     assert!(
         profile.diagnostics().is_empty(),
@@ -808,10 +808,10 @@ fn the_repositorys_own_settings_document_compiles_to_its_written_grants() {
     let runtime = root.join(".agent-runtime");
     profile
         .check("Read", Access::Read, &runtime.join("report-x.md"))
-        .expect("Read(report-*.md) is granted");
+        .expect("a path inside the root is granted by the project default");
     profile
         .check("Write", Access::Write, &runtime.join("report-x.md"))
-        .expect("Write(report-*.md) is granted");
+        .expect("a path inside the root is writable by the project default");
 
     // And the deny entries still refuse, which under the real root is the
     // stronger statement: they beat the project-root default, not merely an

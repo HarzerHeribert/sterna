@@ -1,5 +1,4 @@
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::prompt::{
     COMPLETE_MARKER, Extracted, MAX_PANE_BLOCKS, MAX_PROGRAM_BYTES, completion_text,
     extract_program,
@@ -9,8 +8,6 @@ use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
 use pane::sandbox::profile::Profile;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn complete_pane_blocks_compose_in_message_order_with_a_safe_boundary() {
@@ -57,9 +54,8 @@ fn duplicate_top_level_bindings_are_preserved_for_the_cell_transform() {
     let root = std::env::temp_dir().join(format!("pane-ordered-duplicate-{}", std::process::id()));
     std::fs::create_dir_all(root.join(".claude")).unwrap();
     let profile = Profile::compile(&root, None);
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("ordered-duplicate");
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     assert!(matches!(
         runtime.run_cell(&source),
         CellOutcome::Returned {
@@ -75,10 +71,9 @@ fn ordered_blocks_execute_as_one_cell_and_stop_at_return_or_throw() {
     let root = std::env::temp_dir().join(format!("pane-ordered-blocks-{}", std::process::id()));
     std::fs::create_dir_all(root.join(".claude")).unwrap();
     let profile = Profile::compile(&root, None);
-    let glasshouse = Glasshouse::None;
     let session = SessionId::new("ordered-blocks");
 
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let Extracted::Program(source) = extract_program(
         "```pane\nconst base = 40;\n```\n```pane\nreturn base + 2;\n```\n```pane\nthrow new Error('must not run');\n```",
     ) else {
@@ -93,7 +88,7 @@ fn ordered_blocks_execute_as_one_cell_and_stop_at_return_or_throw() {
         }
     ));
 
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let Extracted::Program(source) = extract_program(
         "```pane\nconst reached = 1;\n```\n```pane\nthrow new Error('stop');\n```\n```pane\nconst skipped = 2;\n```",
     ) else {
@@ -108,40 +103,21 @@ fn ordered_blocks_execute_as_one_cell_and_stop_at_return_or_throw() {
 }
 
 #[cfg(unix)]
-fn fake_glasshouse(dir: &std::path::Path, log: &std::path::Path) -> std::path::PathBuf {
-    let script = dir.join("fake-glasshouse.sh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nprintf 'ARGS %s\\n' \"$*\" >> '{log}'\ncat >> '{log}'\nprintf '\\n' >> '{log}'\nexit 0\n",
-            log = log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    script
-}
-
-#[cfg(unix)]
 #[test]
 fn preflight_return_and_throw_prevent_later_admitted_writes() {
     let root = std::env::temp_dir().join(format!("pane-ordered-effects-{}", std::process::id()));
     std::fs::create_dir_all(root.join(".claude")).unwrap();
     let profile = Profile::compile(&root, Some(r#"{"permissions":{"allow":["Bash(echo*)"]}}"#));
-    let log = root.join("hooks.log");
-    let glasshouse = Glasshouse::Command {
-        glasshouse: fake_glasshouse(&root, &log),
-    };
     let session = SessionId::new("ordered-effects");
 
     // Prove the exact capability used by the negative cases is admitted and
     // can make an observable write in this fixture.
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let control =
         runtime.run_cell("const control = await bash({command: \"echo yes > control-marker\"});\n");
     assert!(root.join("control-marker").exists(), "{control:?}");
 
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let Extracted::Program(source) = extract_program(
         "```pane\nconst later = await bash({command: \"echo bad > syntax-marker\"});\n```\n```pane\nconst = ;\n```",
     ) else {
@@ -152,7 +128,7 @@ fn preflight_return_and_throw_prevent_later_admitted_writes() {
     assert!(!root.join("syntax-marker").exists());
     assert!(syntax.turn().record.calls.is_empty(), "{syntax:?}");
 
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let Extracted::Program(source) = extract_program(
         "```pane\nreturn 7;\n```\n```pane\nconst later = await bash({command: \"echo bad > return-marker\"});\n```",
     ) else {
@@ -163,7 +139,7 @@ fn preflight_return_and_throw_prevent_later_admitted_writes() {
     assert!(!root.join("return-marker").exists());
     assert!(returned.turn().record.calls.is_empty(), "{returned:?}");
 
-    let mut runtime = Runtime::new(&profile, &glasshouse, &session);
+    let mut runtime = Runtime::new(&profile, &session);
     let Extracted::Program(source) = extract_program(
         "```pane\nthrow new Error('stop');\n```\n```pane\nconst later = await bash({command: \"echo bad > throw-marker\"});\n```",
     ) else {

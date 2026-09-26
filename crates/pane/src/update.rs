@@ -268,7 +268,7 @@ fn place(
     let partial = root.join("versions").join(format!("{tag}.partial"));
     let _ = fs::remove_dir_all(&partial);
     fs::create_dir_all(partial.join("bin")).map_err(|e| e.to_string())?;
-    for name in ["pane", "inference-gateway", "glasshouse"] {
+    for name in ["pane", "inference-gateway"] {
         let file = if cfg!(windows) {
             format!("{name}.exe")
         } else {

@@ -113,8 +113,6 @@ fn run(fixture: &Fixture, replies: Vec<serde_json::Value>) -> (std::process::Out
         .arg(pane::wire::MODEL)
         .arg("--task")
         .arg("Decide what to do and finish.")
-        .arg("--glasshouse")
-        .arg(fixture.root.join("missing-glasshouse"))
         .env("ANTHROPIC_BASE_URL", base_url)
         .env("XDG_CONFIG_HOME", fixture.root.join("global-config"))
         .env_remove("ANTHROPIC_AUTH_TOKEN")

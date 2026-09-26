@@ -8,7 +8,6 @@ use pane::agent::AgentOptions;
 use pane::bg;
 use pane::contract::SessionId;
 use pane::events::Kind;
-use pane::glasshouse::Glasshouse;
 use pane::sandbox::profile::Profile;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -154,7 +153,6 @@ fn subagent_uses_native_cell_handoff_across_turns() {
     }
     let _handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "compute",
         &AgentOptions {
@@ -207,7 +205,6 @@ fn a_returned_value_is_notebook_output_and_the_subagent_works_on() {
     }
     let _handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "recommend changes",
         &AgentOptions {
@@ -278,7 +275,6 @@ fn a_subagent_answers_in_a_later_event_and_never_blocks_the_caller() {
     let started = Instant::now();
     let handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "what is six times seven",
         &AgentOptions {
@@ -340,7 +336,6 @@ fn a_subagent_that_never_answers_stops_at_its_turn_hint_and_keeps_its_work() {
     }
     bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "loop forever",
         &AgentOptions {
@@ -391,7 +386,6 @@ fn a_subagent_with_no_turn_hint_works_until_it_answers() {
     }
     bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "take as long as it takes",
         &AgentOptions {
@@ -435,7 +429,6 @@ fn a_configured_deadline_stops_a_subagent_and_keeps_its_work() {
     }
     bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "loop forever",
         &AgentOptions {
@@ -481,7 +474,6 @@ fn a_subagent_that_stopped_early_reports_its_turns_and_trajectory() {
     }
     bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "loop forever",
         &AgentOptions {
@@ -526,7 +518,6 @@ fn a_subagent_can_amend_its_parse_failed_cell() {
     }
     let result = pane::agent::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "answer",
         &AgentOptions {
@@ -559,7 +550,6 @@ fn subagent_plain_prose_is_its_result_without_a_marker_round_trip() {
     }
     let result = pane::agent::run(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "Answer the question",
         &AgentOptions {
@@ -676,7 +666,6 @@ fn a_running_subagents_rollout_is_readable_while_it_works() {
     }
     let handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "read the parser",
         &AgentOptions {
@@ -764,7 +753,6 @@ fn a_person_can_tell_a_running_subagent_something() {
     }
     let handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "read everything",
         &AgentOptions {
@@ -819,7 +807,6 @@ fn a_message_to_a_finished_subagent_is_undelivered_rather_than_an_error() {
     }
     let handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "answer",
         &AgentOptions {
@@ -865,7 +852,6 @@ fn a_look_names_the_record_and_whether_it_still_listens() {
     }
     let handle = bg::agent(
         &fixture.profile(),
-        &Glasshouse::None,
         &fixture.session,
         "answer",
         &AgentOptions {

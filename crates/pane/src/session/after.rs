@@ -52,7 +52,6 @@ pub(super) struct Check {
     pub model: String,
     pub effort: crate::wire::Effort,
     pub profile: crate::sandbox::profile::Profile,
-    pub glasshouse: crate::glasshouse::Glasshouse,
     pub session: crate::contract::SessionId,
 }
 
@@ -109,7 +108,6 @@ pub(super) struct Learn {
     pub ask: String,
     pub model: String,
     pub profile: crate::sandbox::profile::Profile,
-    pub glasshouse: crate::glasshouse::Glasshouse,
     pub session: crate::contract::SessionId,
 }
 
@@ -123,7 +121,6 @@ pub(super) fn spawn_learn(learn: Learn) {
             crate::helpers::HelperRoute::new(&learn.model, crate::wire::Effort::Low),
             &learn.ask,
             &learn.profile,
-            &learn.glasshouse,
             &learn.session,
             &token,
         );
@@ -161,7 +158,6 @@ pub(super) fn spawn(check: Check) {
         let token = crate::tools::invoke::CancellationToken::new();
         let context = crate::helpers::HelperContext {
             profile: &check.profile,
-            glasshouse: &check.glasshouse,
             session: &check.session,
             token: &token,
         };

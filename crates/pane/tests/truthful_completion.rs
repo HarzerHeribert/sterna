@@ -57,9 +57,7 @@ fn max_token_prose_and_native_calls_fail_without_execution_or_retry() {
                 "--model",
                 "fixture",
                 "--yolo",
-                "--glasshouse",
             ])
-            .arg(root.join("no-hook"))
             .env("ANTHROPIC_BASE_URL", base_url)
             .env("XDG_CONFIG_HOME", root.join("global-config"))
             .env_remove("ANTHROPIC_API_KEY")

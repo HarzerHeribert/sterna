@@ -4,7 +4,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use pane::contract::SessionId;
-use pane::glasshouse::Glasshouse;
 use pane::runtime::isolate::Runtime;
 use pane::runtime::outcome::CellOutcome;
 use pane::runtime::preview::Value;
@@ -61,7 +60,7 @@ fn check(runtime: &mut Runtime, command: &str) -> String {
 fn a_passing_check_is_repeated_only_while_the_files_are_byte_identical() {
     let root = crate_fixture("reuse");
     let profile = Profile::compile(&root, Some(ADMITS));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("reuse"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("reuse"));
     let reused = pane::verification::REUSED_NOTE;
 
     let first = check(&mut runtime, "cargo fmt --check");
@@ -99,7 +98,7 @@ fn a_failing_check_attaches_the_lines_it_names_and_they_can_be_edited_next() {
     let root = crate_fixture("attach");
     std::fs::write(root.join("src/main.rs"), "fn main(){println!(\"hi\");}\n").unwrap();
     let profile = Profile::compile(&root, Some(ADMITS));
-    let mut runtime = Runtime::new(&profile, &Glasshouse::None, &SessionId::new("attach"));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("attach"));
 
     let failed = runtime.run_cell("await bash({command: \"cargo fmt --check\"});");
     let turn = failed.turn();

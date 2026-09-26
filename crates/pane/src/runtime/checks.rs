@@ -102,7 +102,6 @@ fn execute(
         force,
         &ToolContext {
             profile: &state.profile,
-            glasshouse: &state.glasshouse,
             session: &state.session,
         },
         &token,

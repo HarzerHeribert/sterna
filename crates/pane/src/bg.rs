@@ -29,7 +29,6 @@ use std::time::{Duration, Instant};
 
 use crate::contract::SessionId;
 use crate::events::{Event, Kind, PayloadRef, Priority, now};
-use crate::glasshouse::Glasshouse;
 use crate::sandbox::profile::{PermissionDenied, Profile};
 use crate::tools::invoke::{self, Args, CancellationToken, ToolContext, ToolError};
 
@@ -267,7 +266,6 @@ fn fast_enough_to_be_free(every_ms: u64) -> Result<(), PermissionDenied> {
 /// and no handle for the model to hold.
 pub fn run(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     command: &str,
     options: &RunOptions,
@@ -276,7 +274,6 @@ pub fn run(
     profile.admits_command(command)?;
     Ok(start(
         profile,
-        glasshouse,
         session,
         Work::Command(command.to_string()),
         options.timeout_ms,
@@ -291,7 +288,6 @@ pub fn run(
 /// exists, exactly as a command outside the grant is.
 pub fn watch(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     command: &str,
     options: &WatchOptions,
@@ -300,7 +296,6 @@ pub fn watch(
     profile.admits_command(command)?;
     Ok(start(
         profile,
-        glasshouse,
         session,
         Work::Command(command.to_string()),
         options.timeout_ms,
@@ -321,17 +316,15 @@ pub fn watch(
 /// this is reached and before a handle exists.
 pub fn agent(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &crate::agent::AgentOptions,
 ) -> String {
-    agent_with_config(profile, glasshouse, session, task, options, None)
+    agent_with_config(profile, session, task, options, None)
 }
 
 pub fn agent_with_config(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     task: &str,
     options: &crate::agent::AgentOptions,
@@ -347,7 +340,6 @@ pub fn agent_with_config(
         .map(|deadline| u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX));
     start(
         profile,
-        glasshouse,
         session,
         Work::Agent {
             task: task.to_string(),
@@ -361,7 +353,6 @@ pub fn agent_with_config(
 
 fn start(
     profile: &Profile,
-    glasshouse: &Glasshouse,
     session: &SessionId,
     work: Work,
     timeout_ms: Option<u64>,
@@ -399,7 +390,6 @@ fn start(
     let job = JobThread {
         handle: handle.clone(),
         profile: profile.clone(),
-        glasshouse: glasshouse.clone(),
         session: session.clone(),
         work,
         token: token.clone(),
@@ -504,7 +494,6 @@ impl Work {
 struct JobThread {
     handle: String,
     profile: Profile,
-    glasshouse: Glasshouse,
     session: SessionId,
     work: Work,
     token: CancellationToken,
@@ -590,7 +579,6 @@ impl JobThread {
             } => {
                 let answered = crate::agent::run_watched(
                     &self.profile,
-                    &self.glasshouse,
                     &self.session,
                     task,
                     options,
@@ -687,7 +675,6 @@ impl JobThread {
     fn call(&self) -> Result<JobResult, ToolError> {
         let context = ToolContext {
             profile: &self.profile,
-            glasshouse: &self.glasshouse,
             session: &self.session,
         };
         let Work::Command(command) = &self.work else {
@@ -858,7 +845,7 @@ pub fn progress(session: &SessionId, handle: &str) -> Option<JobProgress> {
 pub fn tell(session: &SessionId, handle: &str, text: &str) -> Result<Delivery, &'static str> {
     // The parent's own inbox bound, not a second one: a message is a message,
     // and two limits for one idea is how they drift.
-    if text.is_empty() || text.len() > crate::events::inbox::MESSAGE_BYTES {
+    if text.is_empty() || text.len() > crate::agent::MESSAGE_BYTES {
         return Err("a message to a subagent must be 1–65536 UTF-8 bytes");
     }
     Ok(with_board(session, |board| {

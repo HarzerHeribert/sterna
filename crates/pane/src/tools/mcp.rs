@@ -67,13 +67,6 @@ impl Mcp {
     pub fn with_web_broker(&mut self, broker: crate::web::WebBroker) {
         self.web = Some(Arc::new(broker));
     }
-    /// The trusted discovered spelling used by the hook observer.
-    pub(crate) fn registered_name(&self, name: &str) -> Option<&str> {
-        self.tools
-            .get(name)
-            .map(|descriptor| descriptor.name.as_str())
-    }
-
     pub fn list(
         &mut self,
         profile: &Profile,

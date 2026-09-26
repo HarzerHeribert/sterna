@@ -78,13 +78,6 @@ fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// A fake `glasshouse` that records its own argv, one line per invocation.
-#[cfg(unix)]
-fn write_argv_recorder(dir: &Path, record: &Path) -> PathBuf {
-    let body = format!("#!/bin/sh\necho \"$@\" >> \"{}\"\n", record.display());
-    write_script(dir, "fake_glasshouse.sh", &body)
-}
-
 /// Binds an ephemeral local port and drops the listener immediately, so any
 /// connection to it is refused fast, locally, and without ever reaching a
 /// real host -- the guard every test that must not send a request uses for
@@ -340,7 +333,6 @@ fn a_tasks_requests_echo_the_routing_token_its_first_response_gave() {
         "turn-routing",
         &["first task", "second task"],
         &base,
-        Some(&root.join("absent")),
         false,
     );
     assert!(
@@ -412,7 +404,6 @@ fn each_request_resends_the_last_one_unchanged_with_its_reasoning() {
         "append-only",
         "work",
         &url,
-        Some(&root.join("absent")),
     );
     assert!(
         output.status.success(),
@@ -463,7 +454,7 @@ fn native_cell_result_is_correlated_before_the_next_request() {
         native_cell_reply("call-read", "const x = 6 * 7; console.log(x);"),
         native_cell_reply("call-return", "answer(`done ${x}`);"),
     ]);
-    let output = run_session(&root, &rollout, "native-handoff", "compute", &base, None);
+    let output = run_session(&root, &rollout, "native-handoff", "compute", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -525,7 +516,7 @@ fn multiple_native_calls_are_all_rejected_without_execution() {
     .to_string();
     let (base, bodies) =
         start_fake_provider(vec![first, native_cell_reply("finish", "answer('safe');")]);
-    let output = run_session(&root, &rollout, "native-multiple", "do it", &base, None);
+    let output = run_session(&root, &rollout, "native-multiple", "do it", &base);
     assert!(output.status.success());
     assert_eq!(
         cell_lines(&rollout).len(),
@@ -558,7 +549,7 @@ fn one_long_native_call_can_run_multiple_runtime_tools() {
         native_cell_reply("long-tools", &code),
         native_cell_reply("finish", "answer('done');"),
     ]);
-    let output = run_session(&root, &rollout, "native-long-tools", "do it", &base, None);
+    let output = run_session(&root, &rollout, "native-long-tools", "do it", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -585,7 +576,7 @@ fn malformed_native_input_and_runtime_throw_are_correlated_errors() {
         native_cell_reply("throws", "throw new Error('boom')"),
         native_cell_reply("finish", "answer('done');"),
     ]);
-    let output = run_session(&root, &rollout, "native-errors", "do it", &base, None);
+    let output = run_session(&root, &rollout, "native-errors", "do it", &base);
     assert!(output.status.success());
     let bodies = bodies.lock().unwrap();
     for (index, id) in [(1, "bad-input"), (2, "throws")] {
@@ -626,9 +617,8 @@ fn run_session(
     session_id: &str,
     task: &str,
     base_url: &str,
-    glasshouse: Option<&Path>,
 ) -> std::process::Output {
-    run_session_with_gateway(root, rollout, session_id, task, base_url, glasshouse, None)
+    run_session_with_gateway(root, rollout, session_id, task, base_url, None)
 }
 
 /// [`run_session`], plus the `inference-gateway` binary the entitlement,
@@ -646,7 +636,6 @@ fn run_session_with_gateway(
     session_id: &str,
     task: &str,
     base_url: &str,
-    glasshouse: Option<&Path>,
     gateway: Option<&Path>,
 ) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pane"));
@@ -665,9 +654,6 @@ fn run_session_with_gateway(
         .env_remove("ANTHROPIC_AUTH_TOKEN")
         .env_remove("ANTHROPIC_API_KEY");
     supply_test_model(&mut command, root);
-    if let Some(glasshouse) = glasshouse {
-        command.arg("--glasshouse").arg(glasshouse);
-    }
     if let Some(gateway) = gateway {
         command.arg("--gateway").arg(gateway);
         // `--gateway` is ignored by a *hosted* session, which resolves the
@@ -745,7 +731,7 @@ fn the_binary_runs_a_turn_and_writes_a_rollout() {
         ending_reply(),
     ]);
 
-    let output = run_session(&root, &rollout, "sess-turn", "hello there", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-turn", "hello there", &base_url);
 
     assert!(
         output.status.success(),
@@ -781,14 +767,7 @@ fn the_binary_resumes_an_existing_rollout_instead_of_starting_over() {
         assistant_reply("first reply\n<!-- pane:done -->"),
         ending_reply(),
     ]);
-    let first = run_session(
-        &root,
-        &rollout,
-        "sess-resume",
-        "first message",
-        &first_url,
-        None,
-    );
+    let first = run_session(&root, &rollout, "sess-resume", "first message", &first_url);
     assert!(
         first.status.success(),
         "stderr: {}",
@@ -805,7 +784,6 @@ fn the_binary_resumes_an_existing_rollout_instead_of_starting_over() {
         "sess-resume",
         "second message",
         &second_url,
-        None,
     );
     assert!(
         second.status.success(),
@@ -850,7 +828,7 @@ fn the_binary_loads_the_projects_own_instructions() {
         ending_reply(),
     ]);
 
-    let output = run_session(&root, &rollout, "sess-instructions", "hi", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-instructions", "hi", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -865,47 +843,13 @@ fn the_binary_loads_the_projects_own_instructions() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn the_binary_emits_session_start_to_the_hook_command() {
-    let root = scratch_dir("hook-root");
-    let rollout = root.join("rollout.jsonl");
-    let record = root.join("argv.txt");
-    let glasshouse = write_argv_recorder(&root, &record);
-    let (base_url, _bodies) = start_fake_provider(vec![
-        assistant_reply("ack\n<!-- pane:done -->"),
-        ending_reply(),
-    ]);
-
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-hook",
-        "hi",
-        &base_url,
-        Some(&glasshouse),
-    );
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let seen = fs::read_to_string(&record).unwrap();
-    assert!(
-        seen.lines()
-            .any(|line| line == "hook --session sess-hook --event SessionStart"),
-        "argv log did not carry a SessionStart hook call: {seen}"
-    );
-}
-
 #[test]
 fn a_slash_command_is_answered_without_a_request() {
     let root = scratch_dir("slash-root");
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
 
-    let output = run_session(&root, &rollout, "sess-slash", "/model", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-slash", "/model", &base_url);
 
     assert!(
         output.status.success(),
@@ -936,7 +880,7 @@ fn a_session_with_no_flag_starts_on_auto_and_says_it_cannot_ask() {
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
 
-    let output = run_session(&root, &rollout, "sess-rung", "/handles", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-rung", "/handles", &base_url);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -992,7 +936,7 @@ fn handles_command_reports_the_recorded_preview() {
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
 
-    let output = run_session(&root, &rollout, "sess-unbuilt", "/handles", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-unbuilt", "/handles", &base_url);
 
     assert!(
         output.status.success(),
@@ -1059,14 +1003,7 @@ fn nothing_the_model_returns_is_executed() {
     let (base_url, _bodies) =
         start_fake_provider(vec![assistant_reply(&malicious), ending_reply()]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-no-execute",
-        "please help",
-        &base_url,
-        None,
-    );
+    let output = run_session(&root, &rollout, "sess-no-execute", "please help", &base_url);
 
     assert!(
         output.status.success(),
@@ -1077,56 +1014,6 @@ fn nothing_the_model_returns_is_executed() {
         !sentinel.exists(),
         "the model's text must never be executed: {} was created",
         sentinel.display()
-    );
-}
-
-/// Map line 2446 reaching the **binary**, which is the only place it counts.
-///
-/// `glasshouse::{search_memory, checkpoint}` were built and tested by
-/// `GH-PANE-61C-SEAMS` and then called by nothing: `commands` was scoped to
-/// decide what a command *is*, and no package was given the acting half. The
-/// reachability scan over `crates/pane/src` found them with zero production
-/// call site outside their own file, which is the same shape that made the
-/// whole of 61C need correcting.
-///
-/// This drives the built binary with `/memory` against a fake `glasshouse`
-/// that answers one MCP `tools/call`, and asserts the answer reaches stdout.
-#[cfg(unix)]
-#[test]
-fn the_binary_reads_memory_through_the_mcp_surface() {
-    let root = scratch_dir("memory-root");
-    let rollout = root.join("rollout.jsonl");
-
-    // A fake `glasshouse mcp serve`: one JSON-RPC result line per request
-    // line it reads, carrying a note only a reachable surface could produce.
-    // Answers according to which tool was asked for, so the two readers are
-    // distinguishable. A fake that answered both the same way let a mutation
-    // deleting the `search_memory` call SURVIVE: `checkpoint` alone satisfied
-    // an assertion that the surface had been reached.
-    let glasshouse = write_script(
-        &root,
-        "fake_glasshouse_mcp.sh",
-        "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *glasshouse_search_memory*) text=MEMORY-REACHED ;;\n    *glasshouse_get_checkpoint*) text=CHECKPOINT-REACHED ;;\n    *) text=UNKNOWN-TOOL ;;\n  esac\n  printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}]}}\\n' \"$text\"\ndone\n",
-    );
-
-    let output = run_session(
-        &root,
-        &rollout,
-        "memory-session",
-        "/memory",
-        &refused_base_url(),
-        Some(&glasshouse),
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.contains("MEMORY-REACHED"),
-        "search_memory never reached the MCP surface:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        stdout.contains("CHECKPOINT-REACHED"),
-        "checkpoint never reached the MCP surface:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 
@@ -1142,7 +1029,6 @@ fn the_binary_reads_memory_through_the_mcp_surface() {
 fn a_note_written_through_the_binary_is_read_back_by_a_later_run() {
     let root = scratch_dir("memory-roundtrip-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let write = run_session(
         &root,
@@ -1150,7 +1036,6 @@ fn a_note_written_through_the_binary_is_read_back_by_a_later_run() {
         "memory-write",
         "/memory PANE-WROTE-THIS-NOTE",
         &refused_base_url(),
-        Some(&absent),
     );
     assert!(
         write.status.success(),
@@ -1164,7 +1049,6 @@ fn a_note_written_through_the_binary_is_read_back_by_a_later_run() {
         "memory-read",
         "/memory",
         &refused_base_url(),
-        Some(&absent),
     );
     assert!(
         read.status.success(),
@@ -1187,20 +1071,12 @@ fn a_note_written_through_the_binary_is_read_back_by_a_later_run() {
 fn a_piped_session_prints_the_models_reply() {
     let root = scratch_dir("print-reply-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, _bodies) = start_fake_provider(vec![
         assistant_reply("PANE-PRINTED-REPLY-MARKER\n<!-- pane:done -->"),
         ending_reply(),
     ]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-print-reply",
-        "hello",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-print-reply", "hello", &base_url);
 
     assert!(
         output.status.success(),
@@ -1227,20 +1103,12 @@ fn a_piped_session_prints_the_models_reply() {
 fn a_piped_session_prints_the_sidebar_content() {
     let root = scratch_dir("print-sidebar-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, _bodies) = start_fake_provider(vec![
         assistant_reply("ack\n<!-- pane:done -->"),
         ending_reply(),
     ]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-print-sidebar",
-        "hello",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-print-sidebar", "hello", &base_url);
 
     assert!(
         output.status.success(),
@@ -1270,7 +1138,6 @@ fn the_command_list_is_offered_by_the_binary() {
     fs::create_dir_all(root.join(".claude").join("skills").join("reviewer")).unwrap();
 
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let output = run_session(
         &root,
@@ -1278,7 +1145,6 @@ fn the_command_list_is_offered_by_the_binary() {
         "sess-command-list",
         "/help",
         &refused_base_url(),
-        Some(&absent),
     );
 
     assert!(
@@ -1315,7 +1181,6 @@ fn a_project_command_runs_through_the_normal_task_prompt() {
         "project-command-run",
         "/deploy staging",
         &base_url,
-        None,
     );
 
     assert!(
@@ -1346,7 +1211,6 @@ fn a_project_skill_resolves_by_name() {
     fs::create_dir_all(root.join(".claude").join("skills").join("reviewer")).unwrap();
 
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let output = run_session(
         &root,
@@ -1354,7 +1218,6 @@ fn a_project_skill_resolves_by_name() {
         "sess-skill-resolve",
         "/reviewer",
         &refused_base_url(),
-        Some(&absent),
     );
 
     assert!(
@@ -1380,7 +1243,6 @@ fn supervisor_and_permissions_report_effective_session_state() {
     )
     .unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let supervisor = run_session(
         &root,
@@ -1388,7 +1250,6 @@ fn supervisor_and_permissions_report_effective_session_state() {
         "control-supervisor",
         "/supervisor",
         &refused_base_url(),
-        Some(&absent),
     );
     assert!(supervisor.status.success());
     let stdout = String::from_utf8_lossy(&supervisor.stdout);
@@ -1402,7 +1263,6 @@ fn supervisor_and_permissions_report_effective_session_state() {
         "control-permissions",
         "/permissions",
         &refused_base_url(),
-        Some(&absent),
     );
     assert!(permissions.status.success());
     let stdout = String::from_utf8_lossy(&permissions.stdout);
@@ -1421,7 +1281,6 @@ fn supervisor_and_permissions_report_effective_session_state() {
 fn rollback_previews_the_exact_checkpoint_and_headless_confirmation_refuses() {
     let root = scratch_dir("rollback-control");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, _bodies) = start_fake_provider(vec![
         native_cell_reply(
             "make-file",
@@ -1436,7 +1295,6 @@ fn rollback_previews_the_exact_checkpoint_and_headless_confirmation_refuses() {
         "rollback-control",
         &["make a file", "/rollback", "/rollback confirm"],
         &base_url,
-        Some(&absent),
         false,
     );
 
@@ -1505,7 +1363,6 @@ fn a_scripted_two_cell_task_runs_through_the_binary_and_returns() {
     // more file the model's own `grep` reads, and the counts it returns would
     // then depend on the session's own record of asking for them.
     let rollout = scratch_dir("two-cell-rollout").join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let cell_one = format!(
         "```pane\nconst hits = await grep({{ pattern: \"IntegrationId\", path: \"{root}\" }});\nconst adapter = await read({{ path: \"{root}/src/harness.rs\" }});\n```",
@@ -1529,7 +1386,6 @@ fn a_scripted_two_cell_task_runs_through_the_binary_and_returns() {
         "sess-two-cell",
         "How many files name that type, and how many are tests?",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -1595,7 +1451,6 @@ fn a_scripted_two_cell_task_runs_through_the_binary_and_returns() {
 fn a_prose_answer_with_example_code_ends_without_running_a_cell() {
     let root = scratch_dir("prose-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply(
@@ -1604,14 +1459,7 @@ fn a_prose_answer_with_example_code_ends_without_running_a_cell() {
         ending_reply(),
     ]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-prose",
-        "count them",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-prose", "count them", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -1634,19 +1482,11 @@ fn a_prose_answer_with_example_code_ends_without_running_a_cell() {
 fn ordered_pane_blocks_run_in_one_cell() {
     let root = scratch_dir("two-blocks-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nconst a = 1;\n```\n\n```pane\nconst b = a + 2;\n```"),
         assistant_reply("```pane\nanswer(`${b}`);\n```"),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "ordered",
-        "do the thing",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "ordered", "do the thing", &base_url);
     assert!(
         output.status.success(),
         "{}",
@@ -1672,21 +1512,13 @@ fn ordered_pane_blocks_run_in_one_cell() {
 fn a_cell_that_throws_is_answered_and_the_session_continues() {
     let root = scratch_dir("throw-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nconst before = 1;\nthrow new ReferenceError(\"fixture\");\n```"),
         ending_reply(),
     ]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-throw",
-        "do the thing",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-throw", "do the thing", &base_url);
     assert!(
         output.status.success(),
         "a throw must not fail the session; stderr: {}",
@@ -1797,7 +1629,6 @@ fn the_system_block_is_render_systems_own_bytes() {
         "hi",
         &base_url,
         Some(&absent),
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -1848,7 +1679,6 @@ fn the_system_block_is_render_systems_own_bytes() {
 fn the_cell_cap_replaces_the_preamble_and_ends_the_task_after_one_more_turn() {
     let root = scratch_dir("cell-cap-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     // There is no default cap since 2026-09-17; a ceiling exists only when
     // this person sets one, and this test pins that ceiling's mechanics.
     //
@@ -1866,14 +1696,7 @@ fn the_cell_cap_replaces_the_preamble_and_ends_the_task_after_one_more_turn() {
         .collect();
     let (base_url, bodies) = start_fake_provider(replies);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-cell-cap",
-        "keep going",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-cell-cap", "keep going", &base_url);
     assert!(
         !output.status.success(),
         "stderr: {}",
@@ -1945,7 +1768,6 @@ fn a_gateway_reported_turn_is_counted_from_the_usage_row_not_estimated() {
         "count them",
         &base_url,
         Some(&gateway),
-        None,
     );
     assert!(
         output.status.success(),
@@ -1998,7 +1820,6 @@ fn a_turn_the_gateway_never_metered_is_labelled_rather_than_averaged() {
         "count them",
         &base_url,
         Some(&gateway),
-        None,
     );
     assert!(
         output.status.success(),
@@ -2034,7 +1855,6 @@ fn a_turn_the_gateway_never_metered_is_labelled_rather_than_averaged() {
 fn an_answer_ends_the_task_and_a_returned_string_does_not() {
     let root = scratch_dir("terminal-string-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let answer = "Three files name it; two are tests.\nThe third is src/lib.rs.";
     let quoted = serde_json::to_string(answer).unwrap();
 
@@ -2050,7 +1870,6 @@ fn an_answer_ends_the_task_and_a_returned_string_does_not() {
         "sess-terminal-string",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2101,7 +1920,6 @@ fn an_answer_ends_the_task_and_a_returned_string_does_not() {
 fn a_throw_never_becomes_a_terminal_response() {
     let root = scratch_dir("throw-terminal-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply(
@@ -2116,7 +1934,6 @@ fn a_throw_never_becomes_a_terminal_response() {
         "sess-throw-terminal",
         "do the thing",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2160,7 +1977,6 @@ fn a_throw_never_becomes_a_terminal_response() {
 fn a_returned_object_is_output_and_the_task_continues() {
     let root = scratch_dir("terminal-json-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply(
             "```pane\nreturn { matches: 3, files: 2, names: [\"a.rs\", \"b.rs\"] };\n```",
@@ -2174,7 +1990,6 @@ fn a_returned_object_is_output_and_the_task_continues() {
         "sess-terminal-json",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2220,7 +2035,6 @@ fn a_returned_object_is_output_and_the_task_continues() {
         "sess-terminal-json-whole",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(output.status.success());
     let bodies = bodies.lock().unwrap();
@@ -2260,7 +2074,6 @@ fn a_returned_object_is_output_and_the_task_continues() {
 fn no_count_of_cells_ends_a_task_that_keeps_producing_something() {
     let root = scratch_dir("no-cell-cap-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     // Past the old 120-cell default, then a final answer.
     let cells = 130;
@@ -2274,14 +2087,7 @@ fn no_count_of_cells_ends_a_task_that_keeps_producing_something() {
     replies.push(ending_reply());
     let (base_url, bodies) = start_fake_provider(replies);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-no-cell-cap",
-        "keep going",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-no-cell-cap", "keep going", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -2324,7 +2130,6 @@ fn no_count_of_cells_ends_a_task_that_keeps_producing_something() {
 fn an_investigation_that_only_ever_reads_is_never_ended_as_a_stall() {
     let root = scratch_dir("read-only-investigation");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     for i in 0..24 {
         fs::write(root.join(format!("f{i}.txt")), format!("file {i}\n")).unwrap();
     }
@@ -2345,14 +2150,7 @@ fn an_investigation_that_only_ever_reads_is_never_ended_as_a_stall() {
     replies.push(ending_reply());
     let (base_url, bodies) = start_fake_provider(replies);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-read-only",
-        "look around",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-read-only", "look around", &base_url);
     assert!(
         output.status.success(),
         "a task that keeps reading new files must finish on its own terms; \
@@ -2388,7 +2186,6 @@ fn an_investigation_that_only_ever_reads_is_never_ended_as_a_stall() {
 fn a_task_that_stops_producing_anything_ends_on_the_stall_with_its_reason() {
     let root = scratch_dir("stall-end-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     // Far more than the ender needs, so a loop that ran on would be served.
     let replies = (0..40)
@@ -2396,14 +2193,7 @@ fn a_task_that_stops_producing_anything_ends_on_the_stall_with_its_reason() {
         .collect();
     let (base_url, bodies) = start_fake_provider(replies);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-stall-end",
-        "go nowhere",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-stall-end", "go nowhere", &base_url);
     assert!(
         !output.status.success(),
         "stderr: {}",
@@ -2446,17 +2236,9 @@ fn repeated_malformed_executable_replies_are_bounded() {
 
     let root = scratch_dir("prose-cap-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     // Twenty, so a loop that ran on would be served and counted.
     let (base_url, bodies) = start_fake_provider((0..24).map(|_| prose()).collect());
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-prose-cap",
-        "count them",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-prose-cap", "count them", &base_url);
     assert!(
         !output.status.success(),
         "stderr: {}",
@@ -2493,14 +2275,7 @@ fn repeated_malformed_executable_replies_are_bounded() {
         prose(),
         ending_reply(),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-prose-reset",
-        "count them",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-prose-reset", "count them", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -2524,19 +2299,11 @@ fn repeated_malformed_executable_replies_are_bounded() {
 fn the_usage_line_names_the_max_tokens_actually_sent() {
     let root = scratch_dir("turn-cap-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nconst x = 1;\n```"),
         ending_reply(),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-turn-cap",
-        "count them",
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-turn-cap", "count them", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -2584,7 +2351,6 @@ fn the_usage_line_names_the_max_tokens_actually_sent() {
 fn a_direct_providers_usage_is_counted_as_reported_not_estimated() {
     let root = scratch_dir("budget-direct-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply_with_usage("```pane\nconst x = 1;\n```", 20, 10),
@@ -2597,7 +2363,6 @@ fn a_direct_providers_usage_is_counted_as_reported_not_estimated() {
         "sess-budget-direct",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2636,7 +2401,6 @@ fn a_direct_providers_usage_is_counted_as_reported_not_estimated() {
 fn reported_token_spend_never_caps_the_task() {
     let root = scratch_dir("uncapped-token-spend-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply_with_usage("```pane\nconst first = 1;\n```", 450_000, 10),
@@ -2650,7 +2414,6 @@ fn reported_token_spend_never_caps_the_task() {
         "sess-uncapped-token-spend",
         "keep working until you can return",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2697,7 +2460,6 @@ fn the_gateways_row_wins_over_the_responses_usage_when_both_report() {
         "count them",
         &base_url,
         Some(&gateway),
-        None,
     );
     assert!(
         output.status.success(),
@@ -2762,7 +2524,6 @@ fn a_planted_three_turn_loop_is_nudged_within_two_turns() {
     let root = scratch_dir("supervisor-loop-root");
     write_supervisor_pane_toml(&root, 3, "");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, bodies) = start_answering_provider(5, move |body| {
@@ -2786,7 +2547,6 @@ fn a_planted_three_turn_loop_is_nudged_within_two_turns() {
         "sess-supervisor-loop",
         "keep going",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2837,7 +2597,6 @@ fn a_planted_three_turn_loop_is_nudged_within_two_turns() {
     let root = scratch_dir("supervisor-off-root");
     write_supervisor_pane_toml(&root, 3, "enabled = false\n");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, bodies) = start_answering_provider(4, move |body| {
@@ -2860,7 +2619,6 @@ fn a_planted_three_turn_loop_is_nudged_within_two_turns() {
         "sess-supervisor-off",
         "keep going",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2892,7 +2650,6 @@ fn an_unparseable_supervisor_answer_is_not_a_nudge() {
     let root = scratch_dir("supervisor-unparseable-root");
     write_supervisor_pane_toml(&root, 1, "");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, bodies) = start_answering_provider(3, move |body| {
@@ -2914,7 +2671,6 @@ fn an_unparseable_supervisor_answer_is_not_a_nudge() {
         "sess-supervisor-unparseable",
         "keep going",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -2946,7 +2702,6 @@ fn a_failed_supervisor_look_is_recorded_as_failed_not_as_no_nudge() {
     let root = scratch_dir("supervisor-failed-look-root");
     write_supervisor_pane_toml(&root, 1, "");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, bodies) = start_answering_provider(3, move |body| {
@@ -2968,7 +2723,6 @@ fn a_failed_supervisor_look_is_recorded_as_failed_not_as_no_nudge() {
         "sess-supervisor-failed-look",
         &["keep going", "/supervisor"],
         &base_url,
-        Some(&absent),
         false,
     );
     assert!(
@@ -3007,7 +2761,6 @@ fn the_look_carries_the_purpose_header() {
     let root = scratch_dir("supervisor-header-root");
     write_supervisor_pane_toml(&root, 1, "");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, captured) = start_capturing_provider(3, move |body| {
@@ -3029,7 +2782,6 @@ fn the_look_carries_the_purpose_header() {
         "sess-supervisor-header",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -3065,7 +2817,6 @@ fn the_look_names_the_supervisors_model_and_the_turns_name_the_tasks() {
     )
     .unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     let task_count = Mutex::new(0usize);
     let (base_url, bodies) = start_answering_provider(3, move |body| {
@@ -3087,7 +2838,6 @@ fn the_look_names_the_supervisors_model_and_the_turns_name_the_tasks() {
         "sess-supervisor-model",
         "count them",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -3125,7 +2875,6 @@ fn a_loaded_cell_limit_ends_the_task() {
     fs::create_dir_all(root.join(".pane")).unwrap();
     fs::write(root.join(".pane/config.toml"), "[limits]\ncells = 2\n").unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
 
     // Three scripted turns: the third is the final-answer turn.
     let turns = 3;
@@ -3140,7 +2889,6 @@ fn a_loaded_cell_limit_ends_the_task() {
         "sess-loaded-cell-limit",
         "keep going",
         &base_url,
-        Some(&absent),
     );
     assert!(
         !output.status.success(),
@@ -4029,7 +3777,6 @@ mod interrupts {
             "sess-bg-return",
             "start a job, then return",
             &base_url,
-            None,
         );
 
         assert!(
@@ -4076,7 +3823,6 @@ mod interrupts {
             "sess-bg-fail",
             "start a job, then fail",
             &base_url,
-            None,
         );
 
         assert!(
@@ -4169,7 +3915,6 @@ fn run_session_stdin(
     session_id: &str,
     inputs: &[&str],
     base_url: &str,
-    glasshouse: Option<&Path>,
     yolo: bool,
 ) -> std::process::Output {
     use std::process::Stdio;
@@ -4193,9 +3938,6 @@ fn run_session_stdin(
     if yolo {
         command.arg("--yolo");
     }
-    if let Some(glasshouse) = glasshouse {
-        command.arg("--glasshouse").arg(glasshouse);
-    }
     let mut child = command.spawn().unwrap();
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -4213,7 +3955,6 @@ fn run_session_stdin(
 fn a_blank_input_is_not_a_turn_and_never_reaches_the_provider() {
     let root = scratch_dir("blank-input-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     // One reply, because exactly one of the four inputs is a turn.
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
 
@@ -4223,7 +3964,6 @@ fn a_blank_input_is_not_a_turn_and_never_reaches_the_provider() {
         "sess-blank",
         &["", "   ", "\t", "hi"],
         &base_url,
-        Some(&absent),
         false,
     );
     assert!(
@@ -4258,7 +3998,6 @@ fn a_blank_input_is_not_a_turn_and_never_reaches_the_provider() {
 fn an_empty_reply_ends_its_task_without_ending_the_session() {
     let root = scratch_dir("empty-reply-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     // Turn one is answered with an empty message; turn two, a fresh task, is
     // answered normally. Two requests prove the REPL lived through the first.
     let (base_url, bodies) = start_fake_provider(vec![assistant_reply(""), ending_reply()]);
@@ -4269,7 +4008,6 @@ fn an_empty_reply_ends_its_task_without_ending_the_session() {
         "sess-empty-reply",
         &["first task", "second task"],
         &base_url,
-        Some(&absent),
         false,
     );
     assert!(
@@ -4310,18 +4048,9 @@ fn yolo_grants_every_command_line_and_the_system_block_says_so() {
     let root = scratch_dir("yolo-root");
     fs::write(root.join("CLAUDE.md"), "PROJECT").unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
 
-    let output = run_session_stdin(
-        &root,
-        &rollout,
-        "sess-yolo",
-        &["go"],
-        &base_url,
-        Some(&absent),
-        true,
-    );
+    let output = run_session_stdin(&root, &rollout, "sess-yolo", &["go"], &base_url, true);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -4537,18 +4266,9 @@ fn full_access_refuses_a_different_permissions_rung_beside_it() {
 fn without_a_grant_the_system_block_says_no_command_may_run() {
     let root = scratch_dir("nogrant-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
 
-    let output = run_session_stdin(
-        &root,
-        &rollout,
-        "sess-nogrant",
-        &["go"],
-        &base_url,
-        Some(&absent),
-        false,
-    );
+    let output = run_session_stdin(&root, &rollout, "sess-nogrant", &["go"], &base_url, false);
     assert!(output.status.success());
 
     let bodies = bodies.lock().unwrap();
@@ -4578,7 +4298,6 @@ fn slash_model_changes_the_slug_the_next_request_carries() {
         "sess-model-switch",
         &["/model deepseek-v4-flash", "do the thing"],
         &base_url,
-        None,
         false,
     );
     assert!(
@@ -4621,7 +4340,6 @@ fn model_picker_names_the_active_slug_without_calling_the_provider() {
         "sess-model-report",
         &["/model"],
         &base_url,
-        None,
         &gateway,
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4659,7 +4377,6 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         "sess-model-remember",
         &["/model claude-opus-4-8"],
         &base_url,
-        None,
         false,
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4681,7 +4398,6 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         "sess-model-remember-2",
         &["do the thing"],
         &second_url,
-        None,
         false,
     );
     let bodies = bodies.lock().unwrap();
@@ -4711,7 +4427,6 @@ fn a_model_slug_with_a_space_is_refused_and_the_active_slug_stands() {
         "sess-model-refuse",
         &["/model claude sonnet 5", "do the thing"],
         &base_url,
-        None,
         false,
     );
     assert!(
@@ -4735,7 +4450,7 @@ fn untaken_tool_branches_are_not_reported_as_executed_calls() {
     let (base, _) = start_fake_provider(vec![assistant_reply(
         "```pane\nif (false) await bash({command: 'never-run'});\nanswer('done');\n```",
     )]);
-    let output = run_session(&root, &rollout, "untaken", "do it", &base, None);
+    let output = run_session(&root, &rollout, "untaken", "do it", &base);
     assert!(
         output.status.success(),
         "stdout: {}\nstderr: {}",
@@ -4769,7 +4484,7 @@ fn an_overflow_checkpoints_the_already_projected_request_once() {
         }
     });
 
-    let output = run_session(&root, &rollout, "sess-overflow", "do it", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-overflow", "do it", &base_url);
     assert!(
         output.status.success(),
         "the task did not survive the overflow. stderr: {}",
@@ -4851,7 +4566,6 @@ fn task_after_overflow_keeps_small_provider_context_without_stale_handles() {
         "overflow-new-task",
         &["old oversized task", "fresh task"],
         &base,
-        None,
         false,
     );
     assert!(output.status.success());
@@ -4890,7 +4604,6 @@ fn an_overflow_with_nothing_to_compact_falls_back_to_a_checkpoint() {
         "sess-overflow-cp",
         "summarise every caller",
         &base_url,
-        None,
     );
     assert!(
         output.status.success(),
@@ -4933,7 +4646,7 @@ fn a_plain_bad_request_is_reported_rather_than_compacted() {
         )
     });
 
-    let output = run_session(&root, &rollout, "sess-plain-400", "do it", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-plain-400", "do it", &base_url);
     assert_eq!(
         bodies.lock().unwrap().len(),
         1,
@@ -4954,7 +4667,6 @@ fn a_plain_bad_request_is_reported_rather_than_compacted() {
 fn new_user_requests_get_truthful_model_and_runtime_boundaries() {
     let root = scratch_dir("task-boundary-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nconst previous = 42;\n```"),
         assistant_reply("```pane\nanswer(`${previous}`);\n```"),
@@ -4972,7 +4684,6 @@ fn new_user_requests_get_truthful_model_and_runtime_boundaries() {
             "what are you?",
         ],
         &base_url,
-        Some(&absent),
         false,
     );
     assert!(
@@ -5091,7 +4802,6 @@ fn the_sandbox_line_and_the_environment_block_agree_about_what_is_writable() {
 fn an_identity_answer_after_a_completed_task_does_not_trigger_more_execution() {
     let root = scratch_dir("natural-followup-root");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nconst result = 42; answer('Task complete.');\n```"),
         assistant_reply(
@@ -5109,7 +4819,6 @@ fn an_identity_answer_after_a_completed_task_does_not_trigger_more_execution() {
             "what are you?",
         ],
         &base_url,
-        Some(&absent),
         false,
     );
     assert!(
@@ -5140,21 +4849,13 @@ fn shell_changes_survive_a_cell_error_but_never_enter_model_context() {
     .unwrap();
     fs::write(root.join("example.txt"), "LOCAL_DIFF_OLD_SENTINEL\n").unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base, bodies) = start_fake_provider(vec![
         assistant_reply(
             "```pane\nawait bash({command: 'echo replacement > example.txt'});\nthrow new Error('after write');\n```",
         ),
         assistant_reply("The script failed after writing.\n<!-- pane:done -->"),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "diff",
-        "update the file",
-        &base,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "diff", "update the file", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -5196,14 +4897,7 @@ fn syntax_failed_cell_can_be_repaired_without_repeating_the_program() {
         assistant_reply(&format!("```pane\n{source}\n```")),
         assistant_reply(&format!("```pane-edit\n{edit}\n```")),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "repair",
-        "answer",
-        &base,
-        Some(&root.join("absent")),
-    );
+    let output = run_session(&root, &rollout, "repair", "answer", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -5244,14 +4938,7 @@ fn invalid_edits_keep_the_parse_target_and_do_not_create_cells() {
         reply(99),
         reply(1),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "repair-reject",
-        "answer",
-        &base,
-        Some(&root.join("absent")),
-    );
+    let output = run_session(&root, &rollout, "repair-reject", "answer", &base);
     assert!(output.status.success());
     let cells = cell_lines(&rollout);
     assert_eq!(cells.len(), 2);
@@ -5275,14 +4962,7 @@ fn runtime_syntax_error_never_offers_a_replay_and_invalid_edits_are_bounded() {
     )];
     replies.extend(std::iter::repeat_n(edit, 24));
     let (base, bodies) = start_fake_provider(replies);
-    let output = run_session(
-        &root,
-        &rollout,
-        "repair-runtime",
-        "answer",
-        &base,
-        Some(&root.join("absent")),
-    );
+    let output = run_session(&root, &rollout, "repair-runtime", "answer", &base);
     assert!(!output.status.success());
     assert_eq!(cell_lines(&rollout).len(), 1);
     let bodies = bodies.lock().unwrap();
@@ -5306,7 +4986,6 @@ fn prose_without_a_native_call_is_final_and_never_executes_its_example() {
     )
     .unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nawait write({path:'implementation.txt', content:'fixed'});\n```"),
         assistant_reply(
@@ -5322,7 +5001,6 @@ fn prose_without_a_native_call_is_final_and_never_executes_its_example() {
         "completion-regression",
         "Implement the fix and add regression tests.",
         &base,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -5349,7 +5027,6 @@ fn prose_without_a_native_call_is_final_and_never_executes_its_example() {
 fn unmarked_prose_is_a_natural_one_request_answer() {
     let root = scratch_dir("natural-prose");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base, bodies) = start_fake_provider(vec![assistant_reply("Implemented and tested.")]);
     let output = run_session(
         &root,
@@ -5357,7 +5034,6 @@ fn unmarked_prose_is_a_natural_one_request_answer() {
         "unfinished",
         "Make the requested change",
         &base,
-        Some(&absent),
     );
     assert!(output.status.success());
     assert_eq!(bodies.lock().unwrap().len(), 1);
@@ -5369,17 +5045,9 @@ fn unmarked_prose_is_a_natural_one_request_answer() {
 fn explicit_prose_completion_is_displayed_naturally_without_a_cell_or_marker() {
     let root = scratch_dir("explicit-prose");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-glasshouse");
     let (base, bodies) =
         start_fake_provider(vec![assistant_reply("I am Pane.\n<!-- pane:done -->")]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "explicit-prose",
-        "What are you?",
-        &base,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "explicit-prose", "What are you?", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -5412,14 +5080,7 @@ fn outgoing_history_sends_each_result_as_the_model_read_it() {
         assistant_reply("```pane\nconst saved = 2; const fresh = 3;\n```"),
         assistant_reply("```pane\nanswer(`${saved + fresh}`);\n```"),
     ]);
-    let output = run_session(
-        &root,
-        &rollout,
-        "state-history",
-        "Complete the task",
-        &base,
-        Some(&root.join("absent")),
-    );
+    let output = run_session(&root, &rollout, "state-history", "Complete the task", &base);
     assert!(
         output.status.success(),
         "{}",
@@ -5477,7 +5138,6 @@ fn task_orientation_and_instructions_refresh_without_widening_live_permissions()
         "orientation",
         &["first task", "second task"],
         &base,
-        Some(&root.join("absent")),
         false,
     );
     assert!(
@@ -5528,7 +5188,6 @@ fn a_second_task_resends_the_first_as_an_unchanged_prefix() {
         "stable-prefix",
         &["first task", "second task"],
         &base,
-        Some(&root.join("absent")),
         false,
     );
     assert!(
@@ -5559,17 +5218,16 @@ fn resumed_tasks_use_current_instructions_instead_of_the_saved_system_prompt() {
     let root = scratch_dir("resumed-guidance");
     fs::write(root.join("AGENTS.md"), "RESUME_OLD_GUIDANCE").unwrap();
     let log = root.join("rollout.jsonl");
-    let absent = root.join("absent");
     let (url, _) = start_fake_provider(vec![ending_reply()]);
     assert!(
-        run_session(&root, &log, "first", "first", &url, Some(&absent))
+        run_session(&root, &log, "first", "first", &url)
             .status
             .success()
     );
     fs::write(root.join("AGENTS.md"), "RESUME_NEW_GUIDANCE").unwrap();
     let (url, bodies) = start_fake_provider(vec![ending_reply()]);
     assert!(
-        run_session(&root, &log, "second", "second", &url, Some(&absent))
+        run_session(&root, &log, "second", "second", &url)
             .status
             .success()
     );
@@ -5593,7 +5251,6 @@ fn environment_snapshot_does_not_change_between_inferences_in_one_task() {
         "stable-context",
         "work",
         &url,
-        Some(&root.join("absent")),
     );
     assert!(output.status.success());
     let bodies = bodies.lock().unwrap();
@@ -5656,14 +5313,7 @@ fn nested_instructions_reach_the_provider_before_a_write_can_execute() {
         }
     });
     let log = root.join("rollout.jsonl");
-    let output = run_session(
-        &root,
-        &log,
-        "nested-instructions",
-        "write result",
-        &url,
-        Some(&root.join("absent")),
-    );
+    let output = run_session(&root, &log, "nested-instructions", "write result", &url);
     assert!(
         output.status.success(),
         "{}",
@@ -5712,7 +5362,6 @@ fn standing_handler_drains_a_future_batch_without_an_extra_model_request() {
         "standing-handler-drain",
         "handle background noise",
         &url,
-        Some(&root.join("absent-glasshouse")),
     );
     assert!(
         output.status.success(),
@@ -5774,7 +5423,6 @@ fn disabled_handler_notice_reaches_the_first_preview_once_before_next_inference(
         "standing-handler-notice",
         "surface handler failure",
         &url,
-        Some(&root.join("absent-glasshouse")),
     );
     assert!(
         output.status.success(),
@@ -5877,7 +5525,6 @@ fn preflight_does_not_fire_with_helpers_unconfigured() {
         "where is the retry budget applied",
         &base_url,
         Some(&absent),
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -5912,7 +5559,6 @@ fn a_configured_helper_model_does_not_enable_preflight_by_itself() {
     )
     .unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
 
     let output = run_session(
@@ -5921,7 +5567,6 @@ fn a_configured_helper_model_does_not_enable_preflight_by_itself() {
         "sess-preflight-default-off",
         "find where the retry budget is applied",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -5953,21 +5598,13 @@ fn preflight_serves_the_scouts_files_under_the_verbatim_request() {
     write_helpers_pane_toml(&root, "helper-tier");
     fs::write(root.join("haystack.rs"), "// the needle is on this line\n").unwrap();
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let task = "find the needle, and do not change the colour";
     let (base_url, bodies) = start_fake_provider(vec![
         assistant_reply("```pane\nanswer(\"haystack.rs:1 where the needle is\");\n```"),
         ending_reply(),
     ]);
 
-    let output = run_session(
-        &root,
-        &rollout,
-        "sess-preflight-on",
-        task,
-        &base_url,
-        Some(&absent),
-    );
+    let output = run_session(&root, &rollout, "sess-preflight-on", task, &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -6024,7 +5661,6 @@ fn a_failed_preflight_still_runs_the_task() {
     let root = scratch_dir("preflight-failed-root");
     write_helpers_pane_toml(&root, "helper-tier");
     let rollout = root.join("rollout.jsonl");
-    let absent = root.join("no-such-glasshouse");
     let (base_url, bodies) = start_fake_provider(vec![assistant_reply(""), ending_reply()]);
 
     let output = run_session(
@@ -6033,7 +5669,6 @@ fn a_failed_preflight_still_runs_the_task() {
         "sess-preflight-failed",
         "find the needle, and do not change the colour",
         &base_url,
-        Some(&absent),
     );
     assert!(
         output.status.success(),
@@ -6104,29 +5739,6 @@ exit 0
         .replace("@RECORD@", &record.display().to_string())
         .replace("@LISTENING@", listening)
         .replace("@TOKEN@", token);
-    write_script(dir, name, &body)
-}
-
-/// [`write_fake_gateway`]'s script as a fake **Glasshouse**: the same
-/// answers, after the `--scope <root>` prefix a hosted session's usage
-/// readout carries. Its account controls go to the gateway binary instead,
-/// which is why nothing here answers `routing-cost`'s siblings for a project.
-#[cfg(unix)]
-fn write_fake_glasshouse(dir: &Path, name: &str, record: &Path) -> PathBuf {
-    const SCRIPT: &str = r#"#!/bin/sh
-echo "$@" >> "@RECORD@"
-if [ "$1" = "--scope" ]; then shift 2; fi
-case "$1" in
-  entitlements)
-    echo '{"version":1,"accounts":[{"account":"work@example.com","provider":"anthropic","models":["claude-opus-5"],"scope":"user","selectable":true,"authenticated":false,"connect_with":"anthropic"}]}'
-    ;;
-  subscriptions)
-    echo '{"state":"connected","account":"work@example.com"}'
-    ;;
-esac
-exit 0
-"#;
-    let body = SCRIPT.replace("@RECORD@", &record.display().to_string());
     write_script(dir, name, &body)
 }
 
@@ -6245,7 +5857,6 @@ fn run_session_stdin_hosted(
     session_id: &str,
     inputs: &[&str],
     base_url: &str,
-    glasshouse: Option<&Path>,
     gateway_bin: &Path,
 ) -> std::process::Output {
     use std::process::Stdio;
@@ -6268,9 +5879,6 @@ fn run_session_stdin_hosted(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     supply_test_model(&mut command, root);
-    if let Some(glasshouse) = glasshouse {
-        command.arg("--glasshouse").arg(glasshouse);
-    }
     let mut child = command.spawn().unwrap();
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -6514,7 +6122,6 @@ fn a_session_handed_a_base_url_attaches_rather_than_starting_a_gateway() {
         "sess-attach",
         "hi",
         &base_url,
-        None,
         Some(&gateway),
     );
     assert!(
@@ -6713,7 +6320,6 @@ fn a_hosted_session_enters_a_key_through_the_gateway_binary() {
         "sess-hosted-key",
         &["/login key", "/key anthropic", KEY],
         &base_url,
-        None,
         &gateway,
     );
     assert!(
@@ -6757,8 +6363,8 @@ fn a_hosted_session_enters_a_key_through_the_gateway_binary() {
     }
 }
 
-/// **Hosted** account controls: handed a gateway by Glasshouse (a base URL
-/// with a loopback host, as its launch passes), `/model`, `/login` and the
+/// **Attached** account controls: handed a gateway (a base URL with a
+/// loopback host), `/model`, `/login` and the
 /// key rows go to the **gateway binary** — the accounts, subscriptions and
 /// credentials are the gateway's wherever it was started — and none of them
 /// carries `--scope`, which the gateway does not accept.
@@ -6768,10 +6374,8 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
     let root = scratch_dir("hosted-controls-root");
     let rollout = root.join("rollout.jsonl");
     let gateway_record = root.join("gateway-argv.txt");
-    let glasshouse_record = root.join("glasshouse-argv.txt");
     let base_url = refused_base_url();
     let gateway = write_fake_gateway(&root, "fake_gateway.sh", &gateway_record, &base_url, "x");
-    let glasshouse = write_fake_glasshouse(&root, "fake_glasshouse.sh", &glasshouse_record);
 
     let output = run_session_stdin_hosted(
         &root,
@@ -6779,7 +6383,6 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
         "sess-hosted-controls",
         &["/model", "/login", "/login work@example.com"],
         &base_url,
-        Some(&glasshouse),
         &gateway,
     );
     assert!(
@@ -6809,13 +6412,6 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
         "the gateway has no projects to scope a control to: {seen}"
     );
 
-    let hosted = fs::read_to_string(&glasshouse_record).unwrap_or_default();
-    for control in ["entitlements", "subscriptions", "credentials"] {
-        assert!(
-            !hosted.contains(control),
-            "`{control}` is the gateway's, not Glasshouse's: {hosted}"
-        );
-    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("claude-opus-5"),
@@ -6827,19 +6423,17 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
     );
 }
 
-/// The other half of the rule: what a session **spent** is Glasshouse's, so a
-/// hosted session's usage readout still runs `glasshouse --scope <root>
-/// routing-cost` and the gateway binary is never asked for it.
+/// What an attached session **spent** is read from the gateway it is attached
+/// to: the usage readout runs the gateway binary's `routing-cost`, like every
+/// other control, and carries no `--scope`.
 #[cfg(unix)]
 #[test]
-fn the_usage_rows_of_a_hosted_session_still_reach_glasshouse_scoped_to_the_project() {
+fn the_usage_rows_of_an_attached_session_come_from_the_gateway_binary() {
     let root = scratch_dir("hosted-usage-root");
     let rollout = root.join("rollout.jsonl");
     let gateway_record = root.join("gateway-argv.txt");
-    let glasshouse_record = root.join("glasshouse-argv.txt");
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
     let gateway = write_fake_gateway(&root, "fake_gateway.sh", &gateway_record, &base_url, "x");
-    let glasshouse = write_fake_glasshouse(&root, "fake_glasshouse.sh", &glasshouse_record);
 
     let output = Command::new(env!("CARGO_BIN_EXE_pane"))
         .arg("session")
@@ -6853,8 +6447,6 @@ fn the_usage_rows_of_a_hosted_session_still_reach_glasshouse_scoped_to_the_proje
         .arg(pane::wire::MODEL)
         .arg("--task")
         .arg("hi")
-        .arg("--glasshouse")
-        .arg(&glasshouse)
         .env("ANTHROPIC_BASE_URL", &base_url)
         .env_remove("ANTHROPIC_AUTH_TOKEN")
         .env_remove("ANTHROPIC_API_KEY")
@@ -6870,16 +6462,15 @@ fn the_usage_rows_of_a_hosted_session_still_reach_glasshouse_scoped_to_the_proje
     );
     assert_eq!(bodies.lock().unwrap().len(), 1, "the turn must have run");
 
-    let hosted = fs::read_to_string(&glasshouse_record).unwrap_or_default();
-    let scoped = format!("--scope {} routing-cost --json --since", root.display());
-    assert!(
-        hosted.lines().any(|line| line.starts_with(&scoped)),
-        "the usage readout must stay Glasshouse's, scoped to the project: {hosted}"
-    );
     let seen = fs::read_to_string(&gateway_record).unwrap_or_default();
     assert!(
-        !seen.contains("routing-cost"),
-        "the gateway binary must not be asked what this project spent: {seen}"
+        seen.lines()
+            .any(|line| line.starts_with("routing-cost --json --since")),
+        "the usage readout must reach the gateway binary: {seen}"
+    );
+    assert!(
+        !seen.contains("--scope"),
+        "the gateway has no projects to scope a readout to: {seen}"
     );
 }
 
@@ -7054,7 +6645,6 @@ fn a_base_url_without_a_token_or_a_loopback_host_does_not_count_as_a_handed_gate
         "sess-inherited-url",
         "hi",
         "http://proxy.invalid:9",
-        None,
         Some(&gateway),
     );
     assert!(
@@ -7504,7 +7094,7 @@ fn the_event_stream_announces_a_cell_before_it_runs() {
         ending_reply(),
     ]);
 
-    let output = run_session(&root, &rollout, "sess-observe", "go", &base_url, None);
+    let output = run_session(&root, &rollout, "sess-observe", "go", &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -7606,9 +7196,7 @@ fn first_request_effort(config: Option<&str>, model_flag: bool) -> serde_json::V
         .env("ANTHROPIC_BASE_URL", &base)
         .env("XDG_CONFIG_HOME", root.join("global-config"))
         .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .env_remove("ANTHROPIC_API_KEY")
-        .arg("--glasshouse")
-        .arg(root.join("absent"));
+        .env_remove("ANTHROPIC_API_KEY");
     if model_flag {
         command.arg("--model").arg(pane::wire::MODEL);
     }
@@ -7651,7 +7239,6 @@ fn helper_requests(helpers: &str) -> usize {
         "one-task-behind",
         "go",
         &base,
-        Some(&root.join("absent")),
     );
     assert!(
         output.status.success(),

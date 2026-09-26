@@ -176,7 +176,6 @@ pub(super) struct PendingAcceptance<'s> {
     model: String,
     effort: crate::wire::Effort,
     profile: &'s crate::sandbox::profile::Profile,
-    glasshouse: &'s crate::glasshouse::Glasshouse,
     session_id: &'s crate::contract::SessionId,
     token: invoke::CancellationToken,
 }
@@ -187,7 +186,6 @@ impl PendingAcceptance<'_> {
             &self.task,
             crate::helpers::HelperRoute::new(&self.model, self.effort),
             self.profile,
-            self.glasshouse,
             self.session_id,
             &self.token,
         )
@@ -212,7 +210,6 @@ pub(super) fn start_acceptance<'s>(
         model,
         effort,
         profile: session.profile,
-        glasshouse: session.glasshouse,
         session_id: session.id,
         token,
     })
@@ -804,7 +801,6 @@ pub(super) fn preflight_block(
     };
     let helper_context = crate::helpers::HelperContext {
         profile: session.profile,
-        glasshouse: session.glasshouse,
         session: session.id,
         token: &token,
     };

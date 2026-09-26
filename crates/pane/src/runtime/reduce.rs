@@ -386,7 +386,6 @@ fn reduce_text(text: String, state: &Rc<RuntimeState>) -> Reduction {
             },
             &input,
             &state.profile,
-            &state.glasshouse,
             &state.session,
             &token,
         );
