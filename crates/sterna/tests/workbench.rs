@@ -800,6 +800,10 @@ fn settings_browsing_creates_no_file() {
 #[test]
 fn direct_save_and_undo_use_the_native_store() {
     let (_t, mut s, mut p) = prefs();
+    // A session with no saved theme shows the natural one, which depends
+    // on the terminal (a parrot under COLORTERM=truecolor): undo returns
+    // there, so the test starts there too and passes on any terminal.
+    s.theme = Theme::natural();
     let before = s.theme;
     p.save("ui.theme", Some("amber".into()), &mut s).unwrap();
     assert_eq!(s.theme, Theme::Amber);
@@ -2172,6 +2176,38 @@ fn the_theme_sheet_groups_themes_under_their_family() {
     );
 }
 
+/// **A swatch row draws its mark once and every name in one column**:
+/// the focus mark is not drawn again over the swatch, and mono, which has
+/// no accent, still gets a swatch (the terminal's own ink) so its name
+/// lines up with the others.
+#[test]
+fn every_theme_name_starts_in_one_column_and_the_mark_is_drawn_once() {
+    use sterna::workbench::plumage::Bird;
+    let (c, n, mut s) = fixture();
+    s.truecolor = true;
+    s.theme = Theme::Bird(Bird::Amazon);
+    let mut u = Workbench::default();
+    u.open(Source::Themes { before: s.theme });
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 50));
+    let column = |name: &str| {
+        screen
+            .lines()
+            .find_map(|l| l.find(name).map(|at| l[..at].chars().count()))
+            .unwrap_or_else(|| panic!("{name} is missing:\n{screen}"))
+    };
+    let neon = column("neon");
+    for name in ["mono", "Sun Conure", "Arctic Tern"] {
+        assert_eq!(column(name), neon, "{name} is out of line:\n{screen}");
+    }
+    // The swatch is drawn whole, and the name does not overwrite it.
+    assert!(screen.contains("██ Arctic Tern"), "{screen}");
+    let focused = screen
+        .lines()
+        .find(|l| l.contains("● now"))
+        .unwrap_or_else(|| panic!("no current row:\n{screen}"));
+    assert_eq!(focused.matches('›').count(), 1, "{focused}");
+}
+
 /// **A key pasted into a form is bullets on the screen, never the key**, and
 /// the sheet says where the paste goes and what the key looks like.
 #[test]
@@ -3183,6 +3219,91 @@ fn a_favourite_is_a_slot_then_a_model_and_the_picker_moves_on() {
     assert_eq!(
         click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(effort, 2))),
         Effect::Command("/subagents quick fixture-main high".into())
+    );
+}
+
+/// **An account's heading is in the person's words**: the gateway's
+/// bookkeeping scope (`account-declared`, `provider-declared`) reads as how
+/// the account is reached -- a subscription, an API key.
+#[test]
+fn an_account_heading_says_subscription_or_api_key() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.groups[0].scope = "account-declared".into();
+    m.groups[1].scope = "provider-declared".into();
+    m.all_sources = true;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(!screen.to_lowercase().contains("declared"), "{screen}");
+    assert!(
+        screen.contains("A · A-SUBSCRIPTION · SUBSCRIPTION"),
+        "{screen}"
+    );
+    assert!(screen.contains("· API KEY"), "{screen}");
+    // The rows keep their identity: a click still chooses the model.
+    let id = {
+        let m = u.models().unwrap();
+        let main = m
+            .candidates()
+            .into_iter()
+            .find(|c| c.model == "fixture-main")
+            .unwrap();
+        format!("model:{}:{}", main.route, main.model)
+    };
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, &id),
+        Effect::Command("/model fixture-main".into())
+    );
+}
+
+/// **The slot being filled is not "now"**: `● now` marks what subagents run
+/// on, so an empty slot waiting for its model never wears it -- it says the
+/// next model goes there instead -- and "Now:" follows favourites on.
+#[test]
+fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.role = 2;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    let line = |screen: &str, needle: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is missing:\n{screen}"))
+            .to_string()
+    };
+    // Nothing is pinned: PINNED is where a model goes, not what runs.
+    assert!(!line(&screen, "PINNED").contains("● now"), "{screen}");
+    click_item(&mut u, &mut s, &n, "slot:quick");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(!line(&screen, "QUICK").contains("● now"), "{screen}");
+    assert!(
+        screen.contains("the next model you choose goes here"),
+        "{screen}"
+    );
+    let id = {
+        let m = u.models().unwrap();
+        let main = m
+            .candidates()
+            .into_iter()
+            .find(|c| c.model == "fixture-main")
+            .unwrap();
+        format!("model:{}:{}", main.route, main.model)
+    };
+    click_item(&mut u, &mut s, &n, &id);
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(!line(&screen, "BALANCED").contains("● now"), "{screen}");
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "favourites"),
+        Effect::Command("/subagents on".into())
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(
+        line(&screen, "Subagents work in parallel").contains("Now: favourites"),
+        "{screen}"
     );
 }
 

@@ -229,6 +229,32 @@ fn auto_rung_runs_a_read_only_command_with_no_allow_patterns() {
     );
 }
 
+/// The approval says why it asks in the screen's words, and a denied call
+/// is quoted once: `bash("ls -la")`, not `bash("bash ls -la")`.
+#[test]
+fn a_denied_call_names_the_rung_and_quotes_the_call_once() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
+        sterna::permissions::Rung::Manual,
+    ));
+    let responder = std::thread::spawn(move || {
+        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        let reason = asked.reason().unwrap_or_default().to_string();
+        assert!(asked.respond(Decision::DenyOnce));
+        reason
+    });
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(
+        r#"try { bash({command: "touch made"}); }
+           catch (e) { return e.path; }
+           return "unexpected";"#,
+    );
+    returned(&outcome, "touch made");
+    let reason = responder.join().unwrap();
+    assert_eq!(reason, "you chose Every call, which asks before every call");
+    assert!(!fixture.0.join("made").exists());
+}
+
 /// Nobody to ask keeps the list: an unlisted line is refused, exactly as it
 /// was before the Auto rung learned to judge one.
 #[test]

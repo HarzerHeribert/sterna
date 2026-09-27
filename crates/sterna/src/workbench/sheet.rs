@@ -84,9 +84,10 @@ pub struct Item {
     pub inline: bool,
     /// The tone of an Info row's text.
     pub tone: Tone,
-    /// A colour drawn as a swatch before the title, part of the row's
-    /// target: a theme's accent.
-    pub swatch: Option<u32>,
+    /// A swatch drawn before the title, part of the row's target: a theme's
+    /// accent, or the terminal's own ink for one with none (mono), so every
+    /// name in the list starts in one column.
+    pub swatch: Option<Tone>,
 }
 
 impl Item {
@@ -175,8 +176,8 @@ impl Item {
         self
     }
     #[must_use]
-    pub fn swatch(mut self, rgb: u32) -> Self {
-        self.swatch = Some(rgb);
+    pub fn swatch(mut self, rgb: Option<u32>) -> Self {
+        self.swatch = Some(rgb.map_or(Tone::Normal, |rgb| Tone::Pixel(Some(rgb), None)));
         self
     }
     #[must_use]
@@ -1489,27 +1490,20 @@ fn draw_line(
                     g.hits.push((r, Action::Sheet(Hit::Item(*i))));
                 }
                 _ => {
-                    let mut r = r;
-                    if let Some(rgb) = item.swatch {
-                        chrome::text(
-                            f,
-                            Rect::new(r.x + 2, r.y, 2, 1),
-                            "██",
-                            Tone::Pixel(Some(rgb), None),
-                            t,
-                        );
-                        chrome::text(f, Rect::new(r.x, r.y, 2, 1), mark, tone, t);
-                        g.hits
-                            .push((Rect::new(r.x, r.y, 5, 1), Action::Sheet(Hit::Item(*i))));
-                        r = Rect::new(r.x + 3, r.y, r.width.saturating_sub(3), 1);
-                    }
-                    chrome::text(
-                        f,
-                        r,
-                        &clip(&format!("{mark} {title}"), r.width as usize),
-                        tone,
-                        t,
-                    );
+                    // `› ██ name`: the mark, the swatch, then the name alone,
+                    // so the mark is drawn once and never over the swatch.
+                    let (r, shown) = match item.swatch {
+                        Some(ink) => {
+                            chrome::text(f, Rect::new(r.x, r.y, 2, 1), mark, tone, t);
+                            chrome::text(f, Rect::new(r.x + 2, r.y, 2, 1), "██", ink, t);
+                            g.hits
+                                .push((Rect::new(r.x, r.y, 5, 1), Action::Sheet(Hit::Item(*i))));
+                            let r = Rect::new(r.x + 5, r.y, r.width.saturating_sub(5), 1);
+                            (r, title.to_string())
+                        }
+                        None => (r, format!("{mark} {title}")),
+                    };
+                    chrome::text(f, r, &clip(&shown, r.width as usize), tone, t);
                     if item.focusable() {
                         g.hits.push((r, Action::Sheet(Hit::Item(*i))));
                     }

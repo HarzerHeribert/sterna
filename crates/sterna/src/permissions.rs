@@ -102,6 +102,13 @@ impl Rung {
         }
     }
 
+    /// Why a call asks when the rung alone asks for it, in the screen's
+    /// words: "you chose Every call, which asks before every call".
+    #[must_use]
+    pub fn chosen(self) -> String {
+        format!("you chose {}, which {}", self.label(), self.asks())
+    }
+
     /// The notice every route that moves the rung prints.
     #[must_use]
     pub fn now(self) -> String {
@@ -300,7 +307,7 @@ pub fn judge(
 ) -> Verdict {
     match rung {
         // Exactly `--ask-approval`'s behaviour, preserved: every gated call.
-        Rung::Manual => Verdict::Ask("permissions manual: every call is confirmed".into()),
+        Rung::Manual => Verdict::Ask(rung.chosen()),
         Rung::Full => Verdict::Runs,
         Rung::AcceptEdits | Rung::Auto => {
             if !is_a_command(tool) {
@@ -310,9 +317,7 @@ pub fn judge(
                 return Verdict::Runs;
             };
             if rung == Rung::AcceptEdits {
-                return Verdict::Ask(
-                    "permissions accept-edits: every command line is confirmed".into(),
-                );
+                return Verdict::Ask(rung.chosen());
             }
             judge_command(line, extra_read_only, model)
         }

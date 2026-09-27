@@ -206,11 +206,13 @@ impl Navigator {
         let words: Vec<&str> = command.split_whitespace().collect();
         let notice = match words.as_slice() {
             ["/subagents", "on"] => {
+                self.current.subagent = Some("favourites".into());
                 self.assignment.mode = AgentsMode::Roster;
                 self.assignment.model = None;
                 "Favourites are on".to_string()
             }
             ["/subagents", "off"] => {
+                self.current.subagent = Some("off".into());
                 self.assignment.mode = AgentsMode::Off;
                 self.assignment.model = None;
                 "Subagents are off".to_string()
@@ -218,6 +220,7 @@ impl Navigator {
             ["/subagents", slot, "off"] => {
                 self.assignment.slots.remove(*slot);
                 if self.assignment.slots.is_empty() && self.assignment.mode == AgentsMode::Roster {
+                    self.current.subagent = Some("off".into());
                     self.assignment.mode = AgentsMode::Off;
                 }
                 format!("{} is empty", slot.to_uppercase())
@@ -278,6 +281,22 @@ impl Navigator {
             }
         )
     }
+}
+
+/// A route as a person reads it: the provider, the account, and how the
+/// account is reached -- not the catalogue's bookkeeping word for where its
+/// model list came from. The route itself stays the rows' identity.
+fn route_words(route: &str) -> String {
+    let mut parts: Vec<&str> = route.split(" · ").collect();
+    if let Some(scope) = parts.last_mut() {
+        *scope = match *scope {
+            "account-declared" => "subscription",
+            "provider-declared" => "API key",
+            "unknown" => "model list not read yet",
+            other => other,
+        };
+    }
+    parts.join(" · ")
 }
 
 /// The model sheet's rows: what the tier runs on now, the favourite slots on
@@ -349,29 +368,40 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
             .current
             .subagent
             .clone()
-            .filter(|word| !matches!(word.as_str(), "off" | "favourites"))
-            .unwrap_or_else(|| "none".into());
+            .filter(|word| !matches!(word.as_str(), "off" | "favourites"));
+        // `● now` is what subagents run on; the row a model click fills is
+        // said in words, so an empty slot never reads as the one in use.
+        let next = " · the next model you choose goes here";
         items.push(
             Item::choice(
                 "slot:pinned",
                 "PINNED",
-                m.slot.is_none(),
+                pinned.is_some(),
                 Action::Slot(None),
             )
-            .detail(format!("{pinned} · every subagent runs on one model")),
+            .detail(format!(
+                "{} · every subagent runs on one model{}",
+                pinned.as_deref().unwrap_or("none"),
+                if m.slot.is_none() { next } else { "" }
+            )),
         );
         for slot in crate::config::SLOT_NAMES {
             let held = m.assignment.slots.get(slot);
+            let filling = if m.slot.as_deref() == Some(slot) {
+                next
+            } else {
+                ""
+            };
             items.push(
                 Item::choice(
                     format!("slot:{slot}"),
                     slot.to_uppercase(),
-                    m.slot.as_deref() == Some(slot),
+                    false,
                     Action::Slot(Some(slot.to_string())),
                 )
                 .detail(held.map_or_else(
-                    || "empty · choose it, then a model below".to_string(),
-                    |held| held.model.clone(),
+                    || format!("empty · choose it, then a model below{filling}"),
+                    |held| format!("{}{filling}", held.model),
                 )),
             );
             // Each favourite's effort sits under it, one click from any value.
@@ -436,7 +466,7 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
     let mut selected = None;
     for (i, c) in rows.iter().enumerate() {
         if !m.measured_order && c.route != last_route {
-            items.push(Item::heading(c.route.clone()));
+            items.push(Item::heading(route_words(&c.route)));
             last_route = c.route.clone();
             // A locked account's models stay listed and muted; its one way
             // in is a row of its own, not a click on each model.
@@ -454,7 +484,7 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
         let score = c.score.map(|v| format!(" · ★ {v:.0}")).unwrap_or_default();
         let locked = if c.available { "" } else { " · locked" };
         let via = if m.measured_order {
-            format!(" · {}", c.route)
+            format!(" · {}", route_words(&c.route))
         } else {
             String::new()
         };
