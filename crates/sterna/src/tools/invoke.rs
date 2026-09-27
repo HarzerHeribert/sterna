@@ -696,7 +696,11 @@ fn checked_call(
             tool: tool.name().into(),
         });
     }
-    let checked = check_arguments(ctx.profile, tool, args, trace)?;
+    // A command line no allow pattern names goes to the rung's judgement,
+    // but only where the rung judges calls and someone can be asked; with
+    // no gate, or nobody at the terminal, it stays refused as before.
+    let judged = gate.is_some_and(|gate| !gate.ladder().is_unattended());
+    let checked = check_arguments(ctx.profile, tool, args, trace, judged)?;
     if let Some(gate) = gate {
         if ctx.profile.root().to_str().is_none()
             || checked
@@ -736,7 +740,7 @@ fn checked_call(
         // the original arguments again; a retargeted symlink gets no authority
         // from the old answer even when both destinations are in the root.
         let mut current = CheckedArgs::new();
-        check_arguments(ctx.profile, tool, args, &mut current)?;
+        check_arguments(ctx.profile, tool, args, &mut current, judged)?;
         if *trace != current || stopped() {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
@@ -1208,6 +1212,7 @@ fn check_arguments(
     tool: &Tool,
     args: &Args,
     trace: &mut CheckedArgs,
+    judged: bool,
 ) -> Result<Vec<(&'static str, Checked)>, PermissionDenied> {
     for given in args.names() {
         if !tool.args().iter().any(|arg| arg.name() == given) {
@@ -1291,7 +1296,11 @@ fn check_arguments(
                 );
             }
             (ArgKind::CommandLine, Some(Argument::Text(value))) => {
-                profile.admits_command(value)?;
+                if judged {
+                    profile.weigh_command(value)?;
+                } else {
+                    profile.admits_command(value)?;
+                }
                 admit(
                     &mut checked,
                     trace,
@@ -1627,7 +1636,9 @@ fn spawn_confined(
     let mut descendant_binaries = if tool.argv() == Argv::ShellCommand {
         argv.last()
             .and_then(|value| value.to_str())
-            .and_then(|line| profile.admits_command(line).ok())
+            // The line was admitted or judged before it got here; this only
+            // names the programs the OS layer lets it start.
+            .and_then(|line| profile.weigh_command(line).ok())
             .map(|command| {
                 command
                     .executables()
@@ -2546,7 +2557,8 @@ mod tests {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("read").unwrap();
         let args = Args::new().with("path", "x").with("depth", "3");
-        let denied = check_arguments(&profile, tool, &args, &mut CheckedArgs::new()).unwrap_err();
+        let denied =
+            check_arguments(&profile, tool, &args, &mut CheckedArgs::new(), false).unwrap_err();
         assert_eq!(denied.path, "depth");
         assert!(denied.rule.contains("declares no argument named `depth`"));
     }
@@ -2555,8 +2567,8 @@ mod tests {
     fn a_missing_required_argument_is_refused() {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("grep").unwrap();
-        let denied =
-            check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new()).unwrap_err();
+        let denied = check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new(), false)
+            .unwrap_err();
         assert!(denied.rule.contains("requires an argument named `pattern`"));
     }
 
@@ -2566,7 +2578,7 @@ mod tests {
         let tool = registry::lookup("grep").unwrap();
         let args = Args::new().with("pattern", "-rf");
         let mut trace = CheckedArgs::new();
-        let checked = check_arguments(&profile, tool, &args, &mut trace).unwrap();
+        let checked = check_arguments(&profile, tool, &args, &mut trace, false).unwrap();
         // The trajectory records the pattern as admitted, and only that.
         assert_eq!(trace.get("pattern").map(String::as_str), Some("-rf"));
         #[cfg(not(windows))]

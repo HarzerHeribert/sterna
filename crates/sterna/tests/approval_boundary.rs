@@ -184,6 +184,70 @@ fn explicit_denies_never_grantable_actions_and_missing_grants_never_reach_the_ga
     assert!(!fixture.0.join(".claude/settings.json").exists());
 }
 
+/// **The Auto rung runs what it promises to run.** With no `Bash(...)`
+/// pattern at all, a command line that only reads runs without asking; a
+/// line that writes is put to the person; neither is refused for being
+/// absent from a list nobody wrote.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn auto_rung_runs_a_read_only_command_with_no_allow_patterns() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
+        sterna::permissions::Rung::Auto,
+    ));
+    let responder = std::thread::spawn(move || {
+        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(asked.action().arguments()["command"], "touch made");
+        assert!(asked.respond(Decision::AllowOnce));
+        requests
+    });
+    let mut runtime = fixture
+        .runtime(None)
+        .with_approval_gate(gate.with_read_only(Vec::new()));
+    let outcome = runtime.run_cell(
+        r#"const said = [];
+           try { bash({command: "ls -la && git log --oneline -3"}); said.push("ran"); }
+           catch (e) { said.push(e.name); }
+           try { bash({command: "touch made"}); said.push("ran"); }
+           catch (e) { said.push(e.name); }
+           return said.join(",");"#,
+    );
+    match &outcome {
+        CellOutcome::Returned { value, .. } => assert!(
+            !format!("{value:?}").contains("PermissionDenied"),
+            "an unlisted command was refused on Auto: {value:?}"
+        ),
+        other => panic!("expected a return, got {other:?}"),
+    }
+    assert!(
+        fixture.0.join("made").exists(),
+        "the confirmed line did not run"
+    );
+    assert!(
+        responder.join().unwrap().try_recv().is_err(),
+        "the read-only line asked too"
+    );
+}
+
+/// Nobody to ask keeps the list: an unlisted line is refused, exactly as it
+/// was before the Auto rung learned to judge one.
+#[test]
+fn an_unattended_session_still_refuses_an_unlisted_command() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(
+        sterna::permissions::Ladder::new(sterna::permissions::Rung::Auto).unattended(),
+    );
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(
+        r#"try { bash({command: "touch made"}); }
+           catch (e) { return e.name; }
+           return "unexpected";"#,
+    );
+    returned(&outcome, "PermissionDenied");
+    assert!(requests.try_recv().is_err());
+    assert!(!fixture.0.join("made").exists());
+}
+
 #[test]
 fn an_unattached_runtime_stays_fail_closed_for_missing_grants() {
     let fixture = Fixture::new();

@@ -82,7 +82,7 @@ impl Rung {
             Self::Manual => "Confirms every admitted file and command call before it runs.",
             Self::AcceptEdits => "Admitted edits run. Every command line is confirmed.",
             Self::Auto => {
-                "Edits run, and a command a reviewer can vouch for runs. Anything else is confirmed."
+                "Edits run, and a command that only reads or builds runs. Anything else is confirmed."
             }
             Self::Full => {
                 "Nothing is confirmed. Existing denials and the sandbox boundary still hold."

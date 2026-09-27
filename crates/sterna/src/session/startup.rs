@@ -193,9 +193,9 @@ pub(super) fn approval_gate(
     config: &crate::config::SternaConfig,
     interactive: Option<&ui::LiveUi>,
 ) -> Option<crate::approval::Gate> {
-    if !ladder.rung().ever_asks() {
-        return None;
-    }
+    // A terminal session gets its gate whatever rung it starts on: the rung
+    // moves mid-session, and a session started on Never asks and stepped
+    // down to Every call must ask from the next call on.
     let decisions = config.decisions.clone();
     interactive
         .map(|ui| ui.approval_gate(ladder.clone()))
@@ -217,16 +217,9 @@ pub(super) fn approval_gate(
 /// session where they answered.
 pub(super) fn permissions_line(ladder: &crate::permissions::Ladder) -> String {
     let rung = ladder.rung();
-    let what = match rung {
-        crate::permissions::Rung::Manual => "every admitted file and shell call is confirmed",
-        crate::permissions::Rung::AcceptEdits => "edits run, every command line is confirmed",
-        crate::permissions::Rung::Auto => {
-            "edits run, a command that only reads runs, anything else is confirmed"
-        }
-        crate::permissions::Rung::Full => {
-            "nothing is confirmed; the sandbox profile is the only boundary"
-        }
-    };
+    // The same sentence the Ask sheet shows, so the promise made here is
+    // the one the gate keeps.
+    let what = rung.sentence();
     let unattended = if ladder.is_unattended() && rung.ever_asks() {
         " — no terminal to ask at, so what would be confirmed runs"
     } else {

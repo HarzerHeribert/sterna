@@ -185,11 +185,22 @@ pub struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandGrant {
     executables: Vec<String>,
+    /// The segments no `Bash(...)` pattern in `permissions.allow` names.
+    /// Empty for a line the allow list admits outright.
+    unlisted: Vec<String>,
 }
 
 impl CommandGrant {
     pub fn executables(&self) -> &[String] {
         &self.executables
+    }
+
+    /// Whether every segment of the line is named by an allow pattern. An
+    /// unlisted line is admissible only where a rung judges the call and a
+    /// person can be asked about it ([`Profile::weigh_command`]).
+    #[must_use]
+    pub fn listed(&self) -> bool {
+        self.unlisted.is_empty()
     }
 }
 
@@ -890,6 +901,29 @@ impl Profile {
     /// spawns gets exactly the grants the `Read`/`Write`/`Edit` patterns
     /// produced, which [`Profile::check`] is what answers.
     pub fn admits_command(&self, command_line: &str) -> Result<CommandGrant, PermissionDenied> {
+        let grant = self.weigh_command(command_line)?;
+        match grant.unlisted.first() {
+            Some(segment) => Err(PermissionDenied {
+                tool: "Bash".to_string(),
+                path: command_line.to_string(),
+                rule: format!("no `Bash` pattern in permissions.allow admits `{segment}`"),
+            }),
+            None => Ok(grant),
+        }
+    }
+
+    /// [`Self::admits_command`] without its last question: a segment no
+    /// allow pattern names is recorded as unlisted instead of refused.
+    ///
+    /// **Call-level judgement, not an OS cage** (the ruling of 2026-09-19).
+    /// The foreground command tool calls this when the permission ladder
+    /// judges the call and a person can answer it: there a read-only line
+    /// runs on Auto, anything else asks, and nothing is refused only for
+    /// being absent from a list nobody wrote. Every absolute refusal still
+    /// holds here -- a `permissions.deny` match, a launcher or debugger, the
+    /// request mode's narrowing. Background runs, verification and a session
+    /// nobody can be asked in keep [`Self::admits_command`].
+    pub fn weigh_command(&self, command_line: &str) -> Result<CommandGrant, PermissionDenied> {
         let denied = |rule: String| -> Result<CommandGrant, PermissionDenied> {
             Err(PermissionDenied {
                 tool: "Bash".to_string(),
@@ -917,6 +951,7 @@ impl Profile {
             );
         }
         let mut executables = Vec::with_capacity(segments.len());
+        let mut unlisted = Vec::new();
         for segment in &segments {
             // A leading redirect is not the command: `2>&1 cargo test` is
             // matched on `cargo test`, never on the operand that happens to
@@ -934,9 +969,7 @@ impl Profile {
                 .iter()
                 .any(|pattern| match_segment(pattern, command_word, false))
             {
-                return denied(format!(
-                    "no `Bash` pattern in permissions.allow admits `{segment}`"
-                ));
+                unlisted.push(segment.clone());
             }
             if let Some(executable) = literal_executable(command_word) {
                 executables.push(executable.to_string());
@@ -949,7 +982,10 @@ impl Profile {
         {
             return denied(rule);
         }
-        Ok(CommandGrant { executables })
+        Ok(CommandGrant {
+            executables,
+            unlisted,
+        })
     }
 
     /// Whether an executable already admitted by a `Bash(...)` command is
