@@ -183,6 +183,9 @@ impl Preferences {
                 }
                 match self.category {
                     0 => EVERYDAY.contains(&spec.key),
+                    // The favourites and the pinned model are chosen in the
+                    // picker; here is only whether subagents run at all.
+                    4 => spec.key == "agents.mode",
                     category => category_of(spec) == category,
                 }
             })
@@ -602,6 +605,13 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                 .inline(),
             );
         }
+    }
+    if p.category == 4 && p.query.is_empty() {
+        items.push(Item::open(
+            "setting:agents:picker",
+            "Favourites and the pinned model",
+            Action::Command("/subagents".into()),
+        ));
     }
     if rows.is_empty() {
         items.push(super::sheet::Item::info(format!(

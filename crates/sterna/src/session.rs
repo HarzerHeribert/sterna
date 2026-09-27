@@ -2563,6 +2563,12 @@ fn answer_command(
             const USAGE: &str = "/model expects one model name\n\
                 /model parent|helper|subagent <id> assigns one tier\n\
                 /model helper off · /model subagent auto|off (inherit is an alias for auto)";
+            // A tier word alone opens the picker on that tier, rather than
+            // naming the Main model `helper`.
+            if let Some(tier) = crate::spend::Tier::parse(argument.trim()) {
+                controls::models_at(session, tier);
+                return;
+            }
             let (tier, model) = match argument.split_once(char::is_whitespace) {
                 Some((word, rest)) => match crate::spend::Tier::parse(word) {
                     Some(tier) => (tier, rest.trim()),

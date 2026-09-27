@@ -77,6 +77,11 @@ pub enum Action {
     Slot(Option<String>),
     Model(usize),
     ChooseModel,
+    /// Give this model to the tier or slot the picker is on, without asking
+    /// again: what a confirmation's Yes carries.
+    Choose(String),
+    /// A favourite's effort, set in place.
+    SlotEffort(String, String),
     UnsetModel,
     /// Back one layer: the top sheet closes and the one under it shows.
     Close,
@@ -410,8 +415,9 @@ impl Workbench {
                 return;
             };
             if let Some(root) = &state.settings_root
-                && let Ok(loaded) = crate::settings::Store::new(root)
-                    .and_then(|store| store.load(state.settings_profile.as_deref()))
+                && let Ok(loaded) =
+                    crate::settings::Store::with_global(root, state.settings_global.clone())
+                        .and_then(|store| store.load(state.settings_profile.as_deref()))
             {
                 model.assignment = loaded.config.agents;
             }

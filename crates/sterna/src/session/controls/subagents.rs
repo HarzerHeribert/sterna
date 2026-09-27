@@ -1,10 +1,11 @@
 //! Human-only favorite edits. Persist and validate the whole assignment atomically.
 use super::*;
-use crate::settings::{Loaded, Scope, Store};
+use crate::settings::Store;
 
 pub(super) fn assign(session: &Session<'_>, argument: &str) -> Result<String, String> {
-    let store = Store::new(&session.project.root)?;
-    let loaded = edit(&store, session.selected_profile.as_deref(), argument)?;
+    let store = super::store(session)?;
+    let edits = edits(&store, session.selected_profile.as_deref(), argument)?;
+    let loaded = super::save_home(session, &edits, session.selected_profile.as_deref())?;
     let mode = loaded.config.agents.mode.name();
     let count = loaded.config.agents.slots.len();
     session.config.borrow_mut().agents = loaded.config.agents;
@@ -14,7 +15,24 @@ pub(super) fn assign(session: &Session<'_>, argument: &str) -> Result<String, St
     ))
 }
 
-fn edit(store: &Store, profile: Option<&str>, argument: &str) -> Result<Loaded, String> {
+#[cfg(test)]
+fn edit(
+    store: &Store,
+    profile: Option<&str>,
+    argument: &str,
+) -> Result<crate::settings::Loaded, String> {
+    use crate::settings::Scope;
+    let edits = edits(store, profile, argument)?;
+    let snapshot = store.read(Scope::Local)?;
+    store.save_profile(Scope::Local, &snapshot, &edits, profile)
+}
+
+/// What `/subagents …` changes, as settings edits.
+fn edits(
+    store: &Store,
+    profile: Option<&str>,
+    argument: &str,
+) -> Result<Vec<(String, Option<String>)>, String> {
     let words: Vec<_> = argument.split_whitespace().collect();
     let mut edits = Vec::new();
     match words.as_slice() {
@@ -45,13 +63,13 @@ fn edit(store: &Store, profile: Option<&str>, argument: &str) -> Result<Loaded, 
         }
         _ => return Err("Use /subagents on|off, or /subagents quick|balanced|deep|heavy MODEL [EFFORT]. Use MODEL=off to remove a favorite. Filling a slot never enables delegation.".into()),
     }
-    let snapshot = store.read(Scope::Local)?;
-    store.save_profile(Scope::Local, &snapshot, &edits, profile)
+    Ok(edits)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Scope;
     struct Temp(std::path::PathBuf);
     impl Temp {
         fn path(&self) -> &std::path::Path {

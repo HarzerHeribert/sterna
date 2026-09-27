@@ -184,7 +184,13 @@ fn access(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
 /// The one confirmation sheet, for the Never asks rung (`full`) and for
 /// full access (`access`). It opens on Cancel.
 fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
-    let (label, warning, yes) = if what == "access" {
+    let (label, warning, yes) = if let Some(model) = what.strip_prefix("pin:") {
+        (
+            format!("Pin {model}"),
+            "This turns favourites off: every subagent runs on this one model.",
+            Action::Choose(model.to_string()),
+        )
+    } else if what == "access" {
         (
             "Full access".to_string(),
             "From the next session Sterna applies no OS confinement to the commands it runs; \

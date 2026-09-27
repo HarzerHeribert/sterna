@@ -554,7 +554,7 @@ pub struct ModelConfig {
 
 mod agents;
 use agents::parse_agents;
-pub use agents::{AgentSlot, AgentsConfig, AgentsMode, SLOT_NAMES};
+pub use agents::{AgentSlot, AgentsConfig, AgentsMode, SLOT_NAMES, slot_effort};
 
 /// One integer key's valid range, spelled once so the refusal sentence and
 /// the check it comes from cannot drift apart.

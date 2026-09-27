@@ -32,6 +32,16 @@ impl AgentsMode {
         }
     }
 }
+/// The effort a favourite runs at when none is chosen for it.
+pub fn slot_effort(slot: &str) -> Effort {
+    match slot {
+        "quick" => Effort::Low,
+        "balanced" => Effort::Medium,
+        "deep" => Effort::High,
+        _ => Effort::Max,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSlot {
     pub model: String,
@@ -150,12 +160,7 @@ pub(super) fn parse_agents(value: &toml::Value) -> Result<AgentsConfig, String> 
                 .and_then(toml::Value::as_str)
                 .ok_or("a configured favorite needs a concrete model")?;
             validate_concrete_model("favorite model", m)?;
-            let default = match name.as_str() {
-                "quick" => Effort::Low,
-                "balanced" => Effort::Medium,
-                "deep" => Effort::High,
-                _ => Effort::Max,
-            };
+            let default = slot_effort(name);
             let effort = v
                 .get("effort")
                 .map(|v| {

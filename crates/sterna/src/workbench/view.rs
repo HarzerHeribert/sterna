@@ -836,7 +836,7 @@ fn session_card(
         lines.push((
             format!("subagents {word}"),
             Tone::Muted,
-            Some(Action::SettingsAt(4)),
+            Some(Action::Command("/subagents".into())),
         ));
     }
     lines.push((String::new(), Tone::Normal, None));
@@ -1104,7 +1104,7 @@ fn dock_bottom(
                     .filter(|word| *word != "off")
                     .map(|word| format!("subagents {word}"))
                     .unwrap_or_default(),
-                Action::SettingsAt(4),
+                Action::Command("/subagents".into()),
             ),
             (
                 if s.stream == crate::tui::Stream::default() {

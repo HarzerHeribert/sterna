@@ -71,10 +71,16 @@ impl Navigator {
             .position(|c| Some(c.model.as_str()) == current)
             .unwrap_or(0);
     }
-    /// Every model this role could reach before the query narrowed it: the
-    /// denominator a person reads a filter against.
+    /// Every model in scope before the query narrowed it -- the accounts
+    /// shown, chat models only: the denominator a person reads a filter
+    /// against.
     pub fn catalogue_len(&self) -> usize {
-        self.groups.iter().map(|g| g.models.len()).sum()
+        self.groups
+            .iter()
+            .filter(|g| self.all_sources || g.selectable != Some(false))
+            .flat_map(|g| &g.models)
+            .filter(|id| crate::models::chat_capable(id))
+            .count()
     }
     pub fn candidates(&self) -> Vec<Candidate> {
         // `+` joins terms as well as a space does: Space stages a choice for
@@ -93,6 +99,9 @@ impl Navigator {
                 continue;
             }
             for id in &g.models {
+                if !crate::models::chat_capable(id) {
+                    continue;
+                }
                 let hay = format!("{} {} {} {}", id, g.provider, g.account, g.scope).to_lowercase();
                 if !terms.iter().all(|t| hay.contains(t)) {
                     continue;
@@ -112,6 +121,13 @@ impl Navigator {
             }
         }
         out.sort_by(|a, b| {
+            // A search is answered best match first; the order below breaks
+            // ties within one quality of match.
+            let relevance = crate::models::search_rank(&a.model, &terms)
+                .cmp(&crate::models::search_rank(&b.model, &terms));
+            if !terms.is_empty() && relevance != std::cmp::Ordering::Equal {
+                return relevance;
+            }
             let subscription_order = (!a.route.contains("account-declared"))
                 .cmp(&(!b.route.contains("account-declared")));
             if !self.measured_order && subscription_order != std::cmp::Ordering::Equal {
@@ -132,6 +148,61 @@ impl Navigator {
         });
         out
     }
+    /// The picker's own record of a choice the session was just sent, so
+    /// the mark moves at once; returns the notice that names it. On a
+    /// favourite slot it moves on to the next empty one.
+    pub fn chosen(&mut self, model: &str) -> String {
+        use crate::config::{AgentSlot, AgentsMode, SLOT_NAMES};
+        let notice = match (self.role, self.slot.clone()) {
+            (2, Some(slot)) => {
+                let effort = self
+                    .assignment
+                    .slots
+                    .get(&slot)
+                    .map_or_else(|| crate::config::slot_effort(&slot), |held| held.effort);
+                self.assignment.slots.insert(
+                    slot.clone(),
+                    AgentSlot {
+                        model: model.to_string(),
+                        effort,
+                    },
+                );
+                let mut notice =
+                    format!("{} is now {model} · {}", slot.to_uppercase(), effort.name());
+                if self.assignment.mode != AgentsMode::Roster {
+                    notice.push_str(" · favourites are off: turn them on above");
+                }
+                self.slot = SLOT_NAMES
+                    .iter()
+                    .find(|name| !self.assignment.slots.contains_key(**name))
+                    .map_or(Some(slot), |name| Some((*name).to_string()));
+                notice
+            }
+            (2, None) => {
+                self.current.subagent = Some(model.to_string());
+                self.assignment.mode = AgentsMode::Pinned;
+                self.assignment.model = Some(model.to_string());
+                format!("Every subagent now runs on {model}")
+            }
+            (1, _) => {
+                self.current.helper = Some(model.to_string());
+                format!("Helper is now {model}")
+            }
+            _ => {
+                self.current.parent = model.to_string();
+                format!("Main is now {model}")
+            }
+        };
+        self.select_current();
+        notice
+    }
+    /// The model on the row the picker is on, when it can be chosen.
+    pub fn selected_model(&self) -> Option<String> {
+        self.candidates()
+            .get(self.selected)
+            .filter(|c| c.available)
+            .map(|c| c.model.clone())
+    }
     pub fn choose(&self) -> Result<String, String> {
         let rows = self.candidates();
         let c = rows.get(self.selected).ok_or("No selectable model.")?;
@@ -141,22 +212,30 @@ impl Navigator {
                 .clone()
                 .unwrap_or_else(|| "This account is not available.".into()));
         }
+        Ok(self.command_for(&c.model))
+    }
+    /// The command that gives `model` to the tier or slot the picker is on.
+    pub fn command_for(&self, model: &str) -> String {
         // The gateway still owns route selection. Never promise an account pin
         // when the serving protocol accepts only a concrete model here.
         if self.role == 2
             && let Some(slot) = &self.slot
         {
-            return Ok(format!("/subagents {slot} {}", c.model));
+            let effort = self
+                .assignment
+                .slots
+                .get(slot)
+                .map_or_else(|| crate::config::slot_effort(slot), |held| held.effort);
+            return format!("/subagents {slot} {model} {}", effort.name());
         }
-        Ok(format!(
-            "/model {}{}",
+        format!(
+            "/model {}{model}",
             match self.role {
                 1 => "helper ",
                 2 => "subagent ",
                 _ => "",
-            },
-            c.model
-        ))
+            }
+        )
     }
 }
 
@@ -216,47 +295,86 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
         sheet.notice = std::mem::take(&mut m.notice);
     }
     let now = match m.role {
-        1 => m.current.helper.clone().unwrap_or_else(|| "off".into()),
-        2 => m
-            .current
-            .subagent
-            .clone()
-            .unwrap_or_else(|| "favourites".into()),
-        _ => m.current.parent.clone(),
-    };
+        1 => m.current.helper.clone(),
+        2 => m.current.subagent.clone(),
+        _ => Some(m.current.parent.clone()).filter(|parent| !parent.is_empty()),
+    }
+    .unwrap_or_else(|| "not chosen yet".into());
     let (name, purpose) = ROLES[m.role.min(2)];
     let mut items = vec![Item::info(format!("{name} {purpose}. Now: {now}"))];
     if m.role == 2 && m.target_key.is_none() {
-        let slots =
-            std::iter::once(None).chain(crate::config::SLOT_NAMES.iter().copied().map(Some));
-        for slot in slots {
-            let holds = match slot {
-                Some(name) => m
-                    .assignment
-                    .slots
-                    .get(name)
-                    .map_or("empty".to_string(), |held| {
-                        format!("{} · {}", held.model, held.effort.name())
-                    }),
-                None => m.current.subagent.clone().unwrap_or_else(|| "none".into()),
-            };
+        // The pinned model, or none: never the favourites' word.
+        let pinned = m
+            .current
+            .subagent
+            .clone()
+            .filter(|word| !matches!(word.as_str(), "off" | "favourites"))
+            .unwrap_or_else(|| "none".into());
+        items.push(
+            Item::choice(
+                "slot:pinned",
+                "PINNED",
+                m.slot.is_none(),
+                Action::Slot(None),
+            )
+            .detail(format!("{pinned} · every subagent runs on one model")),
+        );
+        for slot in crate::config::SLOT_NAMES {
+            let held = m.assignment.slots.get(slot);
             items.push(
                 Item::choice(
-                    format!("slot:{}", slot.unwrap_or("pinned")),
-                    slot.map_or("PINNED".to_string(), str::to_uppercase),
-                    m.slot.as_deref() == slot,
-                    Action::Slot(slot.map(str::to_owned)),
+                    format!("slot:{slot}"),
+                    slot.to_uppercase(),
+                    m.slot.as_deref() == Some(slot),
+                    Action::Slot(Some(slot.to_string())),
                 )
-                .detail(holds),
+                .detail(held.map_or_else(
+                    || "empty · choose it, then a model below".to_string(),
+                    |held| held.model.clone(),
+                )),
+            );
+            // Each favourite's effort sits under it, one click from any value.
+            const EFFORTS: [crate::wire::Effort; 5] = [
+                crate::wire::Effort::Low,
+                crate::wire::Effort::Medium,
+                crate::wire::Effort::High,
+                crate::wire::Effort::Xhigh,
+                crate::wire::Effort::Max,
+            ];
+            let current = held.and_then(|held| EFFORTS.iter().position(|e| *e == held.effort));
+            items.push(
+                Item::value(
+                    format!("slot:{slot}:effort"),
+                    "effort",
+                    EFFORTS
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.name().to_string(),
+                                Action::SlotEffort(slot.to_string(), e.name().to_string()),
+                            )
+                        })
+                        .collect(),
+                    current,
+                )
+                .disabled(
+                    held.is_none()
+                        .then(|| "Choose this favourite's model first".to_string()),
+                ),
             );
         }
         let enabled = m.assignment.mode == crate::config::AgentsMode::Roster;
-        items.push(Item::toggle(
-            "favourites",
-            "Favourites",
-            enabled,
-            Action::Command(format!("/subagents {}", if enabled { "off" } else { "on" })),
-        ));
+        let empty = m.assignment.slots.is_empty();
+        items.push(
+            Item::toggle(
+                "favourites",
+                "Favourites",
+                enabled,
+                Action::Command(format!("/subagents {}", if enabled { "off" } else { "on" })),
+            )
+            .detail("Subagents choose among the filled favourites.")
+            .disabled((empty && !enabled).then(|| "Fill a favourite first".to_string())),
+        );
     }
     let current = match m.role {
         1 => m.current.helper.clone(),
@@ -279,6 +397,18 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
         if !m.measured_order && c.route != last_route {
             items.push(Item::heading(c.route.clone()));
             last_route = c.route.clone();
+            // A locked account's models stay listed and muted; its one way
+            // in is a row of its own, not a click on each model.
+            if !c.available {
+                let mut parts = c.route.split(" · ");
+                let provider = parts.next().unwrap_or_default().to_string();
+                let account = parts.next().unwrap_or_default().to_string();
+                items.push(Item::run(
+                    format!("signin:{account}"),
+                    format!("Sign in to {provider}"),
+                    Action::Command(format!("/login {account}")),
+                ));
+            }
         }
         let score = c.score.map(|v| format!(" · ★ {v:.0}")).unwrap_or_default();
         let locked = if c.available { "" } else { " · locked" };

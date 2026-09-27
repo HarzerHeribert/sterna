@@ -999,7 +999,11 @@ fn favorites_picker_assigns_one_slot_and_preserves_other_roles() {
     m.role = 2;
     m.slot = Some("quick".into());
     let candidate = m.candidates()[m.selected].model.clone();
-    assert_eq!(m.choose().unwrap(), format!("/subagents quick {candidate}"));
+    // The slot's effort travels with it: quick runs at low unless chosen.
+    assert_eq!(
+        m.choose().unwrap(),
+        format!("/subagents quick {candidate} low")
+    );
     assert!(m.assignment.slots.is_empty());
 }
 
@@ -2847,5 +2851,213 @@ fn the_opening_survives_a_note_and_its_command_chip_runs() {
             Action::Draft("Run the tests and tell me what fails.".into())
         ),
         Effect::Draft("Run the tests and tell me what fails.".into())
+    );
+}
+
+/// Tab to another tier lands on that tier's current model, not row 0.
+#[test]
+fn switching_tier_selects_that_tiers_current_model() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(navigator())));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    key(&mut u, &mut s, &n, KeyCode::Tab);
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let m = u.models().unwrap();
+    assert_eq!(m.role, 1);
+    assert_eq!(m.candidates()[m.selected].model, "fixture-helper");
+    let focused = &u.top().unwrap().sheet;
+    assert!(
+        focused.items[focused.focus].id.ends_with(":fixture-helper"),
+        "{:?}",
+        focused.items[focused.focus]
+    );
+}
+
+/// A choice is sent and the picker stays open, with the mark moved and the
+/// change named.
+#[test]
+fn a_choice_keeps_the_picker_open_and_names_the_change() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(navigator())));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let id = {
+        let m = u.models().unwrap();
+        let helper = m
+            .candidates()
+            .into_iter()
+            .find(|c| c.model == "fixture-helper")
+            .unwrap();
+        format!("model:{}:{}", helper.route, helper.model)
+    };
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, &id),
+        Effect::Command("/model fixture-helper".into())
+    );
+    let m = u.models().expect("the picker stays open");
+    assert_eq!(m.current.parent, "fixture-helper");
+    assert_eq!(u.top().unwrap().sheet.notice, "Main is now fixture-helper");
+}
+
+/// A favourite is filled by choosing its slot, then a model; the picker
+/// moves on to the next empty slot and says favourites are still off.
+#[test]
+fn a_favourite_is_a_slot_then_a_model_and_the_picker_moves_on() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.role = 2;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "slot:quick");
+    draw(&c, &n, &s, &mut u, 120, 60);
+    let id = {
+        let m = u.models().unwrap();
+        let main = m
+            .candidates()
+            .into_iter()
+            .find(|c| c.model == "fixture-main")
+            .unwrap();
+        format!("model:{}:{}", main.route, main.model)
+    };
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, &id),
+        Effect::Command("/subagents quick fixture-main low".into())
+    );
+    assert_eq!(
+        u.top().unwrap().sheet.notice,
+        "QUICK is now fixture-main · low · favourites are off: turn them on above"
+    );
+    assert_eq!(u.models().unwrap().slot.as_deref(), Some("balanced"));
+    // Its effort is set in place, one click from any value.
+    draw(&c, &n, &s, &mut u, 120, 60);
+    let effort = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "slot:quick:effort")
+        .unwrap();
+    assert!(u.top().unwrap().sheet.items[effort].disabled.is_none());
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(effort, 2))),
+        Effect::Command("/subagents quick fixture-main high".into())
+    );
+}
+
+/// Pinning one model over the favourites turns them off, so it is asked
+/// first; Yes sends it.
+#[test]
+fn pinning_over_favourites_asks_first() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.role = 2;
+    m.assignment.mode = sterna::config::AgentsMode::Roster;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    let id = {
+        let m = u.models().unwrap();
+        let main = m
+            .candidates()
+            .into_iter()
+            .find(|c| c.model == "fixture-main")
+            .unwrap();
+        format!("model:{}:{}", main.route, main.model)
+    };
+    assert_eq!(click_item(&mut u, &mut s, &n, &id), Effect::Consumed);
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "confirm:yes"),
+        Effect::Command("/model subagent fixture-main".into())
+    );
+    assert!(u.models().is_some(), "back on the picker");
+}
+
+/// Search answers best match first, and a model that cannot hold a
+/// conversation is never offered or counted.
+#[test]
+fn search_is_ranked_and_only_chat_models_are_offered() {
+    let panel = Panel::models(
+        "Models",
+        vec![ModelGroup {
+            provider: "A".into(),
+            account: "a-subscription".into(),
+            scope: "subscription".into(),
+            models: vec![
+                "claude-3-5-sonnet".into(),
+                "claude-sonnet-5".into(),
+                "gpt-image-1".into(),
+                "whisper-1".into(),
+            ],
+            selectable: Some(true),
+            unavailable_reason: None,
+            connect: None,
+            pooled: None,
+            note: None,
+        }],
+        TierModels {
+            parent: "claude-sonnet-5".into(),
+            helper: None,
+            subagent: None,
+        },
+    );
+    let mut m = Navigator::from_panel(&panel).unwrap();
+    assert_eq!(
+        m.catalogue_len(),
+        2,
+        "image and speech models are not counted"
+    );
+    assert!(m.candidates().iter().all(|c| !c.model.contains("image")));
+    m.query = "sonnet 5".into();
+    assert_eq!(m.candidates()[0].model, "claude-sonnet-5");
+}
+
+/// A locked account's models stay listed, and its one way in is a row.
+#[test]
+fn a_locked_account_offers_its_sign_in_as_one_row() {
+    let (c, n, s) = fixture();
+    let mut m = navigator();
+    m.all_sources = true;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    let sheet = &u.top().unwrap().sheet;
+    let row = sheet
+        .items
+        .iter()
+        .find(|item| item.id == "signin:OpenRouter-subscription")
+        .expect("a sign-in row for the locked account");
+    assert_eq!(row.title, "Sign in to OpenRouter");
+    assert_eq!(
+        row.action,
+        Some(Action::Command("/login OpenRouter-subscription".into()))
+    );
+}
+
+/// Settings › Subagents is whether subagents run, and the way to the
+/// picker where the favourites are chosen.
+#[test]
+fn settings_subagents_links_to_the_picker() {
+    let (_t, s, mut p) = prefs();
+    p.category = 4;
+    assert_eq!(
+        p.rows().iter().map(|spec| spec.key).collect::<Vec<_>>(),
+        ["agents.mode"]
+    );
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert!(
+        u.top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .any(|item| item.action == Some(Action::Command("/subagents".into())))
     );
 }

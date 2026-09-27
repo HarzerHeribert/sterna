@@ -60,6 +60,12 @@ struct Account {
 }
 
 pub(super) fn models(session: &Session<'_>) {
+    models_at(session, Tier::Parent);
+}
+
+/// The model picker, open on `tier`'s section: `/models`, bare `/subagents`
+/// and `/model helper` alike.
+pub(super) fn models_at(session: &Session<'_>, tier: Tier) {
     let mut catalogue = session
         .gateway
         .run(&["entitlements", "--json", "--refresh"], None)
@@ -99,10 +105,11 @@ pub(super) fn models(session: &Session<'_>) {
         show(session, unreachable_panel(session, "Models", "/model"));
         return;
     }
-    show(
-        session,
-        model_panel(catalogue, tier_models(session)).with_intelligence(scores),
-    );
+    let mut panel = model_panel(catalogue, tier_models(session)).with_intelligence(scores);
+    if let Some(assignment) = panel.assignment.as_mut() {
+        assignment.active = tier;
+    }
+    show(session, panel);
 }
 
 /// Words laid into lines no wider than `width`, continuation lines indented
@@ -181,7 +188,7 @@ fn tier_models(session: &Session<'_>) -> TierModels {
             AgentsMode::Auto => None,
             AgentsMode::Off => Some("off".to_string()),
             AgentsMode::Pinned => config.agents.model.clone(),
-            AgentsMode::Roster => Some("favorite roster".into()),
+            AgentsMode::Roster => Some("favourites".into()),
         },
     }
 }
@@ -261,16 +268,30 @@ pub(super) fn save_home(
 /// the id is settled against what is served, saved, and put in force, the
 /// session's own model and the screen's with it.
 pub(super) fn use_model(session: &Session<'_>, tier: Tier, id: &str) -> Result<String, String> {
-    if tier != Tier::Parent {
+    if tier != Tier::Parent && matches!(id, "off" | "auto" | "inherit") {
         return assign_model(session, tier, id);
     }
     // Validate and persist before changing the live request model. A
     // rejected control word or malformed id therefore leaves both the file
     // and the running session unchanged.
-    let model = super::startup::settle_model(
-        id.to_string(),
-        &super::startup::served_accounts(session.gateway),
-    );
+    let accounts = super::startup::served_accounts(session.gateway);
+    let model = super::startup::settle_model(id.to_string(), &accounts);
+    if !crate::models::chat_capable(&model) {
+        return Err(format!(
+            "{model} does not answer a conversation; /models lists the ones that do"
+        ));
+    }
+    // With a catalogue to hand, a model nobody serves is refused rather than
+    // saved and left to fail on the next request.
+    let served = super::startup::served_models(&accounts);
+    if !served.is_empty() && !served.contains(&model) {
+        return Err(format!(
+            "no connected account serves {model}; /models lists what they do"
+        ));
+    }
+    if tier != Tier::Parent {
+        return assign_model(session, tier, &model);
+    }
     assign_model(session, tier, &model)?;
     *session.model.borrow_mut() = model.clone();
     // The effort a person chose survives a model change: `xhigh` and `max`
@@ -1268,6 +1289,11 @@ pub(super) fn command(
     transcript: &Transcript,
 ) -> bool {
     match name {
+        // Bare, it is the picker's Subagents section: the one place the
+        // favourites and the pinned model are chosen.
+        "subagents" if argument.is_none_or(|a| a.trim().is_empty()) => {
+            models_at(session, Tier::Subagents);
+        }
         "subagents" => match subagents::assign(session, argument.unwrap_or_default()) {
             Ok(message) => session_println!("{message}"),
             Err(error) => session_println!("ERROR: {error}"),
@@ -2088,6 +2114,26 @@ pub(super) mod tests {
             settings_global: Some(root.join("user-settings")),
         };
         body(&session);
+    }
+
+    /// A model that cannot hold a conversation is refused on every route
+    /// and changes nothing.
+    #[test]
+    fn a_model_that_cannot_converse_is_refused() {
+        let root = std::env::temp_dir().join(format!("sterna-chat-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        with_session(&root, |session| {
+            let refused = use_model(session, Tier::Parent, "gpt-image-1").unwrap_err();
+            assert!(
+                refused.contains("does not answer a conversation"),
+                "{refused}"
+            );
+            assert!(use_model(session, Tier::Helpers, "whisper-1").is_err());
+            assert_eq!(*session.model.borrow(), "opus-5");
+            assert!(!root.join("user-settings").join("config.toml").exists());
+        });
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// A tier assignment takes effect now and survives the session, and an

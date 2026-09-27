@@ -946,6 +946,19 @@ impl Workbench {
                 };
                 match m.choose() {
                     Ok(cmd) => {
+                        if m.target_key.is_none() {
+                            let model = m.selected_model().unwrap_or_default();
+                            // Pinning one model over the favourites turns them
+                            // off, so it is asked first.
+                            if m.role == 2
+                                && m.slot.is_none()
+                                && m.assignment.mode == crate::config::AgentsMode::Roster
+                            {
+                                self.push(Source::Confirm(format!("pin:{model}")));
+                                return Effect::Consumed;
+                            }
+                            return self.activate(Action::Choose(model), s, n, busy, true);
+                        }
                         if let Some(key) = m.target_key.clone() {
                             let selected = m.candidates().get(m.selected).map(|c| c.model.clone());
                             self.sheets.pop();
@@ -957,12 +970,40 @@ impl Workbench {
                             }
                             self.drain_save();
                         } else {
-                            self.close_all();
                             return Effect::Command(cmd);
                         }
                     }
                     Err(e) => self.say(e),
                 }
+            }
+            // **The picker stays open while choosing.** The choice is sent,
+            // the mark moves at once, and the notice names what changed.
+            Action::Choose(model) => {
+                if matches!(
+                    self.sheets.last().map(|l| &l.source),
+                    Some(Source::Confirm(_))
+                ) {
+                    self.sheets.pop();
+                }
+                let Some(m) = self.models_mut() else {
+                    return Effect::Consumed;
+                };
+                let command = m.command_for(&model);
+                let notice = m.chosen(&model);
+                self.say(notice);
+                return Effect::Command(command);
+            }
+            Action::SlotEffort(slot, effort) => {
+                let Some(m) = self.models_mut() else {
+                    return Effect::Consumed;
+                };
+                let Some(held) = m.assignment.slots.get_mut(&slot) else {
+                    return Effect::Consumed;
+                };
+                held.effort = crate::wire::Effort::parse(&effort).unwrap_or(held.effort);
+                let command = format!("/subagents {slot} {} {effort}", held.model);
+                self.say(format!("{} now runs at {effort}", slot.to_uppercase()));
+                return Effect::Command(command);
             }
             Action::Sources => {
                 if let Some(m) = self.models_mut() {
@@ -977,6 +1018,13 @@ impl Workbench {
                 }
             }
             Action::Command(cmd) => {
+                // A confirmation's Yes: the sheet that asked goes first.
+                if matches!(
+                    self.sheets.last().map(|l| &l.source),
+                    Some(Source::Confirm(_))
+                ) {
+                    self.sheets.pop();
+                }
                 if busy {
                     self.say("This runtime change applies between turns; finish or stop the current turn first.");
                 } else {
