@@ -69,6 +69,10 @@ pub mod access {
         | REFER
         | TRUNCATE;
 
+    /// Write without read: a writable place that holds a secret, where
+    /// Landlock alone keeps the secret unreadable.
+    pub const WRITE: u64 = READ_WRITE & !READ;
+
     /// Every right the ruleset takes responsibility for. An access absent
     /// from here is one the ruleset does not restrict at all.
     pub const HANDLED: u64 = READ_WRITE;
@@ -98,7 +102,8 @@ impl Regime {
             Regime::LandlockAndSeccomp { abi } => format!(
                 "Landlock ABI {abi} with seccomp, without namespaces (this kernel refuses unprivileged user namespaces): \
                  every file is readable except the secrets and writes reach the writable places, but commands have no network, \
-                 and .git/hooks, .sterna and .claude inside the project are protected by Sterna's own checks only."
+                 and .git/hooks, .sterna and .claude inside the project, and a secret inside a writable place, are protected from writes \
+                 by Sterna's own checks only."
             ),
             Regime::Unconfined => {
                 "no Landlock ABI 3 or no supported seccomp architecture on this host, \
@@ -128,17 +133,20 @@ pub struct LandlockRules {
     pub read: Vec<PathBuf>,
     /// List only: each directory on the way to a secret.
     pub list: Vec<PathBuf>,
-    /// Read, write and run: the writable places (their own complement when a
-    /// secret lies inside one) and the `/dev/null` sink.
+    /// Read, write and run: the writable places and the `/dev/null` sink.
     pub read_write: Vec<PathBuf>,
+    /// Write only: a writable place that holds a secret, where no mount
+    /// covers it. Its readable parts come from `read`; the secret stays
+    /// unreadable, and becomes writable.
+    pub write: Vec<PathBuf>,
 }
 
 /// Whether the secrets are also covered by the namespace view's mounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Secrets {
-    /// Landlock alone keeps them out: a writable place that holds one is
-    /// granted as its own complement, so a file cannot be created directly
-    /// in a directory on the way to a secret.
+    /// Landlock alone keeps them unreadable: a writable place that holds
+    /// one is granted write without read, so files can still be created in
+    /// it, and the secret inside can be written but not read.
     Ruleset,
     /// Empty mounts cover them, which a Landlock-restricted process cannot
     /// remove; a writable place is granted whole.
@@ -169,19 +177,18 @@ pub fn landlock_rules_over(
     };
     let mut list = reads.listed;
     let mut read_write = vec![PathBuf::from("/dev/null")];
+    let mut write = Vec::new();
     for place in profile.writable_places() {
         // A write grant never reaches into a secret: a place under one is
-        // not granted, and a place holding one is granted as its own
-        // complement.
+        // not granted, and a place holding one is granted write without
+        // read where no mount covers the secret.
         if secrets.iter().any(|secret| place.starts_with(secret)) {
             continue;
         }
         if secrets_are == Secrets::Ruleset
             && secrets.iter().any(|secret| secret.starts_with(&place))
         {
-            let inside = complement(&place, &secrets, children);
-            read_write.extend(inside.granted);
-            list.extend(inside.listed);
+            write.push(place);
         } else {
             read_write.push(place);
         }
@@ -192,6 +199,7 @@ pub fn landlock_rules_over(
         read: reads.granted,
         list,
         read_write,
+        write,
     }
 }
 
@@ -304,7 +312,7 @@ pub fn regime() -> Regime {
     let abi = landlock_abi();
     if abi < 3 || !seccomp_supported_arch() {
         Regime::Unconfined
-    } else if super::linux_ns::available() {
+    } else if std::env::var_os("STERNA_AB_NO_NS").is_none() && super::linux_ns::available() {
         Regime::Namespaced { abi }
     } else {
         Regime::LandlockAndSeccomp { abi }
@@ -359,6 +367,7 @@ pub fn confine(profile: &Profile, command: &mut std::process::Command) -> std::i
         (&rules.read, access::READ),
         (&rules.list, access::LIST),
         (&rules.read_write, access::READ_WRITE),
+        (&rules.write, access::WRITE),
     ] {
         for path in paths {
             // A path that vanished since it was listed grants nothing.

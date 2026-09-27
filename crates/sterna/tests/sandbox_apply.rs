@@ -267,13 +267,7 @@ fn the_allow_set_is_exactly_the_declared_terms() {
     let mut expected: Vec<String> = EXPECTED_PATHS.iter().map(|p| p.to_string()).collect();
     let text_of = |path: &Path| path.to_string_lossy().into_owned();
     expected.extend(profile.writable_places().iter().map(|p| text_of(p)));
-    for name in [
-        ".git/hooks",
-        ".git/config",
-        ".sterna",
-        ".claude",
-        ".sterna/scratch",
-    ] {
+    for name in [".sterna", ".claude", ".sterna/scratch"] {
         expected.push(text_of(&root.join(name)));
     }
     expected.extend(profile.secret_paths().iter().map(|p| text_of(p)));
@@ -305,6 +299,15 @@ fn the_allow_set_is_exactly_the_declared_terms() {
 
     // §2: a `Bash` pattern grants no file access.
     assert!(!text.contains("cargo test"), "{text}");
+
+    // The repository's hooks and config are protected once it exists, and
+    // not before, so a command can still `git init` a new project.
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let text = macos::profile_text(&profile);
+    for name in [".git/hooks", ".git/config"] {
+        let deny = format!("(deny file-write* (subpath {}))", quoted(&root.join(name)));
+        assert!(text.contains(&deny), "{text}");
+    }
 }
 
 #[test]
@@ -991,7 +994,17 @@ fn the_landlock_ruleset_is_exactly_the_declared_paths() {
             "{}: {rules:?}",
             place.display()
         );
+        // A place that holds a secret is still writable -- write without
+        // read -- so files can be created directly in it.
+        assert_eq!(
+            rules.write.contains(&place),
+            holds,
+            "{}: {rules:?}",
+            place.display()
+        );
     }
+    assert_eq!(linux::access::WRITE & linux::access::READ, 0);
+    assert_ne!(linux::access::WRITE & linux::access::MAKE_REG, 0);
     assert!(
         !rules.read_write.contains(&home()),
         "the home folder is writable: {rules:?}"

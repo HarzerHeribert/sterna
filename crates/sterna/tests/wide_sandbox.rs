@@ -197,10 +197,17 @@ fn inner() {
     }
     let (ok, _) = run("t=$(mktemp) && echo x > \"$t\" && rm \"$t\"");
     assert!(ok, "the temp folder is writable");
-    // Landlock refuses a read of another domain's process memory and
-    // environment, so the host's secrets in `/proc/<pid>/environ` stay put.
-    let (ok, out) = run(&format!("cat /proc/{}/environ", std::process::id()));
-    assert!(!ok && out.is_empty(), "the parent's environment was read");
+    // The confiner's environment -- API keys among them -- stays unread:
+    // the PID namespace hides it, and without one Landlock refuses a
+    // sandboxed reader of an unsandboxed process -- except for root, whose
+    // CAP_SYS_PTRACE passes that check, so as root only the namespace
+    // protects it. (Measured: unprivileged, the read is refused with or
+    // without a non-dumpable confiner.)
+    let root_user = unsafe { libc::geteuid() } == 0;
+    if namespaced || !root_user {
+        let (ok, out) = run(&format!("cat /proc/{}/environ", std::process::id()));
+        assert!(!ok && out.is_empty(), "the parent's environment was read");
+    }
 
     if !namespaced {
         eprintln!("no user namespaces here: the protected paths and the proxy are not tested");

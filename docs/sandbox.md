@@ -138,13 +138,18 @@ minutes.
 
 - **macOS — Seatbelt.** A generated profile applied to each spawned tool
   before `exec`: reads everywhere but the secrets, the writable places,
-  the `.claude`/`.sterna` write carve-outs, and network only to localhost,
-  where the proxy listens.
+  the `.claude`/`.sterna` write carve-outs (and `.git/hooks`/`.git/config`
+  once the repository exists, so `git init` still works), and network only
+  to localhost, where the proxy listens.
 - **Linux — Landlock and seccomp.** Landlock applies per-path rights;
   seccomp limits sockets. Where user namespaces are available, a command
   runs in its own network namespace whose only way out is the proxy, and
   `.git/hooks`, `.git/config` and `.sterna` are mounted read-only; where
   they are not, commands get no network at all and the doctor says so.
+  Without namespaces those paths, and a secret that sits inside a writable
+  place, are kept from writes by Sterna's own check only (the secret stays
+  unreadable), and a Sterna running as root has its environment readable
+  by the commands it runs.
 - **Windows — an AppContainer** entered at `CreateProcessW`, with no
   capabilities (`internetClient` included). Commands have no network there;
   a command that needs it asks to leave the sandbox. `bash` runs under

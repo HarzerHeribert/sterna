@@ -638,7 +638,8 @@ impl Profile {
         places
     }
 
-    /// Paths inside the writable places that stay read-only for a command:
+    /// Paths inside the writable places that stay read-only for a command
+    /// (`.git`'s only once the repository exists):
     /// code written there runs later outside the sandbox (a git hook, a git
     /// config alias) or widens the next session (Sterna's own settings). A
     /// worktree's repository keeps its hooks and config at the top of the
@@ -646,9 +647,15 @@ impl Profile {
     pub fn protected_paths(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for root in std::iter::once(&self.root).chain(self.additional_roots.iter()) {
-            for name in [".git/hooks", ".git/config", ".sterna", ".claude"] {
-                out.push(root.join(name));
+            // The repository's hooks and config once it exists: asked per
+            // spawn, so a command may still `git init` a new project, and
+            // every command after it finds them protected.
+            if root.join(".git").exists() {
+                out.push(root.join(".git/hooks"));
+                out.push(root.join(".git/config"));
             }
+            out.push(root.join(".sterna"));
+            out.push(root.join(".claude"));
         }
         for (dir, _) in &self.repository {
             if dir.join("HEAD").is_file() {
