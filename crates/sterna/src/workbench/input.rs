@@ -28,6 +28,20 @@ pub enum Effect {
     ReopenSignIn,
     HandlerOff(String),
 }
+/// A control that may change while a turn runs: a model, mode or effort
+/// named in full applies from the turn's next request (decision 9). A bare
+/// one opens a sheet the session builds, and that waits for the turn.
+pub fn mid_turn(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    match (words.next(), words.next()) {
+        (Some("/mode" | "/effort"), Some(_)) => true,
+        (Some("/model"), Some(word)) => {
+            crate::spend::Tier::parse(word).is_none() || words.next().is_some()
+        }
+        _ => false,
+    }
+}
+
 impl Workbench {
     /// Writes one presentation key to the settings (globally, decision 6),
     /// puts it on the undo list, and says whether the file took it. A
@@ -834,10 +848,9 @@ impl Workbench {
                 );
             }
             Action::Models => {
+                // The picker is built by the session, which is in the turn.
                 if busy {
-                    self.say(
-                        "Change models after the current turn; in-flight calls retain their model.",
-                    );
+                    self.say(super::voice::BETWEEN_TURNS);
                 } else {
                     if from_sheet {
                         self.child_of = Some("/models".into());
@@ -939,10 +952,6 @@ impl Workbench {
                 }
             }
             Action::ChooseModel => {
-                if busy {
-                    self.say("The current turn must finish before changing models.");
-                    return Effect::Consumed;
-                }
                 let Some(m) = self.models() else {
                     return Effect::Consumed;
                 };
@@ -991,8 +1000,18 @@ impl Workbench {
                     return Effect::Consumed;
                 };
                 let command = m.command_for(&model);
+                // A model applies from the turn's next request; a favourite
+                // slot waits for the turn to end.
+                if busy && !mid_turn(&command) {
+                    self.say(super::voice::BETWEEN_TURNS);
+                    return Effect::Consumed;
+                }
                 let notice = m.chosen(&model);
-                self.say(notice);
+                self.say(if busy {
+                    format!("{notice} · {}", super::voice::NEXT_REQUEST)
+                } else {
+                    notice
+                });
                 return Effect::Command(command);
             }
             Action::SlotEffort(slot, effort) => {
@@ -1027,8 +1046,10 @@ impl Workbench {
                 ) {
                     self.sheets.pop();
                 }
-                if busy {
-                    self.say("This runtime change applies between turns; finish or stop the current turn first.");
+                if busy && mid_turn(&cmd) {
+                    return Effect::Command(cmd);
+                } else if busy {
+                    self.say(super::voice::BETWEEN_TURNS);
                 } else {
                     if from_sheet {
                         self.child_of = Some(cmd.clone());
@@ -1190,7 +1211,7 @@ impl Workbench {
             }
         } else if spec.kind == crate::settings::Kind::Model {
             if busy {
-                p.notice = "Change models after the current turn.".into();
+                p.notice = super::voice::BETWEEN_TURNS.into();
             } else {
                 self.browsing = Some(spec.key.to_string());
                 self.child_of = Some("/models".into());

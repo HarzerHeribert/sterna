@@ -31,6 +31,8 @@ pub(super) fn dock_mark(s: &ScreenState) -> String {
     match s.activity {
         Activity::Complete => "✓".into(),
         Activity::Failed => "✕".into(),
+        Activity::Stopped(_) => "■".into(),
+        Activity::AwaitingYou => "?".into(),
         Activity::Idle | Activity::Starting => if live && frame(s) % 2 == 1 {
             "◆"
         } else {

@@ -24,7 +24,8 @@ impl Face {
             return Self::Asking;
         }
         match activity {
-            Activity::Idle | Activity::Starting => Self::Idle,
+            Activity::Idle | Activity::Starting | Activity::Stopped(_) => Self::Idle,
+            Activity::AwaitingYou => Self::Asking,
             Activity::Thinking | Activity::Waiting | Activity::Compacting | Activity::Searching => {
                 Self::Thinking
             }
@@ -75,10 +76,26 @@ pub fn status(activity: Activity, cell: Option<usize>, writing_cell: bool) -> St
         Activity::Searching => "searching".into(),
         Activity::Waiting => "waiting on a response · estimate unknown".into(),
         Activity::Compacting => "compacting · preparing bounded context".into(),
+        Activity::AwaitingYou => "waiting for you".into(),
         Activity::Failed => "action failed — inspect the cell".into(),
         Activity::Complete => "complete".into(),
+        Activity::Stopped(crate::tui::Stopper::You) => "stopped · what ran stands".into(),
+        Activity::Stopped(crate::tui::Stopper::Interrupt) => {
+            "stopped by Ctrl-C · what ran stands".into()
+        }
     }
 }
+/// The status while the answer is in and its check is still running: the
+/// turn is not complete until the check has had its say.
+pub const CHECKING: &str = "answered · checking it";
+/// The one sentence for a control that waits for the turn to end.
+pub const BETWEEN_TURNS: &str = "Available when this turn ends · Esc stops it";
+/// A model, mode or effort chosen while a turn runs.
+pub const NEXT_REQUEST: &str = "Saved · applies from this turn's next request";
+/// A message held until the session is free.
+pub const QUEUED: &str = "Queued for when this turn ends · Esc takes the last one back";
+/// Ctrl-C while a turn runs.
+pub const CTRL_C_STOPPING: &str = "Stopping · Ctrl-C again within 2 s quits";
 /// The three lines beside the bird inside a running cell: what is happening,
 /// how long it has been, and at whose cost.
 pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'static str, String) {
@@ -289,6 +306,8 @@ mod tests {
             Activity::Waiting,
             Activity::Failed,
             Activity::Complete,
+            Activity::AwaitingYou,
+            Activity::Stopped(crate::tui::Stopper::You),
         ] {
             assert!(!status(a, Some(2), false).is_empty());
         }

@@ -296,11 +296,38 @@ pub enum Activity {
     Searching,
     Waiting,
     Compacting,
+    /// An approval or a question is on screen and the turn waits on the
+    /// person: the clock stands still until it is answered.
+    AwaitingYou,
     Complete,
     Failed,
+    /// The turn was stopped before it finished; what ran stands.
+    Stopped(Stopper),
+}
+
+/// Who stopped a turn: the person, with Esc, or an interrupt (Ctrl-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopper {
+    You,
+    Interrupt,
 }
 
 impl Activity {
+    /// A turn is under way: the model, a cell or the person's answer is
+    /// what the session waits on. A local control is never one.
+    pub fn working(self) -> bool {
+        matches!(
+            self,
+            Self::Thinking
+                | Self::Streaming
+                | Self::Executing
+                | Self::Searching
+                | Self::Waiting
+                | Self::Compacting
+                | Self::AwaitingYou
+        )
+    }
+
     /// Fixed four-cell machinery; only the current header moves.
     pub fn indicator(self, tick: usize) -> &'static str {
         let frames = match self {
@@ -311,9 +338,11 @@ impl Activity {
             Self::Searching => ["/.. ", "./. ", "../ ", "./. "],
             Self::Waiting => ["(  )", "( .)", "(..)", "(. )"],
             Self::Compacting => [">  <", " >< ", " [] ", " >< "],
+            Self::AwaitingYou => [" ?? "; 4],
             Self::Idle => [" -- "; 4],
             Self::Complete => [" OK "; 4],
             Self::Failed => [" !! "; 4],
+            Self::Stopped(_) => [" || "; 4],
         };
         frames[tick % frames.len()]
     }
@@ -328,8 +357,10 @@ impl Activity {
             Self::Searching => "searching",
             Self::Waiting => "waiting",
             Self::Compacting => "compacting",
+            Self::AwaitingYou => "waiting for you",
             Self::Complete => "complete",
             Self::Failed => "failed",
+            Self::Stopped(_) => "stopped",
         }
     }
 }

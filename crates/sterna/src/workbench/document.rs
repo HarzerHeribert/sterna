@@ -350,10 +350,7 @@ impl Document {
                 && !c.messages[idx + 1..]
                     .iter()
                     .any(|next| next.role == Role::Assistant)
-                && !matches!(
-                    s.activity,
-                    Activity::Idle | Activity::Complete | Activity::Failed
-                )
+                && s.activity.working()
                 && v.is_none_or(|v| {
                     v.execution.is_none() && v.error.is_none() && v.returned.is_none()
                 });
@@ -373,6 +370,12 @@ impl Document {
             let failed = v.is_some_and(|v| v.error.is_some());
             let state = if failed {
                 vec![("✕ FAILED".to_string(), Tone::Failure)]
+            } else if running && s.activity == Activity::AwaitingYou {
+                // The turn waits on the person, and its clock stands still.
+                vec![
+                    ("◆ WAITING FOR YOU".to_string(), Tone::Warning),
+                    (format!(" {}", clock(s.pulse.elapsed_ms)), Tone::Muted),
+                ]
             } else if running {
                 vec![
                     ("● RUNNING".to_string(), Tone::Accent),
@@ -755,7 +758,7 @@ impl Document {
             if files > 0 {
                 chips.push((
                     "show the diff".to_string(),
-                    Action::Command("/diff".into()),
+                    Action::Tab(cell, CellTab::Diff),
                     false,
                 ));
                 chips.push((

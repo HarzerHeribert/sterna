@@ -1502,7 +1502,7 @@ fn the_latest_answer_offers_what_to_do_next() {
     );
     draw(&c, &n, &s, &mut u, 100, 40);
     for action in [
-        Action::Command("/diff".into()),
+        Action::Tab(1, CellTab::Diff),
         Action::Insert("commit this".into()),
         Action::Tab(1, CellTab::Output),
     ] {
@@ -3146,4 +3146,135 @@ fn a_running_sign_in_is_one_chip_away() {
         click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(0))),
         Effect::CancelSignIn
     );
+}
+
+/// Clicks a hit target while a turn runs.
+fn click_during_turn(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, a: Action) -> Effect {
+    let (r, _) = u
+        .geometry
+        .hits
+        .iter()
+        .find(|(_, v)| *v == a)
+        .unwrap()
+        .clone();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        let effect = u.event(
+            &Event::Mouse(MouseEvent {
+                kind,
+                column: r.x,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            s,
+            n,
+            true,
+        );
+        if !matches!(kind, MouseEventKind::Down(_)) {
+            return effect;
+        }
+    }
+    unreachable!()
+}
+
+/// While a turn runs, a row that waits for the turn to end says so before
+/// it is clicked, in the one sentence every such refusal uses. A model
+/// named in full applies from the turn's next request, so it does not wait;
+/// a bare `/model helper` opens a sheet the session builds, so it does.
+#[test]
+fn mid_turn_a_row_that_waits_says_so_before_a_click() {
+    let (c, n, mut s) = fixture();
+    s.activity = Activity::Executing;
+    let mut u = Workbench::default();
+    u.open(Source::Panel(Box::new(Panel::rows(
+        "Sign in",
+        vec![
+            sterna::tui::PanelRow::opens("Sign in with an API key", "/key"),
+            sterna::tui::PanelRow::command("Use claude-x", "/model claude-x"),
+        ],
+    ))));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    let row = |u: &Workbench, words: &str| {
+        let items = &u.top().unwrap().sheet.items;
+        let at = items.iter().position(|i| i.title.contains(words)).unwrap();
+        (at, items[at].disabled.clone())
+    };
+    assert_eq!(
+        row(&u, "API key").1.as_deref(),
+        Some(workbench::voice::BETWEEN_TURNS)
+    );
+    let (model, waits) = row(&u, "claude-x");
+    assert_eq!(waits, None, "a model applies from the next request");
+    assert_eq!(
+        click_during_turn(&mut u, &mut s, &n, Action::Sheet(Hit::Item(model))),
+        Effect::Command("/model claude-x".into())
+    );
+    assert!(workbench::mid_turn("/effort high"));
+    assert!(workbench::mid_turn("/model helper claude-x"));
+    assert!(!workbench::mid_turn("/model helper"));
+    assert!(!workbench::mid_turn("/mode"));
+    // Between turns nothing waits.
+    s.activity = Activity::Complete;
+    draw(&c, &n, &s, &mut u, 100, 30);
+    assert_eq!(row(&u, "API key").1, None);
+}
+
+/// "Show the diff" is a view of the cell it sits under, never a command
+/// the turn gate could refuse.
+#[test]
+fn the_diff_chip_is_a_view_of_its_own_cell() {
+    let (c, mut n, mut s) = fixture();
+    n.cells[0].returned = Some("Wrote view.rs.".into());
+    s.activity = Activity::Complete;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(screen.contains("show the diff"), "{screen}");
+    let actions: Vec<Action> = u.geometry.hits.iter().map(|(_, a)| a.clone()).collect();
+    assert!(
+        !actions.contains(&Action::Command("/diff".into())),
+        "no diff chip goes through the command path"
+    );
+    assert!(actions.contains(&Action::Tab(1, CellTab::Diff)));
+}
+
+/// The turn is complete once its check has had its say: until then the
+/// status says the answer is in and being checked.
+#[test]
+fn the_turn_is_complete_once_its_check_has_had_its_say() {
+    let (c, n, mut s) = fixture();
+    s.activity = Activity::Complete;
+    s.lane("check", true);
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains(workbench::voice::CHECKING), "{screen}");
+    assert!(!screen.contains("complete"), "{screen}");
+    s.lane("check", false);
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("complete"), "{screen}");
+}
+
+/// A turn waiting on the person's answer says so on its card and on the
+/// dock, instead of RUNNING.
+#[test]
+fn a_turn_that_waits_on_you_says_so() {
+    let (mut c, n, mut s) = fixture();
+    s.activity = Activity::AwaitingYou;
+    c.messages
+        .push(Message::text(Role::User, "and check the tests"));
+    c.messages.push({
+        let mut m = Message::text(Role::Assistant, "Checking the guard now.");
+        m.content.push(Block::ToolUse {
+            id: "call-2".into(),
+            name: "execute_cell".into(),
+            input: serde_json::json!({"code":"await edit(\"motion.rs\");"}),
+        });
+        m
+    });
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(screen.contains("WAITING FOR YOU"), "{screen}");
+    assert!(screen.contains("waiting for you"), "{screen}");
+    assert!(!screen.contains("RUNNING"), "{screen}");
 }

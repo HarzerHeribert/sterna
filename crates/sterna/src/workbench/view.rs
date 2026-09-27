@@ -1,5 +1,5 @@
 use super::{
-    Action, Document, Geometry, Tone, Workbench, chrome,
+    Action, CellTab, Document, Geometry, Tone, Workbench, chrome,
     document::{RowKind, clip},
     theme, voice,
 };
@@ -665,7 +665,7 @@ fn draw_row(
                         g,
                         Rect::new(limit - w, area.y, w, 1),
                         rest,
-                        Action::Command("/diff".into()),
+                        Action::Tab(cell, CellTab::Diff),
                         false,
                         t,
                     );
@@ -956,23 +956,20 @@ fn dock_top(
     boxed: bool,
 ) {
     let t = s.theme;
-    let running = matches!(
-        s.activity,
-        Activity::Thinking
-            | Activity::Executing
-            | Activity::Compacting
-            | Activity::Searching
-            | Activity::Streaming
-            | Activity::Waiting
-    );
+    let running = s.activity.working();
     // A long wait is exactly when a person looks here to ask whether the
     // session is alive, so the mark keeps moving; only motion off and a
     // selection in progress hold it.
     let cell = matches!(s.activity, Activity::Executing | Activity::Streaming)
         .then_some(n.cells.len() + 1);
+    // The turn is complete once its check has had its say, not before.
+    let said = if s.activity == Activity::Complete && s.behind.iter().any(|lane| lane == "check") {
+        voice::CHECKING.to_string()
+    } else {
+        voice::status(s.activity, cell, s.streaming_tool_input.is_some())
+    };
     let status = format!(
-        "{}{}",
-        voice::status(s.activity, cell, s.streaming_tool_input.is_some()),
+        "{said}{}",
         if s.stopping { " · stop requested" } else { "" }
     );
     let lead = format!(

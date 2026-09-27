@@ -49,7 +49,29 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Fold(_) => fold_items(sheet, fold),
     };
     let _ = n;
+    // While a turn runs, a row that waits for it to end says so before it
+    // is clicked, in the one sentence every such refusal uses.
+    let items = if s.activity.working() {
+        items.into_iter().map(between_turns).collect()
+    } else {
+        items
+    };
     sheet.set_items(items);
+}
+
+/// Disables a row that cannot act until the turn ends: a command other than
+/// a model, mode or effort, and the model picker, which the session builds.
+fn between_turns(item: Item) -> Item {
+    let waits = match &item.action {
+        Some(Action::Command(command)) => !super::mid_turn(command),
+        Some(Action::Models) => true,
+        _ => false,
+    };
+    if waits && item.disabled.is_none() {
+        item.disabled(Some(super::voice::BETWEEN_TURNS.into()))
+    } else {
+        item
+    }
 }
 
 /// One word for the work mode, as the chips and the sheet name it.

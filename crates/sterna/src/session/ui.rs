@@ -182,7 +182,9 @@ pub(super) enum Update {
     /// The approval gate's memory, sent once when the gate is made, so the
     /// Ask sheet can list and forget what was answered for the session.
     Memory(crate::approval::Memory),
-    Snapshot(Box<(Conversation, Notebook, ServedBy, Activity)>),
+    /// The transcript and how the turn stands; `None` when a control has
+    /// been answered, which leaves the turn's ending and its clock alone.
+    Snapshot(Box<(Conversation, Notebook, ServedBy, Option<Activity>)>),
     /// Open a form sheet. The terminal thread answers it on the form
     /// channel and on nothing else.
     Form(Box<tui::Form>),
@@ -208,9 +210,6 @@ pub(super) enum Update {
     /// Work behind the answer started (`true`) or ended, by lane name.
     Behind(&'static str, bool),
     Stop,
-    /// The session loop has taken the oldest queued message and is running
-    /// it; it is a task now and no longer waiting.
-    Dequeued,
 }
 enum Input {
     Submit(String),
@@ -233,15 +232,29 @@ enum Input {
 /// [`Interrupter::raise`]: super::Interrupter::raise
 #[derive(Default)]
 pub(super) struct Steer {
-    stop: AtomicBool,
+    /// A stop asked for, and by whom: the first Escape, or Ctrl-C.
+    stop: Mutex<Option<tui::Stopper>>,
     cancel: AtomicBool,
+    /// A model, mode or effort chosen while the turn runs, applied where
+    /// its next request begins (decision 9).
+    controls: Mutex<Vec<String>>,
 }
 
 impl Steer {
-    /// The first Escape. Idempotent: pressing it twice before the boundary
-    /// is read asks for the same thing.
-    fn request_stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+    /// The first Escape, or a Ctrl-C. Idempotent: pressing it twice before
+    /// the boundary is read asks for the same thing.
+    fn request_stop(&self, by: tui::Stopper) {
+        *super::lock(&self.stop) = Some(by);
+    }
+
+    /// A control for the turn's next request.
+    fn request_control(&self, command: String) {
+        super::lock(&self.controls).push(command);
+    }
+
+    /// The controls chosen since the last request, oldest first.
+    pub(super) fn take_controls(&self) -> Vec<String> {
+        std::mem::take(&mut *super::lock(&self.controls))
     }
 
     /// The second Escape.
@@ -252,14 +265,15 @@ impl Steer {
     /// Read once by the task loop at a cell boundary, and lowered by the
     /// read: a stop ends the turn it was asked during and never the next
     /// one.
-    pub(super) fn take_stop(&self) -> bool {
-        self.stop.swap(false, Ordering::SeqCst)
+    pub(super) fn take_stop(&self) -> Option<tui::Stopper> {
+        super::lock(&self.stop).take()
     }
 
     /// Lowers both levers when a task starts: a lever pulled before it began
-    /// was meant for a turn that has already ended.
+    /// was meant for a turn that has already ended. A control chosen
+    /// between turns is kept: it is for this one.
     pub(super) fn clear(&self) {
-        self.stop.store(false, Ordering::SeqCst);
+        *super::lock(&self.stop) = None;
         self.cancel.store(false, Ordering::SeqCst);
     }
 
@@ -395,15 +409,7 @@ impl LiveUi {
     }
     pub(super) fn next(&self) -> Result<Option<String>, String> {
         match self.inputs.recv() {
-            Ok(Input::Submit(text)) => {
-                // **The queue empties when this loop takes from it, not when
-                // the screen guesses that it has.** Inferring it from the
-                // working-to-idle edge missed a task that started in the
-                // same breath the last one ended, and left a message
-                // standing in the queue while it was already the task.
-                let _ = self.updates.send(Update::Dequeued);
-                Ok(Some(text))
-            }
+            Ok(Input::Submit(text)) => Ok(Some(text)),
             Ok(Input::Exit) => Ok(None),
             Ok(Input::Failed(error)) => Err(error),
             Err(_) => Err("terminal input closed".into()),
@@ -419,7 +425,17 @@ impl LiveUi {
             transcript.conversation.clone(),
             transcript.notebook.clone(),
             served.clone(),
-            activity,
+            Some(activity),
+        ))));
+    }
+    /// A control has been answered: the screen takes the transcript as it
+    /// now stands and stops waiting, and no turn is reported.
+    pub(super) fn control_done(&self, transcript: &super::Transcript) {
+        let _ = self.updates.send(Update::Snapshot(Box::new((
+            transcript.conversation.clone(),
+            transcript.notebook.clone(),
+            ServedBy::default(),
+            None,
         ))));
     }
     /// A publisher onto this terminal's channel that borrows nothing.
@@ -496,7 +512,7 @@ impl Publisher {
             conversation.clone(),
             notebook.clone(),
             served.clone(),
-            activity,
+            Some(activity),
         ))));
     }
 }
@@ -875,7 +891,7 @@ fn run(
     let mut dirty = true;
     let mut last_drawn = Instant::now();
     let mut last_tick = Instant::now();
-    let mut task_started: Option<Instant> = None;
+    let mut clock = Clock::default();
     let mut helper_clocks: HashMap<(usize, usize), Instant> = HashMap::new();
     let mut previous_rows = 0usize;
     let mut viewport_height = 10usize;
@@ -941,41 +957,43 @@ fn run(
                         .turning_off
                         .retain(|name| n.handlers.iter().any(|h| h.name == *name && h.active));
                     conversation = c;
-                    keep_sending(&mut conversation, &mut sending, activity);
+                    keep_sending(
+                        &mut conversation,
+                        &mut sending,
+                        activity.unwrap_or(Activity::Idle),
+                    );
                     state.messages_seen = conversation.messages.len();
                     notebook = n;
                     if s.is_known() {
                         served = s;
                     }
+                    if served.is_known() {
+                        state.connected = Some(true);
+                    }
+                    // A control answered: nothing waits any more, and the
+                    // last turn's ending, clock and pulse stay as they were.
+                    let Some(activity) = activity else {
+                        busy = false;
+                        continue;
+                    };
                     state.activity = activity;
                     state.streaming_text = None;
                     state.streaming_tool_input = None;
                     state.streaming_reasoning = None;
-                    if served.is_known() {
-                        state.connected = Some(true);
-                    }
-                    if matches!(
-                        activity,
-                        Activity::Idle | Activity::Complete | Activity::Failed
-                    ) {
+                    if !activity.working() {
                         // Cancellation may finish the waiting callback before
                         // the user answers. Remove stale confirmations then.
                         prompts.clear_approvals();
-                        if let Some(start) = task_started.take() {
-                            state.pulse.elapsed_ms = start.elapsed().as_millis() as u64;
+                        if let Some(ms) = clock.stop() {
+                            state.pulse.elapsed_ms = ms;
                         }
-                    } else if task_started.is_none() {
-                        task_started = Some(Instant::now());
+                    } else if clock.started.is_none() {
+                        // A turn started by a project command or skill,
+                        // which the screen sent as a control.
+                        clock.start();
+                        state.pulse = tui::Pulse::default();
                     }
-                    busy = matches!(
-                        activity,
-                        Activity::Thinking
-                            | Activity::Streaming
-                            | Activity::Executing
-                            | Activity::Searching
-                            | Activity::Waiting
-                            | Activity::Compacting
-                    );
+                    busy = activity.working();
                 }
                 Update::Delta(text) => {
                     state.pulse.receive(text.len());
@@ -1073,13 +1091,34 @@ fn run(
                     state.form = Some(*form);
                     state.inspection = None;
                 }
-                Update::Dequeued => {
-                    if !state.queued.is_empty() {
-                        state.queued.remove(0);
-                    }
-                }
                 Update::Stop => return Ok(()),
             }
+        }
+        // An approval or a question on screen mid-turn: the card and the dock
+        // say the turn waits for the person, and its clock stands still.
+        if clock.hold(busy && prompts.active(), &mut state.activity) {
+            dirty = true;
+        }
+        // The session is free: the oldest held message is the next turn.
+        if !busy && !state.queued.is_empty() {
+            let text = state.queued.remove(0);
+            if state.queued.is_empty() {
+                unqueue_notice(&mut state);
+            }
+            let Ok(pending) = submit(
+                text,
+                &mut state,
+                &mut clock,
+                &mut workbench,
+                answers.inputs,
+                conversation.messages.len(),
+            ) else {
+                return Ok(());
+            };
+            busy = true;
+            sending = pending;
+            keep_sending(&mut conversation, &mut sending, Activity::Thinking);
+            dirty = true;
         }
         // A stop that was asked for has been answered by the task ending;
         // the next Escape starts the ladder again from its gentle rung.
@@ -1105,8 +1144,8 @@ fn run(
                 state.animation_frame = state.animation_frame.wrapping_add(1);
             }
             state.advance_landing();
-            if let Some(start) = task_started {
-                state.pulse.elapsed_ms = start.elapsed().as_millis() as u64;
+            if let Some(ms) = clock.elapsed_ms() {
+                state.pulse.elapsed_ms = ms;
             }
             state.completion_tick = state
                 .completion_tick
@@ -1237,7 +1276,8 @@ fn run(
             {
                 last_scroll = Some(Instant::now());
             }
-            match workbench.event(&input_event, &mut state, &notebook, busy) {
+            let turn = busy && state.activity.working();
+            match workbench.event(&input_event, &mut state, &notebook, turn) {
                 crate::workbench::Effect::Insert(command) => {
                     editor.text = command;
                     editor.cursor = editor.text.len();
@@ -1343,15 +1383,16 @@ fn run(
                         // A control that acts on this screen is answered by
                         // this screen. Sending it to the model would spend a
                         // request to be told the command is unknown.
-                    } else if !busy {
+                    } else if !(busy && state.activity.working()) {
                         busy = true;
                         workbench.sent(&command, &state);
                         let _ = answers.inputs.send(Input::Submit(command));
+                    } else if crate::workbench::mid_turn(&command) {
+                        workbench.sent(&command, &state);
+                        steer.request_control(command);
+                        say(&mut workbench, crate::workbench::voice::NEXT_REQUEST);
                     } else {
-                        say(
-                            &mut workbench,
-                            "Finish the current turn before this action.",
-                        );
+                        say(&mut workbench, crate::workbench::voice::BETWEEN_TURNS);
                     }
                     dirty = true;
                     continue;
@@ -1567,17 +1608,28 @@ fn run(
                 // second cancels the call in flight; `state.stopping` is
                 // what tells them apart, and the task's end lowers it.
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-                    if !busy {
-                        if state.queued.pop().is_some() {
-                            state.note(if state.queued.is_empty() {
-                                "Queue cleared.".to_string()
-                            } else {
-                                format!(
-                                    "Took the last queued message back; {} still queued.",
-                                    state.queued.len()
-                                )
-                            });
+                    // A message still in the queue is taken back first, into
+                    // the composer, before Escape means stop.
+                    if let Some(taken) = state.queued.pop() {
+                        editor.text = if editor.text.trim().is_empty() {
+                            taken
+                        } else {
+                            format!("{taken}\n{}", editor.text)
+                        };
+                        editor.cursor = editor.text.len();
+                        if state.queued.is_empty() {
+                            unqueue_notice(&mut state);
+                            state.note("Took the queued message back into the composer.");
+                        } else {
+                            state.note(format!(
+                                "Took the last queued message back; {} still queued.",
+                                state.queued.len()
+                            ));
                         }
+                        dirty = true;
+                        continue;
+                    }
+                    if !busy {
                         continue;
                     }
                     if state.stopping {
@@ -1585,7 +1637,7 @@ fn run(
                         state.note("Cancelling the call in flight.");
                     } else {
                         state.stopping = true;
-                        steer.request_stop();
+                        steer.request_stop(tui::Stopper::You);
                         state.note(
                             "Stopping after this cell · Esc again cancels the call in flight",
                         );
@@ -1601,6 +1653,15 @@ fn run(
                                 editor.cursor = 0;
                             } else {
                                 super::INTERRUPT.store(true, Ordering::SeqCst);
+                                // Mid-turn it says what it did, as Escape
+                                // does: the call in flight is cancelled and
+                                // the turn stops at its boundary.
+                                if busy && state.activity.working() {
+                                    state.stopping = true;
+                                    steer.request_stop(tui::Stopper::Interrupt);
+                                    state.note(crate::workbench::voice::CTRL_C_STOPPING);
+                                    dirty = true;
+                                }
                             }
                             continue;
                         }
@@ -1786,62 +1847,62 @@ fn run(
                         }
                         continue;
                     }
-                    // **Submitting while a task runs queues, it does not
-                    // refuse.** `LiveUi::next` blocks on this same channel
-                    // and the session loop reaches it the moment the task
-                    // ends, so a message sent now is simply the next one --
-                    // no new plumbing, and nothing to re-press. What it used
-                    // to do instead was keep the draft and say so in a
-                    // notice, which asked the person to watch for an ending
-                    // they had already stopped watching for.
-                    //
-                    // A slash command is not queued: those are this
-                    // terminal's own controls and several of them mean
-                    // nothing between tasks, so they keep saying what they
-                    // have always said.
-                    if busy {
+                    // /exit is honoured mid-turn: the turn is stopped and the
+                    // session ends when it has.
+                    if editor.text.trim() == "/exit" {
+                        editor.take();
+                        ended_by("/exit");
+                        if busy {
+                            steer.request_stop(tui::Stopper::You);
+                            steer.request_cancel();
+                        }
+                        let _ = answers.inputs.send(Input::Exit);
+                        return Ok(());
+                    }
+                    let turn = busy && state.activity.working();
+                    // A slash command mid-turn is a control: a model, mode
+                    // or effort applies from the turn's next request, and
+                    // the rest wait for the turn to end.
+                    if turn && editor.text.trim_start().starts_with('/') {
                         let text = editor.text.trim().to_string();
-                        if text.starts_with('/') {
-                            state.notice = Some(
-                                "Working. Your draft is kept; Ctrl-C interrupts tools; twice exits."
-                                    .into(),
-                            );
-                            continue;
+                        if crate::workbench::mid_turn(&text) {
+                            editor.take();
+                            workbench.sent(&text, &state);
+                            steer.request_control(text);
+                            state.notice = Some(crate::workbench::voice::NEXT_REQUEST.into());
+                        } else {
+                            state.notice = Some(crate::workbench::voice::BETWEEN_TURNS.into());
                         }
-                        let text = editor.take();
-                        if answers.inputs.send(Input::Submit(text.clone())).is_err() {
-                            return Ok(());
-                        }
-                        state.queued.push(text);
-                        state.notice = Some(
-                            "Queued for when this turn ends · Esc takes the last one back".into(),
-                        );
+                        dirty = true;
+                        continue;
+                    }
+                    // **A message sent while the session is busy is held in
+                    // Sterna's queue** and sent when it is free, so Escape
+                    // can take it back until then (decision 8).
+                    if busy && !editor.text.trim_start().starts_with('/') {
+                        state.queued.push(editor.take());
+                        state.notice = Some(crate::workbench::voice::QUEUED.into());
                         dirty = true;
                         continue;
                     }
                     let text = editor.take();
                     state.scrollback = 0;
                     state.notice = None;
-                    if text.trim() == "/exit" {
-                        ended_by("/exit");
-                        let _ = answers.inputs.send(Input::Exit);
+                    let Ok(pending) = submit(
+                        text,
+                        &mut state,
+                        &mut clock,
+                        &mut workbench,
+                        answers.inputs,
+                        conversation.messages.len(),
+                    ) else {
                         return Ok(());
-                    }
+                    };
                     busy = true;
-                    task_started = Some(Instant::now());
-                    state.pulse = tui::Pulse::default();
-                    state.activity = Activity::Thinking;
-                    if !text.trim_start().starts_with('/') && !text.trim().is_empty() {
-                        sending = Some(Sending {
-                            text: text.clone(),
-                            recorded_at: conversation.messages.len(),
-                        });
+                    if pending.is_some() {
+                        sending = pending;
                         keep_sending(&mut conversation, &mut sending, Activity::Thinking);
                         dirty = true;
-                    }
-                    workbench.sent(&text, &state);
-                    if answers.inputs.send(Input::Submit(text)).is_err() {
-                        return Ok(());
                     }
                 }
             }
@@ -1849,6 +1910,101 @@ fn run(
         }
     }
     Ok(())
+}
+
+/// Sends one input to the session. A message starts a turn and its clock,
+/// and comes back as the line the screen shows until the session records
+/// it; a slash command is a control and starts neither. `Err` when the
+/// session has gone.
+fn submit(
+    text: String,
+    state: &mut ScreenState,
+    clock: &mut Clock,
+    workbench: &mut crate::workbench::Workbench,
+    inputs: &mpsc::Sender<Input>,
+    recorded_at: usize,
+) -> Result<Option<Sending>, ()> {
+    let message = !text.trim_start().starts_with('/') && !text.trim().is_empty();
+    let pending = message.then(|| {
+        clock.start();
+        state.pulse = tui::Pulse::default();
+        state.activity = Activity::Thinking;
+        Sending {
+            text: text.clone(),
+            recorded_at,
+        }
+    });
+    workbench.sent(&text, state);
+    inputs.send(Input::Submit(text)).map_err(|_| ())?;
+    Ok(pending)
+}
+
+/// The queue notice goes when the queue is empty.
+fn unqueue_notice(state: &mut ScreenState) {
+    if state.notice.as_deref() == Some(crate::workbench::voice::QUEUED) {
+        state.notice = None;
+    }
+}
+
+/// A turn's clock: when it started, and how long it has stood still waiting
+/// on the person's answer, which is not time the turn spent working.
+#[derive(Default)]
+struct Clock {
+    started: Option<Instant>,
+    /// When the current wait on the person began.
+    waiting: Option<Instant>,
+    /// The waits already over.
+    held: Duration,
+    /// What the turn was doing when the wait began.
+    resumed: Activity,
+}
+
+impl Clock {
+    fn start(&mut self) {
+        *self = Self {
+            started: Some(Instant::now()),
+            ..Self::default()
+        };
+    }
+    fn elapsed_ms(&self) -> Option<u64> {
+        let held = self.held + self.waiting.map_or(Duration::ZERO, |at| at.elapsed());
+        self.started
+            .map(|start| start.elapsed().saturating_sub(held).as_millis() as u64)
+    }
+    /// The turn ended: its working time, and the clock is put away.
+    fn stop(&mut self) -> Option<u64> {
+        let ms = self.elapsed_ms();
+        *self = Self::default();
+        ms
+    }
+    /// Holds the clock while the turn waits on the person and shows it as
+    /// waiting for them; lets it run again, and restores what the turn was
+    /// doing, once they have answered. True when the screen changed.
+    fn hold(&mut self, waiting: bool, activity: &mut Activity) -> bool {
+        match (waiting, self.waiting) {
+            (true, None) => {
+                self.waiting = Some(Instant::now());
+                self.resumed = *activity;
+                *activity = Activity::AwaitingYou;
+                true
+            }
+            // A snapshot mid-wait said what the turn is doing underneath.
+            (true, Some(_)) if *activity != Activity::AwaitingYou => {
+                self.resumed = *activity;
+                *activity = Activity::AwaitingYou;
+                true
+            }
+            (false, Some(at)) => {
+                self.held += at.elapsed();
+                self.waiting = None;
+                if *activity == Activity::AwaitingYou {
+                    *activity = self.resumed;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A prompt the screen shows before the session has recorded it.
@@ -1942,15 +2098,41 @@ fn paste_callback_form() -> tui::Form {
 
 #[cfg(test)]
 mod tests {
+    /// While the turn waits on the person the card says so and the clock
+    /// stands still; once they answer, the turn is what it was and the
+    /// clock runs again without the wait in it.
+    #[test]
+    fn the_clock_stands_still_while_the_turn_waits_on_you() {
+        use super::{Activity, Clock};
+        let mut clock = Clock::default();
+        clock.start();
+        let mut activity = Activity::Executing;
+        assert!(clock.hold(true, &mut activity));
+        assert_eq!(activity, Activity::AwaitingYou);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        assert!(
+            clock.elapsed_ms().unwrap() < 100,
+            "the wait on the person was counted as work"
+        );
+        assert!(clock.hold(false, &mut activity));
+        assert_eq!(activity, Activity::Executing);
+        assert!(clock.elapsed_ms().unwrap() < 100);
+        assert!(!clock.hold(false, &mut activity), "nothing changed");
+    }
+
     #[test]
     fn a_stop_is_read_once_so_it_ends_the_turn_it_was_asked_during() {
         let steer = super::Steer::default();
-        assert!(!steer.take_stop(), "nothing was asked for");
-        steer.request_stop();
-        steer.request_stop();
-        assert!(steer.take_stop(), "the stop never reached the task loop");
+        assert!(steer.take_stop().is_none(), "nothing was asked for");
+        steer.request_stop(crate::tui::Stopper::You);
+        steer.request_stop(crate::tui::Stopper::You);
+        assert_eq!(
+            steer.take_stop(),
+            Some(crate::tui::Stopper::You),
+            "the stop never reached the task loop"
+        );
         assert!(
-            !steer.take_stop(),
+            steer.take_stop().is_none(),
             "the stop survived its own turn and would end the next one"
         );
     }
@@ -1958,7 +2140,7 @@ mod tests {
     #[test]
     fn the_two_escapes_are_separate_levers() {
         let steer = super::Steer::default();
-        steer.request_stop();
+        steer.request_stop(crate::tui::Stopper::You);
         assert!(
             !steer.take_cancel(),
             "the gentle rung cancelled the call in flight"

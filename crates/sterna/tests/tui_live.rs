@@ -2183,6 +2183,108 @@ fn live_a_second_escape_escalates_to_the_call_in_flight_and_still_spares_the_ses
     assert_eq!(app.exited(), 130);
 }
 
+/// A sheet is a local control, not a model turn: opening and closing one
+/// starts no turn clock and ends in no "complete".
+#[test]
+fn a_sheet_opened_and_closed_is_not_a_turn() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    // Answered by the session, not the screen: the path a model turn takes.
+    app.send(b"/login\r");
+    app.contains("SIGN IN");
+    app.send(b"\x1b");
+    app.settle(500);
+    app.refute("a sheet is not a turn that completed", "complete");
+    app.refute("a sheet starts no turn clock", "on this turn");
+    app.refute("a sheet is not a turn the model is on", "thinking");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// A turn the person stopped reads "stopped", never "complete".
+#[test]
+fn a_stopped_turn_says_stopped_not_complete() {
+    let (base, requests, release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to stop\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x1b");
+    app.contains("Stopping after this cell");
+    app.send(b"\x1b");
+    app.contains("stopped");
+    app.refute("a stopped turn is not a completed one", "complete");
+    drop(release);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// A message sent while a turn runs is held in Sterna's queue, not sent:
+/// Esc takes it back into the composer and it never reaches the model.
+#[test]
+fn a_queued_message_is_held_until_the_turn_ends_and_esc_takes_it_back() {
+    let (base, requests, release) = serving_provider(ANSWERING);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"first task\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"not after all\r");
+    app.contains("Esc takes the last one back");
+    app.send(b"\x1b");
+    app.contains("Took the queued message back");
+    let _ = release.send(());
+    assert!(
+        requests.recv_timeout(Duration::from_secs(3)).is_err(),
+        "a message taken back was sent to the model"
+    );
+    app.contains("not after all");
+    // The first Ctrl-C clears the draft that was taken back.
+    app.send(b"\x03");
+    app.settle(200);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Ctrl-C mid-turn says what it does, as Escape does, and the turn ends as
+/// stopped by it.
+#[test]
+fn ctrl_c_mid_turn_says_it_is_stopping() {
+    let (base, requests, release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to interrupt\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x03");
+    app.contains("Ctrl-C again within 2 s quits");
+    app.contains("stopped by Ctrl-C");
+    drop(release);
+    thread::sleep(Duration::from_millis(2200));
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// /exit is honoured while a turn runs: the turn is stopped and the
+/// session ends.
+#[test]
+fn exit_mid_turn_stops_the_turn_and_ends_the_session() {
+    let (base, requests, _release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to leave\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
 #[test]
 fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let (base, _requests) = provider();

@@ -56,7 +56,18 @@ surface behaves like every other.
 | Ctrl-G | release or recapture the mouse |
 | Shift-Tab | cycle how often you are asked ([sandbox](sandbox.md#how-often-you-are-asked)) |
 | `?` on an empty composer | every key |
-| Ctrl-C | copy a selection; otherwise stop the running task |
+| Ctrl-C | copy a selection; otherwise stop the running task (twice within 2 s quits) |
+| Esc | while a turn runs: take back the last queued message, else stop after this cell; again cancels the call in flight |
+
+A message sent while a turn runs is held in Sterna's queue and sent when
+the turn ends, so Esc can take it back. A model, mode or effort chosen
+mid-turn applies from the turn's next request; anything else that needs
+the session waits for the turn to end and says so on the row before it is
+clicked. Opening a sheet or answering a command is not a turn: it starts
+no turn clock and ends in no "complete". A turn ends complete, failed or
+stopped; while an approval or a question waits on you, the card says
+"waiting for you" and the turn's clock stands still. `/exit` mid-turn stops
+the turn and ends the session.
 
 ## Sheets
 

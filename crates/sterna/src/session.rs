@@ -210,6 +210,9 @@ struct Interrupter {
     /// It pins [`pending`](Self::pending) raised, so every call started
     /// during the reap grace is cancelled before it spawns a child.
     ending: AtomicBool,
+    /// Raised when the last interrupt came from Ctrl-C rather than from
+    /// the person's second Escape, so a stopped turn says which it was.
+    by_signal: AtomicBool,
     /// Held for the length of every rollout write. The second-Ctrl-C exit
     /// takes it too, which is the whole of "the rollout's current line is
     /// complete": `Rollout` writes one whole line per call, so waiting for
@@ -233,6 +236,7 @@ impl Interrupter {
             token: Mutex::new(invoke::CancellationToken::new()),
             pending: AtomicBool::new(false),
             ending: AtomicBool::new(false),
+            by_signal: AtomicBool::new(false),
             writing: Mutex::new(()),
         }
     }
@@ -256,6 +260,15 @@ impl Interrupter {
         let slot = lock(&self.token);
         self.pending.store(true, Ordering::SeqCst);
         slot.cancel();
+    }
+
+    /// Who raised the interrupt a cancelled turn ended on.
+    fn raised_by(&self) -> tui::Stopper {
+        if self.by_signal.load(Ordering::SeqCst) {
+            tui::Stopper::Interrupt
+        } else {
+            tui::Stopper::You
+        }
     }
 
     /// A call ended `Cancelled`, so the interrupt that asked for it has been
@@ -351,6 +364,7 @@ fn watch(state: &Interrupter, steer: Option<Arc<ui::Steer>>) -> ! {
         // session: a person pressing it twice is asking for their call
         // back, not for their session to go away.
         if steer.as_ref().is_some_and(|steer| steer.take_cancel()) {
+            state.by_signal.store(false, Ordering::SeqCst);
             state.raise();
             continue;
         }
@@ -362,6 +376,7 @@ fn watch(state: &Interrupter, steer: Option<Arc<ui::Steer>>) -> ! {
             state.end_the_session();
         }
         first = Some(now);
+        state.by_signal.store(true, Ordering::SeqCst);
         state.raise();
     }
 }
@@ -979,24 +994,26 @@ fn drive(
     rollout: &mut Rollout,
 ) -> Result<(), String> {
     if let Some(task) = &args.task {
-        return after::around(|| process_input(task, session, transcript, rollout));
+        return after::around(|| process_input(task, session, transcript, rollout).result());
     }
 
     if let Some(ui) = session.ui {
         while let Some(input) = ui.next()? {
-            let result = process_input(&input, session, transcript, rollout);
-            if let Err(message) = &result {
+            // A turn has already said how it ended; a control reports no
+            // turn at all, so the turn's clock and its ending stay as they
+            // were.
+            let ran = process_input(&input, session, transcript, rollout);
+            if let Err(message) = ran.outcome() {
                 session_println!("ERROR: {}", startup::explain_failure(message, session));
             }
-            ui.publish(
-                transcript,
-                &ServedBy::default(),
-                if result.is_err() {
-                    tui::Activity::Failed
-                } else {
-                    tui::Activity::Complete
-                },
-            );
+            // A control chosen as the turn ended, after its last request.
+            let late = ui.steer().take_controls();
+            for command in &late {
+                answer_control(command, session, transcript);
+            }
+            if matches!(ran, Ran::Control(_)) || !late.is_empty() {
+                ui.control_done(transcript);
+            }
         }
         return Ok(());
     }
@@ -1009,11 +1026,30 @@ fn drive(
         // scripted one-shot has nobody to report to but its exit code.
         // Observed 2026-09-06: one empty message made a gateway answer 400
         // and the session ended mid-task.
-        if let Err(message) = process_input(&line, session, transcript, rollout) {
-            session_println!("{}", startup::explain_failure(&message, session));
+        if let Err(message) = process_input(&line, session, transcript, rollout).outcome() {
+            session_println!("{}", startup::explain_failure(message, session));
         }
     }
     Ok(())
+}
+
+/// What one input was: a model turn, or a control answered locally.
+enum Ran {
+    Turn(Result<(), String>),
+    Control(Result<(), String>),
+}
+
+impl Ran {
+    fn outcome(&self) -> &Result<(), String> {
+        match self {
+            Self::Turn(result) | Self::Control(result) => result,
+        }
+    }
+    fn result(self) -> Result<(), String> {
+        match self {
+            Self::Turn(result) | Self::Control(result) => result,
+        }
+    }
 }
 
 /// One input: a slash command answered locally, or a **task** run to its end.
@@ -1028,7 +1064,7 @@ fn process_input(
     session: &Session<'_>,
     transcript: &mut Transcript,
     rollout: &mut Rollout,
-) -> Result<(), String> {
+) -> Ran {
     // **Blank input is not a turn.** A message with no content is not a
     // message: the Anthropic shape requires content, tool calls or reasoning
     // blocks, and a gateway that enforces it answers 400 and the task dies.
@@ -1036,7 +1072,7 @@ fn process_input(
     // what stops it ending the session. Observed 2026-09-06 at `messages.0`
     // and again at `messages.13`.
     if input.trim().is_empty() {
-        return Ok(());
+        return Ran::Control(Ok(()));
     }
     if let Some(rest) = input.strip_prefix('/') {
         let (name, argument) = split_command(rest);
@@ -1045,13 +1081,15 @@ fn process_input(
             && resolved.source == CommandSource::ProjectSkill
             && resolved.status == CommandStatus::Available
         {
-            let task = crate::project::workflows::skill_task(
+            return match crate::project::workflows::skill_task(
                 session.project,
                 session.profile,
                 name,
                 argument.unwrap_or(""),
-            )?;
-            return run_task(&task, session, transcript, rollout);
+            ) {
+                Ok(task) => Ran::Turn(run_task(&task, session, transcript, rollout)),
+                Err(error) => Ran::Control(Err(error)),
+            };
         }
         if !is_session_control(name)
             && let Some(resolved) = commands::resolve(session.project, name)
@@ -1060,18 +1098,25 @@ fn process_input(
             && let Some(body) = session.project.commands.get(name)
         {
             let task = project_command_task(name, body, argument);
-            return run_task(&task, session, transcript, rollout);
+            return Ran::Turn(run_task(&task, session, transcript, rollout));
         }
         answer_command(rest, name, argument, session, transcript);
-        render(
-            transcript,
-            &ServedBy::default(),
-            session,
-            tui::Activity::Idle,
-        );
-        return Ok(());
+        // The screen hears of a control through `control_done`, which keeps
+        // the turn's ending; only the line-mode transcript is drawn here.
+        if session.ui.is_none() {
+            startup::render_as_lines(transcript, &ServedBy::default());
+        }
+        return Ran::Control(Ok(()));
     }
-    run_task(input, session, transcript, rollout)
+    Ran::Turn(run_task(input, session, transcript, rollout))
+}
+
+/// One control the screen passed on while a turn ran: `/model`, `/mode` or
+/// `/effort` with its argument.
+fn answer_control(command: &str, session: &Session<'_>, transcript: &mut Transcript) {
+    let rest = command.trim().trim_start_matches('/');
+    let (name, argument) = split_command(rest);
+    answer_command(rest, name, argument, session, transcript);
 }
 
 fn is_session_control(name: &str) -> bool {
@@ -1153,7 +1198,11 @@ fn run_task(
     rollout: &mut Rollout,
 ) -> Result<(), String> {
     if session.model.borrow().is_empty() {
-        return Err("No model selected yet. Pick one with /model.".into());
+        let refused = "No model selected yet. Pick one with /model.";
+        if let Some(ui) = session.ui {
+            ui.publish(transcript, &ServedBy::default(), tui::Activity::Failed);
+        }
+        return Err(refused.into());
     }
     transcript.notebook.handlers.clear();
     transcript.notebook.preflight = None;
@@ -1170,11 +1219,18 @@ fn run_task(
             .map_or("unset", |ladder| ladder.rung().name()),
         &session.model.borrow(),
     );
-    let result = run_task_inner(task, session, transcript, rollout);
-    session.observe.task_end(match &result {
-        Ok(()) => "answered",
+    let ended = run_task_inner(task, session, transcript, rollout);
+    session.observe.task_end(match &ended {
+        Ok(None) => "answered",
+        Ok(Some(_)) => "stopped",
         Err(reason) => reason.as_str(),
     });
+    let activity = match &ended {
+        Ok(None) => tui::Activity::Complete,
+        Ok(Some(by)) => tui::Activity::Stopped(*by),
+        Err(_) => tui::Activity::Failed,
+    };
+    let result = ended.map(|_| ());
     rollout.record_moves(session.ladder.as_ref());
     if mode == RequestMode::Plan
         && let Some(plan) = modes::written_plan(session.profile.root(), started)
@@ -1192,25 +1248,18 @@ fn run_task(
     }
     if let Some(ui) = session.ui {
         ui.handler_cancellations();
-        ui.publish(
-            transcript,
-            &ServedBy::default(),
-            if result.is_ok() {
-                tui::Activity::Complete
-            } else {
-                tui::Activity::Failed
-            },
-        );
+        ui.publish(transcript, &ServedBy::default(), activity);
     }
     result
 }
 
+/// Runs the task; `Ok(Some(by))` when it was stopped before it finished.
 fn run_task_inner(
     task: &str,
     session: &Session<'_>,
     transcript: &mut Transcript,
     rollout: &mut Rollout,
-) -> Result<(), String> {
+) -> Result<Option<tui::Stopper>, String> {
     // A stop or an interrupt raised before this task began belongs to no
     // task: an Escape whose turn ended before its cell boundary, a Ctrl-C at
     // an idle prompt. Left raised, it ended the next task on its first
@@ -1318,7 +1367,7 @@ fn run_task_inner(
     let mut final_turn = false;
     let mut terminal_failure = None;
     let mut incomplete;
-    let mut stopped_by_request = false;
+    let mut stopped_by_request = None;
     // The supervisor nudges and no longer ends: three consecutive model
     // opinions used to end a task, and the criteria it matches on describe
     // exactly what a careful re-read looks like (`ending.rs` carries the
@@ -1358,10 +1407,17 @@ fn run_task_inner(
         // the notebook and the rollout, and the task ends the way a finished
         // one does rather than as a failure, because a person choosing to
         // stop is not an error.
-        if session.ui.is_some_and(|ui| ui.steer().take_stop()) {
+        if let Some(by) = session.ui.and_then(|ui| ui.steer().take_stop()) {
             incomplete = false;
-            stopped_by_request = true;
+            stopped_by_request = Some(by);
             break;
+        }
+        // A model, mode or effort chosen while the turn runs applies from
+        // its next request (decision 9), and this is where that begins.
+        if let Some(ui) = session.ui {
+            for command in ui.steer().take_controls() {
+                answer_control(&command, session, transcript);
+            }
         }
         let since = SystemTime::now();
         let requested_model = session.model.borrow().clone();
@@ -1394,7 +1450,7 @@ fn run_task_inner(
                 Err(error) if error.contains(wire::CANCELLED_TURN) => {
                     session.interrupt.consumed();
                     incomplete = false;
-                    stopped_by_request = true;
+                    stopped_by_request = Some(session.interrupt.raised_by());
                     break;
                 }
                 Err(error) => {
@@ -1810,7 +1866,7 @@ fn run_task_inner(
     // A one-shot run waits for a shadow decision so its result records it; a
     // person at the terminal is never held for one.
     task_state.settle_decision(session, session.ui.is_none());
-    if stopped_by_request {
+    if let Some(by) = stopped_by_request {
         // Said to the model as well as to the person. A turn that simply
         // stops leaves the next one reading a transcript whose last cell
         // had no answer, and a model reading that guesses -- usually that
@@ -1823,7 +1879,7 @@ fn run_task_inner(
             transcript,
             &ServedBy::default(),
             session,
-            tui::Activity::Complete,
+            tui::Activity::Stopped(by),
         );
     }
     if incomplete {
@@ -1835,7 +1891,7 @@ fn run_task_inner(
         Err(reason)
     } else {
         output::capsule(task_state.capsule.to_json());
-        Ok(())
+        Ok(stopped_by_request)
     }
 }
 
@@ -3412,7 +3468,7 @@ mod tests {
             Ok(ui::Update::Snapshot(snapshot)) => (snapshot.1, snapshot.3),
             _ => panic!("a helper call in flight must publish a snapshot"),
         };
-        assert_eq!(activity, tui::Activity::Executing);
+        assert_eq!(activity, Some(tui::Activity::Executing));
         assert_eq!(notebook.cells.len(), 3, "the lane hangs under cell 3");
         let helpers = &notebook.cells[2].helpers;
         assert_eq!(helpers.len(), 1, "the call in flight must be in the view");
