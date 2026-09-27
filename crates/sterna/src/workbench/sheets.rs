@@ -496,7 +496,7 @@ pub(super) fn draw_theme_preview(
     s: &ScreenState,
     t: Theme,
 ) {
-    use super::plumage::{Mood, ROWS, WIDTH, sprite};
+    use super::plumage::{Mood, sprite};
     let Theme::Bird(bird) = chosen else {
         label(f, area, area.y, chosen.title(), Tone::Strong, t);
         label(
@@ -511,8 +511,12 @@ pub(super) fn draw_theme_preview(
     };
     let plumage = bird.plumage();
     let mut y = area.y;
-    if s.truecolor && area.width as usize >= WIDTH && area.height as usize >= ROWS + 5 {
-        for cells in sprite(bird, Mood::Done) {
+    let drawing = sprite(bird, Mood::Done);
+    if s.truecolor
+        && area.width as usize >= drawing[0].len()
+        && area.height as usize >= drawing.len() + 5
+    {
+        for cells in drawing {
             for (dx, (glyph, fg, bg)) in cells.into_iter().enumerate() {
                 row(
                     f,

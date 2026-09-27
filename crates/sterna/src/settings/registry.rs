@@ -80,6 +80,7 @@ const THEMES: &[&str] = &[
     "green-wing",
     "military",
     "cockatoo",
+    "arctic-tern",
 ];
 const STATUS_LINES: &[&str] = &["full", "compact", "hidden"];
 const SIDEBAR: &[&str] = &["auto", "show", "hide"];

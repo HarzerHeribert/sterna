@@ -1198,8 +1198,10 @@ impl Document {
             self.perched(species, face, s, &startup, width);
             return;
         }
-        let art: Vec<Vec<(String, Tone)>> = match parrot {
-            Some(species) => super::plumage::head(species, mood(face, s))
+        let head = parrot.map(|species| super::plumage::head(species, mood(face, s)));
+        let art_width = head.as_ref().map_or(1, |head| head[0].len());
+        let art: Vec<Vec<(String, Tone)>> = match head {
+            Some(head) => head
                 .into_iter()
                 .map(|row| {
                     row.into_iter()
@@ -1212,14 +1214,9 @@ impl Document {
                     super::motion::card_mark(face).to_string(),
                     Tone::Accent,
                 )]];
-                marks.resize(super::plumage::HEAD_HEIGHT, Vec::new());
+                marks.resize(4, Vec::new());
                 marks
             }
-        };
-        let art_width = if parrot.is_some() {
-            super::plumage::HEAD_WIDTH
-        } else {
-            1
         };
         // The header already names the project and the model, so the card
         // says only what the header cannot: a greeting, and what happened
@@ -1275,10 +1272,10 @@ impl Document {
         startup: &[&str],
         width: usize,
     ) {
-        use super::plumage::{WIDTH, sprite};
-        let mood = mood(face, s);
+        let bird = super::plumage::sprite(species, mood(face, s));
         let plumage = species.plumage();
-        let room = width.saturating_sub(WIDTH + 6);
+        // The card is as wide and as tall as this bird's own drawing.
+        let room = width.saturating_sub(bird[0].len() + 6);
         let mut facts = vec![
             (voice::greeting(s.local_hour), Tone::Strong, None),
             (
@@ -1301,8 +1298,8 @@ impl Document {
                 None,
             ));
         }
-        let top = 4usize.min(super::plumage::ROWS.saturating_sub(facts.len()));
-        for (y, row) in sprite(species, mood).into_iter().enumerate() {
+        let top = 4usize.min(bird.len().saturating_sub(facts.len()));
+        for (y, row) in bird.into_iter().enumerate() {
             let mut spans = vec![(" ".to_string(), Tone::Normal)];
             spans.extend(
                 row.into_iter()

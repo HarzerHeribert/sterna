@@ -21,9 +21,17 @@ sessions remains one turn per line. Session options default --root to .";
 
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // `sterna --version` prints the crate version and nothing else: a release
-    // archive can be told from a build, and the primary asked for it (07:16).
+    // `sterna --version` prints the crate version: a release archive can be
+    // told from a build, and the primary asked for it (07:16). On a terminal
+    // that shows true colour the flying tern stands above it; piped, the
+    // version is the one line a script reads.
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() && sterna::workbench::plumage::truecolor() {
+            for line in sterna::workbench::plumage::mark(false) {
+                println!("{line}");
+            }
+        }
         println!("sterna {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }

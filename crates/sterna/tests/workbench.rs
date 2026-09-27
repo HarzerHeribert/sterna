@@ -4119,3 +4119,71 @@ fn a_narrow_sheet_foot_keeps_its_first_and_last_hints_whole() {
     assert!(foot.contains("Enter open"), "{screen}");
     assert!(foot.contains("Esc close"), "{screen}");
 }
+
+/// The Arctic tern is a theme of its own family: it perches on an empty
+/// conversation's card, which is as tall as its drawing, and once the
+/// conversation starts its head stays beside the greeting.
+#[test]
+fn the_arctic_tern_perches_and_its_head_stays_beside_the_greeting() {
+    use sterna::workbench::plumage::Bird;
+    let drawn = |screen: &str| {
+        screen
+            .lines()
+            .skip(2)
+            .take_while(|line| !line.trim_start().starts_with('─'))
+            .filter(|line| line.contains(['▀', '▄']))
+            .count()
+    };
+    let (c, n, mut s) = fixture();
+    s.truecolor = true;
+    let empty = Conversation {
+        system: String::new(),
+        messages: vec![],
+    };
+    s.theme = Theme::Bird(Bird::ArcticTern);
+    let mut u = Workbench::default();
+    let perched = text(&draw(&empty, &Notebook::default(), &s, &mut u, 100, 30));
+    assert!(
+        perched.contains("Arctic Tern · the longest migration of any bird"),
+        "{perched}"
+    );
+    // Twenty-four pixel rows, the empty ones above the bird left out.
+    assert_eq!(drawn(&perched), 10, "{perched}");
+    s.theme = Theme::Bird(Bird::Amazon);
+    let mut u = Workbench::default();
+    let parrot = text(&draw(&empty, &Notebook::default(), &s, &mut u, 100, 30));
+    assert_eq!(drawn(&parrot), 12, "{parrot}");
+    s.theme = Theme::Bird(Bird::ArcticTern);
+    let mut u = Workbench::default();
+    let started = text(&draw(&c, &n, &s, &mut u, 100, 50));
+    let greeting = started
+        .lines()
+        .find(|line| line.contains("What should we build?"))
+        .unwrap_or_else(|| panic!("{started}"));
+    assert!(
+        greeting.contains(['▀', '▄']),
+        "the head is beside it: {started}"
+    );
+    assert_eq!(drawn(&started), 4, "{started}");
+}
+
+/// The theme picker has a Seabirds family, and the tern is in it.
+#[test]
+fn the_theme_picker_has_a_seabirds_family() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Themes { before: s.theme });
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    let heading = screen
+        .lines()
+        .position(|line| line.contains("SEABIRDS"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(
+        screen
+            .lines()
+            .nth(heading + 1)
+            .unwrap()
+            .contains("Arctic Tern"),
+        "{screen}"
+    );
+}
