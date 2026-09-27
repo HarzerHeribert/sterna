@@ -308,8 +308,9 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // twice with two different descriptions. `/usage` (2026-09-23) shows
     // each subscription's limits. `/setup` (2026-09-25) is the first-start
     // wizard. `/bird` (2026-09-23) went on 2026-09-26: the parrots are themes.
-    // `/stream` worked and was in no list until the settings pass.
-    assert_eq!(slash_matches("/").len(), 37);
+    // `/stream` worked and was in no list until the settings pass. `/resume`
+    // (2026-09-27) opens the resume sheet from inside a session.
+    assert_eq!(slash_matches("/").len(), 38);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();

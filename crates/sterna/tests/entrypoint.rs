@@ -27,6 +27,12 @@ impl Scratch {
         &self.0
     }
 
+    /// The session resolved its rollout here: the folder it names sessions
+    /// in exists. (A session nobody asked anything in leaves no file in it.)
+    fn has_session_folder(&self) -> bool {
+        self.path().join(".sterna/sessions").is_dir()
+    }
+
     fn has_session_rollout(&self) -> bool {
         std::fs::read_dir(self.path().join(".sterna/sessions")).is_ok_and(|entries| {
             entries.filter_map(Result::ok).any(|entry| {
@@ -121,8 +127,12 @@ fn bare_sterna_runs_the_ordinary_session_in_its_current_directory() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        root.has_session_rollout(),
+        root.has_session_folder(),
         "bare sterna did not use the session's default rollout path"
+    );
+    assert!(
+        !root.has_session_rollout(),
+        "a session nobody asked anything in is not kept"
     );
 }
 
@@ -135,7 +145,7 @@ fn explicit_session_version_and_ruler_dispatch_remain_available() {
         .output()
         .unwrap();
     assert!(session.status.success());
-    assert!(root.has_session_rollout());
+    assert!(root.has_session_folder());
 
     let version = sterna().arg("--version").output().unwrap();
     assert!(version.status.success());

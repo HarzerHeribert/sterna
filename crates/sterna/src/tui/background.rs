@@ -126,7 +126,9 @@ fn query() -> Option<bool> {
         };
         // SAFETY: one valid pollfd for the process's own stdin.
         let ready = unsafe { libc::poll(&mut fd, 1, left.as_millis() as libc::c_int) };
-        if ready <= 0 {
+        // Only readable input is read: a descriptor `poll` cannot watch
+        // (macOS says so of some terminals) would make the read below block.
+        if ready <= 0 || fd.revents & libc::POLLIN == 0 {
             break;
         }
         // SAFETY: reads at most the buffer's length into the buffer.

@@ -233,7 +233,11 @@ fn a_new_folder_that_exists_is_used_and_the_old_one_is_left_alone() {
 fn the_sessions_pane_saved_are_listed_after_the_move() {
     let scratch = Scratch::new("sessions");
     let old_project = scratch.project().join(".pane");
-    write(&old_project.join("sessions/k3v9ab.jsonl"), "{}\n");
+    // A session somebody asked something in: an empty one is not listed.
+    write(
+        &old_project.join("sessions/k3v9ab.jsonl"),
+        "{\"kind\":\"turn\",\"role\":\"user\",\"text\":\"hello\",\"blocks\":[]}\n",
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
         .arg("--sessions")

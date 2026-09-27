@@ -11,6 +11,8 @@ use ratatui::layout::Rect;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Insert(String),
+    /// End this session and start the one with this id in its place.
+    Resume(String),
     /// Add to the draft: in place of an empty one, else after a blank line.
     Draft(String),
     OpenPath(String),
@@ -915,6 +917,10 @@ impl Workbench {
             }
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),
+            Action::Resume(id) => {
+                self.close_all();
+                return Effect::Resume(id);
+            }
             Action::Settings => match Preferences::open(s) {
                 Ok(p) => self.show(Source::Settings(Box::new(p)), from_sheet),
                 Err(e) => self.say(e),

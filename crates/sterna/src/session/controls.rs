@@ -1224,6 +1224,12 @@ pub(super) fn command(
                 "Open /settings in an interactive terminal. CLI: sterna config --help",
             ),
         ),
+        // This folder's sessions, as a sheet: choosing one ends this session
+        // and starts that one here.
+        "resume" => show(
+            session,
+            super::resume::panel(&session.project.root, session.interrupt.session.as_str()),
+        ),
         "status" => {
             // The same facts the chips show, named the way they name them.
             let config = session.config();

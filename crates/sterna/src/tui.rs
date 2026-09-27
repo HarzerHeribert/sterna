@@ -591,6 +591,10 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect current context and token usage",
                 ),
                 ("/status".to_string(), "inspect session status"),
+                (
+                    "/resume".to_string(),
+                    "go back to an earlier session in this folder",
+                ),
                 ("/settings".to_string(), "Global / Project settings"),
                 (
                     "/config".to_string(),

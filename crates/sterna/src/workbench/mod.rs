@@ -143,6 +143,8 @@ pub enum Action {
     FieldEdited(usize),
     /// The controls a row of chips had no room for: a sheet lists them.
     More(Vec<(String, Action)>),
+    /// Go to this session: this one ends and that one starts here.
+    Resume(String),
 }
 #[derive(Debug, Clone, Default)]
 pub struct Geometry {

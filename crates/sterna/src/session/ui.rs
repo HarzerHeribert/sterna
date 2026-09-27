@@ -1228,6 +1228,17 @@ fn run(
                     dirty = true;
                     continue;
                 }
+                // The resume sheet chose another session: this one ends as
+                // `/exit` ends it, and the chosen one starts in its place.
+                crate::workbench::Effect::Resume(id) => {
+                    super::resume::switch_to(id);
+                    if busy {
+                        steer.request_stop(tui::Stopper::You);
+                        steer.request_cancel();
+                    }
+                    let _ = answers.inputs.send(Input::Exit);
+                    return Ok(());
+                }
                 crate::workbench::Effect::CancelSignIn => {
                     if let Some(handle) = &sign_in.0 {
                         handle
@@ -1488,6 +1499,11 @@ fn run(
                         continue;
                     }
                     if !busy {
+                        // Idle with nothing typed, Escape leaves fullscreen.
+                        if state.fullscreen && editor.text.is_empty() {
+                            workbench.local_command("/fullscreen", &mut state, &notebook);
+                            dirty = true;
+                        }
                         continue;
                     }
                     if state.stopping {
@@ -1550,8 +1566,9 @@ fn run(
                             );
                             continue;
                         }
+                        // The same route as `/fullscreen`, and said the same way.
                         KeyCode::Char('f') => {
-                            state.fullscreen = !state.fullscreen;
+                            workbench.local_command("/fullscreen", &mut state, &notebook);
                             continue;
                         }
                         // Give the pointer back to the terminal, and take it
@@ -1656,8 +1673,7 @@ fn run(
                     }
                     if editor.text.trim() == "/fullscreen" {
                         editor.take();
-                        state.fullscreen = !state.fullscreen;
-                        state.notice = None;
+                        workbench.local_command("/fullscreen", &mut state, &notebook);
                         continue;
                     }
                     if editor.text.split_whitespace().next() == Some("/handlers") {

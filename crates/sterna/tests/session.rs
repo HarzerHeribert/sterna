@@ -970,19 +970,20 @@ fn the_binary_with_no_arguments_starts_a_session_in_its_current_directory() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // Per-session rollouts: the id is generated, so the file is found rather
-    // than named. That a bare `sterna` uses cwd as its root is still the point.
-    let rollout = fs::read_dir(root.join(".sterna/sessions"))
+    // Per-session rollouts: the id is generated, so the folder is found
+    // rather than the file named. That a bare `sterna` uses cwd as its root
+    // is still the point; and EOF invents no turn, so nobody asked anything
+    // and the session is not kept.
+    let kept: Vec<_> = fs::read_dir(root.join(".sterna/sessions"))
         .expect("bare sterna did not use cwd as --root .")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .next()
-        .expect("bare sterna wrote no rollout");
-    let lines = rollout_lines(&rollout);
-    assert!(
-        lines.iter().all(|line| line["kind"] != "turn"),
-        "EOF must not invent a provider turn: {lines:?}"
-    );
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .collect();
+    assert!(kept.is_empty(), "EOF must not invent a turn: {kept:?}");
     fs::remove_dir_all(root).unwrap();
 }
 

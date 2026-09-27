@@ -439,7 +439,12 @@ impl App {
                 "session did not exit: {}",
                 self.screen.screen().contents()
             );
-            thread::sleep(Duration::from_millis(20));
+            // Kept up to date while waiting, so a session that does not exit
+            // is reported with the screen it is actually showing.
+            if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(20)) {
+                self.screen.process(&bytes);
+                self.bytes.extend(bytes);
+            }
         }
     }
 }
@@ -904,7 +909,10 @@ fn bare_sterna_opens_the_live_composer_in_its_current_project() {
     app.contains("message or / for commands");
     app.send(b"bare entrypoint draft");
     app.contains("bare entrypoint draft");
-    app.send(b"\x15/exit\r");
+    // Asked, so the session is one worth keeping.
+    app.send(b"\r");
+    app.contains("ERROR:");
+    app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
     // One file per session now, named by the id `/exit` prints, so the
     // assertion is that a rollout was written -- not where a single
@@ -1467,6 +1475,26 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.contains("⟨ Settings ⟩");
     app.contains("a draft mid-thought still typing");
     app.send(b"\x15/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// Fullscreen says how to come back while it lasts, and with nothing typed
+/// and nothing running Escape leaves it.
+#[test]
+fn fullscreen_says_the_way_back_and_escape_takes_it() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x06");
+    app.wait("the chrome is gone", |screen| {
+        !screen.contents().contains("STERNA /")
+    });
+    // Ctrl-F says what it did, as /fullscreen does, and the way back stays.
+    app.contains("Fullscreen. Ctrl-F or /fullscreen restores the chrome.");
+    app.contains("Ctrl-F restores");
+    app.send(b"\x1b");
+    app.contains("STERNA /");
+    app.contains("Chrome restored.");
+    app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
 
@@ -2062,10 +2090,13 @@ fn live_a_message_sent_while_working_is_queued_and_becomes_the_next_task() {
     assert_eq!(app.exited(), 130);
 }
 
-/// A bare `--resume` asks which session, the way a person finds one: by
-/// what they asked in it. A session's `.events.jsonl` is not a session.
+/// A bare `--resume` opens the newest session with the resume sheet over it:
+/// a normal sheet, with the conversation behind it, listing this folder's
+/// sessions by what was asked in them. Choosing another ends this session
+/// and starts that one in the same terminal. A session's `.events.jsonl` is
+/// not a session.
 #[test]
-fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
+fn a_bare_resume_opens_the_resume_sheet_inside_the_session() {
     let seed = |root: &std::path::Path| {
         let sessions = root.join(".sterna/sessions");
         std::fs::create_dir_all(&sessions).unwrap();
@@ -2080,25 +2111,57 @@ fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
         )
         .unwrap();
         std::fs::write(sessions.join("tlaaaa-1.events.jsonl"), "{}\n").unwrap();
+        thread::sleep(Duration::from_millis(1100));
         std::fs::write(sessions.join("tlbbbb-2.jsonl"), turn("fix the flaky test")).unwrap();
     };
     let mut app = App::start_seeded("http://127.0.0.1:1", false, None, &["--resume"], &seed);
-    app.contains("Resume a session");
-    app.contains("build a habit tracker");
+    app.contains("RESUME A SESSION");
+    app.contains("this session · 1 prompt");
     app.contains("fix the flaky test");
+    app.contains("build a habit tracker ›");
     assert!(
         !app.screen.screen().contents().contains(".events"),
         "an event log is listed as a session"
     );
-    app.send(b"habit");
-    app.wait("the search narrows the list", |screen| {
-        !screen.contents().contains("fix the flaky test")
+    // The sheet opens on the session running now; the other is one down.
+    app.send(b"\x1b[B\r");
+    app.wait("the chosen session is the one running", |screen| {
+        let text = screen.contents();
+        text.contains("STERNA /")
+            && text.contains("build a habit tracker")
+            && !text.contains("fix the flaky test")
     });
-    app.send(b"\r");
-    app.contains("STERNA /");
-    app.contains("build a habit tracker");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
+    let bytes = String::from_utf8_lossy(&app.bytes).into_owned();
+    assert!(
+        bytes.contains("resume it with:  sterna --resume tlaaaa-1"),
+        "the last session is the one to come back to"
+    );
+}
+
+/// A session nobody asked anything in is not kept: no file stays behind
+/// and no line says how to come back to it.
+#[test]
+fn an_empty_session_leaves_no_file_and_no_resume_line() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x04");
+    assert_eq!(app.exited(), 0);
+    let bytes = String::from_utf8_lossy(&app.bytes).into_owned();
+    assert!(!bytes.contains("resume it with"), "{bytes}");
+    let sessions = app.root.join(".sterna/sessions");
+    let left: Vec<_> = std::fs::read_dir(&sessions)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .filter(|name| name.to_string_lossy().ends_with(".jsonl"))
+                .filter(|name| !name.to_string_lossy().contains(".gateway"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// An Escape whose task answered before its cell boundary was never read,
@@ -2740,6 +2803,9 @@ fn xhigh_and_max_are_taken_on_a_model_that_is_not_claude() {
 fn ctrl_d_leaves_the_resume_line_in_the_terminal() {
     let mut app = App::start("http://127.0.0.1:1");
     app.ready();
+    // Something asked, so there is something to come back to.
+    app.send(b"hello\r");
+    app.contains("ERROR:");
     app.send(b"\x04");
     assert_eq!(app.exited(), 0);
     assert!(!app.screen.screen().alternate_screen());

@@ -341,7 +341,9 @@ impl Interrupter {
         ui::restore_terminal();
         eprintln!("sterna: {message}");
         // Every way out says how to come back, Ctrl-C included.
-        eprintln!("{}", resume::resume_hint(&self.session));
+        resume::goodbye()
+            .into_iter()
+            .for_each(|line| eprintln!("{line}"));
         std::process::exit(exit);
     }
 }
@@ -443,7 +445,7 @@ pub fn dispatch(args: &[String]) -> Result<(), String> {
         moved.iter().for_each(|line| eprintln!("{line}"));
         return resume::print_listing(&parsed.root);
     }
-    let result = run(parsed, &mut moved);
+    let result = resume::each(parsed, |args| run(args, &mut moved));
     // A start that ended before its notes were said -- a cancelled picker, a
     // refused `--resume`, an image that would not load -- still says what it
     // moved: the next start finds nothing left to move and never would.
@@ -539,10 +541,8 @@ fn helper_lane(
 /// Runs `session`, in the order the packet's OBJECTIVE fixes: load the
 /// project, resume or start the rollout, `SessionStart`, then one input (or
 /// stdin's, one per line) at a time until the input source is exhausted.
-fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
-    if !resume::choose(&mut args)? {
-        return Ok(());
-    }
+fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>, String> {
+    resume::choose(&mut args);
     if args.images.len() > 4 {
         return Err("at most four image attachments are accepted per task".into());
     }
@@ -868,6 +868,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
     output::interface(session.interface.get(), session.dialect());
     controls::announce_missing_credential(&session, _serving.is_some());
     setup::at_start(&session, started_on.is_none());
+    resume::offer(&args, &session, &session_id);
     let outcome = drive(&args, &session, &mut transcript, &mut rollout)
         .map_err(|message| startup::explain_failure(&message, &session));
     // §5 again, and this one is the promise `session::run` itself makes: an
@@ -875,9 +876,9 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
     // own shutdown, and a job of that task must not outlive the session
     // either.
     bg::shutdown(&session_id);
-    ui::farewell(resume::resume_hint(&session_id));
+    let next = resume::at_end();
 
-    outcome
+    outcome.map(|()| next)
 }
 
 /// Everything one session holds for its whole life, gathered so a per-input
