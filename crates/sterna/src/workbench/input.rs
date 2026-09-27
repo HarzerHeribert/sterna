@@ -758,6 +758,13 @@ impl Workbench {
         match outcome {
             Outcome::Nothing => Effect::Ignored,
             Outcome::Redraw => Effect::Consumed,
+            // A row of the list of folded controls does what its chip would
+            // have: the list goes, and the control acts from where it was.
+            Outcome::Act(action) if self.showing(|source| matches!(source, Source::More(_))) => {
+                self.close();
+                let from_sheet = !self.sheets.is_empty();
+                self.activate(action, s, n, busy, from_sheet)
+            }
             Outcome::Act(action) => self.activate(action, s, n, busy, true),
             Outcome::Back => self.back(busy),
             Outcome::Section(section) => {
@@ -907,6 +914,7 @@ impl Workbench {
                 };
             }
             Action::Latest => s.scrollback = 0,
+            Action::More(controls) => self.show(Source::More(controls), from_sheet),
             Action::Settings => match Preferences::open(s) {
                 Ok(p) => self.show(Source::Settings(Box::new(p)), from_sheet),
                 Err(e) => self.say(e),

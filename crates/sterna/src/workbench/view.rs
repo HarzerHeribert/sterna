@@ -89,8 +89,9 @@ fn ask_tone(s: &ScreenState) -> Tone {
 /// Each item carries a rank: the highest rank is dropped first. A control
 /// drawn in a warning tone is never dropped -- a boundary that can be lifted
 /// has to be continuously visible or it is a mode error waiting to happen --
-/// and the way into settings is never dropped, because it is the way to
-/// everything else.
+/// and the way into settings goes last, because it is the way to everything
+/// else. What is dropped is not gone: it is listed behind one `⟨ ⋯ ⟩` chip
+/// at the end of the row.
 fn controls(
     f: &mut Frame<'_>,
     g: &mut Geometry,
@@ -100,18 +101,28 @@ fn controls(
     press: Option<(u16, u16)>,
     t: Theme,
 ) {
+    const MORE: &str = "⋯";
     let room = a.width.saturating_sub(reserved);
     let mut keep: Vec<usize> = (0..items.len()).collect();
+    // The row's width with the fold chip when anything is folded.
     let width = |keep: &Vec<usize>| -> u16 {
-        keep.iter()
+        let more = if keep.len() < items.len() {
+            chrome::width(MORE) + 4 + 1
+        } else {
+            0
+        };
+        (keep
+            .iter()
             .map(|i| chrome::width(&items[*i].0) + 4 + 1)
             .sum::<u16>()
+            + more)
             .saturating_sub(1)
     };
-    while width(&keep) > room && keep.len() > 1 {
+    // Settings goes last, into the fold like the rest; a warning never does.
+    while width(&keep) > room {
         let Some(drop) = keep
             .iter()
-            .filter(|i| items[**i].3 > 0 && !matches!(items[**i].2, Tone::Warning))
+            .filter(|i| !matches!(items[**i].2, Tone::Warning))
             .max_by_key(|i| items[**i].3)
             .copied()
         else {
@@ -122,6 +133,10 @@ fn controls(
     if width(&keep) > room {
         return;
     }
+    let folded: Vec<(String, Action)> = (0..items.len())
+        .filter(|i| !keep.contains(i))
+        .map(|i| (items[i].0.clone(), items[i].1.clone()))
+        .collect();
     let mut x = a.right().saturating_sub(width(&keep) + 1);
     for i in keep {
         let (text, action, tone, _) = &items[i];
@@ -139,6 +154,21 @@ fn controls(
             t,
         );
         x += w + 1;
+    }
+    if !folded.is_empty() {
+        chrome::chip(
+            f,
+            g,
+            x,
+            a.y,
+            a.right(),
+            MORE,
+            Action::More(folded),
+            false,
+            Tone::Normal,
+            press,
+            t,
+        );
     }
 }
 /// `⠿ STERNA  project` and the session's controls, one row, every width.
@@ -317,11 +347,15 @@ pub fn render(
             row(f, Rect::new(x, y, 1, 1), "│", Tone::Line, s.theme);
         }
     }
+    // Scrolled back, the transcript's last row is the way back down: it
+    // holds the `↓ latest` chip and nothing under it, so the chip never
+    // covers a card's edge or a line of text.
+    let latest_row = usize::from(s.scrollback > 0 && body_height > 1);
     for (j, r) in d
         .rows
         .iter()
         .skip(g.start)
-        .take(body_height as usize)
+        .take((body_height as usize).saturating_sub(latest_row))
         .enumerate()
     {
         let area = Rect::new(
@@ -351,13 +385,14 @@ pub fn render(
             );
         }
     }
-    if s.scrollback > 0 && body_height > 0 {
+    if latest_row > 0 {
         let text = "↓ latest";
         let w = chrome::width(text) + 4;
+        // Left of the scrollbar's column, on the row kept for it.
         let (x, y, limit) = (
-            g.transcript.right().saturating_sub(w),
+            g.transcript.right().saturating_sub(w + 2),
             g.transcript.bottom() - 1,
-            g.transcript.right(),
+            g.transcript.right().saturating_sub(1),
         );
         chrome::chip(
             f,
@@ -673,26 +708,13 @@ fn draw_row(
             let limit = right - 2;
             if let (Some(Action::Tab(cell, current)), false) = (&r.action, r.tabs.is_empty()) {
                 let (cell, current) = (*cell, *current);
-                let mut x = inner_x;
-                for (label, tab) in &r.tabs {
-                    let w = chrome::chip(
-                        f,
-                        g,
-                        x,
-                        area.y,
-                        limit,
-                        label,
-                        Action::Tab(cell, *tab),
-                        current == *tab,
-                        Tone::Normal,
-                        ui.press,
-                        t,
-                    );
-                    if w == 0 {
-                        break;
-                    }
-                    x += w + 1;
-                }
+                // The open tab is never the one folded.
+                let tabs: Vec<(String, Action, bool)> = r
+                    .tabs
+                    .iter()
+                    .map(|(label, tab)| (label.clone(), Action::Tab(cell, *tab), current == *tab))
+                    .collect();
+                let x = chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
                 // Whatever the strip left over -- the route to the whole diff.
                 let rest: String = r.spans.iter().map(|(t, _)| t.as_str()).collect();
                 let rest = rest.trim_start();
@@ -1194,45 +1216,27 @@ fn dock_bottom(
                 Action::Stream,
             ),
         ];
-        // The chips sit on a cleared stretch of the edge, one space apart,
-        // rather than on top of the rule.
-        let span: u16 = items
-            .iter()
+        // A fact nobody measured is not a control; an empty label is how
+        // this strip says "no" rather than saying `unknown`.
+        let chips: Vec<(String, Action, bool)> = items
+            .into_iter()
             .filter(|(text, _)| !text.is_empty())
-            .map(|(text, _)| chrome::width(text) + 5)
-            .sum::<u16>()
-            .min(limit.saturating_sub(x));
-        row(
-            f,
-            Rect::new(x - 1, a.y, span + 1, 1),
-            &" ".repeat(span as usize + 1),
-            Tone::Line,
-            t,
-        );
-        for (text, action) in items {
-            // A fact nobody measured is not a control; an empty label is
-            // how this strip says "no" rather than saying `unknown`.
-            if text.is_empty() {
-                continue;
-            }
-            let w = chrome::chip(
+            .map(|(text, action)| (text, action, false))
+            .collect();
+        // The chips sit on a cleared stretch of the edge, one space apart,
+        // rather than on top of the rule; with no room for one the rule
+        // stays whole.
+        let end = chrome::chips_end(&chips, x, limit);
+        if end > x {
+            row(
                 f,
-                g,
-                x,
-                a.y,
-                limit,
-                &text,
-                action,
-                false,
-                Tone::Normal,
-                ui.press,
+                Rect::new(x - 1, a.y, end - x + 1, 1),
+                &" ".repeat((end - x) as usize + 1),
+                Tone::Line,
                 t,
             );
-            if w == 0 {
-                break;
-            }
-            x += w + 1;
         }
+        x = chrome::chips(f, g, x, a.y, limit, &chips, ui.press, t);
     }
     // One muted line that teaches, instead of one that counts. It turns with
     // the session rather than with the clock, so it is stable inside one

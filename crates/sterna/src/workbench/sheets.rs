@@ -47,6 +47,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Models(m) => super::models::items(sheet, m),
         Source::Panel(panel) => panel_items(sheet, panel, &turning_off),
         Source::Fold(_) => fold_items(sheet, fold),
+        Source::More(controls) => more_items(sheet, controls),
     };
     let _ = n;
     // While a turn runs, a row that waits for it to end says so before it
@@ -408,6 +409,17 @@ fn fold_items(sheet: &mut Sheet, parent: Option<Item>) -> Vec<Item> {
         .map(|(i, (label, action))| {
             Item::choice(format!("value:{label}"), label, Some(i) == current, action)
         })
+        .collect()
+}
+
+/// The controls that had no room in their row, each one a row that does
+/// what the chip would have done.
+fn more_items(sheet: &mut Sheet, controls: &[(String, Action)]) -> Vec<Item> {
+    sheet.title = "More".into();
+    controls
+        .iter()
+        .enumerate()
+        .map(|(i, (label, action))| Item::open(format!("more:{i}"), label.clone(), action.clone()))
         .collect()
 }
 

@@ -3972,3 +3972,150 @@ fn a_disabled_ask_reads_as_where_to_turn_it_on() {
     );
     assert!(!shown.contains("[ask] enabled"), "{shown}");
 }
+
+/// The Theme row keeps the theme in force on screen, however many themes
+/// there are: drawn as the chip that is on, or held by the fold chip.
+#[test]
+fn the_active_theme_chip_is_always_drawn() {
+    let (_t, mut s, mut p) = prefs();
+    p.save("ui.theme", Some("cockatoo".into()), &mut s).unwrap();
+    p.category = 1;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    let row = screen
+        .lines()
+        .find(|line| line.contains("Theme"))
+        .unwrap_or_else(|| panic!("no Theme row:\n{screen}"));
+    assert!(row.contains("cockatoo ●"), "{screen}");
+}
+
+/// What the top bar has no room for is one chip away, never gone: the
+/// `⋯` chip lists it, and a row of that list does what the chip would have.
+#[test]
+fn the_top_bar_folds_what_does_not_fit_into_one_chip() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 80, 24));
+    let bar = screen.lines().next().unwrap().to_string();
+    assert!(bar.contains("⟨ ⋯ ⟩"), "{bar}");
+    let folded = u
+        .geometry
+        .hits
+        .iter()
+        .find_map(|(_, action)| match action {
+            Action::More(list) => Some(list.clone()),
+            _ => None,
+        })
+        .expect("a fold chip");
+    for (label, _) in &folded {
+        assert!(
+            !bar.contains(&format!("⟨ {label} ⟩")),
+            "{label} is drawn and folded: {bar}"
+        );
+    }
+    let help = folded
+        .iter()
+        .position(|(label, action)| label == "?" && *action == Action::Help)
+        .unwrap_or_else(|| panic!("? is neither drawn nor folded: {folded:?}"));
+    click(&mut u, &mut s, &n, Action::More(folded));
+    draw(&c, &n, &s, &mut u, 80, 24);
+    assert!(u.showing(|source| matches!(source, Source::More(_))));
+    click_item(&mut u, &mut s, &n, &format!("more:{help}"));
+    assert!(
+        u.showing(|source| matches!(source, Source::Keys)),
+        "the row did what ? does, and the list went"
+    );
+    assert_eq!(u.sheets.len(), 1);
+}
+
+/// A card's tab strip keeps the open tab when it cannot show them all;
+/// the rest are one `+N ▾` chip away.
+#[test]
+fn a_chip_row_keeps_its_open_tab_and_folds_the_rest() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    u.tabs.insert(1, CellTab::Helpers);
+    let screen = text(&draw(&c, &n, &s, &mut u, 50, 30));
+    let strip = screen
+        .lines()
+        .find(|line| line.contains("▾ ⟩"))
+        .unwrap_or_else(|| panic!("no fold chip:\n{screen}"));
+    assert!(strip.contains("⟨ Helpers ⟩"), "{screen}");
+    let folded = u
+        .geometry
+        .hits
+        .iter()
+        .find_map(|(_, action)| match action {
+            Action::More(list) if matches!(list[0].1, Action::Tab(..)) => Some(list.clone()),
+            _ => None,
+        })
+        .expect("a fold chip");
+    assert!(
+        folded
+            .iter()
+            .all(|(label, action)| matches!(action, Action::Tab(1, _))
+                && !strip.contains(&format!("⟨ {label} ⟩"))),
+        "{folded:?}\n{strip}"
+    );
+}
+
+/// Scrolled back, `↓ latest` has a row of its own: it covers no card edge
+/// and no line of text.
+#[test]
+fn the_latest_chip_covers_nothing() {
+    let (mut c, n, mut s) = fixture();
+    for _ in 0..40 {
+        c.messages
+            .push(Message::text(Role::User, "An earlier instruction."));
+    }
+    // Every offset of a few rows, so the row the chip keeps would have
+    // held text at some of them.
+    for back in 1..6 {
+        s.scrollback = back;
+        let mut u = Workbench::default();
+        let screen = text(&draw(&c, &n, &s, &mut u, 80, 24));
+        let row = screen
+            .lines()
+            .find(|line| line.contains("↓ latest"))
+            .unwrap_or_else(|| panic!("no latest chip:\n{screen}"));
+        let rest = row.replace("⟨ ↓ latest ⟩", "");
+        assert!(
+            rest.chars().all(|ch| ch == ' ' || ch == '▐'),
+            "the chip shares its row {back} rows back: {row:?}"
+        );
+    }
+}
+
+/// The composer's bottom edge is one unbroken rule where it has no room
+/// for a chip.
+#[test]
+fn the_composer_edge_has_no_gap_without_chips() {
+    let (c, mut n, s) = fixture();
+    n.context = Some(sterna::tui::ContextTokens {
+        used: 7_400,
+        cap: None,
+        cap_source: sterna::models::WindowSource::Unknown,
+        counted: sterna::tui::Counted::Estimated,
+    });
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 34, 20));
+    let edge = screen.lines().last().unwrap();
+    assert!(edge.starts_with("╰──"), "{edge:?}");
+}
+
+/// A narrow sheet's foot gives up its middle hints before it cuts a word:
+/// what Enter does and what Esc does stay whole.
+#[test]
+fn a_narrow_sheet_foot_keeps_its_first_and_last_hints_whole() {
+    let (c, n, _) = fixture();
+    let (_t, s, p) = prefs();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 50, 15));
+    let foot = screen.lines().nth(13).unwrap();
+    assert!(foot.contains("Enter open"), "{screen}");
+    assert!(foot.contains("Esc close"), "{screen}");
+}

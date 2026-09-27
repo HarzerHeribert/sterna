@@ -140,6 +140,8 @@ pub enum Action {
     Forget(String),
     /// The text of the field at this row changed.
     FieldEdited(usize),
+    /// The controls a row of chips had no room for: a sheet lists them.
+    More(Vec<(String, Action)>),
 }
 #[derive(Debug, Clone, Default)]
 pub struct Geometry {
@@ -218,6 +220,8 @@ pub enum Source {
     /// The whole list of values of the Value row with this id on the layer
     /// under it, for when they did not fit in its row.
     Fold(String),
+    /// The controls a row of chips folded into its `+N` or `⋯` chip.
+    More(Vec<(String, Action)>),
 }
 
 /// One change on the undo list.

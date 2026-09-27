@@ -1020,13 +1020,16 @@ pub fn draw(
             t,
         );
         // A notice is what just happened, and it is read once: the hint
-        // gives way to it, down to its first and last parts.
+        // gives way to it, down to its first and last parts. Without one the
+        // hint still gives way to the width, and what cannot fit even then
+        // ends in an ellipsis rather than mid-word.
         let hint = if sheet.notice.is_empty() {
-            sheet.hint()
+            sheet.hint_within(area.width as usize)
         } else {
             let wanted = chrome::width(&sheet.notice) as usize + 12;
             sheet.hint_within((area.width as usize).saturating_sub(wanted))
         };
+        let hint = clip(&hint, area.width as usize);
         let hint_w = chrome::width(&hint).min(area.width);
         chrome::text(
             f,
@@ -1491,29 +1494,8 @@ fn chips_in_row(
     let widths: Vec<u16> = (0..values.len())
         .map(|i| chrome::width(&label(i)) + 4 + 1)
         .collect();
-    let all: u16 = widths.iter().sum();
-    let mut shown: Vec<usize> = (0..values.len()).collect();
-    let mut folded = 0;
-    if all > r.width {
-        let more_w = chrome::width("+99 ▾") + 5;
-        let mut budget = r.width.saturating_sub(more_w);
-        shown.clear();
-        if let Some(c) = current {
-            budget = budget.saturating_sub(widths[c]);
-            shown.push(c);
-        }
-        for (i, w) in widths.iter().enumerate() {
-            if Some(i) == current {
-                continue;
-            }
-            if *w <= budget {
-                budget -= w;
-                shown.push(i);
-            }
-        }
-        shown.sort_unstable();
-        folded = values.len() - shown.len();
-    }
+    let shown = chrome::fitting(&widths, r.width, &current.into_iter().collect::<Vec<_>>());
+    let folded = values.len() - shown.len();
     let mut x = r.x;
     for i in shown {
         let w = chrome::chip(
