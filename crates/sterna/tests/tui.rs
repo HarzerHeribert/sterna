@@ -599,7 +599,6 @@ fn the_tui_renders_no_handle_itself() {
         ("tui/composer.rs", include_str!("../src/tui/composer.rs")),
         ("tui/regions.rs", include_str!("../src/tui/regions.rs")),
         ("tui/bands.rs", include_str!("../src/tui/bands.rs")),
-        ("tui/ask.rs", include_str!("../src/tui/ask.rs")),
         ("tui/message.rs", include_str!("../src/tui/message.rs")),
         ("tui/poster.rs", include_str!("../src/tui/poster.rs")),
         ("tui/value.rs", include_str!("../src/tui/value.rs")),
@@ -1608,40 +1607,4 @@ fn notices_stay_in_the_conversation_where_they_happened() {
     );
     assert!(!text.contains(" notice "), "no transient box:\n{text}");
     assert_eq!(fg_of_row(&buffer, "login is no longer valid"), Color::Red);
-}
-
-/// The approval hint (F4, `decision-model.md`): one extra line beside the
-/// confirmation when a hint is present, and nothing extra when it is not.
-#[test]
-fn render_approval_shows_the_hint_line_only_when_one_is_present() {
-    use sterna::approval::{Confirmation, Hint};
-    use sterna::tools::invoke::CheckedArgs;
-    use sterna::tui::render_approval;
-
-    let confirmation = Confirmation::new("write", "/workspace", &CheckedArgs::new());
-
-    let mut without_hint = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    without_hint
-        .draw(|frame| render_approval(frame, &confirmation, 0, None))
-        .unwrap();
-    let text = buffer_text(&without_hint.backend().buffer().clone());
-    assert!(!text.contains("fits the request"), "{text}");
-
-    let mut with_hint = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    with_hint
-        .draw(|frame| {
-            render_approval(
-                frame,
-                &confirmation,
-                0,
-                Some(Hint {
-                    fits: 0.91,
-                    asked_ms: 640,
-                }),
-            )
-        })
-        .unwrap();
-    let text = buffer_text(&with_hint.backend().buffer().clone());
-    assert!(text.contains("fits the request: 0.91"), "{text}");
-    assert!(text.contains("640 ms"), "{text}");
 }

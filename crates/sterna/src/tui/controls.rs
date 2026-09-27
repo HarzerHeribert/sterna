@@ -31,6 +31,9 @@ pub struct Panel {
     /// The model panel's catalogue: every account's models and the published
     /// intelligence index, for the workbench's model sheet.
     pub catalogue: Option<Catalogue>,
+    /// What leaving this panel with Esc does, when leaving is itself an
+    /// answer: the rollback preview's Esc cancels the pending rollback.
+    pub back: Option<Action>,
 }
 
 /// Every model a model panel can offer, grouped by the account serving it.

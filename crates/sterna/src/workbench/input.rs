@@ -552,8 +552,18 @@ impl Workbench {
         {
             return Effect::Consumed;
         }
-        self.sheets.pop();
+        let leaving = self.sheets.pop();
         self.child_of = None;
+        // Leaving some panels is an answer: the rollback preview's Esc
+        // cancels the rollback rather than leaving it pending.
+        if let Some(Layer {
+            source: Source::Panel(panel),
+            ..
+        }) = leaving
+            && let Some(Action::Command(command)) = panel.back
+        {
+            return Effect::Command(command);
+        }
         if let Some(parent) = self.sheets.last_mut() {
             parent.sheet.root = false;
             if !busy
@@ -856,6 +866,24 @@ impl Workbench {
                 }
                 self.say(format!("{name} is already turning off."));
             }
+            Action::Forget(id) => {
+                let label = s.memory.as_ref().and_then(|memory| {
+                    let label = memory
+                        .entries()
+                        .into_iter()
+                        .find(|entry| entry.id == id)
+                        .map(|entry| entry.label);
+                    memory.forget(&id);
+                    label
+                });
+                if let Some(label) = label {
+                    self.say(format!(
+                        "Forgot {label}; the next identical call asks again."
+                    ));
+                }
+            }
+            // A prompt's own answer: the loop that owns the prompt takes it.
+            Action::Answer(_) => {}
             Action::Sheet(hit) => {
                 let outcome = match self.sheets.last_mut() {
                     Some(layer) => layer.sheet.click(&hit),

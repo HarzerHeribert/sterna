@@ -112,7 +112,7 @@ pub(super) fn rule(f: &mut Frame<'_>, r: Rect, joints: &[(u16, &str)], tone: Ton
     }
 }
 /// A framed region: rounded corners, and a title in the top edge.
-pub(super) fn frame(f: &mut Frame<'_>, r: Rect, tone: Tone, t: Theme) {
+pub(crate) fn frame(f: &mut Frame<'_>, r: Rect, tone: Tone, t: Theme) {
     if r.width < 2 || r.height < 2 {
         return;
     }

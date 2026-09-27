@@ -462,6 +462,22 @@ impl<K: Ord + Clone> Judged<K> {
         self.0.lock().map(|answers| answers.len()).unwrap_or(0)
     }
 
+    /// Every remembered answer.
+    pub fn entries(&self) -> Vec<(K, bool)> {
+        self.0
+            .lock()
+            .map(|answers| answers.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Forgets the answers whose key matches: the person took them back,
+    /// so the next identical question is asked again.
+    pub fn forget_where(&self, matches: impl Fn(&K) -> bool) {
+        if let Ok(mut answers) = self.0.lock() {
+            answers.retain(|key, _| !matches(key));
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -715,11 +715,23 @@ fn checked_call(
             .into());
         }
         let action = crate::approval::Action::new(tool.name(), ctx.profile.root(), trace.clone());
-        if !gate.admit(action.clone(), stopped) {
+        let rule = match gate.admit(action.clone(), stopped) {
+            crate::approval::Admission::Allowed => None,
+            // Cancelled the way a running call is: reported as cancelled,
+            // never as a refusal the model should work around.
+            crate::approval::Admission::Cancelled => {
+                return Err(ToolError::Cancelled {
+                    tool: tool.name().into(),
+                });
+            }
+            crate::approval::Admission::DeniedEarlier => Some(
+                "you denied this exact call earlier in this session; it stays denied until you forget it on the Ask sheet"
+                    .to_string(),
+            ),
             // A person who refused with words gets them delivered where the
             // model reads every refusal: as the rule. The refusal itself is
             // the same refusal either way.
-            let rule = match gate.redirect_for(&action) {
+            crate::approval::Admission::Denied => Some(match gate.redirect_for(&action) {
                 Some(text) if text.trim().is_empty() => {
                     "the person declined this exact call and asks you to propose another way to do it: say what you would do instead, then do that".to_string()
                 }
@@ -727,11 +739,16 @@ fn checked_call(
                     "the person declined this exact call and asks for another way: \"{}\" -- do that instead",
                     text.trim()
                 ),
-                None => "the host call gate denied or cancelled this exact attempt".to_string(),
-            };
+                None if !action.confirmation().complete => {
+                    "too large to confirm in one prompt; split it into smaller calls".to_string()
+                }
+                None => "the person denied this call".to_string(),
+            }),
+        };
+        if let Some(rule) = rule {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
-                path: String::new(),
+                path: action.label(),
                 rule,
             }
             .into());

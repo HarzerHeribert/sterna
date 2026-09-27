@@ -1491,6 +1491,25 @@ fn pool(session: &Session<'_>, argument: Option<&str>) {
     }
 }
 
+/// The rollback preview: what the rollback would change, a danger row that
+/// confirms it, and Cancel -- where the sheet opens, and what Esc does.
+fn rollback_panel(preview: &str) -> Panel {
+    let mut panel = Panel::text(
+        "Rollback preview · confirmation required",
+        format!("The latest file-changing cell affected:\n{preview}"),
+    );
+    panel.rows.push(PanelRow::danger(
+        "Confirm rollback",
+        crate::workbench::Action::Command("/rollback confirm".into()),
+    ));
+    panel
+        .rows
+        .push(PanelRow::command("Cancel", "/rollback cancel"));
+    panel.selected = panel.rows.len() - 1;
+    panel.back = Some(crate::workbench::Action::Command("/rollback cancel".into()));
+    panel
+}
+
 fn rollback(session: &Session<'_>, argument: Option<&str>) {
     let count = session.rollbacks.borrow().len();
     let Some(last) = session
@@ -1513,21 +1532,7 @@ fn rollback(session: &Session<'_>, argument: Option<&str>) {
     match argument.filter(|value| !value.is_empty()) {
         None => {
             session.rollback_pending.set(Some(count));
-            let mut panel = Panel::text(
-                "Rollback preview · confirmation required",
-                format!(
-                    "The latest file-changing cell affected:\n{}",
-                    plan.preview()
-                ),
-            );
-            panel
-                .rows
-                .push(PanelRow::command("Confirm rollback", "/rollback confirm"));
-            panel
-                .rows
-                .push(PanelRow::command("Cancel", "/rollback cancel"));
-            panel.selected = panel.rows.len().saturating_sub(2);
-            show(session, panel);
+            show(session, rollback_panel(&plan.preview()));
         }
         Some("cancel") => {
             session.rollback_pending.set(None);
@@ -1698,6 +1703,27 @@ mod tests {
                 "{word}"
             );
         }
+    }
+
+    /// A reflexive Enter on the rollback preview cancels: the sheet opens on
+    /// Cancel, confirming is a danger row, and Esc cancels too.
+    #[test]
+    fn the_rollback_preview_starts_on_cancel() {
+        let panel = rollback_panel("a.txt: restored");
+        assert_eq!(
+            panel.rows[panel.selected].command_line(),
+            Some("/rollback cancel")
+        );
+        let confirm = panel
+            .rows
+            .iter()
+            .find(|row| row.text == "Confirm rollback")
+            .unwrap();
+        assert_eq!(confirm.kind, crate::workbench::ItemKind::Danger);
+        assert_eq!(
+            panel.back,
+            Some(crate::workbench::Action::Command("/rollback cancel".into()))
+        );
     }
 
     #[test]

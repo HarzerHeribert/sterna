@@ -92,7 +92,7 @@ fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     sheet.title = "Ask".into();
     sheet.crumbs = vec!["how often it stops to ask".into()];
     let now = s.permissions.rung();
-    [Rung::Manual, Rung::AcceptEdits, Rung::Auto, Rung::Full]
+    let mut items: Vec<Item> = [Rung::Manual, Rung::AcceptEdits, Rung::Auto, Rung::Full]
         .into_iter()
         .map(|rung| {
             let id = format!("rung:{}", rung.name());
@@ -104,7 +104,39 @@ fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
             };
             item.detail(rung.sentence())
         })
-        .collect()
+        .collect();
+    // What was answered for the whole session is on this sheet too, where it
+    // can be taken back: a refusal that stays must stay visibly.
+    let remembered = s
+        .memory
+        .as_ref()
+        .map(crate::approval::Memory::entries)
+        .unwrap_or_default();
+    for (allowed, heading) in [
+        (true, "Allowed for this session"),
+        (false, "Denied for this session"),
+    ] {
+        let rows: Vec<_> = remembered.iter().filter(|r| r.allowed == allowed).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        items.push(Item::heading(heading));
+        for row in rows {
+            items.push(
+                Item::run(
+                    format!("forget:{}", row.id),
+                    format!("Forget · {}", row.label),
+                    Action::Forget(row.id.clone()),
+                )
+                .detail(if allowed {
+                    "runs without asking until you forget it"
+                } else {
+                    "refused without asking until you forget it"
+                }),
+            );
+        }
+    }
+    items
 }
 
 /// The boundary as a sentence, for the Access sheet and the chips.

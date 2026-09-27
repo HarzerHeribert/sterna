@@ -572,10 +572,11 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
     // it mid-name, so `once.txt` is not on one line. Wide enough never to.
     app.resize(160);
     app.send(b"proceed\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.contains("once.txt");
     assert!(!app.root.join("once.txt").exists());
-    // Enter and pasted text must never accept the modal by accident.
+    // Enter and pasted text must never accept the modal by accident: the
+    // prompt has not been up, quietly, for half a second.
     app.send(b"\r\x1b[200~o\x1b[201~");
     app.settle(100);
     if app.root.join("once.txt").exists() {
@@ -591,15 +592,17 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         );
     } else {
         assert!(!app.root.join("once.txt").exists());
+        app.settle(600);
         app.send(b"o");
     }
     app.wait_for_file("once.txt");
-    app.contains("\"content\": \"remember\"");
+    app.contains("│ remember");
     assert_eq!(
         std::fs::read_to_string(app.root.join("once.txt")).unwrap(),
         "once"
     );
     assert!(!app.root.join("remember.txt").exists());
+    app.settle(600);
     app.send(b"s");
     // Canonically equivalent repeated arguments skip a second prompt.
     app.wait_for_file("remember.txt");
@@ -608,7 +611,8 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         "remember"
     );
     assert!(!app.root.join("denied.txt").exists());
-    app.contains("\"content\": \"must not appear\"");
+    app.contains("│ must not appear");
+    app.settle(600);
     app.send(b"d");
     app.contains_line("APPROVAL FINISHED");
     assert!(!app.root.join("denied.txt").exists());
@@ -623,14 +627,56 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
     app.contains("fixture-model");
     app.send(b"proceed\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.send(b"\x03");
     app.wait("cancelled approval closes", |screen| {
-        !screen.contents().contains("Approve exact tool call")
+        !screen.contents().contains("APPROVE")
     });
     assert!(!app.root.join("cancelled.txt").exists());
     app.settle(300);
     app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// **An approval is answered on purpose.** Keys typed while it appears --
+/// a sentence carried on past the moment it showed -- are held back, never
+/// taken as an answer: the `s` and the `a` in "also please make sure" must
+/// neither allow the write for the session nor open "another way".
+#[test]
+fn an_approval_ignores_keys_typed_before_it_was_shown() {
+    let base = approval_provider(r#"write({path: "typed.txt", content: "no"}); return "done";"#);
+    let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
+    app.contains("fixture-model");
+    app.send(b"write it\r");
+    // Alone, so it sends: an Enter with more typing already behind it is a
+    // newline in the draft.
+    thread::sleep(Duration::from_millis(150));
+    for byte in b"also please make sure" {
+        app.send(&[*byte]);
+        thread::sleep(Duration::from_millis(80));
+    }
+    app.contains("APPROVE");
+    app.settle(200);
+    assert!(
+        !app.root.join("typed.txt").exists(),
+        "a typed-ahead letter answered the approval"
+    );
+    let screen = app.screen.screen().contents();
+    assert!(
+        screen.contains("APPROVE"),
+        "the approval is gone:\n{screen}"
+    );
+    assert!(!screen.contains("ANOTHER WAY"), "{screen}");
+    // Once the typing stops and the prompt has been up for half a second,
+    // a key is an answer again.
+    app.settle(600);
+    app.send(b"d");
+    app.wait("the denied approval closes", |screen| {
+        !screen.contents().contains("APPROVE")
+    });
+    assert!(!app.root.join("typed.txt").exists());
+    app.settle(300);
+    app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
 }
 

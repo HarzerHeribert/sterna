@@ -22,6 +22,7 @@ mod view;
 pub mod voice;
 
 use crate::tui::{Panel, ScreenState};
+pub(crate) use chrome::frame;
 pub use document::{Document, Row, RowKind, Tone};
 pub use input::Effect;
 pub use models::Navigator;
@@ -102,6 +103,11 @@ pub enum Action {
     HandlerOff(String),
     /// A click on one of the top sheet's own targets.
     Sheet(sheet::Hit),
+    /// An answer on a decision prompt.
+    Answer(Answer),
+    /// Forget a call answered for the whole session: the next identical
+    /// call asks again.
+    Forget(String),
     /// The text of the field at this row changed.
     FieldEdited(usize),
 }
@@ -137,6 +143,22 @@ impl Geometry {
 pub(crate) fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
 }
+/// The answers a decision prompt offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    AllowOnce,
+    AllowForSession,
+    /// Refuse and say what to do instead.
+    AnotherWay,
+    Deny,
+    /// Send the words behind "another way".
+    Send,
+    /// One of a question's choices, by index.
+    Choice(usize),
+    /// Show or hide the exact arguments.
+    Raw,
+}
+
 /// What a layer's rows are built from.
 pub enum Source {
     /// The work mode.

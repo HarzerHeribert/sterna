@@ -18,6 +18,7 @@ use crossterm::terminal::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 mod console_mode;
+mod decision;
 mod links;
 mod terminal_input;
 
@@ -170,6 +171,9 @@ pub(super) enum Update {
     Approval(crate::approval::Request),
     /// A question a cell put to the person, waiting on the session thread.
     Ask(crate::ask::Request),
+    /// The approval gate's memory, sent once when the gate is made, so the
+    /// Ask sheet can list and forget what was answered for the session.
+    Memory(crate::approval::Memory),
     Snapshot(Box<(Conversation, Notebook, ServedBy, Activity)>),
     /// Open a form sheet. The terminal thread answers it on the form
     /// channel and on nothing else.
@@ -277,6 +281,7 @@ impl LiveUi {
     ) -> crate::approval::Gate {
         let (gate, receiver) = crate::approval::Gate::channel(ladder);
         let updates = self.updates.clone();
+        let _ = updates.send(Update::Memory(gate.memory()));
         thread::spawn(move || {
             for request in receiver {
                 if updates.send(Update::Approval(request)).is_err() {
@@ -854,53 +859,30 @@ fn run(
     // When the position indicator came up, so it can go down again after
     // `tui::SCROLL_INDICATOR_LINGER` without a timer of its own.
     let mut last_scroll: Option<Instant> = None;
-    let mut approvals: std::collections::VecDeque<crate::approval::Request> =
-        std::collections::VecDeque::new();
-    let mut approval_scroll = 0u16;
-    // At most one question is ever outstanding: `ask` ends the cell that
-    // asked, and the session waits for the answer before the next turn.
-    let mut asking: Option<crate::ask::Request> = None;
-    let mut ask_selected = 0usize;
-    // `[a]` on an approval: the refused request and what has been typed
-    // for it so far. Esc puts the request back in front of the person.
-    let mut redirect: Option<(crate::approval::Request, String)> = None;
+    // The decision prompts -- approvals, a question, the words behind
+    // "another way" -- answered on purpose (`decision.rs`).
+    let mut prompts = decision::Prompts::default();
     // Where the open form was drawn, so a click reaches its fields.
     let mut form_hits: Vec<(ratatui::layout::Rect, crate::workbench::FormHit)> = Vec::new();
     loop {
         if !ACTIVE.load(Ordering::SeqCst) {
             break;
         }
-        let queued = approvals.len();
-        approvals.retain(crate::approval::Request::is_pending);
-        if approvals.len() != queued {
-            approval_scroll = 0;
+        if prompts.retain_pending() {
             dirty = true;
         }
         for update in updates.try_iter() {
             dirty = true;
             match update {
                 Update::Approval(request) => {
-                    approvals.push_back(request);
+                    prompts.push_approval(request);
                     state.inspection = None;
-                    approval_scroll = 0;
                 }
                 Update::Ask(request) => {
-                    // The decision model's own pick starts selected, so the
-                    // common answer is Enter and the person reads rather
-                    // than navigates.
-                    ask_selected = request
-                        .weights()
-                        .and_then(|weights| {
-                            request
-                                .question()
-                                .choices
-                                .iter()
-                                .position(|choice| choice == &weights.choice)
-                        })
-                        .unwrap_or(0);
-                    asking = Some(request);
+                    prompts.ask(request);
                     state.inspection = None;
                 }
+                Update::Memory(memory) => state.memory = Some(memory),
                 Update::Snapshot(snapshot) => {
                     let (c, n, s, activity) = *snapshot;
                     let completed = n
@@ -952,8 +934,7 @@ fn run(
                     ) {
                         // Cancellation may finish the waiting callback before
                         // the user answers. Remove stale confirmations then.
-                        approvals.clear();
-                        approval_scroll = 0;
+                        prompts.clear_approvals();
                         if let Some(start) = task_started.take() {
                             state.pulse.elapsed_ms = start.elapsed().as_millis() as u64;
                         }
@@ -1130,18 +1111,7 @@ fn run(
                     Some(form) => crate::workbench::render_form(frame, form, state.theme),
                     None => Vec::new(),
                 };
-                if let Some((_, text)) = redirect.as_ref() {
-                    tui::render_redirect(frame, text, state.theme);
-                } else if let Some(request) = approvals.front() {
-                    tui::render_approval(
-                        frame,
-                        &request.action().confirmation(),
-                        approval_scroll,
-                        request.hint_line(),
-                    );
-                } else if let Some(request) = asking.as_ref() {
-                    tui::render_ask(frame, request, ask_selected, state.theme);
-                }
+                prompts.draw(frame, state.theme);
             })?;
             io::stdout().flush()?;
             dirty = false;
@@ -1161,7 +1131,39 @@ fn run(
         }
         // Security prompts retain priority; no local control can answer them.
         // All ordinary pointer and local-panel events go to the new reducer.
-        if approvals.is_empty() && asking.is_none() && state.form.is_none() && redirect.is_none() {
+        // Ctrl-C over a selection copies it, even with a prompt up.
+        let copying = matches!(&input_event, Event::Key(key)
+            if key.code == KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL))
+            && state
+                .selection
+                .is_some_and(|selection| !selection.is_empty());
+        if prompts.active() && !copying {
+            let done = match &input_event {
+                Event::Key(key) if key.kind != KeyEventKind::Release => prompts.key(*key),
+                Event::Paste(text) => prompts.paste(text),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                        prompts.click(mouse.column, mouse.row)
+                    }
+                    MouseEventKind::ScrollUp => prompts.wheel(true),
+                    MouseEventKind::ScrollDown => prompts.wheel(false),
+                    _ => decision::Done::Nothing,
+                },
+                Event::Resize(_, _) => decision::Done::Redraw,
+                _ => decision::Done::Nothing,
+            };
+            match done {
+                decision::Done::Nothing => {}
+                decision::Done::Redraw => dirty = true,
+                decision::Done::Interrupt => {
+                    super::INTERRUPT.store(true, Ordering::SeqCst);
+                    dirty = true;
+                }
+            }
+            continue;
+        }
+        if state.form.is_none() {
             state.input = editor.text.clone();
             state.cursor = Some(editor.cursor);
             if matches!(&input_event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown))
@@ -1284,15 +1286,6 @@ fn run(
                     }
                     continue;
                 }
-                if !approvals.is_empty() {
-                    approval_scroll = match mouse.kind {
-                        MouseEventKind::ScrollUp => approval_scroll.saturating_sub(3),
-                        MouseEventKind::ScrollDown => approval_scroll.saturating_add(3),
-                        _ => approval_scroll,
-                    };
-                    dirty = true;
-                    continue;
-                }
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 if up || mouse.kind == MouseEventKind::ScrollDown {
                     state.scrolling = true;
@@ -1317,9 +1310,6 @@ fn run(
                 }
             }
             Event::Paste(text) => {
-                if !approvals.is_empty() {
-                    continue;
-                }
                 // Pasting is how most keys are entered, so the masked prompt
                 // takes a paste before anything else can.
                 if let Some(form) = state.form.as_mut() {
@@ -1331,120 +1321,6 @@ fn run(
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 dirty = true;
-                // The words behind `[a]`: every key is theirs until Enter
-                // sends them or Esc returns to the call.
-                if let Some((_, text)) = redirect.as_mut() {
-                    match key.code {
-                        KeyCode::Enter => {
-                            if let Some((request, text)) = redirect.take() {
-                                request.respond(crate::approval::Decision::Redirect(text));
-                            }
-                        }
-                        KeyCode::Esc => {
-                            if let Some((request, _)) = redirect.take() {
-                                approvals.push_front(request);
-                            }
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            super::INTERRUPT.store(true, Ordering::SeqCst);
-                            if let Some((request, _)) = redirect.take() {
-                                request.respond(crate::approval::Decision::Deny);
-                            }
-                        }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            text.clear();
-                        }
-                        KeyCode::Backspace => {
-                            text.pop();
-                        }
-                        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            text.push(c);
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                if let Some(request) = approvals.front() {
-                    let complete = request.action().confirmation().complete;
-                    let decision = match key.code {
-                        KeyCode::Char('o' | 'O') if complete && key.modifiers.is_empty() => {
-                            Some(crate::approval::Decision::AllowOnce)
-                        }
-                        KeyCode::Char('s' | 'S') if complete && key.modifiers.is_empty() => {
-                            Some(crate::approval::Decision::AllowForSession)
-                        }
-                        KeyCode::Char('d' | 'D') | KeyCode::Esc => {
-                            Some(crate::approval::Decision::Deny)
-                        }
-                        // Refuse, and say what to do instead: the request
-                        // leaves the queue for the prompt that takes the
-                        // words, and comes back to the front on Esc.
-                        KeyCode::Char('a' | 'A') if complete && key.modifiers.is_empty() => {
-                            if let Some(request) = approvals.pop_front() {
-                                redirect = Some((request, String::new()));
-                            }
-                            approval_scroll = 0;
-                            None
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            super::INTERRUPT.store(true, Ordering::SeqCst);
-                            Some(crate::approval::Decision::Deny)
-                        }
-                        KeyCode::Up => {
-                            approval_scroll = approval_scroll.saturating_sub(1);
-                            None
-                        }
-                        KeyCode::Down => {
-                            approval_scroll = approval_scroll.saturating_add(1);
-                            None
-                        }
-                        KeyCode::PageUp => {
-                            approval_scroll = approval_scroll.saturating_sub(10);
-                            None
-                        }
-                        KeyCode::PageDown => {
-                            approval_scroll = approval_scroll.saturating_add(10);
-                            None
-                        }
-                        KeyCode::Home => {
-                            approval_scroll = 0;
-                            None
-                        }
-                        _ => None,
-                    };
-                    if let Some(decision) = decision {
-                        if let Some(request) = approvals.pop_front() {
-                            request.respond(decision);
-                        }
-                        approval_scroll = 0;
-                    }
-                    continue;
-                }
-                // **Modal, and answered either way.** Escape is a choice
-                // ("decide yourself"), not a cancellation: a model waiting on
-                // a question nobody answered would only ask it again.
-                if let Some(request) = asking.as_ref() {
-                    let choices = request.question().choices.len();
-                    let answer = match tui::ask_key(key.code, ask_selected, choices) {
-                        tui::AskKey::Move(index) => {
-                            ask_selected = index;
-                            None
-                        }
-                        tui::AskKey::Confirm => Some(crate::ask::Answer {
-                            choice: request.question().choices.get(ask_selected).cloned(),
-                            by: crate::ask::AnsweredBy::Person,
-                        }),
-                        tui::AskKey::Dismiss => Some(crate::ask::Answer::dismissed()),
-                        tui::AskKey::Ignored => None,
-                    };
-                    if let Some(answer) = answer
-                        && let Some(request) = asking.take()
-                    {
-                        request.respond(answer);
-                        ask_selected = 0;
-                    }
-                    continue;
-                }
                 // **Modal, and first.** While a masked prompt is open every
                 // key belongs to it: none reaches the editor, the panel, the
                 // inspector or the input history.

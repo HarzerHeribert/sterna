@@ -234,6 +234,9 @@ pub struct Sheet {
     /// A decision prompt: the backdrop does not dismiss it, and its answers
     /// carry the letters printed on them.
     pub decision: bool,
+    /// What Esc does here, when it is not Back or Close: a decision prompt
+    /// says what Esc answers.
+    pub esc: Option<String>,
     /// Columns kept free on the right for the owner to draw into (the
     /// theme preview).
     pub aside: u16,
@@ -736,29 +739,33 @@ impl Sheet {
         parts.join(" · ")
     }
 
-    fn hint_parts(&self) -> Vec<&'static str> {
-        let mut parts: Vec<&str> = Vec::new();
+    fn hint_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = Vec::new();
         match self
             .focused()
             .map(|item| (&item.kind, item.disabled.is_some()))
         {
-            Some((_, true)) => parts.push("Enter says why"),
-            Some((Kind::Choice { .. }, _)) => parts.push("Enter choose"),
-            Some((Kind::Value { .. }, _)) => parts.push("←→ change"),
-            Some((Kind::Toggle(_), _)) => parts.push("Enter switch"),
-            Some((Kind::Open, _)) => parts.push("Enter open"),
-            Some((Kind::Run, _)) => parts.push("Enter run"),
-            Some((Kind::Danger, _)) => parts.push("Enter confirm"),
-            Some((Kind::Field(_), _)) => parts.push("type to edit"),
+            Some((_, true)) => parts.push("Enter says why".into()),
+            Some((Kind::Choice { .. }, _)) => parts.push("Enter choose".into()),
+            Some((Kind::Value { .. }, _)) => parts.push("←→ change".into()),
+            Some((Kind::Toggle(_), _)) => parts.push("Enter switch".into()),
+            Some((Kind::Open, _)) => parts.push("Enter open".into()),
+            Some((Kind::Run, _)) => parts.push("Enter run".into()),
+            Some((Kind::Danger, _)) => parts.push("Enter confirm".into()),
+            Some((Kind::Field(_), _)) => parts.push("type to edit".into()),
             _ => {}
         }
         if self.sections.len() > 1 {
-            parts.push("Tab section");
+            parts.push("Tab section".into());
         }
         if self.query.is_some() {
-            parts.push("type to filter");
+            parts.push("type to filter".into());
         }
-        parts.push(if self.root { "Esc close" } else { "Esc back" });
+        parts.push(match &self.esc {
+            Some(esc) => format!("Esc {}", esc.to_lowercase()),
+            None if self.root => "Esc close".into(),
+            None => "Esc back".into(),
+        });
         parts
     }
 }
@@ -808,11 +815,12 @@ pub fn draw(
         };
     }
     // Header: TITLE › crumb › crumb, and the chip that says what Esc does.
-    let back = if sheet.root {
-        "Esc · Close"
-    } else {
-        "Esc · Back"
+    let back = match &sheet.esc {
+        Some(esc) => format!("Esc · {esc}"),
+        None if sheet.root => "Esc · Close".to_string(),
+        None => "Esc · Back".to_string(),
     };
+    let back = back.as_str();
     let back_w = chrome::width(back) + 4;
     let mut heading = sheet.title.to_uppercase();
     for crumb in &sheet.crumbs {
@@ -1036,13 +1044,26 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
     while i < sheet.items.len() {
         let item = &sheet.items[i];
         if item.inline {
-            let mut run = vec![i];
-            while i + 1 < sheet.items.len() && sheet.items[i + 1].inline {
-                i += 1;
+            // A run of chips wraps to as many lines as it needs: an answer
+            // pushed past the edge is an answer nobody can see.
+            let chip_width = |item: &Item| {
+                let key = item.key.map_or(0, |_| 4);
+                // Room for the focus mark too, so focus never rewraps.
+                super::chrome::width(&item.title) as usize + key + 2 + 5
+            };
+            let mut run = Vec::new();
+            let mut used = 2;
+            while i < sheet.items.len() && sheet.items[i].inline {
+                let w = chip_width(&sheet.items[i]);
+                if !run.is_empty() && used + w > width {
+                    lines.push(Line::Chips(std::mem::take(&mut run)));
+                    used = 2;
+                }
                 run.push(i);
+                used += w;
+                i += 1;
             }
             lines.push(Line::Chips(run));
-            i += 1;
             continue;
         }
         match item.kind {

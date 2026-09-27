@@ -3,8 +3,6 @@
 mod controls;
 pub mod history;
 pub use history::{HistoryNote, NoteKind};
-mod ask;
-pub use ask::{Key as AskKey, key as ask_key, render as render_ask, render_redirect};
 mod bands;
 mod message;
 use message::*;
@@ -51,7 +49,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::contract::{Block as ContentBlock, Conversation, Message, Role, ServedBy};
 use crate::helpers::HelperRecord;
@@ -63,85 +61,6 @@ use crate::runtime::preview::TABLE_TOKEN_CAP;
 const ACCENT: Color = Color::LightGreen;
 const MUTED: Color = Color::Gray;
 const NOT_CONNECTED: &str = "gateway not connected.";
-
-/// Modal confirmation drawn last, above all other surfaces. The terminal
-/// owner retains the request and is the only code that can answer it.
-///
-/// `hint` is the approval hint (F4, `decision-model.md`): the caller passes
-/// `Request::hint_line()`, already gated by `mode` -- `None` here never
-/// distinguishes "no model", "not answered yet" and "shadow" from each other,
-/// because none of the three ever change what is drawn.
-pub fn render_approval(
-    frame: &mut Frame<'_>,
-    confirmation: &crate::approval::Confirmation,
-    scroll: u16,
-    hint: Option<crate::approval::Hint>,
-) {
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).min(100);
-    let height = area.height.saturating_sub(2).min(28);
-    let overlay = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(Clear, overlay);
-    let block = Block::default()
-        .title(" Approve exact tool call ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT));
-    let inner = block.inner(overlay);
-    frame.render_widget(block, overlay);
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
-    let footer_height = inner.height.min(3);
-    let body = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width,
-        inner.height.saturating_sub(footer_height),
-    );
-    let footer = Rect::new(inner.x, inner.y + body.height, inner.width, footer_height);
-    let estimated_rows: usize = confirmation
-        .text
-        .lines()
-        .map(|line| {
-            line.chars()
-                .count()
-                .max(1)
-                .div_ceil(usize::from(body.width).max(1))
-        })
-        .sum();
-    let maximum_scroll = estimated_rows
-        .saturating_sub(usize::from(body.height))
-        .min(u16::MAX as usize) as u16;
-    frame.render_widget(
-        Paragraph::new(confirmation.text.as_str())
-            .wrap(Wrap { trim: false })
-            .scroll((scroll.min(maximum_scroll), 0)),
-        body,
-    );
-    let choices = if confirmation.complete {
-        "[o] Allow once  [s] Allow this exact call for session  [a] Ask Sterna for another way  [d/Esc] Deny\n↑/↓ PgUp/PgDn scroll · Expires after 10 min · Sandbox unchanged"
-    } else {
-        "[d/Esc] Deny · This action cannot be approved because its complete details exceed the display limit"
-    };
-    let footer_text = match hint {
-        Some(hint) => format!(
-            "fits the request: {:.2} (decision, {} ms)\n{choices}",
-            hint.fits, hint.asked_ms
-        ),
-        None => choices.to_string(),
-    };
-    frame.render_widget(
-        Paragraph::new(footer_text)
-            .style(Style::default().fg(ACCENT))
-            .wrap(Wrap { trim: false }),
-        footer,
-    );
-}
 
 /// Session-owned presentation state. Missing instrumentation stays unknown.
 /// Pass this to `render_screen` on input, resize, runtime events and activity ticks.
@@ -259,6 +178,9 @@ pub struct ScreenState {
     /// The permission rung, shared live with the approval gate: Shift-Tab
     /// moves it from this thread while a task runs.
     pub permissions: crate::permissions::Ladder,
+    /// The approval gate's memory: every call answered for the whole
+    /// session, which the Ask sheet lists and can forget.
+    pub memory: Option<crate::approval::Memory>,
     pub effort: crate::wire::Effort,
     pub status_line: StatusLine,
     pub panel: Option<Panel>,

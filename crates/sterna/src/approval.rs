@@ -77,13 +77,105 @@ impl Drop for Waiting {
 pub enum Decision {
     AllowOnce,
     AllowForSession,
+    /// Chosen on purpose: refused, and remembered for the session -- visibly,
+    /// with a way to forget it on the Ask sheet.
     Deny,
+    /// Esc: "not now". This call is refused and nothing is remembered.
+    DenyOnce,
+    /// Ctrl-C: the call is cancelled the way a running call is, reported as
+    /// cancelled and never remembered as a refusal.
+    Cancel,
     /// A refusal that says what to do instead. The call is refused exactly
     /// as `Deny` refuses it -- remembered, never widened -- and the words
     /// travel back to the program as the refusal's rule, so the model reads
     /// them where it reads every other refusal. Empty text asks the model
     /// to propose another way itself.
     Redirect(String),
+}
+
+/// What the gate answered for one call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Admission {
+    Allowed,
+    /// Refused now: by the person, or by the rung.
+    Denied,
+    /// Refused from memory: the person denied this exact call earlier in
+    /// the session.
+    DeniedEarlier,
+    /// Cancelled by the person or stopped while it waited.
+    Cancelled,
+}
+
+impl Admission {
+    #[must_use]
+    pub fn allowed(&self) -> bool {
+        *self == Self::Allowed
+    }
+}
+
+/// One call a person answered for the whole session, as the Ask sheet lists
+/// it: allowed or denied, with a way to forget it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remembered {
+    /// The action's summary, stable for the session: what Forget names.
+    pub id: String,
+    /// The tool and its path or command, in the project's own terms.
+    pub label: String,
+    pub allowed: bool,
+}
+
+/// The gate's memory, shared with the screen so it can list what was
+/// answered for the session and forget an answer.
+#[derive(Clone, Default)]
+pub struct Memory {
+    allowed: Arc<Mutex<BTreeSet<Action>>>,
+    judged: Arc<crate::permissions::Judged<Action>>,
+}
+
+impl std::fmt::Debug for Memory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Memory({} remembered)", self.entries().len())
+    }
+}
+
+impl Memory {
+    /// Every call answered for the session: allowed ones first.
+    pub fn entries(&self) -> Vec<Remembered> {
+        let mut out: Vec<Remembered> = self
+            .allowed
+            .lock()
+            .map(|allowed| {
+                allowed
+                    .iter()
+                    .map(|action| Remembered {
+                        id: action.summary(),
+                        label: action.label(),
+                        allowed: true,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.extend(
+            self.judged
+                .entries()
+                .into_iter()
+                .filter(|(_, answer)| !answer)
+                .map(|(action, _)| Remembered {
+                    id: action.summary(),
+                    label: action.label(),
+                    allowed: false,
+                }),
+        );
+        out
+    }
+    /// Forgets the session's answer for the action with this summary: the
+    /// next identical call asks again.
+    pub fn forget(&self, id: &str) {
+        if let Ok(mut allowed) = self.allowed.lock() {
+            allowed.retain(|action| action.summary() != id);
+        }
+        self.judged.forget_where(|action| action.summary() == id);
+    }
 }
 
 /// The decision model's answer to "does this call fit the request" (F4,
@@ -202,6 +294,32 @@ impl Action {
     pub fn confirmation(&self) -> Confirmation {
         Confirmation::new(&self.tool, &self.root, &self.arguments)
     }
+
+    /// The tool and what it acts on, in the project's own terms: a path
+    /// relative to the project, or the start of a command line.
+    pub fn label(&self) -> String {
+        let relative = |path: &str| {
+            path.strip_prefix(&self.root)
+                .map(|rest| rest.trim_start_matches(['/', '\\']))
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(path)
+                .to_string()
+        };
+        match (self.arguments.get("path"), self.arguments.get("command")) {
+            (Some(path), _) => format!("{} {}", self.tool, relative(path)),
+            (_, Some(command)) => {
+                let line = command.lines().next().unwrap_or_default();
+                let short: String = line.chars().take(60).collect();
+                let more = if short.len() < command.len() {
+                    "…"
+                } else {
+                    ""
+                };
+                format!("{} {short}{more}", self.tool)
+            }
+            _ => self.tool.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +370,8 @@ pub struct Request {
     /// Whether [`Self::hint_line`] may surface the hint at all -- `mode =
     /// shadow` still fills [`Self::hint`] above, but never this gate.
     show_hint: bool,
+    /// Why the rung put this call to a person, in its own words.
+    reason: Option<String>,
 }
 
 impl Request {
@@ -275,6 +395,11 @@ impl Request {
     /// arrives, on failure, or with `mode = shadow` (recorded, never shown).
     pub fn hint_line(&self) -> Option<Hint> {
         if self.show_hint { self.hint() } else { None }
+    }
+
+    /// Why this call needs a person, when the rung said.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
     }
 
     /// Returns false when the waiting callback has ended. A queued reply may
@@ -424,6 +549,14 @@ impl Gate {
         self
     }
 
+    /// The memory the screen lists and forgets from.
+    pub fn memory(&self) -> Memory {
+        Memory {
+            allowed: self.remembered.clone(),
+            judged: self.judged.clone(),
+        }
+    }
+
     /// Values that can be displayed without leaking command arguments,
     /// file contents, or MCP parameters. This seam has no persisted state.
     pub fn session_actions(&self) -> Vec<String> {
@@ -496,18 +629,29 @@ impl Gate {
     /// session with no terminal to ask at runs what it would have asked
     /// about — the profile is still the boundary, and refusing instead would
     /// break every scripted run for a question nobody is there to answer.
-    pub(crate) fn admit(&self, action: Action, stopped: impl Fn() -> bool) -> bool {
+    pub(crate) fn admit(&self, action: Action, stopped: impl Fn() -> bool) -> Admission {
+        let unless_stopped = |admission: Admission| {
+            if stopped() {
+                Admission::Cancelled
+            } else {
+                admission
+            }
+        };
         if stopped() {
-            return false;
+            return Admission::Cancelled;
         }
         if let Some(answer) = self.judged.answer(&action) {
-            return answer && !stopped();
+            return unless_stopped(if answer {
+                Admission::Allowed
+            } else {
+                Admission::DeniedEarlier
+            });
         }
         let Ok(remembered) = self.remembered.lock() else {
-            return false;
+            return Admission::Denied;
         };
         if remembered.contains(&action) {
-            return !stopped();
+            return unless_stopped(Admission::Allowed);
         }
         drop(remembered);
         let model = self.decisions.as_ref().and_then(|decisions| {
@@ -516,7 +660,7 @@ impl Gate {
                 vouched: &self.vouched,
             })
         });
-        match crate::permissions::judge(
+        let reason = match crate::permissions::judge(
             self.ladder.rung(),
             action.tool(),
             action.arguments(),
@@ -525,17 +669,18 @@ impl Gate {
                 .as_ref()
                 .map(|judge| judge as &dyn crate::permissions::CommandJudge),
         ) {
-            crate::permissions::Verdict::Runs => return !stopped(),
+            crate::permissions::Verdict::Runs => return unless_stopped(Admission::Allowed),
             crate::permissions::Verdict::Refuse(_) => {
                 self.judged.remember(action, false);
-                return false;
+                return Admission::Denied;
             }
-            crate::permissions::Verdict::Ask(_) => {
+            crate::permissions::Verdict::Ask(why) => {
                 if self.ladder.is_unattended() {
-                    return !stopped();
+                    return unless_stopped(Admission::Allowed);
                 }
+                why
             }
-        }
+        };
         let _waiting = self.wait_clock.as_ref().map(WaitClock::pause);
         let waiting_started = Instant::now();
         let pending = Arc::new(AtomicBool::new(true));
@@ -554,10 +699,11 @@ impl Gate {
                 pending,
                 hint: hint.clone(),
                 show_hint,
+                reason: Some(reason),
             })
             .is_err()
         {
-            return false;
+            return Admission::Denied;
         }
         // The confirmation above is already sent to the human; this thread
         // never delays it. Human approval waits up to ten minutes (line 23),
@@ -569,7 +715,9 @@ impl Gate {
         {
             let task = self.task.clone().unwrap_or_default();
             let tool = action.tool().to_string();
-            let summary = action.summary();
+            // What the call is, in words: a hash would tell the decision
+            // model nothing about whether it fits the request.
+            let summary = action.label();
             thread::spawn(move || {
                 let state = serde_json::json!({
                     "request": task,
@@ -616,34 +764,44 @@ impl Gate {
             });
         }
         loop {
-            if stopped() || waiting_started.elapsed() >= MAX_APPROVAL_WAIT {
-                return false;
+            if stopped() {
+                return Admission::Cancelled;
+            }
+            if waiting_started.elapsed() >= MAX_APPROVAL_WAIT {
+                return Admission::Denied;
             }
             match response.recv_timeout(Duration::from_millis(20)) {
                 Ok(decision) => {
                     // A response queued before a cancellation is still denied
                     // if the call has stopped before it can consume that answer.
-                    if stopped() || waiting_started.elapsed() >= MAX_APPROVAL_WAIT {
-                        return false;
+                    if stopped() {
+                        return Admission::Cancelled;
+                    }
+                    if waiting_started.elapsed() >= MAX_APPROVAL_WAIT {
+                        return Admission::Denied;
                     }
                     return match decision {
                         // Once is once: not remembered, because the person
                         // said so.
-                        Decision::AllowOnce => true,
+                        Decision::AllowOnce => Admission::Allowed,
                         Decision::AllowForSession => {
                             let Ok(mut remembered) = self.remembered.lock() else {
-                                return false;
+                                return Admission::Denied;
                             };
                             remembered.insert(action);
-                            true
+                            Admission::Allowed
                         }
                         // Remembered, so that asking again cannot turn a no
                         // into a yes: a gate that answers differently on a
-                        // retry teaches retrying.
+                        // retry teaches retrying. It is listed on the Ask
+                        // sheet, where the person can forget it.
                         Decision::Deny => {
                             self.judged.remember(action, false);
-                            false
+                            Admission::Denied
                         }
+                        // Esc is "not now": this call only.
+                        Decision::DenyOnce => Admission::Denied,
+                        Decision::Cancel => Admission::Cancelled,
                         // Refused exactly as a denial is, and the words wait
                         // for the refusal that reports it (`redirect_for`).
                         Decision::Redirect(text) => {
@@ -651,11 +809,11 @@ impl Gate {
                                 redirects.insert(action.clone(), text);
                             }
                             self.judged.remember(action, false);
-                            false
+                            Admission::Denied
                         }
                     };
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Admission::Denied,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
@@ -695,7 +853,10 @@ mod tests {
         let (gate, requests) = gate_with_a_model(Rung::Auto);
         gate.vouched
             .remember("./scripts/build.sh --release".to_string(), true);
-        assert!(gate.admit(bash("./scripts/build.sh --release"), || false));
+        assert!(
+            gate.admit(bash("./scripts/build.sh --release"), || false)
+                .allowed()
+        );
         assert!(
             requests.try_recv().is_err(),
             "a remembered answer must cost no confirmation"
@@ -715,7 +876,7 @@ mod tests {
             .expect("the person must be asked");
         assert_eq!(request.action().tool(), "bash");
         assert!(request.respond(Decision::AllowOnce));
-        assert!(asking.join().unwrap());
+        assert!(asking.join().unwrap().allowed());
     }
 
     /// A refusal with words is a refusal: not admitted, remembered, and the
@@ -731,7 +892,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("the person must be asked");
         assert!(request.respond(Decision::Redirect("use fd instead".into())));
-        assert!(!asking.join().unwrap(), "refused");
+        assert_eq!(asking.join().unwrap(), Admission::Denied, "refused");
         assert_eq!(
             gate.redirect_for(&bash("rm -rf /var/tmp/x")).as_deref(),
             Some("use fd instead")
@@ -741,8 +902,12 @@ mod tests {
             None,
             "taken once"
         );
-        // Asking again cannot turn the no into a yes.
-        assert!(!gate.admit(bash("rm -rf /var/tmp/x"), || false));
+        // Asking again cannot turn the no into a yes, and the refusal says
+        // it was the person's own, earlier.
+        assert_eq!(
+            gate.admit(bash("rm -rf /var/tmp/x"), || false),
+            Admission::DeniedEarlier
+        );
         assert!(
             requests.try_recv().is_err(),
             "a remembered refusal asks nobody"

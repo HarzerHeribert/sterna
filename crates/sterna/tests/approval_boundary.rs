@@ -284,8 +284,11 @@ fn a_disconnected_host_and_a_dropped_request_deny_without_an_effect() {
     }
 }
 
+/// A call cancelled while it waits is reported as cancelled -- the way a
+/// running call is -- never as a refusal the model should work around, and
+/// an answer arriving after it changes nothing.
 #[test]
-fn cancellation_denies_the_pending_call_and_rejects_a_late_session_answer() {
+fn cancellation_cancels_the_pending_call_and_rejects_a_late_session_answer() {
     let fixture = Fixture::new();
     let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
         sterna::permissions::Rung::Manual,
@@ -310,7 +313,7 @@ fn cancellation_denies_the_pending_call_and_rejects_a_late_session_answer() {
            catch (e) { return e.name; }
            return "unexpected";"#,
     );
-    returned(&outcome, "PermissionDenied");
+    returned(&outcome, "Cancelled");
     finished.send(()).unwrap();
     responder.join().unwrap();
     assert!(gate.session_actions().is_empty());
@@ -876,9 +879,12 @@ fn a_hint_that_answers_in_time_is_shown_beside_the_confirmation() {
     );
     app.contains("fixture-model");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
-    app.contains("fits the request: 0.91");
+    app.contains("APPROVE");
+    // The hint is words, not a score.
+    app.contains("looks like part of what you asked");
     assert_eq!(decisions.lock().unwrap().len(), 1);
+    // A key counts once the prompt has been up, quietly, for half a second.
+    app.settle(600);
     app.send(b"o");
     app.contains("done");
 }
@@ -893,7 +899,7 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
     app.contains("fixture-model");
     let sent = Instant::now();
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     assert!(
         sent.elapsed() < Duration::from_secs(2),
         "the confirmation waited on the decision model"
@@ -902,7 +908,7 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
     // by 2.5 s the request has failed and no hint was ever stored.
     app.settle(2_500);
     assert!(
-        !app.screen_text().contains("fits the request"),
+        !app.screen_text().contains("Jev:"),
         "a failed or slow decision must never show a line:\n{}",
         app.screen_text()
     );
@@ -919,12 +925,12 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
     );
     app.contains("fixture-model");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     // No text to wait on distinguishes "recorded but not shown" from "not
     // asked yet", so this settles a fixed interval and checks both sides.
     app.settle(1_000);
     assert!(
-        !app.screen_text().contains("fits the request"),
+        !app.screen_text().contains("Jev:"),
         "shadow must never show the line:\n{}",
         app.screen_text()
     );
@@ -943,9 +949,9 @@ fn no_model_means_no_approval_hint_request() {
     let mut app = LiveApp::start(&base, "");
     app.contains("fixture-model");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.settle(1_000);
-    assert!(!app.screen_text().contains("fits the request"));
+    assert!(!app.screen_text().contains("Jev:"));
     assert_eq!(
         decisions.lock().unwrap().len(),
         0,
