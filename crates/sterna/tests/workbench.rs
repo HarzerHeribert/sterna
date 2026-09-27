@@ -3500,3 +3500,132 @@ fn the_running_cell_is_named_by_its_card() {
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
     assert!(screen.contains("executing cell 001"), "{screen}");
 }
+
+/// The composer keeps every character: the rows it draws, joined, are the
+/// draft, and a click on a wrapped row puts the caret under the pointer.
+#[test]
+fn the_composer_draws_every_character_and_a_click_lands_where_it_points() {
+    let (c, n, mut s) = fixture();
+    s.input = (0..75).map(|i| format!("{i:03},")).collect();
+    s.cursor = Some(0);
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 140, 42);
+    let r = u.geometry.composer;
+    let drawn: String = (r.y..r.bottom())
+        .map(|y| {
+            (r.x..r.right())
+                .map(|x| b[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(drawn, s.input);
+    // With no space to break at, a row is full: the second row starts at
+    // the composer's width.
+    let first = r.width as usize;
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        r.x,
+        r.y + 1,
+    );
+    let effect = mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Up(MouseButton::Left),
+        r.x,
+        r.y + 1,
+    );
+    assert_eq!(effect, Effect::Cursor(first));
+}
+
+/// A draft taller than its window says how much is out of view, and the
+/// window does not jump when the caret stays inside it.
+#[test]
+fn a_tall_draft_says_what_is_out_of_view() {
+    let (c, n, mut s) = fixture();
+    s.input = (1..=9)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    s.cursor = Some(s.input.len());
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("↑ 4 more"), "{screen}");
+    assert!(screen.contains("line 9"), "{screen}");
+    assert!(!screen.contains("line 4"), "{screen}");
+    // A click on the window's first row lands on that row, not on the
+    // draft's first line.
+    let r = u.geometry.composer;
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        r.x,
+        r.y,
+    );
+    assert_eq!(
+        mouse(
+            &mut u,
+            &mut s,
+            &n,
+            MouseEventKind::Up(MouseButton::Left),
+            r.x,
+            r.y
+        ),
+        Effect::Cursor(s.input.find("line 5").unwrap())
+    );
+    // The wheel scrolls the draft, and the window stays where it was put
+    // while the caret does not move.
+    mouse(&mut u, &mut s, &n, MouseEventKind::ScrollUp, r.x, r.y);
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("line 4"), "{screen}");
+    assert!(screen.contains("↑ 3 more"), "{screen}");
+    s.cursor = Some(s.input.find("line 1").unwrap());
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("line 1"), "{screen}");
+    assert!(screen.contains("↓ 4 more"), "{screen}");
+}
+
+/// With nothing typed, Home and End go to the conversation's ends.
+#[test]
+fn home_and_end_on_an_empty_composer_scroll_the_conversation() {
+    let (mut c, n, mut s) = fixture();
+    for i in 0..40 {
+        c.messages
+            .push(Message::text(Role::User, format!("question {i}")));
+        c.messages
+            .push(Message::text(Role::Assistant, format!("answer {i}")));
+    }
+    let mut u = Workbench::default();
+    draw(&c, &n, &s, &mut u, 120, 30);
+    key(&mut u, &mut s, &n, KeyCode::Home);
+    assert!(s.scrollback > 0, "Home goes to the top");
+    key(&mut u, &mut s, &n, KeyCode::End);
+    assert_eq!(s.scrollback, 0, "End comes back to the latest");
+}
+
+/// The popup marks its row with `›`, says when rows do not fit, and a
+/// click takes the row it lands on.
+#[test]
+fn the_popup_marks_its_row_and_a_click_takes_it() {
+    let (c, n, mut s) = fixture();
+    s.input = "/".into();
+    s.completions = (0..12)
+        .map(|i| (format!("/command{i}"), format!("does thing {i}")))
+        .collect();
+    s.completion_selected = 1;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("› /command1"), "{screen}");
+    assert!(screen.contains("more · ↑↓ or the wheel"), "{screen}");
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Completion(2)),
+        Effect::Completion(2)
+    );
+}

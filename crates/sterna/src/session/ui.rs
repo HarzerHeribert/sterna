@@ -15,10 +15,12 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use editor::Editor;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 mod console_mode;
 mod decision;
+mod editor;
 mod links;
 mod terminal_input;
 
@@ -142,6 +144,28 @@ fn disable_mouse_reporting() {
     let _ = io::stdout().flush();
 }
 
+/// Asks the terminal to tell Shift-Enter from Enter (the kitty keyboard
+/// protocol's first flag). A terminal without the protocol ignores the
+/// request, and Alt-Enter stays the newline everywhere. Windows reads
+/// console records, which carry the modifiers already.
+#[cfg(not(windows))]
+fn push_keyboard_protocol() {
+    let _ = execute!(
+        io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
+}
+#[cfg(windows)]
+fn push_keyboard_protocol() {}
+#[cfg(not(windows))]
+fn pop_keyboard_protocol() {
+    let _ = execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+}
+#[cfg(windows)]
+fn pop_keyboard_protocol() {}
+
 /// Also called by the existing second-SIGINT exit path, which skips Drop.
 pub(super) fn restore_terminal() {
     let _guard = super::lock(&DRAWING);
@@ -150,6 +174,7 @@ pub(super) fn restore_terminal() {
         console_mode::disable();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), DisableBracketedPaste);
+        pop_keyboard_protocol();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
     }
 }
@@ -563,161 +588,6 @@ impl Drop for LiveUi {
     }
 }
 
-#[derive(Default)]
-struct Editor {
-    text: String,
-    cursor: usize,
-    selected: usize,
-    history: Vec<String>,
-    history_index: Option<usize>,
-    draft: String,
-}
-impl Editor {
-    fn previous(&self) -> usize {
-        self.text[..self.cursor]
-            .char_indices()
-            .last()
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    }
-    fn next(&self) -> usize {
-        self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| self.cursor + c.len_utf8())
-            .unwrap_or(self.cursor)
-    }
-    fn insert(&mut self, text: &str) {
-        // Terminal transports may turn pasted LF into CR. Preserve either
-        // newline convention as one LF, while stripping other controls.
-        let mut text = text.chars().peekable();
-        let mut normalized = String::with_capacity(text.size_hint().0);
-        while let Some(c) = text.next() {
-            match c {
-                '\r' => {
-                    if text.peek() == Some(&'\n') {
-                        text.next();
-                    }
-                    normalized.push('\n');
-                }
-                '\n' | '\t' => normalized.push(c),
-                c if !c.is_control() => normalized.push(c),
-                _ => {}
-            }
-        }
-        self.text.insert_str(self.cursor, &normalized);
-        self.cursor += normalized.len();
-        self.selected = 0;
-    }
-    fn recall(&mut self, older: bool) {
-        if self.history.is_empty() {
-            return;
-        }
-        let index = match (self.history_index, older) {
-            (None, true) => {
-                self.draft = self.text.clone();
-                Some(self.history.len() - 1)
-            }
-            (Some(i), true) => Some(i.saturating_sub(1)),
-            (Some(i), false) if i + 1 < self.history.len() => Some(i + 1),
-            _ => None,
-        };
-        self.text = index
-            .map(|i| self.history[i].clone())
-            .unwrap_or_else(|| self.draft.clone());
-        self.history_index = index;
-        self.cursor = self.text.len();
-        self.selected = 0;
-    }
-    fn take(&mut self) -> String {
-        let text = std::mem::take(&mut self.text);
-        if self.history.last() != Some(&text) {
-            self.history.push(text.clone());
-        }
-        self.cursor = 0;
-        self.selected = 0;
-        self.history_index = None;
-        self.draft.clear();
-        text
-    }
-    fn key(&mut self, key: KeyEvent) -> bool {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('p') if control => self.recall(true),
-            KeyCode::Char('n') if control => self.recall(false),
-            KeyCode::Char('a') if control => self.cursor = 0,
-            KeyCode::Char('e') if control => self.cursor = self.text.len(),
-            KeyCode::Char('u') if control => {
-                self.text.drain(..self.cursor);
-                self.cursor = 0;
-            }
-            KeyCode::Char('k') if control => {
-                self.text.truncate(self.cursor);
-            }
-            KeyCode::Left => self.cursor = self.previous(),
-            KeyCode::Right => self.cursor = self.next(),
-            KeyCode::Home => {
-                self.cursor = self.text[..self.cursor]
-                    .rfind('\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(0)
-            }
-            KeyCode::End => {
-                self.cursor = self.text[self.cursor..]
-                    .find('\n')
-                    .map(|i| self.cursor + i)
-                    .unwrap_or(self.text.len())
-            }
-            KeyCode::Backspace => {
-                let prev = self.previous();
-                self.text.drain(prev..self.cursor);
-                self.cursor = prev;
-                self.selected = 0;
-            }
-            KeyCode::Delete => {
-                self.text.drain(self.cursor..self.next());
-                self.selected = 0;
-            }
-            KeyCode::Up | KeyCode::Down if !tui::slash_matches(&self.text).is_empty() => {
-                let count = tui::slash_matches(&self.text).len();
-                self.selected = if key.code == KeyCode::Down {
-                    (self.selected + 1) % count
-                } else {
-                    (self.selected + count - 1) % count
-                };
-            }
-            KeyCode::Up => self.recall(true),
-            KeyCode::Down => self.recall(false),
-            KeyCode::Tab => {
-                if let Some((name, _)) = tui::slash_matches(&self.text).get(self.selected) {
-                    self.text = format!("{name} ");
-                    self.cursor = self.text.len();
-                    self.selected = 0;
-                }
-            }
-            KeyCode::Enter
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
-            {
-                self.insert("\n")
-            }
-            KeyCode::Enter => {
-                if let Some((name, _)) = tui::slash_matches(&self.text).get(self.selected) {
-                    self.text = name.clone();
-                    self.cursor = self.text.len();
-                }
-                return true;
-            }
-            KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
-                self.insert(&c.to_string())
-            }
-            _ => {}
-        }
-        false
-    }
-}
-
 /// Dates every helper call still in flight from the frame it first appeared
 /// in, and writes that wall clock into the copy of the notebook this thread
 /// is about to draw.
@@ -842,6 +712,7 @@ fn run(
         let console = console_mode::select();
         ACTIVE.store(true, Ordering::SeqCst);
         execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        push_keyboard_protocol();
         enable_mouse_reporting()?;
         Terminal::new(CrosstermBackend::new(io::stdout())).map(|terminal| (terminal, console))
     })();
@@ -858,6 +729,7 @@ fn run(
     };
     let mut input = terminal_input::TerminalInput::new(console);
     let mut editor = Editor::default();
+    editor.root = state.settings_root.clone();
     let mut served = ServedBy::default();
     let mut busy = false;
     // A sign-in running beside the session: its handle, its latest panel,
@@ -1162,6 +1034,7 @@ fn run(
             tick_helper_clocks(&mut notebook, &mut helper_clocks);
             state.input = editor.text.clone();
             state.cursor = Some(editor.cursor);
+            state.completions = editor.completions().rows();
             state.completion_selected = editor.selected;
             let _guard = super::lock(&DRAWING);
             if !ACTIVE.load(Ordering::SeqCst) {
@@ -1255,22 +1128,32 @@ fn run(
                 last_scroll = Some(Instant::now());
             }
             let turn = busy && state.activity.working();
-            match workbench.event(&input_event, &mut state, &notebook, turn) {
+            let mut effect = workbench.event(&input_event, &mut state, &notebook, turn);
+            // A popup row: a path completes in place; a command runs.
+            if let crate::workbench::Effect::Completion(index) = effect {
+                editor.selected = index;
+                effect = match editor.complete(index) {
+                    Some(true) => crate::workbench::Effect::Command(editor.take()),
+                    _ => crate::workbench::Effect::Consumed,
+                };
+            }
+            match effect {
                 crate::workbench::Effect::Insert(command) => {
-                    editor.text = command;
-                    editor.cursor = editor.text.len();
-                    editor.selected = 0;
+                    editor.replace(command);
                     dirty = true;
                     continue;
                 }
                 crate::workbench::Effect::Draft(message) => {
-                    if editor.text.trim().is_empty() {
-                        editor.text = message;
+                    editor.replace(if editor.text.trim().is_empty() {
+                        message
                     } else {
-                        editor.text = format!("{}\n\n{message}", editor.text.trim_end());
-                    }
-                    editor.cursor = editor.text.len();
-                    editor.selected = 0;
+                        format!("{}\n\n{message}", editor.text.trim_end())
+                    });
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::PopupMove(down) => {
+                    editor.move_selection(down);
                     dirty = true;
                     continue;
                 }
@@ -1285,7 +1168,8 @@ fn run(
                     continue;
                 }
                 crate::workbench::Effect::Pass => {}
-                crate::workbench::Effect::Consumed => {
+                // A popup row was taken above, before this match.
+                crate::workbench::Effect::Consumed | crate::workbench::Effect::Completion(_) => {
                     dirty = true;
                     continue;
                 }
@@ -1357,6 +1241,15 @@ fn run(
                     continue;
                 }
                 crate::workbench::Effect::Command(command) => {
+                    if command.trim() == "/exit" {
+                        ended_by("/exit");
+                        if busy {
+                            steer.request_stop(tui::Stopper::You);
+                            steer.request_cancel();
+                        }
+                        let _ = answers.inputs.send(Input::Exit);
+                        return Ok(());
+                    }
                     if workbench.local_command(command.trim(), &mut state, &notebook) {
                         // A control that acts on this screen is answered by
                         // this screen. Sending it to the model would spend a
@@ -1532,6 +1425,15 @@ fn run(
                 // second cancels the call in flight; `state.stopping` is
                 // what tells them apart, and the task's end lowers it.
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    // An open popup is put away first; with it away, a
+                    // second Escape clears the slash word it was for.
+                    if editor.dismiss() {
+                        continue;
+                    }
+                    if !busy && editor.dismissed() {
+                        editor.clear();
+                        continue;
+                    }
                     // A message still in the queue is taken back first, into
                     // the composer, before Escape means stop.
                     if let Some(taken) = state.queued.pop() {
@@ -1573,8 +1475,7 @@ fn run(
                     match key.code {
                         KeyCode::Char('c') => {
                             if !busy && !editor.text.is_empty() {
-                                editor.text.clear();
-                                editor.cursor = 0;
+                                editor.clear();
                             } else {
                                 super::INTERRUPT.store(true, Ordering::SeqCst);
                                 // Mid-turn it says what it did, as Escape
@@ -2187,50 +2088,6 @@ mod tests {
             }
             before = after;
         }
-    }
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn editing_preserves_unicode_boundaries_and_multiline_paste() {
-        let mut editor = Editor::default();
-        editor.insert("a界\nb");
-        editor.key(key(KeyCode::Left));
-        editor.key(key(KeyCode::Backspace));
-        assert_eq!(editor.text, "a界b");
-        editor.key(key(KeyCode::Backspace));
-        assert_eq!(editor.text, "ab");
-        editor.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        assert_eq!(editor.text, "a\nb");
-    }
-    #[test]
-    fn paste_normalizes_terminal_newlines_without_admitting_controls() {
-        let mut editor = Editor::default();
-        editor.insert("first\rsecond\r\nthird\nfourth\tcolumn\x00\x1bfinal");
-        assert_eq!(editor.text, "first\nsecond\nthird\nfourth\tcolumnfinal");
-        assert_eq!(editor.cursor, editor.text.len());
-    }
-    #[test]
-    fn selection_changes_what_tab_completes() {
-        let mut editor = Editor::default();
-        editor.insert("/");
-        editor.key(key(KeyCode::Down));
-        editor.key(key(KeyCode::Tab));
-        assert_eq!(editor.text, "/models ");
-        assert_eq!(editor.cursor, editor.text.len());
-    }
-    #[test]
-    fn history_restores_an_unsent_draft() {
-        let mut editor = Editor::default();
-        editor.insert("sent");
-        editor.take();
-        editor.insert("draft");
-        editor.recall(true);
-        assert_eq!(editor.text, "sent");
-        editor.recall(false);
-        assert_eq!(editor.text, "draft");
     }
 
     /// Shift-Tab walks the permission ladder and wraps, and it does not

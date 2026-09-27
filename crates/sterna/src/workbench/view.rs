@@ -198,8 +198,9 @@ pub struct Layout {
     sidebar: Option<Rect>,
     header: u16,
     footer: u16,
-    textwidth: u16,
-    input_lines: Vec<String>,
+    /// The composer's width, the one every composer computation uses: the
+    /// wrap, the drawing, the caret and a click.
+    composer_width: u16,
     composer_height: u16,
     queue_height: u16,
     body_height: u16,
@@ -211,10 +212,10 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     // The composer dock's bottom edge, which carries the everyday chips.
     let footer = u16::from(chrome && a.height > 4);
     let textwidth = a.width.saturating_sub(2).max(1);
-    // Four columns belong to the dock's edge and the prompt mark.
-    let input_lines = wrap_input(&s.input, textwidth.saturating_sub(4).max(1) as usize);
+    let composer_width = composer_width(a, s);
+    let composer_rows = composer_lines(&s.input, composer_width as usize).len();
     // The lines typed plus the dock's top edge, which is the activity line.
-    let composer_height = (input_lines.len() as u16)
+    let composer_height = (composer_rows as u16)
         .clamp(1, 5)
         .saturating_add(1)
         .min(a.height.saturating_sub(header + footer).max(1));
@@ -247,8 +248,7 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     Layout {
         header,
         footer,
-        textwidth,
-        input_lines,
+        composer_width,
         composer_height,
         queue_height,
         body_height,
@@ -284,8 +284,7 @@ pub fn render(
     let Layout {
         header,
         footer,
-        textwidth,
-        input_lines,
+        composer_width,
         composer_height,
         queue_height,
         body_height,
@@ -389,6 +388,17 @@ pub fn render(
         y += 1;
     }
     let boxed = !s.fullscreen && a.width > 8;
+    // The composer's window, worked out before the dock's edges are drawn,
+    // because they say how much of the draft is out of view.
+    let lines = composer_lines(&s.input, composer_width as usize);
+    let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
+    let (caret_row, caret_col) = caret(&lines, &s.input, cursor);
+    let skip = ui.composer_window(
+        lines.len(),
+        composer_height.saturating_sub(1) as usize,
+        cursor,
+        caret_row,
+    );
     // The number the running card carries: a program being executed is in
     // the conversation already, and one being written is the next.
     let running_cell = match s.activity {
@@ -427,18 +437,13 @@ pub fn render(
     g.composer = Rect::new(
         a.x + prompt.max(u16::from(a.width > 1)),
         y,
-        textwidth.saturating_sub(prompt.saturating_sub(1) + u16::from(boxed) * 2),
+        composer_width,
         composer_height
             .saturating_sub(1)
             .min(a.bottom().saturating_sub(y)),
     );
     let visible = g.composer.height as usize;
-    let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
-    let before = &s.input[..s.input.floor_char_boundary(cursor)];
-    let cursor_lines = wrap_input(before, textwidth.saturating_sub(4).max(1) as usize);
-    let cursor_row = cursor_lines.len().saturating_sub(1);
-    let skip = cursor_row.saturating_sub(visible.saturating_sub(1));
-    for (i, l) in input_lines.iter().skip(skip).take(visible).enumerate() {
+    for (i, (_, l)) in lines.iter().skip(skip).take(visible).enumerate() {
         let yy = g.composer.y + i as u16;
         row(
             f,
@@ -462,17 +467,12 @@ pub fn render(
         row(f, g.composer, voice::PLACEHOLDER, Tone::Muted, s.theme);
     }
     g.hits.push((g.composer, Action::Composer));
-    if !ui.is_local() && s.form.is_none() && visible > 0 {
-        let x = cursor_lines
-            .last()
-            .map(|l| Span::raw(l.as_str()).width())
-            .unwrap_or(0)
-            .min(g.composer.width.saturating_sub(1) as usize);
+    if !ui.is_local() && s.form.is_none() && visible > 0 && caret_row >= skip {
         let position = (
-            g.composer.x + x as u16,
-            g.composer.y + (cursor_row - skip) as u16,
+            g.composer.x + caret_col.min(g.composer.width.saturating_sub(1) as usize) as u16,
+            g.composer.y + (caret_row - skip) as u16,
         );
-        if super::contains(a, position.0, position.1) {
+        if caret_row - skip < visible && super::contains(a, position.0, position.1) {
             f.set_cursor_position(position);
         }
     }
@@ -486,32 +486,47 @@ pub fn render(
             ui,
         );
     }
-    if !ui.is_local() && !s.input.contains(char::is_whitespace) {
-        let completions = crate::tui::slash_matches(&s.input);
-        let capacity = g.transcript.height.min(7) as usize;
-        let first = s
-            .completion_selected
-            .saturating_sub(capacity.saturating_sub(1));
-        let count = completions.len().min(capacity);
-        let top = g.transcript.bottom().saturating_sub(count as u16);
-        for (i, (command, help)) in completions.iter().enumerate().skip(first).take(count) {
-            let area = Rect::new(
-                g.transcript.x,
-                top + (i - first) as u16,
-                g.transcript.width,
-                1,
-            );
-            f.render_widget(Clear, area);
+    // The popup: the commands a slash word matches, or the paths an `@`
+    // word does. A click takes the row; the wheel moves the selection.
+    if !ui.is_local() && !s.completions.is_empty() {
+        let capacity = (g.transcript.height.min(7) as usize).max(1);
+        let total = s.completions.len();
+        // When the rows do not all fit, the last line says how many more.
+        let shown = if total > capacity {
+            capacity.saturating_sub(1).max(1)
+        } else {
+            total
+        };
+        let selected = s.completion_selected.min(total - 1);
+        let first = selected.saturating_sub(shown.saturating_sub(1));
+        let height = shown + usize::from(total > shown);
+        let top = g.transcript.bottom().saturating_sub(height as u16);
+        let area = Rect::new(g.transcript.x, top, g.transcript.width, height as u16);
+        f.render_widget(Clear, area);
+        for (i, (label, help)) in s.completions.iter().enumerate().skip(first).take(shown) {
+            let line = Rect::new(area.x, top + (i - first) as u16, area.width, 1);
+            let mark = if i == selected { "›" } else { " " };
             button(
                 f,
                 &mut g,
-                area,
-                &format!("{command:14} {help}"),
-                Action::Insert(command.clone()),
-                i == s.completion_selected,
+                line,
+                &format!("{mark} {label:14} {help}"),
+                Action::Completion(i),
+                i == selected,
                 s.theme,
             );
         }
+        let rest = total - shown;
+        if total > shown {
+            row(
+                f,
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+                &format!("  ↕ {rest} more · ↑↓ or the wheel"),
+                Tone::Muted,
+                s.theme,
+            );
+        }
+        g.popup = Some(area);
     }
     if s.telemetry_open && !ui.is_local() {
         // The instruments take the transcript's room, never the status line
@@ -1052,6 +1067,21 @@ fn dock_top(
         if boxed {
             row(f, Rect::new(a.right() - 1, a.y, 1, 1), "╮", Tone::Line, t);
         }
+        // Rows of the draft above the composer's window say so here, on
+        // its top edge.
+        if ui.composer_hidden.0 > 0 {
+            let above = format!(" ↑ {} more ", ui.composer_hidden.0);
+            let w = chrome::width(&above);
+            if used + w + 4 < a.width {
+                row(
+                    f,
+                    Rect::new(a.right().saturating_sub(w + 2), a.y, w, 1),
+                    &above,
+                    Tone::Muted,
+                    t,
+                );
+            }
+        }
     }
 }
 /// The dock's bottom edge: the three everyday chips, one whispered hint,
@@ -1076,7 +1106,18 @@ fn dock_bottom(
             matches!(s.activity, Activity::Thinking | Activity::Streaming),
         )
     });
-    let right = context.map(|c| format!(" {c} ")).unwrap_or_default();
+    // Rows of the draft below the composer's window say so here, on its
+    // bottom edge.
+    let below = match ui.composer_hidden.1 {
+        0 => String::new(),
+        rows => format!("↓ {rows} more"),
+    };
+    let right = match (context, below.is_empty()) {
+        (Some(c), true) => format!(" {c} "),
+        (Some(c), false) => format!(" {below} · {c} "),
+        (None, false) => format!(" {below} "),
+        (None, true) => String::new(),
+    };
     let rw = chrome::width(&right);
     if rw > 0 && rw + 4 < a.width {
         row(
@@ -1249,8 +1290,68 @@ pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-pub(super) fn wrap_input(text: &str, width: usize) -> Vec<String> {
-    let mut d = Document::default();
-    d.push(text, Tone::Normal, None, width, 0);
-    d.rows.into_iter().map(|r| r.text).collect()
+/// The composer's width: the text width less the dock's edges and the
+/// prompt mark. Computed here once, for every composer computation.
+fn composer_width(a: Rect, s: &ScreenState) -> u16 {
+    let textwidth = a.width.saturating_sub(2).max(1);
+    let boxed = !s.fullscreen && a.width > 8;
+    let prompt = if boxed { 4 } else { u16::from(a.width > 6) * 3 };
+    textwidth
+        .saturating_sub(prompt.saturating_sub(1) + u16::from(boxed) * 2)
+        .max(1)
+}
+
+/// The composer's rows: the draft cut at its newlines and wherever a line
+/// reaches `width` columns, after a space where one fits. **Every
+/// character is kept** -- the rows joined, with the newlines between them,
+/// are the draft -- and each row carries the byte it starts at.
+pub(super) fn composer_lines(text: &str, width: usize) -> Vec<(usize, &str)> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for line in text.split('\n') {
+        let (mut at, mut rest) = (start, line);
+        loop {
+            let (mut used, mut cut, mut space) = (0, rest.len(), None);
+            for (i, c) in rest.char_indices() {
+                let w = Span::raw(c.to_string()).width();
+                if used + w > width {
+                    cut = i;
+                    break;
+                }
+                used += w;
+                if c == ' ' {
+                    space = Some(i + 1);
+                }
+            }
+            if cut == rest.len() {
+                rows.push((at, rest));
+                break;
+            }
+            // A row ends after its last space, or where it is full; it
+            // always takes at least one character, so a character wider
+            // than the composer still moves on.
+            let cut = space
+                .filter(|space| *space <= cut)
+                .unwrap_or(cut)
+                .max(rest.chars().next().map_or(1, char::len_utf8));
+            rows.push((at, &rest[..cut]));
+            at += cut;
+            rest = &rest[cut..];
+        }
+        start += line.len() + 1;
+    }
+    rows
+}
+
+/// The row and column the caret is drawn at: on the last row that starts
+/// at or before it, so a caret at a wrap is at the start of the next row.
+pub(super) fn caret(lines: &[(usize, &str)], text: &str, cursor: usize) -> (usize, usize) {
+    let row = lines
+        .iter()
+        .rposition(|(start, _)| *start <= cursor)
+        .unwrap_or(0);
+    let start = lines.get(row).map_or(0, |(start, _)| *start);
+    let col = Span::raw(&text[start.min(cursor)..cursor]).width();
+    (row, col)
 }

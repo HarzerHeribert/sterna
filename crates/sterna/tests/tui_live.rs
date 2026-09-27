@@ -2285,6 +2285,47 @@ fn exit_mid_turn_stops_the_turn_and_ends_the_session() {
     assert_eq!(app.exited(), 0);
 }
 
+/// The terminal is asked to tell Shift-Enter from Enter, and the request is
+/// taken back on the way out. Windows reads console records, which carry
+/// the modifiers already, so nothing is asked for there.
+#[cfg(not(windows))]
+#[test]
+fn the_keyboard_protocol_is_asked_for_and_given_back() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    assert!(emitted(&app.bytes, b"\x1b[>1u"), "the flags were pushed");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+    assert!(emitted(&app.bytes, b"\x1b[<1u"), "the flags were popped");
+}
+
+/// Esc puts the command popup away and a second Esc clears the slash word;
+/// Enter on a command typed in full runs that command, not a longer one.
+#[test]
+fn esc_puts_the_popup_away_and_enter_runs_the_exact_command() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"/mo");
+    app.contains("browse models");
+    app.send(b"\x1b");
+    app.refute("the popup is put away", "browse models");
+    app.send(b"\x1b");
+    app.contains("Describe the next step");
+    app.send(b"/mode\r");
+    app.contains("WORK");
+    app.refute("Enter on /mode is not /models", "MODELS");
+    app.send(b"\x1b");
+    app.settle(200);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 #[test]
 fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let (base, _requests) = provider();

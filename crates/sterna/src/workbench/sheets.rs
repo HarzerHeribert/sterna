@@ -246,7 +246,27 @@ fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
 /// and the tests read. A row with an action is one click from doing it.
 pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
     vec![
-        ("Enter", "send · Alt-Enter for a new line", None),
+        (
+            "Enter",
+            "send · Shift-Enter, Alt-Enter or Ctrl-J for a new line",
+            None,
+        ),
+        (
+            "Ctrl-Z",
+            "undo an edit to the draft · Ctrl-Shift-Z redoes it",
+            None,
+        ),
+        (
+            "Ctrl-K Ctrl-U",
+            "cut to the line's end or start · Ctrl-Y puts it back",
+            None,
+        ),
+        (
+            "Ctrl-W",
+            "delete the word before the caret · Alt-B Alt-F move by word",
+            None,
+        ),
+        ("@", "complete a path in this project", None),
         (
             "Esc",
             "take back a queued message · else stop after this cell",

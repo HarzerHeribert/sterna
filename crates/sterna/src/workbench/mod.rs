@@ -44,6 +44,8 @@ pub enum CellTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Cell(usize),
+    /// A row of the composer's popup: a command runs, a path completes.
+    Completion(usize),
     /// Put this in the composer in place of what is there: a command the
     /// completion list or /help offers.
     Insert(String),
@@ -139,6 +141,8 @@ pub enum Action {
 pub struct Geometry {
     pub transcript: Rect,
     pub composer: Rect,
+    /// Where the composer's popup is drawn, when it is.
+    pub popup: Option<Rect>,
     pub local: Option<Rect>,
     pub hits: Vec<(Rect, Action)>,
     pub rows: usize,
@@ -247,6 +251,13 @@ pub struct Workbench {
     pub anchor: Option<((usize, usize), String)>,
     pub last_scrollback: usize,
     pub jump_cell: Option<usize>,
+    /// The first composer row in view. It moves only when the caret leaves
+    /// the window, or with the wheel, so a click never makes the draft jump.
+    pub composer_scroll: usize,
+    /// The caret the window last followed.
+    composer_caret: Option<usize>,
+    /// Rows of the draft out of view, above and below the window.
+    pub composer_hidden: (usize, usize),
     /// **One undo list for the whole session**, newest last: every change a
     /// sheet, a chip, a settings row or a command made, and how to take it
     /// back. Ctrl-Z on a sheet and the undo chip beside a notice both take
@@ -278,6 +289,30 @@ pub struct Workbench {
 /// the transcript and on the Activity surface after that.
 pub const NOTICE_LINGER: std::time::Duration = std::time::Duration::from_secs(4);
 impl Workbench {
+    /// The first composer row to draw. The window follows the caret only
+    /// when the caret has moved, and never shows past the draft's end.
+    pub(super) fn composer_window(
+        &mut self,
+        rows: usize,
+        visible: usize,
+        cursor: usize,
+        caret_row: usize,
+    ) -> usize {
+        if self.composer_caret != Some(cursor) {
+            self.composer_caret = Some(cursor);
+            if caret_row < self.composer_scroll {
+                self.composer_scroll = caret_row;
+            } else if visible > 0 && caret_row >= self.composer_scroll + visible {
+                self.composer_scroll = caret_row + 1 - visible;
+            }
+        }
+        self.composer_scroll = self.composer_scroll.min(rows.saturating_sub(visible));
+        self.composer_hidden = (
+            self.composer_scroll,
+            rows.saturating_sub(self.composer_scroll + visible),
+        );
+        self.composer_scroll
+    }
     /// Opens a surface as the only one: what a chip on the chrome does.
     pub fn open(&mut self, source: Source) {
         self.sheets.clear();

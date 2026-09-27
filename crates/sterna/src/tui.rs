@@ -102,6 +102,10 @@ pub struct ScreenState {
     /// UTF-8 byte offset supplied by the live editor; None hides the cursor.
     pub cursor: Option<usize>,
     pub completion_selected: usize,
+    /// What the composer's popup offers for the draft as it stands: the
+    /// commands a slash word matches, or the paths an `@` word does. Empty
+    /// when there are none or the popup was put away.
+    pub completions: Vec<(String, String)>,
     /// A keystroke hint the next keystroke replaces; everything a person may
     /// want to read again is a [`HistoryNote`] instead.
     pub notice: Option<String>,
@@ -509,7 +513,7 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
     if prefix.chars().any(char::is_whitespace) {
         return Vec::new();
     }
-    BUILT_INS
+    let matches = BUILT_INS
         .iter()
         .filter(|command| command.name().starts_with(prefix))
         .map(|command| {
@@ -561,11 +565,11 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "/stream".to_string(),
                     "actions, code or raw · what a cell shows while it is written",
                 ),
+                ("/cells".to_string(), "open every cell's card"),
                 (
-                    "/cells".to_string(),
-                    "inspect code and real results by cell",
+                    "/cell".to_string(),
+                    "open the newest cell that ran · /cell 12 for another",
                 ),
-                ("/cell".to_string(), "inspect a numbered cell · /cell 12"),
                 ("/chat".to_string(), "return to the conversation"),
                 (
                     "/key".to_string(),
@@ -613,7 +617,15 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
             .into_iter()
             .filter(|(name, _)| name.trim_start_matches('/').starts_with(prefix)),
         )
-        .collect()
+        .collect::<Vec<_>>();
+    // The name typed in full comes first, so Enter on "/mode" runs /mode
+    // and not /model, and "/cell" runs /cell and not /cells.
+    let mut matches = matches;
+    if let Some(at) = matches.iter().position(|(name, _)| name[1..] == *prefix) {
+        let exact = matches.remove(at);
+        matches.insert(0, exact);
+    }
+    matches
 }
 
 /// What one cell produced, beside the assistant message the notebook already

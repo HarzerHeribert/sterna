@@ -57,6 +57,19 @@ surface behaves like every other.
 | Ctrl-G | release or recapture the mouse |
 | Shift-Tab | cycle how often you are asked ([sandbox](sandbox.md#how-often-you-are-asked)) |
 | `?` on an empty composer | every key |
+| Home / End on an empty composer | the conversation's first and last rows |
+
+The composer is a multi-line editor. ↑ and ↓ move between lines and reach
+the history only from the first or last line; a draft is filed in the
+history before a recall, so nothing typed is lost. Enter sends;
+Shift-Enter, Alt-Enter or Ctrl-J start a new line. Ctrl-A/E and Home/End
+act on the caret's line, Ctrl-K/U cut to its end or start and Ctrl-Y puts
+the cut back, Ctrl-W and Alt-Backspace delete a word, Alt-B/F and
+Ctrl-←/→ move by one, and Ctrl-Z / Ctrl-Shift-Z undo and redo edits,
+including a chip that replaced the draft. `/` offers commands and `@`
+offers this project's paths in one popup: ↑↓, Ctrl-P/N or the wheel move
+through it, Tab or Enter takes a row, a click takes it too, and Esc puts
+it away. A draft taller than five lines says how much is above or below.
 | Ctrl-C | copy a selection; otherwise stop the running task (twice within 2 s quits) |
 | Esc | while a turn runs: take back the last queued message, else stop after this cell; again cancels the call in flight |
 

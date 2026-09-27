@@ -21,6 +21,10 @@ pub enum Effect {
     Command(String),
     Copy(String),
     Cursor(usize),
+    /// The popup's row: the screen completes it or runs it.
+    Completion(usize),
+    /// The popup's selection, one row down (`true`) or up.
+    PopupMove(bool),
     OpenLink(String),
     /// Open the form that takes the address a browser ended on.
     PasteCallback,
@@ -506,6 +510,24 @@ impl Workbench {
                                 _ => Effect::Consumed,
                             };
                         }
+                        // Over the popup the wheel moves its selection; over a
+                        // draft taller than its window it scrolls the draft.
+                        if let Some(popup) = self.geometry.popup
+                            && super::contains(popup, m.column, m.row)
+                        {
+                            return Effect::PopupMove(!up);
+                        }
+                        if super::contains(self.geometry.composer, m.column, m.row) {
+                            let (above, below) = self.composer_hidden;
+                            if up && above > 0 {
+                                self.composer_scroll -= 1;
+                                return Effect::Consumed;
+                            }
+                            if !up && below > 0 {
+                                self.composer_scroll += 1;
+                                return Effect::Consumed;
+                            }
+                        }
                         s.scrollback = if up {
                             s.scrollback.saturating_add(3).min(
                                 self.geometry
@@ -588,6 +610,21 @@ impl Workbench {
                         Effect::Consumed
                     }
                     KeyCode::F(3) => self.activate(Action::Models, s, n, busy, false),
+                    // With nothing typed, Home and End go to the
+                    // conversation's first and last rows.
+                    KeyCode::Home | KeyCode::End
+                        if s.input.is_empty() && k.modifiers.is_empty() =>
+                    {
+                        s.scrollback = if k.code == KeyCode::Home {
+                            self.geometry
+                                .rows
+                                .saturating_sub(self.geometry.transcript.height as usize)
+                        } else {
+                            0
+                        };
+                        s.scrolling = k.code == KeyCode::Home;
+                        Effect::Consumed
+                    }
                     // With no card selected, the keys act on the newest cell
                     // that ran -- or, for helpers, that called one -- never
                     // on the entry a prose answer leaves in the notebook.
@@ -664,36 +701,27 @@ impl Workbench {
                 .is_some_and(|area| !super::contains(area, x, y))
     }
     /// Where a click in the composer puts the caret.
+    ///
+    /// It reads the rows the composer drew, at the width it drew them and
+    /// from the row its window starts at, so the caret lands under the
+    /// pointer on every row of a wrapped draft.
     fn composer_click(&self, s: &ScreenState, column: u16, row: u16) -> Effect {
         let width = self.geometry.composer.width as usize;
-        let lines = super::view::wrap_input(&s.input, width);
-        let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
-        let before = &s.input[..s.input.floor_char_boundary(cursor)];
-        let cr = super::view::wrap_input(before, width)
-            .len()
-            .saturating_sub(1);
-        let skip = cr.saturating_sub(self.geometry.composer.height.saturating_sub(1) as usize);
-        let wanted = row.saturating_sub(self.geometry.composer.y) as usize + skip;
+        let lines = super::view::composer_lines(&s.input, width);
+        let wanted = row.saturating_sub(self.geometry.composer.y) as usize + self.composer_scroll;
         let col = column.saturating_sub(self.geometry.composer.x) as usize;
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == wanted {
-                let mut x = 0;
-                for (byte, ch) in line.char_indices() {
-                    let w = ratatui::text::Span::raw(ch.to_string()).width();
-                    if x + w > col {
-                        return Effect::Cursor(offset + byte);
-                    }
-                    x += w;
-                }
-                return Effect::Cursor((offset + line.len()).min(s.input.len()));
+        let Some((start, line)) = lines.get(wanted) else {
+            return Effect::Cursor(s.input.len());
+        };
+        let mut x = 0;
+        for (byte, ch) in line.char_indices() {
+            let w = ratatui::text::Span::raw(ch.to_string()).width();
+            if x + w > col {
+                return Effect::Cursor(start + byte);
             }
-            offset += line.len();
-            if s.input.as_bytes().get(offset) == Some(&b'\n') {
-                offset += 1;
-            }
+            x += w;
         }
-        Effect::Cursor(s.input.len())
+        Effect::Cursor(start + line.len())
     }
     /// Carries out what the top sheet answered.
     fn apply(&mut self, outcome: Outcome, s: &mut ScreenState, n: &Notebook, busy: bool) -> Effect {
@@ -800,6 +828,7 @@ impl Workbench {
         from_sheet: bool,
     ) -> Effect {
         match action {
+            Action::Completion(index) => return Effect::Completion(index),
             Action::Insert(command) => {
                 // What is inserted is typed next, so the sheet that offered
                 // it gives the keyboard back.
