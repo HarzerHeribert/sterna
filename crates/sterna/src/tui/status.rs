@@ -46,11 +46,18 @@ pub(crate) fn context_summary(
     let Some(cap) = tokens.cap else {
         // No window known: the count alone. A `?` where a size belongs
         // reads as something broken.
-        return format!(
-            "ctx {} · {}",
-            compact_tokens(tokens.used),
-            tokens.counted.as_str()
-        );
+        return match tokens.counted {
+            super::Counted::Gateway => format!(
+                "context {} tokens · provider count",
+                compact_tokens(tokens.used)
+            ),
+            super::Counted::Estimated => {
+                format!("≈{} tokens (estimate)", compact_tokens(tokens.used))
+            }
+            super::Counted::Mixed => {
+                format!("≈{} tokens (part estimate)", compact_tokens(tokens.used))
+            }
+        };
     };
     let (bar, percent) = context_bar(tokens, width, tick, moving);
     // **A percentage is a claim, and it is only made against a measured
@@ -154,7 +161,32 @@ mod tests {
     #[test]
     fn no_window_at_all_says_so_rather_than_drawing_a_bar() {
         let shown = meter(None, WindowSource::Unknown);
-        assert!(shown.starts_with("ctx ") && !shown.contains('?'), "{shown}");
+        assert!(!shown.contains('?') && !shown.contains('━'), "{shown}");
         assert!(!shown.contains('%'), "{shown}");
+    }
+
+    /// Without a window the count says what it is and who counted it, in
+    /// words rather than a `~` or a `*`.
+    #[test]
+    fn a_bare_count_says_who_counted_it() {
+        let count = |counted| {
+            context_summary(
+                ContextTokens {
+                    used: 7_400,
+                    cap: None,
+                    cap_source: WindowSource::Unknown,
+                    counted,
+                },
+                8,
+                0,
+                false,
+            )
+        };
+        assert_eq!(
+            count(Counted::Gateway),
+            "context 7.4k tokens · provider count"
+        );
+        assert_eq!(count(Counted::Estimated), "≈7.4k tokens (estimate)");
+        assert_eq!(count(Counted::Mixed), "≈7.4k tokens (part estimate)");
     }
 }

@@ -63,6 +63,8 @@ mod context;
 mod controls;
 mod ending;
 use ending::delivered_the_interrupt;
+mod interrupt;
+use interrupt::{DOUBLE_INTERRUPT_WINDOW, INTERRUPT, install_interrupt_handler, watch};
 mod mode_proposal;
 mod native;
 mod notices;
@@ -103,87 +105,6 @@ const TWO_BLOCKS: &str = "Mixed or multiple sterna-edit blocks are ambiguous; se
 /// off the cell's own trajectory so the session knows a Ctrl-C was delivered.
 const CANCELLED: &str = "Cancelled";
 
-/// A second Ctrl-C inside this window ends the session; a later one starts a
-/// new pair. Two seconds is long enough that a person who meant "again"
-/// reaches it and short enough that an interrupt an hour ago is not half of
-/// today's.
-const DOUBLE_INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
-
-/// How often the watcher asks whether the handler fired -- the same 20 ms
-/// `tools::invoke` polls its child with, so a Ctrl-C costs at most two polls.
-const INTERRUPT_POLL: Duration = Duration::from_millis(20);
-
-/// The status a shell reports for a process ended by SIGINT.
-const INTERRUPTED_EXIT: i32 = 130;
-
-/// How long the second Ctrl-C gives the cancelled call to kill and reap its
-/// own child before exiting anyway: twelve of `invoke`'s 20 ms polls, spent
-/// holding the rollout's write lock so the task loop cannot start another
-/// call inside it. See [`Interrupter::end_the_session`].
-const REAP_GRACE: Duration = Duration::from_millis(250);
-
-/// Raised by the signal handler and by nothing else.
-///
-/// **A handler may do exactly one async-signal-safe thing, and this is it.**
-/// Everything the interrupt means -- which token to cancel, whether it is the
-/// second of a pair, whether a rollout line is half written -- is decided by
-/// [`watch`] on an ordinary thread, where locks and allocation are legal.
-static INTERRUPT: AtomicBool = AtomicBool::new(false);
-static TERMINATE: AtomicBool = AtomicBool::new(false);
-
-/// Installs the process's SIGINT handler. Unix: `signal(2)`, whose BSD
-/// semantics on both platforms sterna ships for leave the handler installed
-/// across deliveries, so a second Ctrl-C reaches the same function.
-///
-/// `libc` is not a dependency of this crate on macOS and this is two lines of
-/// declaration, so the handler is declared rather than depended on -- the same
-/// choice `sandbox::macos` makes for `sandbox_init`.
-#[cfg(unix)]
-fn install_interrupt_handler() {
-    /// `SIGINT` on every unix sterna ships for.
-    const SIGINT: i32 = 2;
-
-    unsafe extern "C" {
-        fn signal(sig: i32, handler: usize) -> usize;
-    }
-
-    extern "C" fn on_interrupt(_sig: i32) {
-        INTERRUPT.store(true, Ordering::SeqCst);
-    }
-
-    extern "C" fn on_terminate(_sig: i32) {
-        TERMINATE.store(true, Ordering::SeqCst);
-    }
-    unsafe {
-        signal(SIGINT, on_interrupt as *const () as usize);
-        signal(15, on_terminate as *const () as usize);
-    };
-}
-
-/// The Windows half: the console's Ctrl-C routine sets the identical flag.
-///
-/// It runs on a thread of the console's own making rather than on top of the
-/// interrupted one, and returning `TRUE` says the event was handled -- which
-/// is what stops the default handler ending the process before [`watch`] has
-/// decided whether this was the first Ctrl-C or the second.
-#[cfg(windows)]
-fn install_interrupt_handler() {
-    use windows_sys::Win32::Foundation::TRUE;
-    use windows_sys::Win32::System::Console::{
-        CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler,
-    };
-    use windows_sys::core::BOOL;
-
-    unsafe extern "system" fn on_interrupt(event: u32) -> BOOL {
-        if event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT {
-            INTERRUPT.store(true, Ordering::SeqCst);
-        }
-        TRUE
-    }
-
-    unsafe { SetConsoleCtrlHandler(Some(on_interrupt), TRUE) };
-}
-
 /// The keyboard's end of the cancellation facility.
 ///
 /// **A Ctrl-C cancels the call in flight; it never terminates the isolate.**
@@ -210,6 +131,9 @@ struct Interrupter {
     /// It pins [`pending`](Self::pending) raised, so every call started
     /// during the reap grace is cancelled before it spawns a child.
     ending: AtomicBool,
+    /// Raised when the last interrupt came from Ctrl-C rather than from
+    /// the person's second Escape, so a stopped turn says which it was.
+    by_signal: AtomicBool,
     /// Held for the length of every rollout write. The second-Ctrl-C exit
     /// takes it too, which is the whole of "the rollout's current line is
     /// complete": `Rollout` writes one whole line per call, so waiting for
@@ -233,6 +157,7 @@ impl Interrupter {
             token: Mutex::new(invoke::CancellationToken::new()),
             pending: AtomicBool::new(false),
             ending: AtomicBool::new(false),
+            by_signal: AtomicBool::new(false),
             writing: Mutex::new(()),
         }
     }
@@ -258,6 +183,15 @@ impl Interrupter {
         slot.cancel();
     }
 
+    /// Who raised the interrupt a cancelled turn ended on.
+    fn raised_by(&self) -> tui::Stopper {
+        if self.by_signal.load(Ordering::SeqCst) {
+            tui::Stopper::Interrupt
+        } else {
+            tui::Stopper::You
+        }
+    }
+
     /// A call ended `Cancelled`, so the interrupt that asked for it has been
     /// delivered and later cells start clean -- **unless the session is
     /// already ending**, in which case there are no later cells and lowering
@@ -271,98 +205,12 @@ impl Interrupter {
     /// A new task starts with nothing pending -- unless the session is
     /// ending, for the same reason [`consumed`](Self::consumed) keeps it.
     fn start_clean(&self) {
-        INTERRUPT.store(false, Ordering::SeqCst);
+        INTERRUPT.store(0, Ordering::SeqCst);
         self.consumed();
     }
 
     fn writing(&self) -> MutexGuard<'_, ()> {
         lock(&self.writing)
-    }
-
-    /// The second Ctrl-C, and the only place in `sterna` that exits from a
-    /// thread other than the main one.
-    ///
-    /// **It cancels before it exits, and that is not decoration.**
-    /// `std::process::exit` does not touch this process's children, so an
-    /// exit taken with a call in flight reparents the confined child to
-    /// `init` and leaves it there. Measured, before this function did
-    /// anything but exit: one `bash` spinning at 87% of a core, for ever.
-    /// Cancelling hands that child to `invoke::kill_and_reap`, which kills
-    /// *and* reaps it.
-    ///
-    /// **Then it takes [`writing`](Self::writing) and holds it across the
-    /// grace, and that ordering is the rest of the fix.** Taking the lock
-    /// waits for the rollout line in flight to finish, which is the
-    /// whole-line guarantee. *Holding* it stops the task loop at its next
-    /// write -- `act_on`'s cell line is the very next thing after the
-    /// cancelled call returns -- so the loop cannot answer the cell, ask for
-    /// another turn and start another cell inside the grace. It did exactly
-    /// that when the grace was an unguarded sleep, spawning a *fresh*
-    /// spinning child for the same exit to orphan.
-    ///
-    /// **Then it takes the background board with it, which is the same
-    /// defect a second time**: `raise` cancels the foreground call's token
-    /// and nothing else, and a job runs on a thread of its own under a token
-    /// of its own. Measured before this call existed: a job's `bash` on
-    /// `ppid 1` at 99% of a core, twenty seconds after `sterna` exited 130.
-    /// It goes *after* the lock, because holding it is what stops the loop
-    /// starting a fresh `bg.run` for the exit to orphan, and *before* the
-    /// sleep, because the grace is what the cancelled children are reaped
-    /// in. The grace it passes is [`REAP_GRACE`] rather than `bg`'s own ten
-    /// seconds, and `shutdown_within` detaches what has not stopped by then:
-    /// a Ctrl-C that waits for an unkillable job would be a worse defect
-    /// than the orphan this closes.
-    ///
-    /// [`REAP_GRACE`] is bounded because a Ctrl-C that hangs is not a Ctrl-C:
-    /// after it, the exit proceeds whatever the child is doing.
-    fn end_the_session(&self) -> ! {
-        self.end_after_signal(INTERRUPTED_EXIT, "interrupted twice; ending the session")
-    }
-
-    fn end_after_signal(&self, exit: i32, message: &str) -> ! {
-        self.ending.store(true, Ordering::SeqCst);
-        self.raise();
-        let _line = self.writing();
-        bg::shutdown_within(&self.session, REAP_GRACE);
-        std::thread::sleep(REAP_GRACE);
-        ui::restore_terminal();
-        eprintln!("sterna: {message}");
-        // Every way out says how to come back, Ctrl-C included.
-        eprintln!("{}", resume::resume_hint(&self.session));
-        std::process::exit(exit);
-    }
-}
-
-/// Turns the handler's flag into the session's decision, forever.
-///
-/// It is a thread because there is nowhere else to poll from: a task spends
-/// its whole life inside `send_turn` or inside `run_cell`, and neither
-/// returns to the loop while the call a Ctrl-C is meant to stop is running.
-fn watch(state: &Interrupter, steer: Option<Arc<ui::Steer>>) -> ! {
-    let mut first: Option<Instant> = None;
-    loop {
-        std::thread::sleep(INTERRUPT_POLL);
-        if TERMINATE.swap(false, Ordering::SeqCst) {
-            state.end_after_signal(143, "termination requested; ending the session");
-        }
-        // The second Escape reaches the token here, because this thread is
-        // the one that owns it -- but it stays out of the double-interrupt
-        // window above. Escape is the lever that must never end the
-        // session: a person pressing it twice is asking for their call
-        // back, not for their session to go away.
-        if steer.as_ref().is_some_and(|steer| steer.take_cancel()) {
-            state.raise();
-            continue;
-        }
-        if !INTERRUPT.swap(false, Ordering::SeqCst) {
-            continue;
-        }
-        let now = Instant::now();
-        if first.is_some_and(|earlier| now.duration_since(earlier) <= DOUBLE_INTERRUPT_WINDOW) {
-            state.end_the_session();
-        }
-        first = Some(now);
-        state.raise();
     }
 }
 
@@ -428,7 +276,7 @@ pub fn dispatch(args: &[String]) -> Result<(), String> {
         moved.iter().for_each(|line| eprintln!("{line}"));
         return resume::print_listing(&parsed.root);
     }
-    let result = run(parsed, &mut moved);
+    let result = resume::each(parsed, |args| run(args, &mut moved));
     // A start that ended before its notes were said -- a cancelled picker, a
     // refused `--resume`, an image that would not load -- still says what it
     // moved: the next start finds nothing left to move and never would.
@@ -524,10 +372,8 @@ fn helper_lane(
 /// Runs `session`, in the order the packet's OBJECTIVE fixes: load the
 /// project, resume or start the rollout, `SessionStart`, then one input (or
 /// stdin's, one per line) at a time until the input source is exhausted.
-fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
-    if !resume::choose(&mut args)? {
-        return Ok(());
-    }
+fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>, String> {
+    resume::choose(&mut args);
     if args.images.len() > 4 {
         return Err("at most four image attachments are accepted per task".into());
     }
@@ -632,7 +478,11 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
     } else if let Some(model) = default_decisions.filter(|_| !terminal) {
         session_println!("decisions: {model} (the gateway serves a TypeSafe account)");
     }
-    session_println!("{}", startup::permissions_line(&ladder));
+    // A terminal draws the rung live on the session card instead, so the
+    // line cannot go stale the moment Shift-Tab moves it.
+    if !terminal {
+        session_println!("{}", startup::permissions_line(&ladder));
+    }
 
     // `sandbox-grants.md` §1.5: computed once, at session start, immutable
     // for the session's life. Reloading a persisted configuration must never
@@ -750,9 +600,11 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
                     let mut state = tui::ScreenState {
                         model: started_on.clone(),
                         mode: initial_mode,
+                        mode_pinned: initial_mode_pinned,
                         permissions: ladder.clone(),
                         effort: initial_effort,
                         settings_root: Some(args.root.clone()),
+                        settings_global: crate::project::workflows::user_directory(),
                         settings_profile: args.profile.clone(),
                         compact: true,
                         pretty: true,
@@ -842,10 +694,12 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
         rollback_pending: Cell::new(None),
         plan: RefCell::new(None),
         requests: std::cell::Cell::new(0),
+        settings_global: crate::project::workflows::user_directory(),
     };
     output::interface(session.interface.get(), session.dialect());
     controls::announce_missing_credential(&session, _serving.is_some());
     setup::at_start(&session, started_on.is_none());
+    resume::offer(&args, &session, &session_id);
     let outcome = drive(&args, &session, &mut transcript, &mut rollout)
         .map_err(|message| startup::explain_failure(&message, &session));
     // §5 again, and this one is the promise `session::run` itself makes: an
@@ -853,9 +707,10 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
     // own shutdown, and a job of that task must not outlive the session
     // either.
     bg::shutdown(&session_id);
-    ui::farewell(resume::resume_hint(&session_id));
+    interrupt::leave_the_exit_to_the_signal(&session.interrupt.ending);
+    let next = resume::at_end();
 
-    outcome
+    outcome.map(|()| next)
 }
 
 /// Everything one session holds for its whole life, gathered so a per-input
@@ -925,6 +780,10 @@ struct Session<'a> {
     plan: RefCell<Option<String>>,
     /// Requests this session has started, for the decision model's context.
     requests: std::cell::Cell<u32>,
+    /// The person's own settings folder, where a model, a setup pick or Jev
+    /// is saved (decision 6). `None` -- a machine with no home, a test that
+    /// names none -- saves to the project instead.
+    settings_global: Option<std::path::PathBuf>,
 }
 
 impl Session<'_> {
@@ -957,6 +816,8 @@ impl Session<'_> {
 struct RollbackCheckpoint {
     before: crate::changes::Snapshot,
     after: crate::changes::Snapshot,
+    /// The cell whose change this is, marked when it is rolled back.
+    cell: usize,
 }
 
 /// Handles scripted, live-composer, and piped input through the same task
@@ -968,24 +829,26 @@ fn drive(
     rollout: &mut Rollout,
 ) -> Result<(), String> {
     if let Some(task) = &args.task {
-        return after::around(|| process_input(task, session, transcript, rollout));
+        return after::around(|| process_input(task, session, transcript, rollout).result());
     }
 
     if let Some(ui) = session.ui {
-        while let Some(input) = ui.next()? {
-            let result = process_input(&input, session, transcript, rollout);
-            if let Err(message) = &result {
+        while let Some(input) = ui.next(&|| setup::offer(session))? {
+            // A turn has already said how it ended; a control reports no
+            // turn at all, so the turn's clock and its ending stay as they
+            // were.
+            let ran = process_input(&input, session, transcript, rollout);
+            if let Err(message) = ran.outcome() {
                 session_println!("ERROR: {}", startup::explain_failure(message, session));
             }
-            ui.publish(
-                transcript,
-                &ServedBy::default(),
-                if result.is_err() {
-                    tui::Activity::Failed
-                } else {
-                    tui::Activity::Complete
-                },
-            );
+            // A control chosen as the turn ended, after its last request.
+            let late = ui.steer().take_controls();
+            for command in &late {
+                answer_control(command, session, transcript);
+            }
+            if matches!(ran, Ran::Control(_)) || !late.is_empty() {
+                ui.control_done(transcript);
+            }
         }
         return Ok(());
     }
@@ -998,11 +861,30 @@ fn drive(
         // scripted one-shot has nobody to report to but its exit code.
         // Observed 2026-09-06: one empty message made a gateway answer 400
         // and the session ended mid-task.
-        if let Err(message) = process_input(&line, session, transcript, rollout) {
-            session_println!("{}", startup::explain_failure(&message, session));
+        if let Err(message) = process_input(&line, session, transcript, rollout).outcome() {
+            session_println!("{}", startup::explain_failure(message, session));
         }
     }
     Ok(())
+}
+
+/// What one input was: a model turn, or a control answered locally.
+enum Ran {
+    Turn(Result<(), String>),
+    Control(Result<(), String>),
+}
+
+impl Ran {
+    fn outcome(&self) -> &Result<(), String> {
+        match self {
+            Self::Turn(result) | Self::Control(result) => result,
+        }
+    }
+    fn result(self) -> Result<(), String> {
+        match self {
+            Self::Turn(result) | Self::Control(result) => result,
+        }
+    }
 }
 
 /// One input: a slash command answered locally, or a **task** run to its end.
@@ -1017,7 +899,7 @@ fn process_input(
     session: &Session<'_>,
     transcript: &mut Transcript,
     rollout: &mut Rollout,
-) -> Result<(), String> {
+) -> Ran {
     // **Blank input is not a turn.** A message with no content is not a
     // message: the Anthropic shape requires content, tool calls or reasoning
     // blocks, and a gateway that enforces it answers 400 and the task dies.
@@ -1025,7 +907,7 @@ fn process_input(
     // what stops it ending the session. Observed 2026-09-06 at `messages.0`
     // and again at `messages.13`.
     if input.trim().is_empty() {
-        return Ok(());
+        return Ran::Control(Ok(()));
     }
     if let Some(rest) = input.strip_prefix('/') {
         let (name, argument) = split_command(rest);
@@ -1034,13 +916,15 @@ fn process_input(
             && resolved.source == CommandSource::ProjectSkill
             && resolved.status == CommandStatus::Available
         {
-            let task = crate::project::workflows::skill_task(
+            return match crate::project::workflows::skill_task(
                 session.project,
                 session.profile,
                 name,
                 argument.unwrap_or(""),
-            )?;
-            return run_task(&task, session, transcript, rollout);
+            ) {
+                Ok(task) => Ran::Turn(run_task(&task, session, transcript, rollout)),
+                Err(error) => Ran::Control(Err(error)),
+            };
         }
         if !is_session_control(name)
             && let Some(resolved) = commands::resolve(session.project, name)
@@ -1049,18 +933,25 @@ fn process_input(
             && let Some(body) = session.project.commands.get(name)
         {
             let task = project_command_task(name, body, argument);
-            return run_task(&task, session, transcript, rollout);
+            return Ran::Turn(run_task(&task, session, transcript, rollout));
         }
         answer_command(rest, name, argument, session, transcript);
-        render(
-            transcript,
-            &ServedBy::default(),
-            session,
-            tui::Activity::Idle,
-        );
-        return Ok(());
+        // The screen hears of a control through `control_done`, which keeps
+        // the turn's ending; only the line-mode transcript is drawn here.
+        if session.ui.is_none() {
+            startup::render_as_lines(transcript, &ServedBy::default());
+        }
+        return Ran::Control(Ok(()));
     }
-    run_task(input, session, transcript, rollout)
+    Ran::Turn(run_task(input, session, transcript, rollout))
+}
+
+/// One control the screen passed on while a turn ran: `/model`, `/mode` or
+/// `/effort` with its argument.
+fn answer_control(command: &str, session: &Session<'_>, transcript: &mut Transcript) {
+    let rest = command.trim().trim_start_matches('/');
+    let (name, argument) = split_command(rest);
+    answer_command(rest, name, argument, session, transcript);
 }
 
 fn is_session_control(name: &str) -> bool {
@@ -1142,7 +1033,11 @@ fn run_task(
     rollout: &mut Rollout,
 ) -> Result<(), String> {
     if session.model.borrow().is_empty() {
-        return Err("No model selected yet. Pick one with /model.".into());
+        let refused = "No model selected yet. Pick one with /model.";
+        if let Some(ui) = session.ui {
+            ui.publish(transcript, &ServedBy::default(), tui::Activity::Failed);
+        }
+        return Err(refused.into());
     }
     transcript.notebook.handlers.clear();
     transcript.notebook.preflight = None;
@@ -1159,11 +1054,18 @@ fn run_task(
             .map_or("unset", |ladder| ladder.rung().name()),
         &session.model.borrow(),
     );
-    let result = run_task_inner(task, session, transcript, rollout);
-    session.observe.task_end(match &result {
-        Ok(()) => "answered",
+    let ended = run_task_inner(task, session, transcript, rollout);
+    session.observe.task_end(match &ended {
+        Ok(None) => "answered",
+        Ok(Some(_)) => "stopped",
         Err(reason) => reason.as_str(),
     });
+    let activity = match &ended {
+        Ok(None) => tui::Activity::Complete,
+        Ok(Some(by)) => tui::Activity::Stopped(*by),
+        Err(_) => tui::Activity::Failed,
+    };
+    let result = ended.map(|_| ());
     rollout.record_moves(session.ladder.as_ref());
     if mode == RequestMode::Plan
         && let Some(plan) = modes::written_plan(session.profile.root(), started)
@@ -1181,25 +1083,18 @@ fn run_task(
     }
     if let Some(ui) = session.ui {
         ui.handler_cancellations();
-        ui.publish(
-            transcript,
-            &ServedBy::default(),
-            if result.is_ok() {
-                tui::Activity::Complete
-            } else {
-                tui::Activity::Failed
-            },
-        );
+        ui.publish(transcript, &ServedBy::default(), activity);
     }
     result
 }
 
+/// Runs the task; `Ok(Some(by))` when it was stopped before it finished.
 fn run_task_inner(
     task: &str,
     session: &Session<'_>,
     transcript: &mut Transcript,
     rollout: &mut Rollout,
-) -> Result<(), String> {
+) -> Result<Option<tui::Stopper>, String> {
     // A stop or an interrupt raised before this task began belongs to no
     // task: an Escape whose turn ended before its cell boundary, a Ctrl-C at
     // an idle prompt. Left raised, it ended the next task on its first
@@ -1307,7 +1202,7 @@ fn run_task_inner(
     let mut final_turn = false;
     let mut terminal_failure = None;
     let mut incomplete;
-    let mut stopped_by_request = false;
+    let mut stopped_by_request = None;
     // The supervisor nudges and no longer ends: three consecutive model
     // opinions used to end a task, and the criteria it matches on describe
     // exactly what a careful re-read looks like (`ending.rs` carries the
@@ -1347,10 +1242,17 @@ fn run_task_inner(
         // the notebook and the rollout, and the task ends the way a finished
         // one does rather than as a failure, because a person choosing to
         // stop is not an error.
-        if session.ui.is_some_and(|ui| ui.steer().take_stop()) {
+        if let Some(by) = session.ui.and_then(|ui| ui.steer().take_stop()) {
             incomplete = false;
-            stopped_by_request = true;
+            stopped_by_request = Some(by);
             break;
+        }
+        // A model, mode or effort chosen while the turn runs applies from
+        // its next request (decision 9), and this is where that begins.
+        if let Some(ui) = session.ui {
+            for command in ui.steer().take_controls() {
+                answer_control(&command, session, transcript);
+            }
         }
         let since = SystemTime::now();
         let requested_model = session.model.borrow().clone();
@@ -1383,7 +1285,7 @@ fn run_task_inner(
                 Err(error) if error.contains(wire::CANCELLED_TURN) => {
                     session.interrupt.consumed();
                     incomplete = false;
-                    stopped_by_request = true;
+                    stopped_by_request = Some(session.interrupt.raised_by());
                     break;
                 }
                 Err(error) => {
@@ -1582,10 +1484,11 @@ fn run_task_inner(
             }
         }
         if let Some((before, after)) = step.rollback.take() {
-            session
-                .rollbacks
-                .borrow_mut()
-                .push(RollbackCheckpoint { before, after });
+            session.rollbacks.borrow_mut().push(RollbackCheckpoint {
+                before,
+                after,
+                cell: ordinal,
+            });
             session.rollback_pending.set(None);
         }
         let instruction_boundary = runtime.pending_instructions();
@@ -1799,7 +1702,7 @@ fn run_task_inner(
     // A one-shot run waits for a shadow decision so its result records it; a
     // person at the terminal is never held for one.
     task_state.settle_decision(session, session.ui.is_none());
-    if stopped_by_request {
+    if let Some(by) = stopped_by_request {
         // Said to the model as well as to the person. A turn that simply
         // stops leaves the next one reading a transcript whose last cell
         // had no answer, and a model reading that guesses -- usually that
@@ -1812,7 +1715,7 @@ fn run_task_inner(
             transcript,
             &ServedBy::default(),
             session,
-            tui::Activity::Complete,
+            tui::Activity::Stopped(by),
         );
     }
     if incomplete {
@@ -1824,7 +1727,7 @@ fn run_task_inner(
         Err(reason)
     } else {
         output::capsule(task_state.capsule.to_json());
-        Ok(())
+        Ok(stopped_by_request)
     }
 }
 
@@ -2218,10 +2121,11 @@ fn act_on(
     // that asked is already over, so nothing is suspended while a person
     // reads; what waits is this one function, and it waits at most
     // `ask::MAX_ASK_WAIT` before answering itself that nobody chose.
-    let ask_answer = turn
-        .ask
-        .clone()
-        .map(|question| ask::resolve(question, &after, session, task_state).rendered());
+    let ask_answer = turn.ask.clone().map(|question| {
+        let answer = ask::resolve(question.clone(), &after, session, task_state);
+        view.asked = Some(answer.row(&question.question));
+        answer.rendered()
+    });
     let mut result = CellResult {
         cell: turn.record.cell,
         elapsed_ms: turn.elapsed_ms,
@@ -2535,7 +2439,7 @@ fn answer_command(
     name: &str,
     argument: Option<&str>,
     session: &Session<'_>,
-    transcript: &Transcript,
+    transcript: &mut Transcript,
 ) {
     if controls::command(name, argument, session, transcript) {
         return;
@@ -2552,6 +2456,12 @@ fn answer_command(
             const USAGE: &str = "/model expects one model name\n\
                 /model parent|helper|subagent <id> assigns one tier\n\
                 /model helper off · /model subagent auto|off (inherit is an alias for auto)";
+            // A tier word alone opens the picker on that tier, rather than
+            // naming the Main model `helper`.
+            if let Some(tier) = crate::spend::Tier::parse(argument.trim()) {
+                controls::models_at(session, tier);
+                return;
+            }
             let (tier, model) = match argument.split_once(char::is_whitespace) {
                 Some((word, rest)) => match crate::spend::Tier::parse(word) {
                     Some(tier) => (tier, rest.trim()),
@@ -2566,34 +2476,14 @@ fn answer_command(
                 session_println!("{USAGE}");
                 return;
             }
-            if tier != crate::spend::Tier::Parent {
-                match controls::assign_model(session, tier, model) {
-                    Ok(outcome) => session_println!("{outcome}"),
-                    Err(reason) => session_println!("{reason}"),
+            match controls::use_model(session, tier, model) {
+                Ok(outcome) => session_println!("{outcome}"),
+                Err(reason) if tier == crate::spend::Tier::Parent => {
+                    session_println!("model unchanged: {reason}");
                 }
-                return;
+                Err(reason) => session_println!("{reason}"),
             }
-            // Validate and persist before changing the live request model.
-            // A rejected control word or malformed id therefore leaves both
-            // the file and the running session unchanged.
-            let model = &startup::settle_model(
-                model.to_string(),
-                &startup::served_accounts(session.gateway),
-            );
-            let remembered = controls::assign_model(session, tier, model);
-            if let Err(reason) = remembered {
-                session_println!("model unchanged: {reason}");
-                return;
-            }
-            *session.model.borrow_mut() = model.into();
-            // The effort a person chose survives a model change now. It used
-            // to be silently reset to `default` on a non-Claude model, because
-            // `xhigh` and `max` had no wire form there; they do, so taking
-            // the choice away would be taking away a level that works.
-            if let Some(ui) = session.ui {
-                ui.model(model);
-            }
-            session_println!("model changed to {model}");
+            setup::offer(session);
         } else {
             controls::models(session);
         }
@@ -2650,19 +2540,22 @@ fn answer_command(
 /// built-ins, then the project's own commands and skills. `all` had a
 /// production caller nowhere before this package; this is that caller.
 fn offer_commands(session: &Session<'_>) {
-    let mut lines: Vec<String> = tui::slash_matches("/")
+    // A click puts the command in the composer, ready for its argument.
+    let row = |name: String, help: &str| {
+        let text = format!("{name} · {help}");
+        tui::PanelRow::run(text, crate::workbench::Action::Insert(format!("{name} ")))
+    };
+    let mut rows: Vec<tui::PanelRow> = tui::slash_matches("/")
         .into_iter()
-        .map(|(name, help)| format!("{name:<16} {help}"))
+        .map(|(name, help)| row(name, help))
         .collect();
     for command in commands::all(session.project) {
-        if !lines
-            .iter()
-            .any(|line| line.starts_with(&format!("/{} ", command.name)))
-        {
-            lines.push(format!("/{}", command.name));
+        let name = format!("/{}", command.name);
+        if !rows.iter().any(|r| r.text.starts_with(&format!("{name} "))) {
+            rows.push(row(name, "a project command"));
         }
     }
-    controls::show(session, tui::Panel::text("Commands", lines.join("\n")));
+    controls::show(session, tui::Panel::rows("Commands", rows));
 }
 
 /// Reads memory and the latest checkpoint through Glasshouse's MCP surface,
@@ -2853,12 +2746,12 @@ fn answer_tool(rest: &str, session: &Session<'_>) {
         Ok(result) => {
             session_println!("{}{}", result.stdout, result.stderr);
             session_println!(
-                "/tool {tool}: exit {} under {}",
+                "/tool {tool}: exit {} · {}",
                 result
                     .exit_code
                     .map(|code| code.to_string())
                     .unwrap_or_else(|| "signal".to_string()),
-                result.confinement.as_str()
+                result.confinement.plainly()
             );
         }
         Err(ToolError::Denied(denied)) => session_println!("{denied}"),
@@ -3130,6 +3023,7 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: None,
         };
         let mut task_state = TaskState::new("admit", profile, &config.borrow());
         act_on(
@@ -3411,7 +3305,7 @@ mod tests {
             Ok(ui::Update::Snapshot(snapshot)) => (snapshot.1, snapshot.3),
             _ => panic!("a helper call in flight must publish a snapshot"),
         };
-        assert_eq!(activity, tui::Activity::Executing);
+        assert_eq!(activity, Some(tui::Activity::Executing));
         assert_eq!(notebook.cells.len(), 3, "the lane hangs under cell 3");
         let helpers = &notebook.cells[2].helpers;
         assert_eq!(helpers.len(), 1, "the call in flight must be in the view");

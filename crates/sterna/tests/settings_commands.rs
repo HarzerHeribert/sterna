@@ -79,13 +79,13 @@ fn cli_removes_root_options_safely_wherever_they_appear() {
     let root = temp_root("cli-root");
     let output = cli(&strings(&[
         "config",
-        "ui.reduced_motion",
+        "helpers.enabled",
         "--root",
         root.to_str().unwrap(),
         "true",
     ]))
     .unwrap();
-    assert!(output.contains("Saved ui.reduced_motion"));
+    assert!(output.contains("Saved helpers.enabled"));
     assert!(root.join(".sterna/config.toml").exists());
     assert!(
         cli(&strings(&["config", "--root"]))

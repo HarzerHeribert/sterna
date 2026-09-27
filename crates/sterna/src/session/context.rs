@@ -241,7 +241,8 @@ pub(super) fn send_task_turn_recovering(
             return Ok(sent);
         }
         Err(error) if error.is_context_overflow() => error,
-        Err(error) => return Err(format!("request failed: {error}")),
+        // The error already says the request failed.
+        Err(error) => return Err(error.to_string()),
     };
 
     let checkpoint = prompt::checkpoint(
@@ -264,8 +265,13 @@ pub(super) fn send_task_turn_recovering(
         runtime.handle_names().len()
     );
     let retry = provider_view(transcript);
-    timed_send_task_turn(&retry, session, task, cause)
-        .map_err(|error| format!("request failed after a checkpoint: {error}"))
+    timed_send_task_turn(&retry, session, task, cause).map_err(|error| after_checkpoint(&error))
+}
+
+/// The retry's error, said once: the wire's own words already say the
+/// request failed.
+fn after_checkpoint(error: &wire::WireError) -> String {
+    format!("{error} (after a checkpoint)")
 }
 
 /// The whole sweep decision as one call, so the turn loop carries the intent
@@ -461,5 +467,20 @@ mod sweep_tests {
         // it keeps everything.
         let newest = text(4);
         assert!(newest.contains("## Handles") && newest.contains("## Plan"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_after_a_checkpoint_says_its_request_failed_once() {
+        let error = wire::WireError::Http(Box::new(ureq::Error::Io(std::io::Error::other(
+            "connection refused",
+        ))));
+        let said = after_checkpoint(&error);
+        assert_eq!(said.matches("request failed").count(), 1, "{said}");
+        assert!(said.ends_with("(after a checkpoint)"), "{said}");
     }
 }

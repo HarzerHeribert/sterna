@@ -92,7 +92,7 @@ fn sterna(scratch: &Scratch, words: &[&str]) -> (String, String) {
 #[test]
 fn a_start_moves_the_old_folders_once_with_everything_in_them() {
     let scratch = Scratch::new("once");
-    let old_global = scratch.home().join(".config/pane");
+    let old_global = scratch.home().join(".config").join("pane");
     let old_project = scratch.project().join(".pane");
     write(
         &old_global.join("config.toml"),
@@ -118,7 +118,7 @@ fn a_start_moves_the_old_folders_once_with_everything_in_them() {
 
     let (stdout, stderr) = start(&scratch);
 
-    let new_global = scratch.home().join(".config/sterna");
+    let new_global = scratch.home().join(".config").join("sterna");
     let new_project = scratch.project().join(".sterna");
     for (old, new) in [(&old_global, &new_global), (&old_project, &new_project)] {
         let said = format!("moved {} to {}", old.display(), new.display());
@@ -170,8 +170,8 @@ fn a_start_moves_the_old_folders_once_with_everything_in_them() {
 #[test]
 fn a_new_folder_that_exists_is_used_and_the_old_one_is_left_alone() {
     let scratch = Scratch::new("both");
-    let old_global = scratch.home().join(".config/pane");
-    let new_global = scratch.home().join(".config/sterna");
+    let old_global = scratch.home().join(".config").join("pane");
+    let new_global = scratch.home().join(".config").join("sterna");
     let old_project = scratch.project().join(".pane");
     let new_project = scratch.project().join(".sterna");
     write(
@@ -194,11 +194,13 @@ fn a_new_folder_that_exists_is_used_and_the_old_one_is_left_alone() {
     let (_, again) = start(&scratch);
     assert!(!again.contains("Pane is now Sterna"), "{again}");
     // `doctor` names each pair it left alone; it prints the project by its
-    // canonical path, so the names are matched by their tails.
+    // canonical path, so the names are matched by their tails, in the
+    // platform's own separator.
     let (doctor, _) = sterna(&scratch, &["doctor", "--root"]);
+    let tail = |a: &str, b: &str| format!("{a}{}{b}", std::path::MAIN_SEPARATOR);
     for (old, new) in [
-        (".config/pane", ".config/sterna"),
-        ("project/.pane", "project/.sterna"),
+        (tail(".config", "pane"), tail(".config", "sterna")),
+        (tail("project", ".pane"), tail("project", ".sterna")),
     ] {
         let said = format!("{new} is used; the older ");
         assert!(
@@ -233,7 +235,11 @@ fn a_new_folder_that_exists_is_used_and_the_old_one_is_left_alone() {
 fn the_sessions_pane_saved_are_listed_after_the_move() {
     let scratch = Scratch::new("sessions");
     let old_project = scratch.project().join(".pane");
-    write(&old_project.join("sessions/k3v9ab.jsonl"), "{}\n");
+    // A session somebody asked something in: an empty one is not listed.
+    write(
+        &old_project.join("sessions/k3v9ab.jsonl"),
+        "{\"kind\":\"turn\",\"role\":\"user\",\"text\":\"hello\",\"blocks\":[]}\n",
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
         .arg("--sessions")
@@ -289,9 +295,14 @@ fn a_start_refused_before_the_session_opens_still_says_what_it_moved() {
     );
     assert!(stderr.contains("zzzz-nope"), "{stderr}");
     // The session names the project as it was given: here, the current
-    // directory.
+    // directory, joined the way this platform joins a path.
+    let here = Path::new(".");
     assert!(
-        stderr.contains("Pane is now Sterna: moved ./.pane to ./.sterna."),
+        stderr.contains(&format!(
+            "Pane is now Sterna: moved {} to {}.",
+            here.join(".pane").display(),
+            here.join(".sterna").display()
+        )),
         "{stderr}"
     );
     assert!(!old_project.exists(), "{stderr}");

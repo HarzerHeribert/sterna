@@ -1003,7 +1003,7 @@ fn every_choice_the_registry_offers_validates() {
 #[test]
 fn typed_values_are_parsed_without_toml_quoting() {
     assert_eq!(
-        registry::validate("ui.reduced_motion", "true").expect("bool"),
+        registry::validate("helpers.enabled", "true").expect("bool"),
         toml::Value::Boolean(true)
     );
     assert_eq!(

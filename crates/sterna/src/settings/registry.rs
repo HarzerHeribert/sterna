@@ -80,9 +80,11 @@ const THEMES: &[&str] = &[
     "green-wing",
     "military",
     "cockatoo",
+    "arctic-tern",
 ];
 const STATUS_LINES: &[&str] = &["full", "compact", "hidden"];
 const SIDEBAR: &[&str] = &["auto", "show", "hide"];
+const BACKGROUNDS: &[&str] = &crate::tui::background::Background::NAMES;
 const STREAMS: &[&str] = &["actions", "code", "raw"];
 const MOTIONS: &[&str] = &["full", "calm", "off"];
 /// The working mode a session starts in. `build` is this file's word for the
@@ -215,7 +217,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "model.parent",
         label: "Main model",
-        description: "Which model answers you. Takes effect on your next message; a call already in flight keeps the model it started on.",
+        description: "Which model answers you. Applies from the next request, even during a turn; a request already in flight keeps the model it started on.",
         kind: Kind::Model,
         choices: &[],
         basic: true,
@@ -376,6 +378,15 @@ static SPECS: &[SettingSpec] = &[
         restart: false,
     },
     SettingSpec {
+        key: "ui.background",
+        label: "Background",
+        description: "Whether your terminal's background is dark or light, so every colour stays readable on it. Auto asks the terminal when Sterna starts.",
+        kind: Kind::Choice,
+        choices: BACKGROUNDS,
+        basic: true,
+        restart: false,
+    },
+    SettingSpec {
         key: "ui.statusline",
         label: "Status line",
         description: "How much the bottom strip carries: everything, the controls only, or nothing.",
@@ -387,7 +398,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "ui.sidebar",
         label: "Sidebar",
-        description: "The session card on the right. Auto shows it only when the terminal is wide enough to spare the columns.",
+        description: "The sidebar on the right. Auto shows it only when the terminal is wide enough to spare the columns.",
         kind: Kind::Choice,
         choices: SIDEBAR,
         basic: true,
@@ -408,15 +419,6 @@ static SPECS: &[SettingSpec] = &[
         description: "What you see while the model is still writing a cell: each action on its own row with a live character count, the code as it forms, or the raw protocol text.",
         kind: Kind::Choice,
         choices: STREAMS,
-        basic: true,
-        restart: false,
-    },
-    SettingSpec {
-        key: "ui.reduced_motion",
-        label: "Reduced motion",
-        description: "Freezes every animation, the same as motion off. Nothing is hidden by it; the same words stay on screen.",
-        kind: Kind::Bool,
-        choices: &[],
         basic: true,
         restart: false,
     },
@@ -990,7 +992,20 @@ pub fn spec(key: &str) -> Option<&'static SettingSpec> {
 const RETIRED_KEYS: &[(&str, &str)] = &[
     ("ui.look", "the bird lives in the parrot themes now: /theme"),
     ("ui.voice", "Sterna speaks one plain voice with every theme"),
+    (
+        "ui.reduced_motion",
+        "motion off freezes every animation the same way: /motion off",
+    ),
 ];
+
+/// Keys Sterna writes for itself. They load like any other and are never
+/// offered as a choice.
+const HIDDEN: &[&str] = &["wizard.seen", "legacy.imported"];
+
+/// Whether `key` is Sterna's own bookkeeping rather than a choice.
+pub fn hidden(key: &str) -> bool {
+    HIDDEN.contains(&key)
+}
 
 /// Where a removed setting's job went, if `key` is one.
 pub fn retired_key(key: &str) -> Option<&'static str> {

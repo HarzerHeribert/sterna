@@ -65,38 +65,102 @@ pub(super) fn chip(
     g.hits.push((r, action));
     w
 }
-/// A row of chips from `x`, each two columns apart; returns where it ended.
+/// Which chips of a row are drawn in `room` columns, given each one's width
+/// with the column after it: every one when they fit; otherwise the `kept`
+/// ones -- the active value, the tab that is open -- and then, in order, as
+/// many of the rest as leave room for the `⟨ +N ▾ ⟩` chip that holds the
+/// others. Nothing is dropped without that chip saying so.
+pub(super) fn fitting(widths: &[u16], room: u16, kept: &[usize]) -> Vec<usize> {
+    if widths.iter().sum::<u16>().saturating_sub(1) <= room {
+        return (0..widths.len()).collect();
+    }
+    let mut budget = room.saturating_sub(width("+99 ▾") + 5);
+    let mut shown: Vec<usize> = kept.to_vec();
+    for &k in kept {
+        budget = budget.saturating_sub(widths[k]);
+    }
+    for (i, w) in widths.iter().enumerate() {
+        if !kept.contains(&i) && *w <= budget {
+            budget -= w;
+            shown.push(i);
+        }
+    }
+    shown.sort_unstable();
+    shown
+}
+/// Where each chip of a row lands from `x`: the ones [`fitting`] keeps,
+/// then `⟨ +N ▾ ⟩` holding the rest, each one column after the last.
+fn placed(
+    items: &[(String, Action, bool)],
+    x: u16,
+    limit: u16,
+) -> Vec<(String, Action, bool, u16)> {
+    let widths: Vec<u16> = items.iter().map(|(label, ..)| width(label) + 5).collect();
+    let kept: Vec<usize> = (0..items.len()).filter(|i| items[*i].2).collect();
+    let mut at = x;
+    let mut out = Vec::new();
+    let mut drawn = Vec::new();
+    for i in fitting(&widths, limit.saturating_sub(x), &kept) {
+        let w = widths[i] - 1;
+        if at >= limit || w > limit - at {
+            break;
+        }
+        let (label, action, on) = &items[i];
+        out.push((label.clone(), action.clone(), *on, at));
+        drawn.push(i);
+        at += w + 1;
+    }
+    let folded: Vec<(String, Action)> = (0..items.len())
+        .filter(|i| !drawn.contains(i))
+        .map(|i| (items[i].0.clone(), items[i].1.clone()))
+        .collect();
+    if !folded.is_empty() {
+        let label = format!("+{} ▾", folded.len());
+        if at < limit && width(&label) + 4 <= limit - at {
+            out.push((label, Action::More(folded), false, at));
+        }
+    }
+    out
+}
+/// Where a row of chips from `x` ends, the column after its last chip
+/// included: what a strip clears before the row is drawn on it.
+pub(super) fn chips_end(items: &[(String, Action, bool)], x: u16, limit: u16) -> u16 {
+    placed(items, x, limit)
+        .last()
+        .map_or(x, |(label, _, _, at)| at + width(label) + 5)
+}
+/// A row of chips from `x`, one column apart; returns where it ended. The
+/// ones that do not fit fold into `⟨ +N ▾ ⟩`, which lists them, and a chip
+/// that is on is never the one folded.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn chips(
     f: &mut Frame<'_>,
     g: &mut Geometry,
-    mut x: u16,
+    x: u16,
     y: u16,
     limit: u16,
     items: &[(String, Action, bool)],
     press: Option<(u16, u16)>,
     t: Theme,
 ) -> u16 {
-    for (label, action, on) in items {
+    let mut end = x;
+    for (label, action, on, at) in placed(items, x, limit) {
         let w = chip(
             f,
             g,
-            x,
+            at,
             y,
             limit,
-            label,
-            action.clone(),
-            *on,
+            &label,
+            action,
+            on,
             Tone::Normal,
             press,
             t,
         );
-        if w == 0 {
-            break;
-        }
-        x += w + 1;
+        end = at + w + 1;
     }
-    x
+    end
 }
 /// A horizontal rule across `r`, with `joints` -- (column, glyph) pairs --
 /// where another line meets it.
@@ -112,7 +176,7 @@ pub(super) fn rule(f: &mut Frame<'_>, r: Rect, joints: &[(u16, &str)], tone: Ton
     }
 }
 /// A framed region: rounded corners, and a title in the top edge.
-pub(super) fn frame(f: &mut Frame<'_>, r: Rect, tone: Tone, t: Theme) {
+pub(crate) fn frame(f: &mut Frame<'_>, r: Rect, tone: Tone, t: Theme) {
     if r.width < 2 || r.height < 2 {
         return;
     }

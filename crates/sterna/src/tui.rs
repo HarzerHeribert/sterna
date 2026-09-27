@@ -1,16 +1,15 @@
 //! Fullscreen presentation. The caller owns terminal lifecycle, input and ticks.
 
+pub mod background;
 mod controls;
 pub mod history;
 pub use history::{HistoryNote, NoteKind};
-mod ask;
-pub use ask::{Key as AskKey, key as ask_key, render as render_ask, render_redirect};
 mod bands;
 mod message;
 use message::*;
 mod composer;
 mod paths;
-pub(crate) use paths::{found as found_paths, resolve as resolve_path};
+pub(crate) use paths::{forget as forget_paths, found as found_paths, resolve as resolve_path};
 mod poster;
 mod regions;
 mod selection;
@@ -18,8 +17,6 @@ use composer::{composer_cursor, wrapped_input};
 pub use selection::Selection;
 pub(crate) use selection::draw as draw_selection;
 
-mod inspection;
-pub use inspection::Inspection;
 pub mod form;
 mod lane;
 mod look;
@@ -39,7 +36,9 @@ use regions::{
 };
 use status::{compact_tokens, context_summary, footer_row};
 pub(crate) mod telemetry;
-pub use controls::{Assignment, Mode, ModelGroup, Panel, PanelRow, StatusLine, TierModels};
+pub use controls::{
+    Assignment, Catalogue, Mode, ModelGroup, Panel, PanelRow, StatusLine, TierModels,
+};
 pub(crate) use lane::helper_in_flight;
 use lane::{helper_fold, helper_lane, push_helper_lane};
 pub use telemetry::Pulse;
@@ -49,7 +48,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::contract::{Block as ContentBlock, Conversation, Message, Role, ServedBy};
 use crate::helpers::HelperRecord;
@@ -61,85 +60,6 @@ use crate::runtime::preview::TABLE_TOKEN_CAP;
 const ACCENT: Color = Color::LightGreen;
 const MUTED: Color = Color::Gray;
 const NOT_CONNECTED: &str = "gateway not connected.";
-
-/// Modal confirmation drawn last, above all other surfaces. The terminal
-/// owner retains the request and is the only code that can answer it.
-///
-/// `hint` is the approval hint (F4, `decision-model.md`): the caller passes
-/// `Request::hint_line()`, already gated by `mode` -- `None` here never
-/// distinguishes "no model", "not answered yet" and "shadow" from each other,
-/// because none of the three ever change what is drawn.
-pub fn render_approval(
-    frame: &mut Frame<'_>,
-    confirmation: &crate::approval::Confirmation,
-    scroll: u16,
-    hint: Option<crate::approval::Hint>,
-) {
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).min(100);
-    let height = area.height.saturating_sub(2).min(28);
-    let overlay = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(Clear, overlay);
-    let block = Block::default()
-        .title(" Approve exact tool call ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT));
-    let inner = block.inner(overlay);
-    frame.render_widget(block, overlay);
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
-    let footer_height = inner.height.min(3);
-    let body = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width,
-        inner.height.saturating_sub(footer_height),
-    );
-    let footer = Rect::new(inner.x, inner.y + body.height, inner.width, footer_height);
-    let estimated_rows: usize = confirmation
-        .text
-        .lines()
-        .map(|line| {
-            line.chars()
-                .count()
-                .max(1)
-                .div_ceil(usize::from(body.width).max(1))
-        })
-        .sum();
-    let maximum_scroll = estimated_rows
-        .saturating_sub(usize::from(body.height))
-        .min(u16::MAX as usize) as u16;
-    frame.render_widget(
-        Paragraph::new(confirmation.text.as_str())
-            .wrap(Wrap { trim: false })
-            .scroll((scroll.min(maximum_scroll), 0)),
-        body,
-    );
-    let choices = if confirmation.complete {
-        "[o] Allow once  [s] Allow this exact call for session  [a] Ask Sterna for another way  [d/Esc] Deny\n↑/↓ PgUp/PgDn scroll · Expires after 10 min · Sandbox unchanged"
-    } else {
-        "[d/Esc] Deny · This action cannot be approved because its complete details exceed the display limit"
-    };
-    let footer_text = match hint {
-        Some(hint) => format!(
-            "fits the request: {:.2} (decision, {} ms)\n{choices}",
-            hint.fits, hint.asked_ms
-        ),
-        None => choices.to_string(),
-    };
-    frame.render_widget(
-        Paragraph::new(footer_text)
-            .style(Style::default().fg(ACCENT))
-            .wrap(Wrap { trim: false }),
-        footer,
-    );
-}
 
 /// Session-owned presentation state. Missing instrumentation stays unknown.
 /// Pass this to `render_screen` on input, resize, runtime events and activity ticks.
@@ -183,6 +103,10 @@ pub struct ScreenState {
     /// UTF-8 byte offset supplied by the live editor; None hides the cursor.
     pub cursor: Option<usize>,
     pub completion_selected: usize,
+    /// What the composer's popup offers for the draft as it stands: the
+    /// commands a slash word matches, or the paths an `@` word does. Empty
+    /// when there are none or the popup was put away.
+    pub completions: Vec<(String, String)>,
     /// A keystroke hint the next keystroke replaces; everything a person may
     /// want to read again is a [`HistoryNote`] instead.
     pub notice: Option<String>,
@@ -224,8 +148,6 @@ pub struct ScreenState {
     pub completion_tick: Option<usize>,
     /// Rows back from the transcript's end; zero follows the current turn.
     pub scrollback: usize,
-    /// A selected notebook cell, inspected locally without model traffic.
-    pub inspection: Option<Inspection>,
     /// User preference, retained across resizes. The caller toggles this field.
     pub sidebar: SidebarVisibility,
     /// Chrome off, composer kept: the transcript takes the whole terminal.
@@ -251,12 +173,24 @@ pub struct ScreenState {
     pub selection: Option<selection::Selection>,
     pub theme: Theme,
     pub settings_root: Option<std::path::PathBuf>,
+    /// The person's own settings folder. `None` -- a test, a machine with no
+    /// home -- saves nothing globally, so no test reaches the real one.
+    pub settings_global: Option<std::path::PathBuf>,
     pub settings_profile: Option<String>,
     pub settings_models: Vec<String>,
     pub mode: Mode,
+    /// The subscription a sign-in is running for, beside the session: the
+    /// dock's chip that brings its panel back.
+    pub signing_in: Option<String>,
+    /// Whether the mode is pinned. Unpinned, a confident read-only request
+    /// may propose Explore, and the chip says `· auto`.
+    pub mode_pinned: bool,
     /// The permission rung, shared live with the approval gate: Shift-Tab
     /// moves it from this thread while a task runs.
     pub permissions: crate::permissions::Ladder,
+    /// The approval gate's memory: every call answered for the whole
+    /// session, which the Ask sheet lists and can forget.
+    pub memory: Option<crate::approval::Memory>,
     pub effort: crate::wire::Effort,
     pub status_line: StatusLine,
     pub panel: Option<Panel>,
@@ -265,6 +199,12 @@ pub struct ScreenState {
     pub reduced_motion: bool,
     /// The terminal shows 24-bit colour, so a bird theme's sprite can be drawn.
     pub truecolor: bool,
+    /// The `ui.background` choice.
+    pub background: background::Background,
+    /// The ground is light: what [`ScreenState::background`] comes to on
+    /// this terminal, resolved when it is set and once the terminal has
+    /// answered.
+    pub light: bool,
     pub pulse: Pulse,
     /// How many of the notes in [`ScreenState::history`] are the session's
     /// own opening, and therefore belong to the card at the top rather than
@@ -363,11 +303,38 @@ pub enum Activity {
     Searching,
     Waiting,
     Compacting,
+    /// An approval or a question is on screen and the turn waits on the
+    /// person: the clock stands still until it is answered.
+    AwaitingYou,
     Complete,
     Failed,
+    /// The turn was stopped before it finished; what ran stands.
+    Stopped(Stopper),
+}
+
+/// Who stopped a turn: the person, with Esc, or an interrupt (Ctrl-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopper {
+    You,
+    Interrupt,
 }
 
 impl Activity {
+    /// A turn is under way: the model, a cell or the person's answer is
+    /// what the session waits on. A local control is never one.
+    pub fn working(self) -> bool {
+        matches!(
+            self,
+            Self::Thinking
+                | Self::Streaming
+                | Self::Executing
+                | Self::Searching
+                | Self::Waiting
+                | Self::Compacting
+                | Self::AwaitingYou
+        )
+    }
+
     /// Fixed four-cell machinery; only the current header moves.
     pub fn indicator(self, tick: usize) -> &'static str {
         let frames = match self {
@@ -378,9 +345,11 @@ impl Activity {
             Self::Searching => ["/.. ", "./. ", "../ ", "./. "],
             Self::Waiting => ["(  )", "( .)", "(..)", "(. )"],
             Self::Compacting => [">  <", " >< ", " [] ", " >< "],
+            Self::AwaitingYou => [" ?? "; 4],
             Self::Idle => [" -- "; 4],
             Self::Complete => [" OK "; 4],
             Self::Failed => [" !! "; 4],
+            Self::Stopped(_) => [" || "; 4],
         };
         frames[tick % frames.len()]
     }
@@ -395,8 +364,10 @@ impl Activity {
             Self::Searching => "searching",
             Self::Waiting => "waiting",
             Self::Compacting => "compacting",
+            Self::AwaitingYou => "waiting for you",
             Self::Complete => "complete",
             Self::Failed => "failed",
+            Self::Stopped(_) => "stopped",
         }
     }
 }
@@ -549,7 +520,7 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
     if prefix.chars().any(char::is_whitespace) {
         return Vec::new();
     }
-    BUILT_INS
+    let matches = BUILT_INS
         .iter()
         .filter(|command| command.name().starts_with(prefix))
         .map(|command| {
@@ -590,29 +561,43 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect standing handlers · /handlers off <name>",
                 ),
                 ("/help".to_string(), "show available commands"),
-                ("/sidebar".to_string(), "auto, show or hide telemetry"),
-                ("/theme".to_string(), "choose a palette · classic or parrot"),
+                (
+                    "/sidebar".to_string(),
+                    "auto, show or hide the sidebar · Ctrl-B",
+                ),
+                ("/theme".to_string(), "choose a bird or a classic palette"),
                 (
                     "/telemetry".to_string(),
                     "live activity, requests and execution · Ctrl-T",
                 ),
                 ("/motion".to_string(), "full, calm or off · how much moves"),
                 (
-                    "/cells".to_string(),
-                    "inspect code and real results by cell",
+                    "/stream".to_string(),
+                    "actions, code or raw · what a cell shows while it is written",
                 ),
-                ("/cell".to_string(), "inspect a numbered cell · /cell 12"),
+                ("/cells".to_string(), "open every cell's card"),
+                (
+                    "/cell".to_string(),
+                    "open the newest cell that ran · /cell 12 for another",
+                ),
                 ("/chat".to_string(), "return to the conversation"),
                 (
                     "/key".to_string(),
                     "enter a provider API key · /key anthropic",
                 ),
-                ("/effort".to_string(), "configure response reasoning effort"),
+                (
+                    "/effort".to_string(),
+                    "default, low, medium, high, xhigh or max",
+                ),
                 (
                     "/context".to_string(),
                     "inspect current context and token usage",
                 ),
                 ("/status".to_string(), "inspect session status"),
+                (
+                    "/resume".to_string(),
+                    "go back to an earlier session in this folder",
+                ),
                 ("/settings".to_string(), "Global / Project settings"),
                 (
                     "/config".to_string(),
@@ -625,9 +610,12 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 (
                     "/permissions".to_string(),
-                    "inspect or configure next-session grants",
+                    "how often it asks · Every call, Commands, Auto-review or Never asks",
                 ),
-                ("/mode".to_string(), "execute, explore (reads only) or plan"),
+                (
+                    "/mode".to_string(),
+                    "Build, Explore (reads only), Plan or auto",
+                ),
                 // Three commands that worked and were in no list, which is
                 // how a command that works comes to look like one Sterna does
                 // not have -- the same defect `/exit` was fixed for.
@@ -643,7 +631,15 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
             .into_iter()
             .filter(|(name, _)| name.trim_start_matches('/').starts_with(prefix)),
         )
-        .collect()
+        .collect::<Vec<_>>();
+    // The name typed in full comes first, so Enter on "/mode" runs /mode
+    // and not /model, and "/cell" runs /cell and not /cells.
+    let mut matches = matches;
+    if let Some(at) = matches.iter().position(|(name, _)| name[1..] == *prefix) {
+        let exact = matches.remove(at);
+        matches.insert(0, exact);
+    }
+    matches
 }
 
 /// What one cell produced, beside the assistant message the notebook already
@@ -704,6 +700,10 @@ pub struct CellView {
     /// is already on screen as this cell's output, error and return regions,
     /// so drawing it again would put the handle table on the screen twice.
     pub answered: bool,
+    /// The question this cell asked and who chose what, as its card's row.
+    pub asked: Option<String>,
+    /// `/rollback` undid what this cell changed.
+    pub rolled_back: bool,
     /// The task capsule as it stood when this cell ended — goal, state,
     /// verified facts, risks and next action (`runtime::capsule`). Display
     /// and rollout state; the model receives it through the result block,
@@ -749,6 +749,15 @@ impl Counted {
             Counted::Gateway => "reported",
             Counted::Estimated => "estimated",
             Counted::Mixed => "part estimated",
+        }
+    }
+
+    /// Who counted, in a sentence's words.
+    pub(crate) fn by(self) -> &'static str {
+        match self {
+            Counted::Gateway => "counted by the provider",
+            Counted::Estimated => "estimated",
+            Counted::Mixed => "partly estimated",
         }
     }
 }
@@ -878,24 +887,27 @@ pub fn handlers_panel(handlers: &[crate::runtime::handlers::HandlerInfo]) -> Pan
         if handlers.is_empty() {
             "No handlers in this task."
         } else {
-            "Task-scoped · /handlers off <name>"
+            "Task-scoped · turn one off here or with /handlers off <name>"
         },
     );
     for h in handlers {
-        panel.rows.push(PanelRow {
-            text: format!(
-                "{} · {} · {} runs · {} drained{}",
-                h.name,
-                if h.active { "active" } else { "stale" },
-                h.runs,
-                h.drained,
-                h.error
-                    .as_ref()
-                    .map(|e| format!(" · {e}"))
-                    .unwrap_or_default()
-            ),
-            command: h.active.then(|| format!("/handlers off {}", h.name)),
-        });
+        let text = format!(
+            "{} · {} · {} runs · {} drained{}",
+            h.name,
+            if h.active { "active" } else { "stale" },
+            h.runs,
+            h.drained,
+            h.error
+                .as_ref()
+                .map(|e| format!(" · {e}"))
+                .unwrap_or_default()
+        );
+        let row = if h.active {
+            PanelRow::run(text, crate::workbench::Action::HandlerOff(h.name.clone()))
+        } else {
+            PanelRow::info(text)
+        };
+        panel.rows.push(row.with_id(format!("handler:{}", h.name)));
     }
     panel
 }
@@ -917,6 +929,55 @@ impl Notebook {
 
     fn cell(&self, ordinal: usize) -> Option<&CellView> {
         self.cells.get(ordinal.checked_sub(1)?)
+    }
+
+    /// The cells that ran a program, by the number the transcript gives
+    /// them. The entry a prose answer leaves in the notebook is not one.
+    pub fn program_cells(&self) -> impl DoubleEndedIterator<Item = (usize, &CellView)> {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter(|(_, view)| view.ran())
+            .map(|(index, view)| (index + 1, view))
+    }
+
+    /// The newest cell that ran a program: what F4 and Ctrl-O act on when
+    /// no card is selected.
+    pub fn last_program_cell(&self) -> Option<usize> {
+        self.program_cells().next_back().map(|(cell, _)| cell)
+    }
+
+    /// The newest cell that called a helper: what F5 and the sidebar's
+    /// helper rows show when no card is selected.
+    pub fn last_with_helpers(&self) -> Option<usize> {
+        self.program_cells()
+            .rev()
+            .find(|(_, view)| !view.helpers.is_empty())
+            .map(|(cell, _)| cell)
+    }
+
+    /// The program cell before or after `from`; the newest one from none.
+    pub fn next_program_cell(&self, from: Option<usize>, forward: bool) -> Option<usize> {
+        let Some(from) = from else {
+            return self.last_program_cell();
+        };
+        let found = if forward {
+            self.program_cells().find(|(cell, _)| *cell > from)
+        } else {
+            self.program_cells().rev().find(|(cell, _)| *cell < from)
+        };
+        found.map(|(cell, _)| cell).or(Some(from))
+    }
+}
+
+impl CellView {
+    /// A program ran here: something was executed, recorded or returned.
+    pub fn ran(&self) -> bool {
+        self.executed_source.is_some()
+            || self.execution.is_some()
+            || self.error.is_some()
+            || self.output.is_some()
+            || self.returned.is_some()
     }
 }
 
@@ -1031,23 +1092,6 @@ pub fn render_screen(
         );
         frame.render_widget(Clear, area);
         telemetry::expanded(frame, area, conversation, served_by, notebook, state);
-    }
-    if let Some(inspection) = &state.inspection {
-        inspection::render(
-            frame,
-            regions.transcript,
-            conversation,
-            notebook,
-            inspection,
-        );
-    }
-    if let Some(panel) = &state.panel {
-        frame.render_widget(Clear, regions.transcript);
-        frame.render_widget(
-            Block::default().style(Style::default().fg(Color::White).bg(Color::Reset)),
-            regions.transcript,
-        );
-        controls::render_panel(frame, regions.transcript, panel, state.theme);
     }
     ribbon::activity(frame, regions.activity, state);
     poster::notice(frame, regions.notice, state);
@@ -1291,7 +1335,7 @@ pub fn render_screen(
     // cells, so what is copied is exactly what is on the screen.
     if let Some(span) = state.selection.filter(|span| !span.is_empty()) {
         let area = frame.area();
-        selection::draw(frame.buffer_mut(), area, span);
+        selection::draw(frame.buffer_mut(), area, span, 0);
     }
 }
 

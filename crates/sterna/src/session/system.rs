@@ -484,26 +484,11 @@ impl PendingDecision {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
             }
         };
+        // The classifier's raw answer is the telemetry's, never the
+        // person's: the task's decision summary carries it.
         Some(match received {
-            Ok(Ok(decision)) => {
-                session_println!(
-                    "decision: intent {} ({:.2}), complexity {} ({:.2}), {} ms",
-                    decision.intent.choice,
-                    decision.intent.confidence,
-                    decision.complexity.choice,
-                    decision.complexity.confidence,
-                    decision.intent.latency_ms
-                );
-                Ok(decision)
-            }
-            Ok(Err(error)) => {
-                session_println!("decision: no answer ({error})");
-                Err(())
-            }
-            Err(()) => {
-                session_println!("decision: no answer (the request never returned)");
-                Err(())
-            }
+            Ok(Ok(decision)) => Ok(decision),
+            Ok(Err(_)) | Err(()) => Err(()),
         })
     }
 }
@@ -591,7 +576,10 @@ impl<'s, 'a> EffortLease<'s, 'a> {
             (crate::config::DecisionMode::On, Some(effort)) => {
                 lease.restore = Some(session.effort.replace(effort));
                 lease.set = Some(effort);
-                session_println!("decision: effort {} for this task", effort.name());
+                session_println!(
+                    "Effort {} for this task: it looks like a question, not a change.",
+                    effort.name()
+                );
             }
             (crate::config::DecisionMode::Shadow, Some(effort)) => {
                 lease.would_set = Some(effort);

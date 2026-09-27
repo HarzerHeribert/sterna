@@ -38,11 +38,23 @@ takes precedence over every other action.
 Mouse first, one interaction model: everything is clickable, and every
 surface behaves like every other.
 
-- A click acts on **release**; a drag selects and copies text instead.
+- A click acts on **release**; a drag selects and copies text instead. A
+  selection stays inside the region it began in (the conversation, the
+  sidebar or the composer), stays on its text while the conversation
+  scrolls, copies a card's text without its frame, and goes on a resize.
 - The wheel scrolls the open surface or the conversation, never both.
   Scrolling up stops following new output; *Latest* returns to the live
   edge.
-- File paths in the conversation are underlined and open on click.
+- File paths in the conversation are underlined and open on click,
+  wherever they stand -- in an answer, a card, the diff's file header. A
+  path is looked up again after every turn, so a new file becomes
+  clickable and a deleted one stops being so. Over SSH a click copies the
+  path instead, and a file that is gone says so.
+- Answers read as Markdown: strong and code text keep their tone without
+  their markers, a code span is never broken at a wrap, fences and tables
+  are shown as written, and a link opens after asking first.
+- A cell's helper calls are listed inside its card; the Helpers tab shows
+  each one's whole account. A cell `/rollback` undid says ↶ ROLLED BACK.
 
 | key | does |
 |---|---|
@@ -50,13 +62,39 @@ surface behaves like every other.
 | F3 | models |
 | F4 | the selected cell's before/after diff |
 | F5 | the selected cell's helpers |
-| Ctrl-O | expand a cell |
+| Ctrl-O | expand the selected cell, else the newest that ran |
+| Alt-↑ / Alt-↓ | select the previous or next cell |
 | Ctrl-T | live telemetry and activity |
 | Ctrl-F | fullscreen: transcript and composer only |
 | Ctrl-G | release or recapture the mouse |
 | Shift-Tab | cycle how often you are asked ([sandbox](sandbox.md#how-often-you-are-asked)) |
 | `?` on an empty composer | every key |
-| Ctrl-C | copy a selection; otherwise stop the running task |
+| Home / End on an empty composer | the conversation's first and last rows |
+
+The composer is a multi-line editor. ↑ and ↓ move between lines and reach
+the history only from the first or last line; a draft is filed in the
+history before a recall, so nothing typed is lost. Enter sends;
+Shift-Enter, Alt-Enter or Ctrl-J start a new line. Ctrl-A/E and Home/End
+act on the caret's line, Ctrl-K/U cut to its end or start and Ctrl-Y puts
+the cut back, Ctrl-W and Alt-Backspace delete a word, Alt-B/F and
+Ctrl-←/→ move by one, and Ctrl-Z / Ctrl-Shift-Z undo and redo edits,
+including a chip that replaced the draft. `/` offers commands and `@`
+offers this project's paths in one popup: ↑↓, Ctrl-P/N or the wheel move
+through it, Tab or Enter takes a row, a click takes it too, and Esc puts
+it away. A draft taller than five lines says how much is above or below.
+| Ctrl-C | in this order: copy a selection (and put it away); stop a running turn; clear the draft (Ctrl-Z brings it back); on an empty composer, say that a second Ctrl-C within 2 s quits |
+| Ctrl-D | on an empty composer between turns, quit; during a turn it says so |
+| Esc | while a turn runs: take back the last queued message, else stop after this cell; again cancels the call in flight |
+
+A message sent while a turn runs is held in Sterna's queue and sent when
+the turn ends, so Esc can take it back. A model, mode or effort chosen
+mid-turn applies from the turn's next request; anything else that needs
+the session waits for the turn to end and says so on the row before it is
+clicked. Opening a sheet or answering a command is not a turn: it starts
+no turn clock and ends in no "complete". A turn ends complete, failed or
+stopped; while an approval or a question waits on you, the card says
+"waiting for you" and the turn's clock stands still. `/exit` mid-turn stops
+the turn and ends the session.
 
 ## Sheets
 
@@ -68,6 +106,14 @@ the gateway where it exists, unknown where it does not), `/theme`,
 `/wizard` and `/settings`. A choice saves at once and Undo reverses it; see
 [configuration](configuration.md). Choosing a model in the navigator
 assigns the model; the gateway still chooses the account that serves it.
+
+A subscription sign-in runs beside the session: its sheet offers the link
+to copy, the address to paste back and a cancel row; Esc leaves it running
+behind a "signing in to … ▸" chip on the dock, and commands keep working.
+Nothing opens a browser on a single click: opening the page asks first,
+and over SSH it is not offered at all. A sign-in with no answer after five
+minutes stops and says so; one that fails or is cancelled offers to start
+again and declares no account. Leaving Sterna ends a sign-in still running.
 
 ## Themes
 
@@ -93,9 +139,10 @@ from photographs; the credits are in the [README](../README.md#art).
   helper evidence are never muted; foreground roles are normal, accent,
   failure, warning, success and muted technical detail.
 - **Plain copy.** Say what happened in plain words, in one voice. No puns.
-- **Motion is decoration, not state.** `ui.motion` (full, calm, off) and
-  `ui.reduced_motion` freeze decoration only; real state and elapsed times
-  stay visible.
+- **Motion is decoration, not state.** `ui.motion` (full, calm, off)
+  freezes decoration only; real state and elapsed times stay visible. The
+  retired `ui.reduced_motion` is removed from a settings file with a
+  one-time notice that names `/motion off`.
 - **Unknown stays unknown.** A missing measurement, an unfinished helper or
   a context window nobody reported is shown as unknown, never as zero.
 - **The diff is this cell's.** Before/after this cell, not against `HEAD`

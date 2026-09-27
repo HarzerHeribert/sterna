@@ -55,11 +55,22 @@ pub(super) fn helper_callback(
         return;
     }
 
-    let asked = asked_summary(&input);
+    // A question is said as it was asked; a payload -- a log to reduce --
+    // only by its size, so a record never repeats what it carried.
+    let asked = if spec.name == "reduce" {
+        asked_summary(&input)
+    } else {
+        crate::helpers::bounded_ask(&input)
+    };
     let slot = state.begin_helper(crate::helpers::HelperRecord {
         helper: spec.name.to_string(),
         verb: spec.verb.to_string(),
         asked: asked.clone(),
+        // The route's model until the answer names the one that served it.
+        usage: crate::helpers::HelperUsage {
+            model: model.clone(),
+            ..Default::default()
+        },
         ..crate::helpers::HelperRecord::default()
     });
     // The reader starts from the project's file listing: measured
@@ -190,5 +201,17 @@ fn find(
 /// persisted to the rollout, and a 4,000-line build log in a lane line is
 /// neither readable nor cheap.
 pub(crate) fn asked_summary(input: &str) -> String {
-    format!("{} lines", thousands(input.lines().count() as u64))
+    match input.lines().count() {
+        1 => "1 line".to_string(),
+        lines => format!("{} lines", thousands(lines as u64)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_size_is_said_in_words_that_agree_with_it() {
+        assert_eq!(super::asked_summary("one"), "1 line");
+        assert_eq!(super::asked_summary("one\ntwo"), "2 lines");
+    }
 }

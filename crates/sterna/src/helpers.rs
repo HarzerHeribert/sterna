@@ -946,7 +946,8 @@ fn run_once_metered(
                 }
             }
         }
-        Err(err) => HelperOutcome::failed(format!("request failed: {err}"), started),
+        // The error already says the request failed.
+        Err(err) => HelperOutcome::failed(err.to_string(), started),
     };
     HelperCall {
         outcome,
@@ -1181,7 +1182,7 @@ pub const RECAP_PREAMBLE: &str = "You close out a coding session. In at most two
      never claim something succeeded that the transcript does not show succeeding.";
 
 /// One short description of an input, bounded, never the payload itself.
-fn bounded_ask(input: &str) -> String {
+pub(crate) fn bounded_ask(input: &str) -> String {
     let line = input.lines().next().unwrap_or("").trim();
     if line.chars().count() <= 60 {
         line.to_string()

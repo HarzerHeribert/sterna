@@ -18,7 +18,7 @@ pub enum Theme {
     Cobalt,
     Mint,
     Rose,
-    /// A parrot: its plumage is the palette, and it perches in the card.
+    /// A bird: its plumage is the palette, and it perches in the card.
     Bird(crate::workbench::plumage::Bird),
 }
 impl Theme {
@@ -32,7 +32,7 @@ impl Theme {
             Self::default()
         }
     }
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Neon,
         Self::Amber,
         Self::Ice,
@@ -49,6 +49,7 @@ impl Theme {
         Self::Bird(Bird::GreenWing),
         Self::Bird(Bird::Military),
         Self::Bird(Bird::Cockatoo),
+        Self::Bird(Bird::ArcticTern),
     ];
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -125,7 +126,10 @@ impl Theme {
     #[must_use]
     pub fn family(self) -> Family {
         match self {
-            Self::Bird(_) => Family::Parrots,
+            Self::Bird(bird) => match bird.kin() {
+                crate::workbench::plumage::Kin::Parrot => Family::Parrots,
+                crate::workbench::plumage::Kin::Seabird => Family::Seabirds,
+            },
             _ => Family::Classic,
         }
     }
@@ -144,21 +148,6 @@ impl Theme {
             .into_iter()
             .flat_map(|family| Theme::ALL.into_iter().filter(move |t| t.family() == family))
     }
-    pub fn picker(current: Theme) -> super::Panel {
-        let themes: Vec<Theme> = Theme::by_family().collect();
-        super::Panel {
-            title: "Themes".into(),
-            selected: themes.iter().position(|t| *t == current).unwrap_or(0),
-            rows: themes
-                .iter()
-                .map(|t| super::PanelRow {
-                    text: format!("{} · {}", t.family().label(), t.title()),
-                    command: Some(format!("/theme {}", t.name())),
-                })
-                .collect(),
-            ..super::Panel::default()
-        }
-    }
 }
 
 /// The families themes come in. The picker shows one heading per family,
@@ -169,14 +158,17 @@ pub enum Family {
     Classic,
     /// A parrot: its plumage is the palette, and it perches in the card.
     Parrots,
+    /// A seabird, drawn the same way.
+    Seabirds,
 }
 impl Family {
-    pub const ALL: [Self; 2] = [Self::Classic, Self::Parrots];
+    pub const ALL: [Self; 3] = [Self::Classic, Self::Parrots, Self::Seabirds];
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Classic => "Classic",
             Self::Parrots => "Parrots",
+            Self::Seabirds => "Seabirds",
         }
     }
     /// One line on what the family is, under its heading.
@@ -184,7 +176,7 @@ impl Family {
     pub fn blurb(self) -> &'static str {
         match self {
             Self::Classic => "a palette alone",
-            Self::Parrots => "the bird's plumage, and the bird",
+            Self::Parrots | Self::Seabirds => "the bird's plumage, and the bird",
         }
     }
 }

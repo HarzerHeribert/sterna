@@ -82,7 +82,7 @@ impl Rung {
             Self::Manual => "Confirms every admitted file and command call before it runs.",
             Self::AcceptEdits => "Admitted edits run. Every command line is confirmed.",
             Self::Auto => {
-                "Edits run, and a command a reviewer can vouch for runs. Anything else is confirmed."
+                "Edits run, and a command that only reads or builds runs. Anything else is confirmed."
             }
             Self::Full => {
                 "Nothing is confirmed. Existing denials and the sandbox boundary still hold."
@@ -90,13 +90,34 @@ impl Rung {
         }
     }
 
+    /// The same promise as [`Self::sentence`], short enough for a sidebar
+    /// line and the session card.
+    #[must_use]
+    pub fn asks(self) -> &'static str {
+        match self {
+            Self::Manual => "asks before every call",
+            Self::AcceptEdits => "asks before every command",
+            Self::Auto => "asks before commands other than reads and builds",
+            Self::Full => "nothing is confirmed",
+        }
+    }
+
+    /// The notice every route that moves the rung prints.
+    #[must_use]
+    pub fn now(self) -> String {
+        format!("Ask is now {} · {}", self.label(), self.sentence())
+    }
+
+    /// The file's word or the screen's, in any case: `manual` and
+    /// `Every call` are the same rung.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
-        match word.trim() {
-            "manual" => Some(Self::Manual),
-            "accept-edits" | "accept_edits" | "acceptedits" => Some(Self::AcceptEdits),
-            "auto" => Some(Self::Auto),
-            "full" => Some(Self::Full),
+        let word = word.trim().to_ascii_lowercase();
+        match word.as_str() {
+            "manual" | "every call" => Some(Self::Manual),
+            "accept-edits" | "accept_edits" | "acceptedits" | "commands" => Some(Self::AcceptEdits),
+            "auto" | "auto-review" => Some(Self::Auto),
+            "full" | "never asks" => Some(Self::Full),
             _ => None,
         }
     }
@@ -460,6 +481,22 @@ impl<K: Ord + Clone> Judged<K> {
 
     pub fn len(&self) -> usize {
         self.0.lock().map(|answers| answers.len()).unwrap_or(0)
+    }
+
+    /// Every remembered answer.
+    pub fn entries(&self) -> Vec<(K, bool)> {
+        self.0
+            .lock()
+            .map(|answers| answers.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Forgets the answers whose key matches: the person took them back,
+    /// so the next identical question is asked again.
+    pub fn forget_where(&self, matches: impl Fn(&K) -> bool) {
+        if let Ok(mut answers) = self.0.lock() {
+            answers.retain(|key, _| !matches(key));
+        }
     }
 
     pub fn is_empty(&self) -> bool {

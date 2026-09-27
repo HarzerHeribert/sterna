@@ -137,31 +137,19 @@ pub(super) fn panel(usage: Option<&Usage>, now_unix: i64) -> Panel {
             .flatten()
             .collect::<Vec<_>>()
             .join(" · ");
-        rows.push(tui::PanelRow {
-            text: if who.is_empty() {
-                account.account.clone()
-            } else {
-                format!("{} — {who}", account.account)
-            },
-            command: None,
-        });
+        rows.push(tui::PanelRow::info(if who.is_empty() {
+            account.account.clone()
+        } else {
+            format!("{} — {who}", account.account)
+        }));
         if let Some(error) = &account.error {
-            rows.push(tui::PanelRow {
-                text: format!("  {error}"),
-                command: None,
-            });
+            rows.push(tui::PanelRow::info(format!("  {error}")));
         }
         for window in &account.windows {
-            rows.push(tui::PanelRow {
-                text: window_line(window, now_unix),
-                command: None,
-            });
+            rows.push(tui::PanelRow::info(window_line(window, now_unix)));
         }
         if account.limited {
-            rows.push(tui::PanelRow {
-                text: "  a limit is reached now".to_string(),
-                command: None,
-            });
+            rows.push(tui::PanelRow::info("  a limit is reached now".to_string()));
         }
     }
     Panel::rows("Usage", rows)

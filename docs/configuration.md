@@ -24,9 +24,14 @@ permission denial survives every project overlay and `--yolo`.
 ## Changing a setting
 
 - **`/settings`** (or F2) opens the settings sheet: Everyday, Display,
-  Little helpers, Models & accounts, Subagents and Advanced, each with a
-  Global and a Project tab. A choice validates and saves at once; Undo
-  restores the previous operation. Viewing creates no files.
+  Little helpers, Models & accounts, Subagents, Advanced and Tuning (the
+  decision thresholds). It opens on Global; a choice is written to the
+  project only when the Project tab (F6) is chosen, and a row the project
+  overrides says so. Each row shows what the running session uses now. A
+  choice validates and saves at once; Ctrl-Z, or the undo chip beside the
+  notice, takes back the newest change -- from Settings, a chip, Shift-Tab
+  or a command alike. Viewing creates no files. `/settings <word>` opens on
+  the row the word names.
 - **`/wizard`** walks through sign-in, a model for each workload and Jev.
 - **From the shell**, with no model, gateway or terminal needed:
 
@@ -38,9 +43,8 @@ permission denial survives every project overlay and `--yolo`.
   sterna config --help                       # every key, its type and choices
   ```
 
-Display settings (`ui.*`) apply at once. Runtime and permission settings
-apply from the next session; `/models` changes the model between turns of a
-running one. Unknown keys and invalid values are refused and the file is
+Display settings (`ui.*`), the rung, the mode, the effort and the models
+apply at once; a row that waits for the next session says so. Unknown keys and invalid values are refused and the file is
 left byte-identical. Values are literal: nothing is shell-expanded or run.
 Credentials never belong here — keys go to the gateway (`/key`).
 
@@ -50,8 +54,8 @@ Credentials never belong here — keys go to the gateway (`/key`).
 |---|---|
 | `model.parent` | the model that answers you |
 | `session.effort` | how hard it thinks: `low` … `max` |
-| `session.mode` | `execute`, `explore` (reads only) or `plan` |
-| `permissions.mode` | how often you are asked: `manual`, `accept-edits`, `auto`, `full` ([sandbox](sandbox.md)) |
+| `session.mode` | `build`, `explore` (reads only) or `plan` |
+| `permissions.mode` | how often you are asked: `manual` (Every call), `accept-edits` (Commands), `auto` (Auto-review), `full` (Never asks) ([sandbox](sandbox.md)) |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow |
 | `permissions.full_access` | global only: the three halves of `--full-access` |
 | `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
@@ -59,7 +63,7 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
 | `supervisor.model`, `supervisor.every` | the loop watcher ([supervisor](supervisor.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
-| `ui.motion`, `ui.reduced_motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
+| `ui.motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
 | `web.enabled`, `web.allow_domains`, `web.search_endpoint`, … | the web broker ([web](web.md)) |
 | `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits; nothing caps a task's cells unless you set it |
 

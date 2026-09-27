@@ -548,7 +548,7 @@ fn the_profile_is_built_once_per_session() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        stdout.matches("/tool read: exit 0 under").count(),
+        stdout.matches("/tool read: exit 0 · ").count(),
         2,
         "two calls did not both run: {stdout}"
     );

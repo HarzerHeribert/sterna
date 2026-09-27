@@ -354,16 +354,17 @@ fn inert_settings(
                 .into(),
         );
     }
-    // The trap that cost a real session its test run: a rung is not a grant.
-    // `Profile::admits_command` refuses every line without a `Bash(...)`
-    // pattern whatever the rung, so `permissions.mode = full` on its own
-    // runs nothing.
+    // The trap that cost a real session its test run: a rung is not a grant
+    // where nobody can be asked. A terminal session judges an unlisted line
+    // per call (`Profile::weigh_command`); a run with no terminal keeps
+    // `Profile::admits_command`, which refuses every line without a
+    // `Bash(...)` pattern whatever the rung.
     if rung == Some("full")
         && !profile.admits_every_command()
         && profile.command_pattern_count() == 0
     {
         inert.push(
-            "[permissions] mode is `full` but no `Bash(...)` pattern is allowed, so no command line runs — a rung decides how often you are asked, never what is admissible; add a Bash grant to permissions.allow"
+            "[permissions] mode is `full` but no `Bash(...)` pattern is allowed, so a run with no terminal to ask at runs no command line — add a Bash grant to permissions.allow for those runs"
                 .into(),
         );
     }

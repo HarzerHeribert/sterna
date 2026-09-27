@@ -26,7 +26,8 @@ use crate::subscription::connect::Progress;
 pub enum Method {
     /// A link opened in a browser, or a callback address pasted back.
     Browser,
-    /// A code entered on any device; only OpenAI issues one.
+    /// A code entered on any device. OpenAI issues one when it is asked
+    /// for; xAI's login (`-xai-login`) is always one, whatever it is called.
     DeviceCode,
 }
 
@@ -173,6 +174,8 @@ const SAVED: &str = "Authentication saved to";
 #[derive(Debug, Default)]
 pub struct LoginOutput {
     awaiting_link: bool,
+    /// xAI names its device link on the line after its own heading.
+    awaiting_device_link: bool,
     device_link: Option<String>,
     failure: Option<String>,
 }
@@ -199,7 +202,21 @@ impl LoginOutput {
             self.device_link = Some(link.trim().to_owned());
             return None;
         }
-        if let Some(code) = line.strip_prefix("Codex device code:") {
+        // xAI: "To authenticate, please visit:", the link on a line of its
+        // own, then "Then enter this code: ABCD".
+        if line.starts_with("To authenticate, please visit") {
+            self.awaiting_device_link = true;
+            return None;
+        }
+        if self.awaiting_device_link && line.starts_with("https://") {
+            self.awaiting_device_link = false;
+            self.device_link = Some(line.to_owned());
+            return None;
+        }
+        if let Some(code) = line
+            .strip_prefix("Codex device code:")
+            .or_else(|| line.strip_prefix("Then enter this code:"))
+        {
             return Some(Progress::DeviceCode {
                 verification_url: self.device_link.clone()?,
                 user_code: code.trim().to_owned(),
@@ -297,6 +314,28 @@ pub fn open_in_browser(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// xAI's login is a device flow: its link on the line after its own
+    /// heading, then the code. Both reach the person.
+    #[test]
+    fn xai_device_flow_yields_a_link_and_a_code() {
+        let mut output = LoginOutput::default();
+        let said: Vec<_> = [
+            "To authenticate, please visit:",
+            "https://accounts.x.ai/oauth2/device?user_code=ABCD",
+            "Then enter this code: ABCD",
+        ]
+        .into_iter()
+        .filter_map(|line| output.read(line))
+        .collect();
+        assert_eq!(
+            said,
+            [Progress::DeviceCode {
+                verification_url: "https://accounts.x.ai/oauth2/device?user_code=ABCD".into(),
+                user_code: "ABCD".into(),
+            }]
+        );
+    }
 
     /// The broker's own no-browser Claude login output, captured 2026-09-14
     /// from CLIProxyAPI 7.2.153 with the challenge and state shortened.

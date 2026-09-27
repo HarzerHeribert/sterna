@@ -335,6 +335,19 @@ impl Confinement {
         }
     }
 
+    /// Where the call ran, as a person reads it after `/tool`: the sandbox's
+    /// backend is the doctor's to name, not the result line's.
+    pub fn plainly(self) -> &'static str {
+        match self {
+            Confinement::BrokeredNetwork => "went through the web broker",
+            Confinement::Seatbelt | Confinement::Landlock | Confinement::AppContainer => {
+                "ran in the sandbox"
+            }
+            Confinement::DangerouslyUnconfined => "ran without the OS sandbox",
+            Confinement::InProcess => "ran inside Sterna",
+        }
+    }
+
     /// One word for a status line, where the sentence [`Confinement::as_str`]
     /// returns has no room.
     pub fn short(self) -> &'static str {
@@ -696,7 +709,11 @@ fn checked_call(
             tool: tool.name().into(),
         });
     }
-    let checked = check_arguments(ctx.profile, tool, args, trace)?;
+    // A command line no allow pattern names goes to the rung's judgement,
+    // but only where the rung judges calls and someone can be asked; with
+    // no gate, or nobody at the terminal, it stays refused as before.
+    let judged = gate.is_some_and(|gate| !gate.ladder().is_unattended());
+    let checked = check_arguments(ctx.profile, tool, args, trace, judged)?;
     if let Some(gate) = gate {
         if ctx.profile.root().to_str().is_none()
             || checked
@@ -711,11 +728,23 @@ fn checked_call(
             .into());
         }
         let action = crate::approval::Action::new(tool.name(), ctx.profile.root(), trace.clone());
-        if !gate.admit(action.clone(), stopped) {
+        let rule = match gate.admit(action.clone(), stopped) {
+            crate::approval::Admission::Allowed => None,
+            // Cancelled the way a running call is: reported as cancelled,
+            // never as a refusal the model should work around.
+            crate::approval::Admission::Cancelled => {
+                return Err(ToolError::Cancelled {
+                    tool: tool.name().into(),
+                });
+            }
+            crate::approval::Admission::DeniedEarlier => Some(
+                "you denied this exact call earlier in this session; it stays denied until you forget it on the Ask sheet"
+                    .to_string(),
+            ),
             // A person who refused with words gets them delivered where the
             // model reads every refusal: as the rule. The refusal itself is
             // the same refusal either way.
-            let rule = match gate.redirect_for(&action) {
+            crate::approval::Admission::Denied => Some(match gate.redirect_for(&action) {
                 Some(text) if text.trim().is_empty() => {
                     "the person declined this exact call and asks you to propose another way to do it: say what you would do instead, then do that".to_string()
                 }
@@ -723,11 +752,16 @@ fn checked_call(
                     "the person declined this exact call and asks for another way: \"{}\" -- do that instead",
                     text.trim()
                 ),
-                None => "the host call gate denied or cancelled this exact attempt".to_string(),
-            };
+                None if !action.confirmation().complete => {
+                    "too large to confirm in one prompt; split it into smaller calls".to_string()
+                }
+                None => "the person denied this call".to_string(),
+            }),
+        };
+        if let Some(rule) = rule {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
-                path: String::new(),
+                path: action.label(),
                 rule,
             }
             .into());
@@ -736,7 +770,7 @@ fn checked_call(
         // the original arguments again; a retargeted symlink gets no authority
         // from the old answer even when both destinations are in the root.
         let mut current = CheckedArgs::new();
-        check_arguments(ctx.profile, tool, args, &mut current)?;
+        check_arguments(ctx.profile, tool, args, &mut current, judged)?;
         if *trace != current || stopped() {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
@@ -1208,6 +1242,7 @@ fn check_arguments(
     tool: &Tool,
     args: &Args,
     trace: &mut CheckedArgs,
+    judged: bool,
 ) -> Result<Vec<(&'static str, Checked)>, PermissionDenied> {
     for given in args.names() {
         if !tool.args().iter().any(|arg| arg.name() == given) {
@@ -1291,7 +1326,11 @@ fn check_arguments(
                 );
             }
             (ArgKind::CommandLine, Some(Argument::Text(value))) => {
-                profile.admits_command(value)?;
+                if judged {
+                    profile.weigh_command(value)?;
+                } else {
+                    profile.admits_command(value)?;
+                }
                 admit(
                     &mut checked,
                     trace,
@@ -1627,7 +1666,9 @@ fn spawn_confined(
     let mut descendant_binaries = if tool.argv() == Argv::ShellCommand {
         argv.last()
             .and_then(|value| value.to_str())
-            .and_then(|line| profile.admits_command(line).ok())
+            // The line was admitted or judged before it got here; this only
+            // names the programs the OS layer lets it start.
+            .and_then(|line| profile.weigh_command(line).ok())
             .map(|command| {
                 command
                     .executables()
@@ -2288,6 +2329,28 @@ fn truncate(text: &str, limit: usize) -> String {
 mod tests {
     use super::*;
 
+    /// The `/tool` result line says where a call ran in words, never by the
+    /// sandbox backend's name.
+    #[test]
+    fn where_a_call_ran_is_said_plainly() {
+        for backend in [
+            Confinement::Seatbelt,
+            Confinement::Landlock,
+            Confinement::AppContainer,
+        ] {
+            assert_eq!(backend.plainly(), "ran in the sandbox");
+        }
+        assert_eq!(Confinement::InProcess.plainly(), "ran inside Sterna");
+        assert_eq!(
+            Confinement::DangerouslyUnconfined.plainly(),
+            "ran without the OS sandbox"
+        );
+        assert_eq!(
+            Confinement::BrokeredNetwork.plainly(),
+            "went through the web broker"
+        );
+    }
+
     /// **The fallback's dialect, checked structurally because on a machine
     /// with ripgrep it never runs.** `checked_call` hands a `grep` call to
     /// ripgrep wherever ripgrep is installed, so every behavioural search
@@ -2546,7 +2609,8 @@ mod tests {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("read").unwrap();
         let args = Args::new().with("path", "x").with("depth", "3");
-        let denied = check_arguments(&profile, tool, &args, &mut CheckedArgs::new()).unwrap_err();
+        let denied =
+            check_arguments(&profile, tool, &args, &mut CheckedArgs::new(), false).unwrap_err();
         assert_eq!(denied.path, "depth");
         assert!(denied.rule.contains("declares no argument named `depth`"));
     }
@@ -2555,8 +2619,8 @@ mod tests {
     fn a_missing_required_argument_is_refused() {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("grep").unwrap();
-        let denied =
-            check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new()).unwrap_err();
+        let denied = check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new(), false)
+            .unwrap_err();
         assert!(denied.rule.contains("requires an argument named `pattern`"));
     }
 
@@ -2566,7 +2630,7 @@ mod tests {
         let tool = registry::lookup("grep").unwrap();
         let args = Args::new().with("pattern", "-rf");
         let mut trace = CheckedArgs::new();
-        let checked = check_arguments(&profile, tool, &args, &mut trace).unwrap();
+        let checked = check_arguments(&profile, tool, &args, &mut trace, false).unwrap();
         // The trajectory records the pattern as admitted, and only that.
         assert_eq!(trace.get("pattern").map(String::as_str), Some("-rf"));
         #[cfg(not(windows))]

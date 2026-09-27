@@ -35,6 +35,9 @@ struct App {
     root: PathBuf,
     #[cfg(unix)]
     terminal_flags: Vec<u8>,
+    /// What this terminal answers when asked its background colour
+    /// (OSC 11); `None` is a terminal that ignores the question.
+    ground: Option<&'static str>,
 }
 impl App {
     fn start(base: &str) -> Self {
@@ -194,6 +197,7 @@ impl App {
             root,
             #[cfg(unix)]
             terminal_flags,
+            ground: None,
         }
     }
     /// Waits for a file the session was asked to write to appear.
@@ -258,9 +262,23 @@ impl App {
     /// position. **Row 1, column 1 is a true answer here**, not a placeholder:
     /// the emulator this fixture keeps is the only screen there is, and the
     /// cursor starts at its origin.
+    ///
+    /// It answers the background query the way a terminal does too: OSC 11
+    /// with its ground when it has one, and always the device attributes
+    /// (`ESC [ c`) that follow it, which every terminal reports.
     fn answer_cursor_query(&mut self, bytes: &[u8]) {
         if bytes.windows(4).any(|w| w == b"\x1b[6n") {
             let _ = self.input.write_all(b"\x1b[1;1R");
+            let _ = self.input.flush();
+        }
+        if let Some(ground) = self.ground
+            && bytes.windows(6).any(|w| w == b"\x1b]11;?")
+        {
+            let _ = write!(self.input, "\x1b]11;{ground}\x1b\\");
+            let _ = self.input.flush();
+        }
+        if bytes.windows(3).any(|w| w == b"\x1b[c") {
+            let _ = self.input.write_all(b"\x1b[?62;22c");
             let _ = self.input.flush();
         }
     }
@@ -286,6 +304,22 @@ impl App {
                 })
             })
         });
+    }
+    /// The file a choice is saved to unless Project is chosen in Settings
+    /// (decision 6), in the store's own spelling.
+    fn global_settings(&self) -> std::path::PathBuf {
+        sterna::settings::Store::with_global(
+            &self.root,
+            Some(self.root.join("global-config").join("sterna")),
+        )
+        .unwrap()
+        .path(sterna::settings::Scope::Global)
+    }
+    /// The session's first frame is up. The header's model chip is not the
+    /// sign: at eighty columns how often it asks and which mode it is in
+    /// outrank the model's name, and the name gives way first.
+    fn ready(&mut self) {
+        self.contains("⠿ STERNA");
     }
     /// Asserts text is **not** on a settled screen.
     ///
@@ -398,6 +432,17 @@ impl App {
                     self.terminal_flags,
                     "raw terminal mode was not restored"
                 );
+                // A session that ended some other way than the two it is
+                // asked to end by says why: what it printed last.
+                if ![0, 130].contains(&status.exit_code()) {
+                    let tail = &self.bytes[self.bytes.len().saturating_sub(2000)..];
+                    eprintln!(
+                        "sterna exited {}; its screen:\n{}\nits last output: {:?}",
+                        status.exit_code(),
+                        self.screen.screen().contents(),
+                        String::from_utf8_lossy(tail)
+                    );
+                }
                 return status.exit_code();
             }
             assert!(
@@ -405,7 +450,12 @@ impl App {
                 "session did not exit: {}",
                 self.screen.screen().contents()
             );
-            thread::sleep(Duration::from_millis(20));
+            // Kept up to date while waiting, so a session that does not exit
+            // is reported with the screen it is actually showing.
+            if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(20)) {
+                self.screen.process(&bytes);
+                self.bytes.extend(bytes);
+            }
         }
     }
 }
@@ -566,16 +616,17 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
     "#,
     );
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
-    app.contains("fixture-model");
+    app.ready();
     // The dialog prints the call's resolved path, and at 80 columns a long
     // temp root (Windows: `\\?\C:\Users\<name>\AppData\Local\Temp\…`) wraps
     // it mid-name, so `once.txt` is not on one line. Wide enough never to.
     app.resize(160);
     app.send(b"proceed\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.contains("once.txt");
     assert!(!app.root.join("once.txt").exists());
-    // Enter and pasted text must never accept the modal by accident.
+    // Enter and pasted text must never accept the modal by accident: the
+    // prompt has not been up, quietly, for half a second.
     app.send(b"\r\x1b[200~o\x1b[201~");
     app.settle(100);
     if app.root.join("once.txt").exists() {
@@ -591,15 +642,17 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         );
     } else {
         assert!(!app.root.join("once.txt").exists());
+        app.settle(600);
         app.send(b"o");
     }
     app.wait_for_file("once.txt");
-    app.contains("\"content\": \"remember\"");
+    app.contains("│ remember");
     assert_eq!(
         std::fs::read_to_string(app.root.join("once.txt")).unwrap(),
         "once"
     );
     assert!(!app.root.join("remember.txt").exists());
+    app.settle(600);
     app.send(b"s");
     // Canonically equivalent repeated arguments skip a second prompt.
     app.wait_for_file("remember.txt");
@@ -608,7 +661,8 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         "remember"
     );
     assert!(!app.root.join("denied.txt").exists());
-    app.contains("\"content\": \"must not appear\"");
+    app.contains("│ must not appear");
+    app.settle(600);
     app.send(b"d");
     app.contains_line("APPROVAL FINISHED");
     assert!(!app.root.join("denied.txt").exists());
@@ -621,16 +675,61 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     let base =
         approval_provider(r#"write({path: "cancelled.txt", content: "no"}); return "done";"#);
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"proceed\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.send(b"\x03");
     app.wait("cancelled approval closes", |screen| {
-        !screen.contents().contains("Approve exact tool call")
+        !screen.contents().contains("APPROVE")
     });
+    // Ctrl-C at an approval stops the turn as Ctrl-C does anywhere, and
+    // says so.
+    app.contains("stopped by Ctrl-C");
     assert!(!app.root.join("cancelled.txt").exists());
     app.settle(300);
     app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// **An approval is answered on purpose.** Keys typed while it appears --
+/// a sentence carried on past the moment it showed -- are held back, never
+/// taken as an answer: the `s` and the `a` in "also please make sure" must
+/// neither allow the write for the session nor open "another way".
+#[test]
+fn an_approval_ignores_keys_typed_before_it_was_shown() {
+    let base = approval_provider(r#"write({path: "typed.txt", content: "no"}); return "done";"#);
+    let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
+    app.ready();
+    app.send(b"write it\r");
+    // Alone, so it sends: an Enter with more typing already behind it is a
+    // newline in the draft.
+    thread::sleep(Duration::from_millis(150));
+    for byte in b"also please make sure" {
+        app.send(&[*byte]);
+        thread::sleep(Duration::from_millis(80));
+    }
+    app.contains("APPROVE");
+    app.settle(200);
+    assert!(
+        !app.root.join("typed.txt").exists(),
+        "a typed-ahead letter answered the approval"
+    );
+    let screen = app.screen.screen().contents();
+    assert!(
+        screen.contains("APPROVE"),
+        "the approval is gone:\n{screen}"
+    );
+    assert!(!screen.contains("ANOTHER WAY"), "{screen}");
+    // Once the typing stops and the prompt has been up for half a second,
+    // a key is an answer again.
+    app.settle(600);
+    app.send(b"d");
+    app.wait("the denied approval closes", |screen| {
+        !screen.contents().contains("APPROVE")
+    });
+    assert!(!app.root.join("typed.txt").exists());
+    app.settle(300);
+    app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
 }
 
@@ -760,9 +859,9 @@ fn held_cell_helper_provider() -> (String, mpsc::Receiver<serde_json::Value>, mp
 fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_returns() {
     let (base, requests, _release) = held_provider();
     let mut app = App::start_with_helpers(&base, "helper-tier");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     let task = "find where helper cancellation is implemented";
     app.send(format!("{task}\r").as_bytes());
 
@@ -796,7 +895,7 @@ fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_retur
 fn live_cell_helper_shows_its_lane_before_its_provider_returns() {
     let (base, requests, _release) = held_cell_helper_provider();
     let mut app = App::start_with_helpers(&base, "helper-tier");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"find this\r");
 
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -805,7 +904,8 @@ fn live_cell_helper_shows_its_lane_before_its_provider_returns() {
         let text = screen.contents();
         text.contains("find")
             && text.contains("scanning")
-            && text.contains("1 lines")
+            && text.contains("scanning find the needle")
+            && text.contains("find · helper-tier")
             && text.contains("executing")
     });
 
@@ -823,7 +923,10 @@ fn bare_sterna_opens_the_live_composer_in_its_current_project() {
     app.contains("message or / for commands");
     app.send(b"bare entrypoint draft");
     app.contains("bare entrypoint draft");
-    app.send(b"\x15/exit\r");
+    // Asked, so the session is one worth keeping.
+    app.send(b"\r");
+    app.contains("ERROR:");
+    app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
     // One file per session now, named by the id `/exit` prints, so the
     // assertion is that a rollout was written -- not where a single
@@ -856,13 +959,13 @@ fn bare_sterna_opens_the_live_composer_in_its_current_project() {
 fn live_composition_completion_model_selection_busy_input_resize_and_exit() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.contains("Describe the next step");
     assert!(app.screen.screen().alternate_screen());
     app.send(b"/theme amber\r");
     app.contains("Theme: amber");
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     app.send(b"/mo");
     app.contains("set the parent, helper or subagent model");
     app.send(b"\tfixture-next\r");
@@ -943,14 +1046,19 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"fail this\r");
     app.contains("ERROR:");
     app.contains("request failed");
+    app.contains("Couldn't reach the model's endpoint");
+    app.refute(
+        "a failure says what failed once",
+        "request failed: request failed",
+    );
     app.send(b"/theme amber\r");
     app.contains("Theme: amber");
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     app.send(b"/mo");
     app.contains("set the parent, helper or subagent model");
     app.send(b"\x15/exit\r");
@@ -961,7 +1069,7 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
 #[test]
 fn double_ctrl_c_restores_the_terminal_before_exit() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"\x03");
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
@@ -973,7 +1081,7 @@ fn double_ctrl_c_restores_the_terminal_before_exit() {
 fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     // Shift-Tab is the ladder's key, not the request mode's: it moves the
     // rung and leaves the mode where it was. The two axes are independent —
     // `sandbox-grants.md` §10 — and this is the live proof of it.
@@ -998,9 +1106,9 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
         "Never asks",
     );
     app.send(b"/mode explore\r");
-    app.contains("Mode: explore");
+    app.contains("Mode is now Explore");
     app.send(b"/mode plan\r");
-    app.contains("Mode: plan");
+    app.contains("Mode is now Plan");
     app.send(b"plan this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     // The mode line is task context: it rides in the task's own message.
@@ -1020,7 +1128,7 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     // changes nothing runs, and writes are refused by the profile.
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"/mode execute\r");
-    app.contains("Mode: execute");
+    app.contains("Mode is now Build");
     app.send(b"/context\r");
     app.contains("Next request:");
     app.send(b"\x1b");
@@ -1031,10 +1139,10 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     // and `/exit` sent into that gap never reach the composer, which is the
     // macOS and Windows cells' "session did not exit" with the frame still
     // on screen. The statusline's own note is the outcome waited for next;
-    // `fixture-model` was on screen all along and waited for nothing.
+    // the header was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
-        !screen.contains("Next request:") && !screen.contains("Esc closes")
+        !screen.contains("Next request:") && !screen.contains("Esc · Close")
     });
     app.send(b"/statusline compact\r");
     app.contains("Status line");
@@ -1055,20 +1163,89 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
     app.contains("Auto-review");
+    // Typed in full, by its label or its file word, it is still confirmed
+    // on the one sheet every route to it uses, and that sheet opens on
+    // Cancel.
     app.send(b"/permissions full\r");
-    app.contains("→ full");
-    // The panel arrives as a runtime update, so it can still be settling
-    // when the line it carries first appears; a key sent into that gap is
-    // read by the composer underneath and not by the panel.
-    app.settle(120);
-    app.send(b"\x1b");
-    app.wait("the permissions panel closes on Escape", |screen| {
-        !screen.contents().contains("Esc · Back")
+    app.contains("CONFIRM");
+    // A key sooner than half a second is held back: the confirm arms first.
+    app.settle(600);
+    app.send(b"\r");
+    app.wait("Cancel goes back unchanged", |screen| {
+        !screen.contents().contains("CONFIRM")
     });
+    app.refute("a reflexive Enter changes nothing", "Ask is now");
+    app.send(b"/permissions never asks\r");
+    app.contains("CONFIRM");
+    app.settle(600);
+    app.send(b"\x1b[B");
+    app.settle(60);
+    app.send(b"\r");
+    app.contains("Ask is now Never asks");
     // And the session bar says so, in the word it shows everywhere else.
-    app.contains("Never asks");
+    // The confirmation closed itself: no Escape is sent to the composer,
+    // where one followed by `/exit` can read as Alt-/.
+    app.wait("the confirmation closes", |screen| {
+        !screen.contents().contains("Esc · Close") && !screen.contents().contains("Esc · Back")
+    });
+    app.contains("⟨ Never asks ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
+}
+
+/// **A sign-in runs beside the session.** The panel opens on the link to
+/// copy; Esc leaves it running behind a dock chip; commands keep working
+/// meanwhile; and leaving Sterna takes the gateway's sign-in down with it.
+#[cfg(unix)]
+#[test]
+fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    let pid_file = app.root.join("sign-in.pid");
+    let executable = app.root.join("no-gateway");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  subscriptions)\n    echo $$ > '{}'\n    printf '%s\\n' '{{\"state\":\"opened\",\"authorize_url\":\"https://accounts.x.ai/sign-in?x=1\"}}'\n    exec sleep 60 ;;\n  *) printf '%s\\n' '{{\"version\":1,\"accounts\":[]}}' ;;\nesac\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    app.send(b"/login grok\r");
+    app.contains("SIGN IN · GROK");
+    app.contains("copy the sign-in link");
+    // Nothing opened a browser: the gateway was told not to, and the open
+    // row asks first.
+    app.settle(200);
+    app.send(b"\x1b");
+    app.contains("signing in to Grok ▸");
+    // The session is free: a command answers while the sign-in waits.
+    app.send(b"/status\r");
+    app.contains("Ask: Auto-review");
+    app.settle(200);
+    app.send(b"\x1b");
+    app.wait("the status sheet closes", |screen| {
+        !screen.contents().contains("Esc · Close")
+    });
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(), "the sign-in outlived the session");
 }
 
 #[cfg(unix)]
@@ -1077,7 +1254,7 @@ fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
     use std::os::unix::fs::PermissionsExt;
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let executable = app.root.join("no-gateway");
     std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"accounts\":[{\"account\":\"z-account\",\"provider\":\"fixture\",\"models\":[\"z-model\"],\"scope\":\"provider-declared\"},{\"account\":\"a-account\",\"provider\":\"fixture\",\"models\":[\"b-model\",\"a-model\"],\"scope\":\"provider-declared\"}]}'\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1092,8 +1269,14 @@ fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
     let content = app.screen.screen().contents();
     assert!(content.find("A-ACCOUNT").unwrap() < content.find("Z-ACCOUNT").unwrap());
     assert!(content.find("a-model").unwrap() < content.find("b-model").unwrap());
+    // The picker stays open on a choice and names it; Esc leaves it.
     app.send(b"\r");
-    app.contains("model changed to a-model");
+    app.contains("Main is now a-model");
+    app.settle(120);
+    app.send(b"\x1b");
+    app.wait("the picker closes", |screen| {
+        !screen.contents().contains("Esc · Close")
+    });
     app.send(b"answer this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(request["model"], "a-model");
@@ -1108,7 +1291,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     use std::os::unix::fs::PermissionsExt;
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let models: Vec<_> = (0..304)
         .rev()
         .map(|i| format!("vendor/model-{i:03}"))
@@ -1132,11 +1315,11 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     app.send(b"/model\r");
-    // The default offers what this session can actually route to: the one
-    // account that is pinned elsewhere is counted, not offered (workbench.md,
-    // *Model navigator*). Ctrl-A asks for every account, and only then is
-    // the locked row on screen to explain itself.
-    app.contains("307 of 308");
+    // The default offers what this session can actually route to, and
+    // counts only that: the account pinned elsewhere is out of scope until
+    // Ctrl-A asks for every account, and only then is the locked row on
+    // screen to explain itself.
+    app.contains("307 of 307");
     app.contains("gemini/exact");
     app.send(b"\x01");
     app.contains("308 of 308");
@@ -1145,12 +1328,16 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     // full.
     app.contains("locked");
     app.contains("Pinned to another entitlement");
-    app.send(b"\r");
+    // The locked account's first row is its way in; the locked model under
+    // it, chosen, says why it is locked and chooses nothing.
+    app.contains("Sign in to anthropic");
+    app.send(b"\x1b[H\x1b[B\r");
+    app.settle(120);
     assert!(requests.try_recv().is_err());
     // Back to the routes this session can actually use: the locked account
     // is counted in the catalogue and gone from the list.
     app.send(b"\x01");
-    app.contains("307 of 308");
+    app.contains("307 of 307");
     app.settle(120);
     assert!(!app.screen.screen().contents().contains("claude/exact"));
     // One list, each account under its own header: no carousel to step
@@ -1162,7 +1349,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     // they have to -- this fixture's `work` and `personal` accounts both
     // carry `vendor/model-303`, so one term cannot pick between them.
     app.send(b"OPENROUTER+work+303");
-    app.contains("1 of 308");
+    app.contains("1 of 307");
     app.contains("OPENROUTER · WORK");
     app.contains("vendor/model-303");
     // `contains` stops pumping the moment it is satisfied, so an absence is
@@ -1182,16 +1369,25 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     app.send(b"\r");
     assert!(requests.try_recv().is_err());
     app.send(b"\x7f");
-    app.contains("1 of 308");
+    app.contains("1 of 307");
     app.send(b"\x15");
-    app.contains("307 of 308");
+    app.contains("307 of 307");
     app.send(b"\x1b[200~personal 302\x1b[201~");
     app.contains("vendor/model-302");
-    app.contains("1 of 308");
+    app.contains("1 of 307");
     app.resize(40);
     app.contains("vendor/model-302");
     app.send(b"\r");
-    app.contains("model changed to vendor/model-302");
+    // Forty columns leave the notice no room; the row's mark moves.
+    app.contains("vendor/model-302  ● now");
+    // The picker stays open: Esc clears the search, a second leaves.
+    app.settle(120);
+    app.send(b"\x1b");
+    app.settle(120);
+    app.send(b"\x1b");
+    app.wait("the picker closes", |screen| {
+        !screen.contents().contains("Esc · Close")
+    });
     app.send(b"answer this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(request["model"], "vendor/model-302");
@@ -1204,11 +1400,11 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
 fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/motion off\r");
     app.contains("Motion reduced");
     app.send(b"/telemetry\r");
-    app.contains("LIVE INSTRUMENTS");
+    app.contains("↑↓ request · Esc returns");
     assert!(requests.try_recv().is_err());
     app.send(b"answer this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1221,7 +1417,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
     app.send(b"\x14");
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"\x14");
-    app.contains("LIVE INSTRUMENTS");
+    app.contains("↑↓ request · Esc returns");
     app.send(b"next draft");
     for width in [60, 80, 120, 200] {
         app.resize(width);
@@ -1231,7 +1427,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
             (25..30).any(|row| {
                 screen
                     .contents_between(row, 0, row, width)
-                    .contains("ctx 123")
+                    .contains("context 123 tokens")
             })
         });
         app.contains("REQUEST 01");
@@ -1247,12 +1443,19 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
 #[test]
 fn theme_picker_applies_local_palettes_without_a_request() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/theme\r");
-    app.contains("Themes");
+    app.contains("THEMES");
     app.contains("violet");
+    // The sheet opens on the theme in force; Enter applies the focused one
+    // at once and the sheet stays open.
     app.send(b"\x1b[B\x1b[B\x1b[B\x1b[B\r");
-    app.contains("Theme: violet");
+    app.contains("Theme is now violet");
+    app.contains("THEMES");
+    app.send(b"\x1b");
+    app.wait("theme sheet closed", |screen| {
+        !screen.contents().contains("THEMES")
+    });
     app.send(b"/theme cobalt\r");
     app.contains("Theme: cobalt");
     app.send(b"/theme mint\r");
@@ -1287,6 +1490,26 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.contains("⟨ Settings ⟩");
     app.contains("a draft mid-thought still typing");
     app.send(b"\x15/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// Fullscreen says how to come back while it lasts, and with nothing typed
+/// and nothing running Escape leaves it.
+#[test]
+fn fullscreen_says_the_way_back_and_escape_takes_it() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x06");
+    app.wait("the chrome is gone", |screen| {
+        !screen.contents().contains("STERNA /")
+    });
+    // Ctrl-F says what it did, as /fullscreen does, and the way back stays.
+    app.contains("Fullscreen. Ctrl-F or /fullscreen restores the chrome.");
+    app.contains("Ctrl-F restores");
+    app.send(b"\x1b");
+    app.contains("STERNA /");
+    app.contains("Chrome restored.");
+    app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
 
@@ -1331,6 +1554,12 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
             emitted(&app.bytes, b"\x1b[?1002h"),
             "motion while a button is held must be requested: it is what a drag-selection reads"
         );
+        // Every pointer move: hover highlights the target under it, and a
+        // frame is drawn only when that target changes.
+        assert!(
+            emitted(&app.bytes, b"\x1b[?1003h"),
+            "any-motion reporting must be requested for hover"
+        );
         assert!(
             emitted(&app.bytes, b"\x1b[?1006h"),
             "SGR encoding must be requested"
@@ -1344,15 +1573,9 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
         assert!(
             emitted(shutdown, b"\x1b[?1000l")
                 && emitted(shutdown, b"\x1b[?1002l")
+                && emitted(shutdown, b"\x1b[?1003l")
                 && emitted(shutdown, b"\x1b[?1006l"),
             "every requested mode must be reset on exit"
-        );
-        // `?1003` reports every pointer move, held or not. Nothing consumes
-        // it, and an unread report is another chance for a read boundary to
-        // split it into typed text.
-        assert!(
-            !emitted(&app.bytes, b"?1003"),
-            "a motion mode nothing handles was negotiated"
         );
     }
 }
@@ -1368,7 +1591,7 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
 fn a_fragmented_click_report_does_not_become_prompt_text() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send_split_mouse_report(b"[<0;10;5M");
     app.send_split_mouse_report(b"[<0;10;5m");
     app.settle(200);
@@ -1405,7 +1628,7 @@ fn a_fragmented_click_report_does_not_become_prompt_text() {
 fn a_report_whose_halves_are_a_third_of_a_second_apart_is_still_not_typed() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let gap = Duration::from_millis(300);
     app.send_report_split_by(b"[<65;101;28M", gap);
     app.send_report_split_by(b"[<0;10;5M", gap);
@@ -1501,7 +1724,7 @@ fn a_fragmented_wheel_report_still_scrolls_the_transcript() {
 fn fragmented_mouse_reports_do_not_become_prompt_text() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send_split_mouse_report(b"[<65;101;28M");
     app.send(b"WHEEL_INPUT_OK\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1562,47 +1785,47 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
         }
     });
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"register noise handler\r");
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.send(b"/handlers\r");
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     app.contains("noise");
     app.contains("active");
     app.send(b"\x1b");
     app.wait("handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
+        !screen.contents().contains("STANDING HANDLERS")
     });
     app.send(b"/handlers off noise\r");
     app.contains("cancellation queued");
     app.send(b"/handlers\r");
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     app.contains("noise");
     app.resize(40);
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     release.send(()).unwrap();
     // Keep the panel open across task completion, including on a narrow
     // terminal. Reopening it would conceal a stale snapshot regression.
     app.contains("No handlers in this task");
     app.send(b"\x1b");
     app.wait("completed handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
+        !screen.contents().contains("STANDING HANDLERS")
     });
     app.resize(80);
     app.contains("HANDLER CONTROL DONE");
     app.send(b"/handles\r");
-    app.contains("Last handle preview");
+    app.contains("LAST HANDLE PREVIEW");
     app.contains("stale");
     app.send(b"\x1b");
     app.wait("handle panel closed", |screen| {
-        !screen.contents().contains("Last handle preview")
+        !screen.contents().contains("LAST HANDLE PREVIEW")
     });
+    // With nothing standing, the answer is one line: a notice, not a sheet,
+    // so there is nothing to close before the next command.
     app.send(b"/handlers\r");
     app.contains("No handlers in this task");
-    app.send(b"\x1b");
-    app.wait("empty handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
-    });
+    app.settle(120);
+    assert!(!app.screen.screen().contents().contains("STANDING HANDLERS"));
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -1610,7 +1833,7 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
 #[test]
 fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.resize(160);
     // The editor names the file the store will write, in the store's own
     // spelling: on Windows that is the canonical long-name form of a temp
@@ -1634,10 +1857,14 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     app.contains("SETTINGS");
     app.contains("Global");
     app.contains("Project");
-    // The platform's own separator: `.sterna\config.toml` on Windows.
-    app.contains("This project only · .sterna");
+    // It opens on Global (decision 6): a project file is written only when
+    // Project is chosen here.
+    app.contains("Your settings, for every project");
     app.contains("config.toml");
-    app.contains("⟨ Off ⟩ ⟨ On ⟩");
+    // Both values are chips, and the one in force carries its mark.
+    app.contains("⟨ Off");
+    app.contains("⟨ On");
+    app.contains(" ● ⟩");
     assert!(
         !app.screen
             .screen()
@@ -1646,14 +1873,15 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
         "the full path is not on the sheet"
     );
 
-    // Tab switches scope without saving. The destination shown must switch
+    // F6 switches scope without saving. The destination shown must switch
     // with the selected tab, so a Global label cannot conceal a Project
-    // write (or vice versa).
+    // write (or vice versa). The platform's own separator:
+    // `.sterna\config.toml` on Windows.
     app.send(b"\x1b[17~");
-    app.contains("Your settings, for every project");
+    app.contains("This project only · .sterna");
     app.send(b"\x1b");
     app.wait("settings editor closes", |screen| {
-        !screen.contents().contains("for every project")
+        !screen.contents().contains("This project only")
     });
     assert!(!project.exists(), "viewing/cancelling created {project:?}");
     assert!(!global.exists(), "viewing/cancelling created {global:?}");
@@ -1663,12 +1891,12 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
 }
 
 #[test]
-fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
+fn bare_statusline_opens_its_row_and_the_shortcut_saves_globally() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     let project = app.root.join(".sterna/config.toml");
     std::fs::create_dir_all(project.parent().unwrap()).unwrap();
-    let original = "# retained on cancel\n[ui]\nstatusline = \"full\"\n";
+    let original = "# retained on cancel\n[ui]\ntheme = \"amber\"\n";
     std::fs::write(&project, original).unwrap();
 
     // Opening the editor and closing it again writes nothing: viewing is
@@ -1680,7 +1908,7 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
     app.contains("Project");
     app.send(b"\x1b");
     app.wait("settings editor closes", |screen| {
-        !screen.contents().contains("F6 switches")
+        !screen.contents().contains("SETTINGS")
     });
     assert_eq!(
         std::fs::read_to_string(&project).unwrap(),
@@ -1691,9 +1919,15 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
     // A completed choice saves itself. `/statusline compact` is the same
     // save by its shortest route.
     app.send(b"/statusline compact\r");
-    app.contains("Status line saved for this project");
-    let saved = std::fs::read_to_string(&project).expect("the shortcut writes project settings");
+    app.contains("Status line saved: compact");
+    let saved = std::fs::read_to_string(app.global_settings())
+        .expect("the shortcut writes the global settings");
     assert!(saved.contains("statusline = \"compact\""), "{saved}");
+    assert_eq!(
+        std::fs::read_to_string(&project).unwrap(),
+        original,
+        "the project file is written only when Project is chosen"
+    );
 
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
@@ -1702,12 +1936,12 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
 #[test]
 fn statusline_compact_shortcut_persists_without_contacting_inference() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
-    let project = app.root.join(".sterna/config.toml");
+    app.ready();
 
     app.send(b"/statusline compact\r");
-    app.contains("Status line saved for this project");
-    let saved = std::fs::read_to_string(&project).expect("shortcut writes project settings");
+    app.contains("Status line saved: compact");
+    let saved = std::fs::read_to_string(app.global_settings())
+        .expect("shortcut writes the global settings");
     assert!(saved.contains("statusline = \"compact\""), "{saved}");
 
     app.send(b"/exit\r");
@@ -1718,7 +1952,7 @@ fn statusline_compact_shortcut_persists_without_contacting_inference() {
 fn typed_newlines_compose_one_message_and_a_lone_enter_still_sends_it() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     // No bracketed-paste markers, which is exactly what another program
     // typing into the pty produces. The separator is `\r`, not `\n`: in raw
     // mode crossterm reads `\n` as Ctrl+J and only `\r` as Enter, so `\r` is
@@ -1840,7 +2074,7 @@ fn said(request: &serde_json::Value) -> String {
 fn live_a_message_sent_while_working_is_queued_and_becomes_the_next_task() {
     let (base, requests, release) = serving_provider(ANSWERING);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"first task\r");
     let first = requests.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(said(&first).contains("first task"), "{first}");
@@ -1871,10 +2105,13 @@ fn live_a_message_sent_while_working_is_queued_and_becomes_the_next_task() {
     assert_eq!(app.exited(), 130);
 }
 
-/// A bare `--resume` asks which session, the way a person finds one: by
-/// what they asked in it. A session's `.events.jsonl` is not a session.
+/// A bare `--resume` opens the newest session with the resume sheet over it:
+/// a normal sheet, with the conversation behind it, listing this folder's
+/// sessions by what was asked in them. Choosing another ends this session
+/// and starts that one in the same terminal. A session's `.events.jsonl` is
+/// not a session.
 #[test]
-fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
+fn a_bare_resume_opens_the_resume_sheet_inside_the_session() {
     let seed = |root: &std::path::Path| {
         let sessions = root.join(".sterna/sessions");
         std::fs::create_dir_all(&sessions).unwrap();
@@ -1889,25 +2126,57 @@ fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
         )
         .unwrap();
         std::fs::write(sessions.join("tlaaaa-1.events.jsonl"), "{}\n").unwrap();
+        thread::sleep(Duration::from_millis(1100));
         std::fs::write(sessions.join("tlbbbb-2.jsonl"), turn("fix the flaky test")).unwrap();
     };
     let mut app = App::start_seeded("http://127.0.0.1:1", false, None, &["--resume"], &seed);
-    app.contains("Resume a session");
-    app.contains("build a habit tracker");
+    app.contains("RESUME A SESSION");
+    app.contains("this session · 1 prompt");
     app.contains("fix the flaky test");
+    app.contains("build a habit tracker ›");
     assert!(
         !app.screen.screen().contents().contains(".events"),
         "an event log is listed as a session"
     );
-    app.send(b"habit");
-    app.wait("the search narrows the list", |screen| {
-        !screen.contents().contains("fix the flaky test")
+    // The sheet opens on the session running now; the other is one down.
+    app.send(b"\x1b[B\r");
+    app.wait("the chosen session is the one running", |screen| {
+        let text = screen.contents();
+        text.contains("STERNA /")
+            && text.contains("build a habit tracker")
+            && !text.contains("fix the flaky test")
     });
-    app.send(b"\r");
-    app.contains("STERNA /");
-    app.contains("build a habit tracker");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
+    let bytes = String::from_utf8_lossy(&app.bytes).into_owned();
+    assert!(
+        bytes.contains("resume it with:  sterna --resume tlaaaa-1"),
+        "the last session is the one to come back to"
+    );
+}
+
+/// A session nobody asked anything in is not kept: no file stays behind
+/// and no line says how to come back to it.
+#[test]
+fn an_empty_session_leaves_no_file_and_no_resume_line() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x04");
+    assert_eq!(app.exited(), 0);
+    let bytes = String::from_utf8_lossy(&app.bytes).into_owned();
+    assert!(!bytes.contains("resume it with"), "{bytes}");
+    let sessions = app.root.join(".sterna/sessions");
+    let left: Vec<_> = std::fs::read_dir(&sessions)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .filter(|name| name.to_string_lossy().ends_with(".jsonl"))
+                .filter(|name| !name.to_string_lossy().contains(".gateway"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// An Escape whose task answered before its cell boundary was never read,
@@ -1917,7 +2186,7 @@ fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
 fn live_a_stop_left_over_from_a_finished_task_does_not_stop_the_next() {
     let (base, requests, release) = serving_provider(ANSWERING);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"first task\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.send(b"\x1b");
@@ -1944,7 +2213,7 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
     // a test that let the task finish on its own would prove nothing.
     let (base, requests, release) = serving_provider(UNFINISHED);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"a task to stop\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
 
@@ -1961,9 +2230,12 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
         requests.recv_timeout(Duration::from_secs(6)).is_err(),
         "a turn was sent after the person stopped the task"
     );
-    app.wait("the cell that was in flight kept its result", |screen| {
-        screen.contents().contains('2')
-    });
+    // The turn has ended, and said so: a bare `2` would match the session
+    // id in the header before anything ran.
+    app.wait(
+        "the cell that was in flight ran and the turn stopped",
+        |screen| screen.contents().contains("stopped · what ran stands"),
+    );
     assert!(
         app.child.try_wait().unwrap().is_none(),
         "stopping a turn ended the session"
@@ -1975,11 +2247,21 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
     assert_eq!(app.exited(), 130);
 }
 
+/// Two Ctrl-C read in one go -- a quick double tap, or a terminal that
+/// sends both at once -- are two presses, and two presses end the session.
+#[test]
+fn two_ctrl_c_read_together_end_the_session() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x03\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 #[test]
 fn live_a_second_escape_escalates_to_the_call_in_flight_and_still_spares_the_session() {
     let (base, requests, release) = serving_provider(UNFINISHED);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"a task to interrupt\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
 
@@ -2016,6 +2298,245 @@ fn live_a_second_escape_escalates_to_the_call_in_flight_and_still_spares_the_ses
     assert_eq!(app.exited(), 130);
 }
 
+/// A sheet is a local control, not a model turn: opening and closing one
+/// starts no turn clock and ends in no "complete".
+#[test]
+fn a_sheet_opened_and_closed_is_not_a_turn() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    // Answered by the session, not the screen: the path a model turn takes.
+    app.send(b"/login\r");
+    app.contains("SIGN IN");
+    app.send(b"\x1b");
+    app.settle(500);
+    app.refute("a sheet is not a turn that completed", "complete");
+    app.refute("a sheet starts no turn clock", "on this turn");
+    app.refute("a sheet is not a turn the model is on", "thinking");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// A turn the person stopped reads "stopped", never "complete".
+#[test]
+fn a_stopped_turn_says_stopped_not_complete() {
+    let (base, requests, release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to stop\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x1b");
+    app.contains("Stopping after this cell");
+    app.send(b"\x1b");
+    app.contains("stopped");
+    app.refute("a stopped turn is not a completed one", "complete");
+    drop(release);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// A message sent while a turn runs is held in Sterna's queue, not sent:
+/// Esc takes it back into the composer and it never reaches the model.
+#[test]
+fn a_queued_message_is_held_until_the_turn_ends_and_esc_takes_it_back() {
+    let (base, requests, release) = serving_provider(ANSWERING);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"first task\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"not after all\r");
+    app.contains("Esc takes the last one back");
+    app.send(b"\x1b");
+    app.contains("Took the queued message back");
+    let _ = release.send(());
+    assert!(
+        requests.recv_timeout(Duration::from_secs(3)).is_err(),
+        "a message taken back was sent to the model"
+    );
+    app.contains("not after all");
+    // The first Ctrl-C clears the draft that was taken back.
+    app.send(b"\x03");
+    app.settle(200);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Ctrl-C mid-turn says what it does, as Escape does, and the turn ends as
+/// stopped by it.
+#[test]
+fn ctrl_c_mid_turn_says_it_is_stopping() {
+    let (base, requests, release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to interrupt\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x03");
+    app.contains("Ctrl-C again within 2 s quits");
+    app.contains("stopped by Ctrl-C");
+    drop(release);
+    thread::sleep(Duration::from_millis(2200));
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// /exit is honoured while a turn runs: the turn is stopped and the
+/// session ends.
+#[test]
+fn exit_mid_turn_stops_the_turn_and_ends_the_session() {
+    let (base, requests, _release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a task to leave\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// The terminal is asked to tell Shift-Enter from Enter, and the request is
+/// taken back on the way out. Windows reads console records, which carry
+/// the modifiers already, so nothing is asked for there.
+#[cfg(not(windows))]
+#[test]
+fn the_keyboard_protocol_is_asked_for_and_given_back() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    assert!(emitted(&app.bytes, b"\x1b[>1u"), "the flags were pushed");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+    assert!(emitted(&app.bytes, b"\x1b[<1u"), "the flags were popped");
+}
+
+/// Ctrl-C clears a draft and says Ctrl-Z brings it back; on an empty
+/// composer it says a second one quits, and the notice lapses with the
+/// window.
+#[test]
+fn ctrl_c_says_what_it_did_to_a_draft_and_what_a_second_one_does() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a careful draft");
+    app.contains("a careful draft");
+    app.send(b"\x03");
+    app.contains("Draft cleared · Ctrl-Z brings it back");
+    app.send(b"\x1a");
+    app.contains("a careful draft");
+    app.send(b"\x15");
+    app.send(b"\x03");
+    app.contains("Ctrl-C again within 2 s to quit");
+    thread::sleep(Duration::from_millis(2300));
+    app.refute(
+        "the quit notice lapses with its window",
+        "within 2 s to quit",
+    );
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Ctrl-D while a turn runs says what it would do and when.
+#[test]
+fn ctrl_d_mid_turn_says_it_waits_for_the_turn() {
+    let (base, requests, _release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a long task\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x04");
+    app.contains("Ctrl-D quits between turns");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// A confirmed rollback marks the cell it undid, and says so in one line.
+#[test]
+fn a_rollback_marks_its_cell_and_says_so_in_one_line() {
+    let base =
+        approval_provider(r#"await write({path: "made.txt", content: "x"}); return "done";"#);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"make a file\r");
+    app.contains("EXECUTED");
+    assert!(
+        app.root.join("made.txt").exists(),
+        "the cell wrote its file"
+    );
+    app.send(b"/rollback\r");
+    app.contains("Confirm rollback");
+    app.settle(600);
+    app.send(b"\x1b[A");
+    // A decision sheet takes a key only after half a second without one.
+    app.settle(700);
+    app.send(b"\r");
+    app.contains("Rolled back cell 001");
+    app.contains("ROLLED BACK");
+    assert!(!app.root.join("made.txt").exists(), "the file is gone");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Esc puts the command popup away and a second Esc clears the slash word;
+/// Enter on a command typed in full runs that command, not a longer one.
+#[test]
+fn esc_puts_the_popup_away_and_enter_runs_the_exact_command() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"/mo");
+    app.contains("browse models");
+    app.send(b"\x1b");
+    app.refute("the popup is put away", "browse models");
+    app.send(b"\x1b");
+    app.contains("Describe the next step");
+    app.send(b"/mode\r");
+    app.contains("WORK");
+    app.refute("Enter on /mode is not /models", "MODELS");
+    app.send(b"\x1b");
+    app.settle(200);
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// After an `@` popup is put away, a second Esc takes back the `@` word it
+/// was for and nothing else the person typed.
+#[test]
+fn a_second_escape_after_a_path_popup_keeps_the_rest_of_the_draft() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    std::fs::write(app.root.join("notes-for-escape.md"), "notes").unwrap();
+    app.send(b"look at @notes-for");
+    app.contains("notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the popup is put away", "notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the @ word is taken back", "@notes-for");
+    app.contains("look at");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 #[test]
 fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let (base, _requests) = provider();
@@ -2028,7 +2549,7 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.contains("Display");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
-    let saved = std::fs::read_to_string(app.root.join(".sterna/config.toml")).unwrap();
+    let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("amber"), "{saved}");
     app.send(b"\x1b");
     app.contains("keep this draft");
@@ -2052,7 +2573,7 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
 fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"\x1bOQ"); // F2 opens settings on the everyday category
     app.contains("SETTINGS");
     // Reasoning effort is the second row; one Down and one Right is the
@@ -2060,13 +2581,13 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     app.send(b"\x1b[B");
     app.settle(60);
     app.send(b"\x1b[C");
-    app.contains("Reasoning effort is now");
+    app.contains("Effort is now low");
     app.send(b"\x1b");
     // The strip reads the running session. If the choice had only reached
     // the file, this would still say `default`.
     app.contains("effort low");
     // And it reached the file too, so the next session starts there.
-    let saved = std::fs::read_to_string(app.root.join(".sterna/config.toml")).unwrap();
+    let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("low"), "{saved}");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
@@ -2081,7 +2602,11 @@ fn workbench_final_answer_survives_the_actual_provider_and_terminal_loop() {
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"/diff\r");
-    app.contains("before");
+    // The expanded cell's tabs, which only the command draws. "before"
+    // was also the completion hint's word ("before/after diff"), so the
+    // wait could end while `/diff` was still being typed, and the `/exit`
+    // behind it turned its Enter into a new line of the same draft.
+    app.contains("Cell program");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -2091,7 +2616,7 @@ fn workbench_final_answer_survives_the_actual_provider_and_terminal_loop() {
 #[test]
 fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     // A note to select, not a task: a turn in flight would make the `/exit`
     // below an Enter a running turn ignores, and on Windows a refused
     // connection is slow enough to still be in flight.
@@ -2114,6 +2639,36 @@ fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
     app.settle(300);
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// Shift-Tab moves the rung like every other route that moves it: saved,
+/// and offered back beside its notice, where a click takes it back.
+#[test]
+fn shift_tab_offers_the_rung_it_left_back() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.contains("⟨ Auto-review ⟩");
+    app.send(b"\x1b[Z");
+    app.contains("undo · Ask Auto-review");
+    app.refute("the rung moved", "⟨ Auto-review ⟩");
+    let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
+    let (y, row) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.contains("undo · Ask Auto-review"))
+        .unwrap();
+    let x = row
+        .char_indices()
+        .position(|(byte, _)| row[byte..].starts_with("undo"))
+        .unwrap()
+        + 1;
+    let y = y + 1;
+    app.send(format!("\x1b[<0;{x};{y}M").as_bytes());
+    app.send(format!("\x1b[<0;{x};{y}m").as_bytes());
+    app.contains("⟨ Auto-review ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -2247,7 +2802,7 @@ fn walk_a_turn(bird: bool) {
         &[]
     };
     let mut app = App::start_in(&base, false, Some("helper-tier"), &[], &|_| {}, colours);
-    app.contains("fixture-model");
+    app.ready();
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
         app.settle(90);
@@ -2296,6 +2851,19 @@ fn a_parrot_theme_walks_the_same_turn() {
     walk_a_turn(true);
 }
 
+/// **The session card names the rung in force.** The startup line that
+/// froze the rung the session began on is gone, and the card's own line
+/// moves with Shift-Tab.
+#[test]
+fn the_card_names_the_rung_in_force() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.contains("Ask: Auto-review");
+    app.refute("the frozen startup line", "permissions: auto");
+    app.send(b"\x1b[Z");
+    app.contains("Ask: Every call");
+}
+
 /// **Every effort level is open on any model**: the word rides the request
 /// and the gateway carries it, so `xhigh` and `max` are not refused for a
 /// model that is not Claude -- a refusal there left the strip's effort chip
@@ -2303,11 +2871,11 @@ fn a_parrot_theme_walks_the_same_turn() {
 #[test]
 fn xhigh_and_max_are_taken_on_a_model_that_is_not_claude() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/effort xhigh\r");
-    app.contains("Effort: xhigh");
+    app.contains("Effort is now xhigh");
     app.send(b"/effort max\r");
-    app.contains("Effort: max");
+    app.contains("Effort is now max");
 }
 
 /// **Leaving with Ctrl-D says how to come back**, after the screen is gone:
@@ -2315,7 +2883,10 @@ fn xhigh_and_max_are_taken_on_a_model_that_is_not_claude() {
 #[test]
 fn ctrl_d_leaves_the_resume_line_in_the_terminal() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
+    // Something asked, so there is something to come back to.
+    app.send(b"hello\r");
+    app.contains("ERROR:");
     app.send(b"\x04");
     assert_eq!(app.exited(), 0);
     assert!(!app.screen.screen().alternate_screen());
@@ -2343,9 +2914,42 @@ fn a_true_colour_terminal_starts_with_a_parrot_perched_on_the_card() {
         &|_| {},
         &[("COLORTERM", "truecolor")],
     );
-    app.contains("fixture-model");
+    app.ready();
     app.wait("the parrot's half-block sprite on the card", |screen| {
         let text = screen.contents();
         text.contains('▀') || text.contains('▄')
     });
+}
+
+/// A terminal that answers that its background is white gets the light
+/// palette: the person's label is drawn in the light "you" colour, and no
+/// part of the answer reaches the composer as typed text. (A Windows
+/// console is not asked; `COLORFGBG` or the setting decides there.)
+#[cfg(unix)]
+#[test]
+fn a_terminal_that_answers_light_gets_the_light_colours() {
+    let (base, _requests) = provider();
+    let mut app = App::start_in(
+        &base,
+        false,
+        None,
+        &[],
+        &|_| {},
+        &[("COLORTERM", "truecolor")],
+    );
+    app.ground = Some("rgb:ffff/ffff/ffff");
+    app.ready();
+    app.send(b"hello there\r");
+    app.wait("the person's label in the light colour", |screen| {
+        (0..30).any(|row| {
+            (0..80).any(|col| {
+                screen.cell(row, col).is_some_and(|cell| {
+                    cell.contents() == "y" && cell.fgcolor() == vt100::Color::Rgb(0x5b, 0x3f, 0xb5)
+                })
+            })
+        })
+    });
+    app.refute("the reply is not typed", "rgb:ffff");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
 }

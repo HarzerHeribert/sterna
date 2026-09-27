@@ -1,7 +1,6 @@
 use super::{
-    Action, Document, Geometry, Tone, Workbench, chrome,
+    Action, CellTab, Document, Geometry, Tone, Workbench, chrome,
     document::{RowKind, clip},
-    settings::CATEGORIES,
     theme, voice,
 };
 use crate::contract::{Conversation, ServedBy};
@@ -40,58 +39,15 @@ pub(super) fn label(f: &mut Frame<'_>, a: Rect, y: u16, text: &str, tone: Tone, 
         row(f, full_row(a, y), text, tone, t);
     }
 }
-// Keep drawing and the matching hit rectangle in one leaf helper.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn add(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    a: Rect,
-    y: u16,
-    text: &str,
-    action: Action,
-    selected: bool,
-    t: Theme,
-) {
-    if y < a.bottom() {
-        button(f, g, full_row(a, y), text, action, selected, t);
-    }
-}
-/// A chip on a surface row, at the row's left edge.
-#[allow(clippy::too_many_arguments)]
-fn add_chip(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    a: Rect,
-    y: u16,
-    text: &str,
-    action: Action,
-    on: bool,
-    ui: &Workbench,
-    t: Theme,
-) {
-    if y < a.bottom() {
-        chrome::chip(
-            f,
-            g,
-            a.x,
-            y,
-            a.right(),
-            text,
-            action,
-            on,
-            Tone::Normal,
-            ui.press,
-            t,
-        );
-    }
-}
 
 /// One word for the work mode, as the footer and the session bar both name it.
-fn work_word(s: &ScreenState) -> &'static str {
-    match s.mode {
-        crate::tui::Mode::Execute => "Build",
-        crate::tui::Mode::Explore => "Explore",
-        crate::tui::Mode::Plan => "Plan",
+/// Explore and Plan change what a request may do, so while one of them is
+/// in force its chip is drawn as a warning and never dropped.
+fn work_tone(s: &ScreenState) -> Tone {
+    if s.mode == crate::tui::Mode::Execute {
+        Tone::Normal
+    } else {
+        Tone::Warning
     }
 }
 /// The access profile, named by what it does to your work. The counts and the
@@ -103,13 +59,6 @@ fn access_word(s: &ScreenState) -> &'static str {
         "This project"
     }
 }
-fn access_sentence(s: &ScreenState) -> &'static str {
-    if s.full_access {
-        "Every file on this machine and every command line. Nothing is confined."
-    } else {
-        "Files inside this project, and the commands the profile admits. Your home directory is out of reach."
-    }
-}
 fn network_word(s: &ScreenState) -> &'static str {
     match s.network.as_deref() {
         Some("on") => "network on",
@@ -119,15 +68,6 @@ fn network_word(s: &ScreenState) -> &'static str {
 }
 fn ask_word(s: &ScreenState) -> &'static str {
     s.permissions.rung().label()
-}
-/// What the rung means, as the session card says it: what Sterna stops for.
-fn ask_before(s: &ScreenState) -> &'static str {
-    match s.permissions.rung() {
-        crate::permissions::Rung::Manual => "every call",
-        crate::permissions::Rung::AcceptEdits => "every command",
-        crate::permissions::Rung::Auto => "risky commands",
-        crate::permissions::Rung::Full => "nothing",
-    }
 }
 fn access_tone(s: &ScreenState) -> Tone {
     if s.full_access {
@@ -143,24 +83,15 @@ fn ask_tone(s: &ScreenState) -> Tone {
         Tone::Normal
     }
 }
-/// A picker row that says which option the session is on, not only where
-/// the cursor is. The mark is a glyph and the word `now`, so it survives a
-/// monochrome terminal.
-fn mark_current(word: &str, current: bool) -> String {
-    if current {
-        format!("▸ {word}  · now")
-    } else {
-        format!("  {word}")
-    }
-}
 /// Right-aligned chips that give room up in a fixed order, so a narrow
 /// terminal loses the least useful control rather than the leftmost one.
 ///
 /// Each item carries a rank: the highest rank is dropped first. A control
 /// drawn in a warning tone is never dropped -- a boundary that can be lifted
 /// has to be continuously visible or it is a mode error waiting to happen --
-/// and the way into settings is never dropped, because it is the way to
-/// everything else.
+/// and the way into settings goes last, because it is the way to everything
+/// else. What is dropped is not gone: it is listed behind one `⟨ ⋯ ⟩` chip
+/// at the end of the row.
 fn controls(
     f: &mut Frame<'_>,
     g: &mut Geometry,
@@ -170,18 +101,28 @@ fn controls(
     press: Option<(u16, u16)>,
     t: Theme,
 ) {
+    const MORE: &str = "⋯";
     let room = a.width.saturating_sub(reserved);
     let mut keep: Vec<usize> = (0..items.len()).collect();
+    // The row's width with the fold chip when anything is folded.
     let width = |keep: &Vec<usize>| -> u16 {
-        keep.iter()
+        let more = if keep.len() < items.len() {
+            chrome::width(MORE) + 4 + 1
+        } else {
+            0
+        };
+        (keep
+            .iter()
             .map(|i| chrome::width(&items[*i].0) + 4 + 1)
             .sum::<u16>()
+            + more)
             .saturating_sub(1)
     };
-    while width(&keep) > room && keep.len() > 1 {
+    // Settings goes last, into the fold like the rest; a warning never does.
+    while width(&keep) > room {
         let Some(drop) = keep
             .iter()
-            .filter(|i| items[**i].3 > 0 && !matches!(items[**i].2, Tone::Warning))
+            .filter(|i| !matches!(items[**i].2, Tone::Warning))
             .max_by_key(|i| items[**i].3)
             .copied()
         else {
@@ -192,6 +133,10 @@ fn controls(
     if width(&keep) > room {
         return;
     }
+    let folded: Vec<(String, Action)> = (0..items.len())
+        .filter(|i| !keep.contains(i))
+        .map(|i| (items[i].0.clone(), items[i].1.clone()))
+        .collect();
     let mut x = a.right().saturating_sub(width(&keep) + 1);
     for i in keep {
         let (text, action, tone, _) = &items[i];
@@ -209,6 +154,21 @@ fn controls(
             t,
         );
         x += w + 1;
+    }
+    if !folded.is_empty() {
+        chrome::chip(
+            f,
+            g,
+            x,
+            a.y,
+            a.right(),
+            MORE,
+            Action::More(folded),
+            false,
+            Tone::Normal,
+            press,
+            t,
+        );
     }
 }
 /// `⠿ STERNA  project` and the session's controls, one row, every width.
@@ -239,12 +199,13 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         a,
         chrome::width(brand) + 1 + chrome::width(&project) + 2,
         &[
-            (format!("{model} ▾"), Action::Models, Tone::Normal, 2),
+            (format!("{model} ▾"), Action::Models, Tone::Normal, 3),
             // How often it asks outranks which mode it is in, and both
             // outrank the model's name: at eighty columns a session must
-            // still say whether it will ask before running anything.
+            // still say whether it will ask before running anything, and
+            // whether it may change anything at all.
             (ask_word(s).to_string(), Action::Approvals, ask_tone(s), 1),
-            (work_word(s).to_string(), Action::Work, Tone::Normal, 3),
+            (super::facts::mode_word(s), Action::Work, work_tone(s), 2),
             (
                 if s.full_access {
                     "▲ FULL ACCESS".to_string()
@@ -267,8 +228,9 @@ pub struct Layout {
     sidebar: Option<Rect>,
     header: u16,
     footer: u16,
-    textwidth: u16,
-    input_lines: Vec<String>,
+    /// The composer's width, the one every composer computation uses: the
+    /// wrap, the drawing, the caret and a click.
+    composer_width: u16,
     composer_height: u16,
     queue_height: u16,
     body_height: u16,
@@ -280,10 +242,10 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     // The composer dock's bottom edge, which carries the everyday chips.
     let footer = u16::from(chrome && a.height > 4);
     let textwidth = a.width.saturating_sub(2).max(1);
-    // Four columns belong to the dock's edge and the prompt mark.
-    let input_lines = wrap_input(&s.input, textwidth.saturating_sub(4).max(1) as usize);
+    let composer_width = composer_width(a, s);
+    let composer_rows = composer_lines(&s.input, composer_width as usize).len();
     // The lines typed plus the dock's top edge, which is the activity line.
-    let composer_height = (input_lines.len() as u16)
+    let composer_height = (composer_rows as u16)
         .clamp(1, 5)
         .saturating_add(1)
         .min(a.height.saturating_sub(header + footer).max(1));
@@ -316,8 +278,7 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     Layout {
         header,
         footer,
-        textwidth,
-        input_lines,
+        composer_width,
         composer_height,
         queue_height,
         body_height,
@@ -341,6 +302,12 @@ pub fn render(
     _served: &ServedBy,
     ui: &mut Workbench,
 ) {
+    // Every style this frame is drawn with reads the terminal's ground and
+    // colour depth from here.
+    super::look::set(super::look::Look {
+        light: s.light,
+        truecolor: s.truecolor,
+    });
     let a = f.area();
     f.render_widget(Clear, a);
     f.buffer_mut()
@@ -353,8 +320,7 @@ pub fn render(
     let Layout {
         header,
         footer,
-        textwidth,
-        input_lines,
+        composer_width,
         composer_height,
         queue_height,
         body_height,
@@ -387,11 +353,15 @@ pub fn render(
             row(f, Rect::new(x, y, 1, 1), "│", Tone::Line, s.theme);
         }
     }
+    // Scrolled back, the transcript's last row is the way back down: it
+    // holds the `↓ latest` chip and nothing under it, so the chip never
+    // covers a card's edge or a line of text.
+    let latest_row = usize::from(s.scrollback > 0 && body_height > 1);
     for (j, r) in d
         .rows
         .iter()
         .skip(g.start)
-        .take(body_height as usize)
+        .take((body_height as usize).saturating_sub(latest_row))
         .enumerate()
     {
         let area = Rect::new(
@@ -421,13 +391,14 @@ pub fn render(
             );
         }
     }
-    if s.scrollback > 0 && body_height > 0 {
+    if latest_row > 0 {
         let text = "↓ latest";
         let w = chrome::width(text) + 4;
+        // Left of the scrollbar's column, on the row kept for it.
         let (x, y, limit) = (
-            g.transcript.right().saturating_sub(w),
+            g.transcript.right().saturating_sub(w + 2),
             g.transcript.bottom() - 1,
-            g.transcript.right(),
+            g.transcript.right().saturating_sub(1),
         );
         chrome::chip(
             f,
@@ -443,6 +414,7 @@ pub fn render(
             s.theme,
         );
     }
+    g.sidebar = sidebar;
     if let Some(side) = sidebar {
         session_card(f, &mut g, side, n, s, ui);
     }
@@ -458,15 +430,33 @@ pub fn render(
         y += 1;
     }
     let boxed = !s.fullscreen && a.width > 8;
+    // The composer's window, worked out before the dock's edges are drawn,
+    // because they say how much of the draft is out of view.
+    let lines = composer_lines(&s.input, composer_width as usize);
+    let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
+    let (caret_row, caret_col) = caret(&lines, &s.input, cursor);
+    let skip = ui.composer_window(
+        lines.len(),
+        composer_height.saturating_sub(1) as usize,
+        cursor,
+        caret_row,
+    );
+    // The number the running card carries: a program being executed is in
+    // the conversation already, and one being written is the next.
+    let running_cell = match s.activity {
+        Activity::Executing => Some(crate::tui::cell_ordinal(c, n)),
+        Activity::Streaming => Some(crate::tui::cell_ordinal(c, n) + 1),
+        _ => None,
+    };
     if y < a.bottom() {
         dock_top(
             f,
             &mut g,
             Rect::new(a.x, y, a.width, 1),
-            n,
             s,
             ui,
             gutter,
+            running_cell,
             boxed,
         );
         y += 1;
@@ -489,18 +479,13 @@ pub fn render(
     g.composer = Rect::new(
         a.x + prompt.max(u16::from(a.width > 1)),
         y,
-        textwidth.saturating_sub(prompt.saturating_sub(1) + u16::from(boxed) * 2),
+        composer_width,
         composer_height
             .saturating_sub(1)
             .min(a.bottom().saturating_sub(y)),
     );
     let visible = g.composer.height as usize;
-    let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
-    let before = &s.input[..s.input.floor_char_boundary(cursor)];
-    let cursor_lines = wrap_input(before, textwidth.saturating_sub(4).max(1) as usize);
-    let cursor_row = cursor_lines.len().saturating_sub(1);
-    let skip = cursor_row.saturating_sub(visible.saturating_sub(1));
-    for (i, l) in input_lines.iter().skip(skip).take(visible).enumerate() {
+    for (i, (_, l)) in lines.iter().skip(skip).take(visible).enumerate() {
         let yy = g.composer.y + i as u16;
         row(
             f,
@@ -524,17 +509,12 @@ pub fn render(
         row(f, g.composer, voice::PLACEHOLDER, Tone::Muted, s.theme);
     }
     g.hits.push((g.composer, Action::Composer));
-    if !ui.is_local() && s.panel.is_none() && s.form.is_none() && visible > 0 {
-        let x = cursor_lines
-            .last()
-            .map(|l| Span::raw(l.as_str()).width())
-            .unwrap_or(0)
-            .min(g.composer.width.saturating_sub(1) as usize);
+    if !ui.is_local() && s.form.is_none() && visible > 0 && caret_row >= skip {
         let position = (
-            g.composer.x + x as u16,
-            g.composer.y + (cursor_row - skip) as u16,
+            g.composer.x + caret_col.min(g.composer.width.saturating_sub(1) as usize) as u16,
+            g.composer.y + (caret_row - skip) as u16,
         );
-        if super::contains(a, position.0, position.1) {
+        if caret_row - skip < visible && super::contains(a, position.0, position.1) {
             f.set_cursor_position(position);
         }
     }
@@ -548,50 +528,86 @@ pub fn render(
             ui,
         );
     }
-    if !ui.is_local() && s.panel.is_none() && !s.input.contains(char::is_whitespace) {
-        let completions = crate::tui::slash_matches(&s.input);
-        let capacity = g.transcript.height.min(7) as usize;
-        let first = s
-            .completion_selected
-            .saturating_sub(capacity.saturating_sub(1));
-        let count = completions.len().min(capacity);
-        let top = g.transcript.bottom().saturating_sub(count as u16);
-        for (i, (command, help)) in completions.iter().enumerate().skip(first).take(count) {
-            let area = Rect::new(
-                g.transcript.x,
-                top + (i - first) as u16,
-                g.transcript.width,
-                1,
-            );
-            f.render_widget(Clear, area);
+    // The popup: the commands a slash word matches, or the paths an `@`
+    // word does. A click takes the row; the wheel moves the selection.
+    if !ui.is_local() && !s.completions.is_empty() {
+        let capacity = (g.transcript.height.min(7) as usize).max(1);
+        let total = s.completions.len();
+        // When the rows do not all fit, the last line says how many more.
+        let shown = if total > capacity {
+            capacity.saturating_sub(1).max(1)
+        } else {
+            total
+        };
+        let selected = s.completion_selected.min(total - 1);
+        let first = selected.saturating_sub(shown.saturating_sub(1));
+        let height = shown + usize::from(total > shown);
+        let top = g.transcript.bottom().saturating_sub(height as u16);
+        let area = Rect::new(g.transcript.x, top, g.transcript.width, height as u16);
+        f.render_widget(Clear, area);
+        for (i, (label, help)) in s.completions.iter().enumerate().skip(first).take(shown) {
+            let line = Rect::new(area.x, top + (i - first) as u16, area.width, 1);
+            let mark = if i == selected { "›" } else { " " };
             button(
                 f,
                 &mut g,
-                area,
-                &format!("{command:14} {help}"),
-                Action::Insert(command.clone()),
-                i == s.completion_selected,
+                line,
+                &format!("{mark} {label:14} {help}"),
+                Action::Completion(i),
+                i == selected,
                 s.theme,
             );
         }
+        let rest = total - shown;
+        if total > shown {
+            row(
+                f,
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+                &format!("  ↕ {rest} more · ↑↓ or the wheel"),
+                Tone::Muted,
+                s.theme,
+            );
+        }
+        g.popup = Some(area);
     }
-    if s.telemetry_open && !ui.is_local() && s.panel.is_none() {
+    if s.telemetry_open && !ui.is_local() {
         // The instruments take the transcript's room, never the status line
         // that carries the context reading they are read against.
         let area = Rect::new(a.x, a.y + header, a.width, body_height + queue_height);
         f.render_widget(Clear, area);
         f.buffer_mut()
             .set_style(area, theme::style(Tone::Normal, s.theme));
-        g.hits.clear();
-        g.local = Some(area);
+        // Nothing hidden under the instruments stays clickable; the chrome
+        // around them does.
+        g.hits.retain(|(r, _)| !r.intersects(area));
         crate::tui::telemetry::expanded(f, area, c, _served, n, s);
+        // Drawn with colours of its own: they are taken through the look.
+        super::look::adopt(f.buffer_mut(), area, super::look::get());
+        let back = "Esc · Back";
+        let w = chrome::width(back) + 4;
+        if area.width > w + 2 && area.height > 0 {
+            chrome::chip(
+                f,
+                &mut g,
+                area.right().saturating_sub(w + 1),
+                area.y,
+                area.right(),
+                back,
+                Action::Close,
+                false,
+                Tone::Normal,
+                ui.press,
+                s.theme,
+            );
+        }
     }
-    if ui.is_local() || s.panel.is_some() {
+    if ui.is_local() {
+        super::sheets::build(ui, s, n);
         surface(f, &mut g, a, s, ui);
     }
     g.screen = Some(f.buffer_mut().clone());
     if let Some(sel) = s.selection {
-        g.copied = crate::tui::draw_selection(f.buffer_mut(), a, sel);
+        g.copied = crate::tui::draw_selection(f.buffer_mut(), a, sel, g.start);
     }
     ui.geometry = g;
 }
@@ -614,12 +630,27 @@ fn draw_row(
     let spans_at = |f: &mut Frame<'_>, g: &mut Geometry, x: u16, limit: u16| {
         let mut x = x;
         if !r.spans.is_empty() {
-            for (text, tone) in &r.spans {
+            for (i, (text, tone)) in r.spans.iter().enumerate() {
                 let w = (chrome::width(text)).min(limit.saturating_sub(x));
                 if w == 0 {
                     break;
                 }
-                row(f, Rect::new(x, area.y, w, 1), text, *tone, t);
+                let at = Rect::new(x, area.y, w, 1);
+                row(f, at, text, *tone, t);
+                // A link opens on a click, asking first; a path in any
+                // other run opens its file.
+                match r.links.iter().find(|(span, _)| *span == i) {
+                    Some((_, address)) => {
+                        f.buffer_mut().set_style(
+                            at,
+                            theme::style(*tone, t)
+                                .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                        );
+                        g.hits.push((at, Action::AskOpenLink(address.clone())));
+                    }
+                    None if *tone != Tone::Line => paths(f, g, at, text, *tone, s),
+                    None => {}
+                }
                 x += w;
             }
         } else {
@@ -685,26 +716,13 @@ fn draw_row(
             let limit = right - 2;
             if let (Some(Action::Tab(cell, current)), false) = (&r.action, r.tabs.is_empty()) {
                 let (cell, current) = (*cell, *current);
-                let mut x = inner_x;
-                for (label, tab) in &r.tabs {
-                    let w = chrome::chip(
-                        f,
-                        g,
-                        x,
-                        area.y,
-                        limit,
-                        label,
-                        Action::Tab(cell, *tab),
-                        current == *tab,
-                        Tone::Normal,
-                        ui.press,
-                        t,
-                    );
-                    if w == 0 {
-                        break;
-                    }
-                    x += w + 1;
-                }
+                // The open tab is never the one folded.
+                let tabs: Vec<(String, Action, bool)> = r
+                    .tabs
+                    .iter()
+                    .map(|(label, tab)| (label.clone(), Action::Tab(cell, *tab), current == *tab))
+                    .collect();
+                let x = chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
                 // Whatever the strip left over -- the route to the whole diff.
                 let rest: String = r.spans.iter().map(|(t, _)| t.as_str()).collect();
                 let rest = rest.trim_start();
@@ -715,11 +733,13 @@ fn draw_row(
                         g,
                         Rect::new(limit - w, area.y, w, 1),
                         rest,
-                        Action::Command("/diff".into()),
+                        Action::Tab(cell, CellTab::Diff),
                         false,
                         t,
                     );
                 }
+            } else if !r.chips.is_empty() {
+                chrome::chips(f, g, inner_x, area.y, limit, &r.chips, ui.press, t);
             } else {
                 spans_at(f, g, inner_x, limit);
                 if let Some(act) = &r.action {
@@ -818,7 +838,7 @@ fn session_card(
                 .map_or(0, |d| d.lines().filter(|l| l.starts_with("+++ ")).count())
         })
         .sum();
-    let (ok, failed) = n.cells.iter().fold((0, 0), |(ok, bad), c| {
+    let (ok, failed) = n.program_cells().fold((0, 0), |(ok, bad), (_, c)| {
         if c.error.is_some() {
             (ok, bad + 1)
         } else if c.execution.is_some() {
@@ -828,19 +848,23 @@ fn session_card(
         }
     });
     let running = usize::from(matches!(s.activity, Activity::Executing));
-    let mut lines: Vec<(String, Tone, Option<Action>)> = vec![
-        ("THIS SESSION".into(), Tone::Accent, None),
-        (
-            match (id, s.pulse.elapsed_ms) {
-                (Some(id), 0) => id,
-                (Some(id), ms) => format!("{id} · {} on this turn", clip_clock(ms)),
-                (None, 0) => String::new(),
-                (None, ms) => format!("{} on this turn", clip_clock(ms)),
-            },
-            Tone::Muted,
-            None,
-        ),
-        (String::new(), Tone::Normal, None),
+    let session_line = match (id, s.pulse.elapsed_ms) {
+        (Some(id), 0) => id,
+        (Some(id), ms) => format!("{id} · {} on this turn", clip_clock(ms)),
+        (None, 0) => String::new(),
+        (None, ms) => format!("{} on this turn", clip_clock(ms)),
+    };
+    // A heading over nothing is not drawn.
+    let mut lines: Vec<(String, Tone, Option<Action>)> = if session_line.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            ("THIS SESSION".into(), Tone::Accent, None),
+            (session_line, Tone::Muted, None),
+            (String::new(), Tone::Normal, None),
+        ]
+    };
+    lines.extend([
         ("GUARDRAILS".into(), Tone::Accent, None),
         (
             if s.full_access {
@@ -853,13 +877,13 @@ fn session_card(
         ),
         (network_word(s).into(), Tone::Muted, Some(Action::Access)),
         (
-            format!("asks before {}", ask_before(s)),
+            s.permissions.rung().asks().to_string(),
             ask_tone(s),
             Some(Action::Approvals),
         ),
         (
-            format!("mode {}", work_word(s).to_lowercase()),
-            Tone::Normal,
+            format!("mode {}", super::facts::mode_word(s)),
+            work_tone(s),
             Some(Action::Work),
         ),
         (String::new(), Tone::Normal, None),
@@ -869,30 +893,34 @@ fn session_card(
             Tone::Normal,
             Some(Action::Models),
         ),
+        // Two lines, two targets: the effort steps where it stands, and
+        // the helpers open the settings that turn them on.
         (
-            format!(
-                "effort {} · helpers {}",
-                s.effort.sent_for(s.model.as_deref().unwrap_or("")).name(),
-                if s.helpers_on { "on" } else { "off" }
-            ),
+            super::facts::effort_word(s),
             Tone::Muted,
             Some(Action::Effort),
         ),
-    ];
+        (
+            format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
+            Tone::Muted,
+            Some(Action::SettingsAt(2)),
+        ),
+    ]);
     if let Some(word) = &s.subagents {
         lines.push((
             format!("subagents {word}"),
             Tone::Muted,
-            Some(Action::SettingsAt(4)),
+            Some(Action::Command("/subagents".into())),
         ));
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("SO FAR".into(), Tone::Accent, None));
+    let ran = n.program_cells().count();
     lines.push((
         format!(
             "{} {} · {} {}{}",
-            n.cells.len(),
-            if n.cells.len() == 1 { "cell" } else { "cells" },
+            ran,
+            if ran == 1 { "cell" } else { "cells" },
             files,
             if files == 1 { "file" } else { "files" },
             n.tokens
@@ -903,16 +931,26 @@ fn session_card(
         Tone::Normal,
         None,
     ));
-    if !n.cells.is_empty() {
-        lines.push((
-            format!("✓ {ok}  ● {running}  ✕ {failed}"),
-            Tone::Muted,
-            None,
-        ));
+    // Each count on its own line, and only when there is one: the words
+    // say what the marks mean, and the narrow card never cuts them.
+    for (count, said) in [(ok, "ran"), (running, "running"), (failed, "failed")] {
+        if count > 0 {
+            let mark = match said {
+                "ran" => "✓",
+                "running" => "●",
+                _ => "✕",
+            };
+            lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
+        }
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
-    let helpers = n.cells.last().map(|c| c.helpers.as_slice()).unwrap_or(&[]);
+    // The newest cell that called a helper: the turn ending does not make
+    // the sidebar forget them.
+    let with_helpers = n.last_with_helpers();
+    let helpers = with_helpers
+        .and_then(|cell| n.cells.get(cell - 1))
+        .map_or(&[][..], |c| c.helpers.as_slice());
     if helpers.is_empty() {
         lines.push((
             if s.helpers_on { "none yet" } else { "off" }.into(),
@@ -920,7 +958,7 @@ fn session_card(
             Some(Action::SettingsAt(2)),
         ));
     }
-    for helper in helpers {
+    for (i, helper) in helpers.iter().enumerate() {
         lines.push((
             format!(
                 "{} · {}",
@@ -938,7 +976,8 @@ fn session_card(
             } else {
                 Tone::Failure
             },
-            None,
+            // The same lane the card shows, opened there.
+            Some(Action::Helper(with_helpers.unwrap_or(0), i)),
         ));
     }
     for (i, (text, tone, action)) in lines.iter().enumerate() {
@@ -969,11 +1008,7 @@ fn session_card(
             side.right(),
             &[
                 ("activity".into(), Action::Activity, false),
-                (
-                    "telemetry".into(),
-                    Action::Command("/telemetry".into()),
-                    false,
-                ),
+                ("telemetry".into(), Action::Telemetry, false),
             ],
             ui.press,
             t,
@@ -999,30 +1034,22 @@ fn dock_top(
     f: &mut Frame<'_>,
     g: &mut Geometry,
     a: Rect,
-    n: &Notebook,
     s: &ScreenState,
     ui: &Workbench,
     gutter: Option<u16>,
+    cell: Option<usize>,
     boxed: bool,
 ) {
     let t = s.theme;
-    let running = matches!(
-        s.activity,
-        Activity::Thinking
-            | Activity::Executing
-            | Activity::Compacting
-            | Activity::Searching
-            | Activity::Streaming
-            | Activity::Waiting
-    );
-    // A long wait is exactly when a person looks here to ask whether the
-    // session is alive, so the mark keeps moving; only motion off and a
-    // selection in progress hold it.
-    let cell = matches!(s.activity, Activity::Executing | Activity::Streaming)
-        .then_some(n.cells.len() + 1);
+    let running = s.activity.working();
+    // The turn is complete once its check has had its say, not before.
+    let said = if s.activity == Activity::Complete && s.behind.iter().any(|lane| lane == "check") {
+        voice::CHECKING.to_string()
+    } else {
+        voice::status(s.activity, cell, s.streaming_tool_input.is_some())
+    };
     let status = format!(
-        "{}{}",
-        voice::status(s.activity, cell, s.streaming_tool_input.is_some()),
+        "{said}{}",
         if s.stopping { " · stop requested" } else { "" }
     );
     let lead = format!(
@@ -1048,6 +1075,9 @@ fn dock_top(
         Some(notice.clone())
     } else if s.mouse_off {
         Some("Mouse released · Ctrl-G captures again".to_string())
+    } else if s.fullscreen {
+        // With the chrome gone, the way back stays in view.
+        Some("Fullscreen · Ctrl-F restores".to_string())
     } else {
         None
     }
@@ -1058,24 +1088,31 @@ fn dock_top(
     if let Some(notice) = &notice
         && used + 8 < a.width
     {
-        let text = format!(
-            "── {} ",
-            clip(notice, a.width.saturating_sub(used + 6) as usize)
-        );
+        // The undo is the point of offering a change back, so the notice
+        // is cut to leave it room, never the other way round.
+        let undo = ui
+            .changes
+            .last()
+            .filter(|_| ui.offer_undo && ui.notice_visible())
+            .map(|change| format!("undo · {}", change.was));
+        let room = a.width.saturating_sub(used + 6);
+        let kept = undo
+            .as_deref()
+            .map_or(0, |undo| chrome::width(undo) + 5)
+            .min(room.saturating_sub(12));
+        let text = format!("── {} ", clip(notice, (room - kept) as usize));
         let w = chrome::width(&text).min(a.width - used);
         row(f, Rect::new(a.x + used, a.y, w, 1), &text, Tone::Accent, t);
         used += w;
-        if let Some((label, _)) = &ui.undo
-            && ui.notice_visible()
-        {
+        if let Some(undo) = undo {
             let w = chrome::chip(
                 f,
                 g,
                 a.x + used,
                 a.y,
                 a.right().saturating_sub(2),
-                &format!("undo {label}"),
-                Action::UndoLive,
+                &undo,
+                Action::Undo,
                 false,
                 Tone::Normal,
                 ui.press,
@@ -1095,6 +1132,21 @@ fn dock_top(
         );
         if boxed {
             row(f, Rect::new(a.right() - 1, a.y, 1, 1), "╮", Tone::Line, t);
+        }
+        // Rows of the draft above the composer's window say so here, on
+        // its top edge.
+        if ui.composer_hidden.0 > 0 {
+            let above = format!(" ↑ {} more ", ui.composer_hidden.0);
+            let w = chrome::width(&above);
+            if used + w + 4 < a.width {
+                row(
+                    f,
+                    Rect::new(a.right().saturating_sub(w + 2), a.y, w, 1),
+                    &above,
+                    Tone::Muted,
+                    t,
+                );
+            }
         }
     }
 }
@@ -1120,7 +1172,18 @@ fn dock_bottom(
             matches!(s.activity, Activity::Thinking | Activity::Streaming),
         )
     });
-    let right = context.map(|c| format!(" {c} ")).unwrap_or_default();
+    // Rows of the draft below the composer's window say so here, on its
+    // bottom edge.
+    let below = match ui.composer_hidden.1 {
+        0 => String::new(),
+        rows => format!("↓ {rows} more"),
+    };
+    let right = match (context, below.is_empty()) {
+        (Some(c), true) => format!(" {c} "),
+        (Some(c), false) => format!(" {below} · {c} "),
+        (None, false) => format!(" {below} "),
+        (None, true) => String::new(),
+    };
     let rw = chrome::width(&right);
     if rw > 0 && rw + 4 < a.width {
         row(
@@ -1134,20 +1197,19 @@ fn dock_bottom(
     let limit = a.right().saturating_sub(rw + 3);
     let mut x = a.x + 3;
     if s.status_line != StatusLine::Hidden {
-        // **A chip says only what differs from Sterna's own default.** Four
-        // chips that read "default", "off", "off", "actions" are four words a
-        // newcomer cannot use yet; a setting someone changed is one they
-        // know, and it stays one click from changing back.
-        let effort = s.effort.sent_for(s.model.as_deref().unwrap_or("")).name();
+        // **A chip says only what differs from Sterna's own default** --
+        // except the effort, which is a control stepped in place: a chip
+        // that vanished at `default` could not be stepped again.
         let items = [
+            // A sign-in running beside the session, one click from its panel.
             (
-                if s.effort == crate::wire::Effort::Default {
-                    String::new()
-                } else {
-                    format!("effort {effort}")
-                },
-                Action::Effort,
+                s.signing_in
+                    .as_ref()
+                    .map(|label| format!("signing in to {label} ▸"))
+                    .unwrap_or_default(),
+                Action::ReopenSignIn,
             ),
+            (super::facts::effort_word(s), Action::Effort),
             (
                 if s.helpers_on {
                     "◇ helpers on".to_string()
@@ -1162,7 +1224,7 @@ fn dock_bottom(
                     .filter(|word| *word != "off")
                     .map(|word| format!("subagents {word}"))
                     .unwrap_or_default(),
-                Action::SettingsAt(4),
+                Action::Command("/subagents".into()),
             ),
             (
                 if s.stream == crate::tui::Stream::default() {
@@ -1173,51 +1235,44 @@ fn dock_bottom(
                 Action::Stream,
             ),
         ];
-        // The chips sit on a cleared stretch of the edge, one space apart,
-        // rather than on top of the rule.
-        let span: u16 = items
-            .iter()
+        // A fact nobody measured is not a control; an empty label is how
+        // this strip says "no" rather than saying `unknown`.
+        let chips: Vec<(String, Action, bool)> = items
+            .into_iter()
             .filter(|(text, _)| !text.is_empty())
-            .map(|(text, _)| chrome::width(text) + 5)
-            .sum::<u16>()
-            .min(limit.saturating_sub(x));
-        row(
-            f,
-            Rect::new(x - 1, a.y, span + 1, 1),
-            &" ".repeat(span as usize + 1),
-            Tone::Line,
-            t,
-        );
-        for (text, action) in items {
-            // A fact nobody measured is not a control; an empty label is
-            // how this strip says "no" rather than saying `unknown`.
-            if text.is_empty() {
-                continue;
-            }
-            let w = chrome::chip(
+            .map(|(text, action)| (text, action, false))
+            .collect();
+        // The chips sit on a cleared stretch of the edge, one space apart,
+        // rather than on top of the rule; with no room for one the rule
+        // stays whole.
+        let end = chrome::chips_end(&chips, x, limit);
+        if end > x {
+            row(
                 f,
-                g,
-                x,
-                a.y,
-                limit,
-                &text,
-                action,
-                false,
-                Tone::Normal,
-                ui.press,
+                Rect::new(x - 1, a.y, end - x + 1, 1),
+                &" ".repeat((end - x) as usize + 1),
+                Tone::Line,
                 t,
             );
-            if w == 0 {
-                break;
-            }
-            x += w + 1;
         }
+        x = chrome::chips(f, g, x, a.y, limit, &chips, ui.press, t);
     }
     // One muted line that teaches, instead of one that counts. It turns with
     // the session rather than with the clock, so it is stable inside one
     // screenshot and inside one test.
     if s.status_line == StatusLine::Full {
-        let hint = format!(" {} ", voice::hint(n.cells.len() + s.history.len()));
+        let changed = n
+            .cells
+            .iter()
+            .any(|c| c.changes.as_deref().is_some_and(|d| !d.is_empty()));
+        let hint = format!(
+            " {} ",
+            voice::hint(
+                n.cells.len() + s.history.len(),
+                s.activity.working(),
+                changed
+            )
+        );
         let hw = chrome::width(&hint);
         if x + hw + 2 < limit {
             row(
@@ -1230,9 +1285,9 @@ fn dock_bottom(
         }
     }
 }
-/// A local surface: modal, framed, with one head and one foot in the same
-/// three places every time -- what it is, what it does, and the way out.
-fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &Workbench) {
+/// A local surface: modal and framed, drawn by the one sheet component --
+/// the same head, the same foot and the same keys every time.
+fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &mut Workbench) {
     let t = s.theme;
     let area = if a.width >= 100 && a.height >= 25 {
         Rect::new(a.x + 2, a.y + 1, a.width - 4, a.height - 2)
@@ -1259,651 +1314,19 @@ fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &W
             area.height,
         )
     };
-    let (title, sub) = if ui.preferences.is_some() {
-        (
-            "SETTINGS",
-            "every choice applies now and saves itself; there is no Apply",
-        )
-    } else if ui.models.is_some() {
-        ("MODELS", "one Enter commits one selection")
-    } else if ui.work {
-        ("WORK", "what this session may do")
-    } else if ui.approvals {
-        ("ASK", "how often it stops to ask")
-    } else if ui.access {
-        ("ACCESS", "the boundaries it is actually running under")
-    } else if ui.activity {
-        ("ACTIVITY", "local notices, newest last")
-    } else if ui.help {
-        ("KEYS", "every key, and what it does")
-    } else if ui.confirm.is_some() {
-        ("CONFIRM", "this one is not undone by Esc")
-    } else {
-        (
-            s.panel
-                .as_ref()
-                .map(|p| p.title.as_str())
-                .unwrap_or("DETAILS"),
-            "",
-        )
+    let (press, hover) = (ui.press, ui.hover);
+    let Some(layer) = ui.sheets.last_mut() else {
+        return;
     };
-    row(
-        f,
-        Rect::new(inner.x, inner.y, inner.width, 1),
-        &format!("{title}  "),
-        Tone::Accent,
-        t,
-    );
-    if inner.width as usize > title.len() + sub.len() + 16 {
-        row(
-            f,
-            Rect::new(
-                inner.x + title.len() as u16 + 2,
-                inner.y,
-                inner.width.saturating_sub(title.len() as u16 + 2),
-                1,
-            ),
-            sub,
-            Tone::Muted,
-            t,
-        );
-    }
-    if inner.width > 16 {
-        chrome::chip(
-            f,
-            g,
-            inner.right() - 14,
-            inner.y,
-            inner.right(),
-            "Esc · Back",
-            Action::Close,
-            false,
-            Tone::Normal,
-            ui.press,
-            t,
-        );
-    }
-    row(
-        f,
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        &"─".repeat(inner.width as usize),
-        Tone::Line,
-        t,
-    );
-    // And one foot: what just happened, and what leaving will do.
-    if inner.height > 3 {
-        let y = inner.bottom() - 1;
-        row(
-            f,
-            Rect::new(inner.x, y - 1, inner.width, 1),
-            &"─".repeat(inner.width as usize),
-            Tone::Line,
-            t,
-        );
-        let notice = if !ui.notice.is_empty() {
-            ui.notice.clone()
-        } else {
-            s.notice.clone().unwrap_or_default()
-        };
-        row(
-            f,
-            Rect::new(inner.x, y, inner.width, 1),
-            &notice,
-            Tone::Accent,
-            t,
-        );
-        let hint = if ui.models.is_some() {
-            "Esc back · the assignment stays unchanged"
-        } else {
-            "Esc closes · saved choices stay"
-        };
-        row(
-            f,
-            Rect::new(
-                inner.right().saturating_sub(hint.len() as u16 + 1),
-                y,
-                hint.len() as u16,
-                1,
-            ),
-            hint,
-            Tone::Muted,
-            t,
-        );
-    }
-    let inner = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width,
-        inner.height.saturating_sub(2),
-    );
-    if let Some(p) = &ui.preferences {
-        draw_settings(f, g, inner, p, s, ui);
-    } else if let Some(m) = &ui.models {
-        super::sheets::draw_models(f, g, inner, m, s);
-    } else if ui.work {
-        for (i, (word, help, command)) in [
-            (
-                "Build",
-                "Edits files and runs commands, inside the session's boundary.",
-                "execute",
-            ),
-            (
-                "Explore",
-                "Reads only. It can still write to its own scratch directory.",
-                "explore",
-            ),
-            (
-                "Plan",
-                "Reads, and writes one file: the plan. Nothing else changes.",
-                "plan",
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            add(
-                f,
-                g,
-                inner,
-                inner.y + 3 + i as u16 * 3,
-                &mark_current(word, work_word(s) == word),
-                Action::Command(format!("/mode {command}")),
-                i == ui.local_scroll.min(2),
-                t,
-            );
-            label(
-                f,
-                inner,
-                inner.y + 4 + i as u16 * 3,
-                &format!("  {help}"),
-                Tone::Normal,
-                t,
-            );
-        }
-    } else if ui.approvals {
-        for (i, rung) in [
-            crate::permissions::Rung::Manual,
-            crate::permissions::Rung::AcceptEdits,
-            crate::permissions::Rung::Auto,
-            crate::permissions::Rung::Full,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let (word, help, mode) = (rung.label(), rung.sentence(), rung.name());
-            let word = mark_current(word, rung == s.permissions.rung());
-            add(
-                f,
-                g,
-                inner,
-                inner.y + 3 + i as u16 * 3,
-                &word,
-                Action::Rung(mode.into()),
-                i == ui.local_scroll.min(3),
-                t,
-            );
-            label(
-                f,
-                inner,
-                inner.y + 4 + i as u16 * 3,
-                &format!("  {help}"),
-                Tone::Normal,
-                t,
-            );
-        }
-    } else if ui.access {
-        // The plain sentence first, the mechanism under it, and a way to
-        // act at the end.
-        label(f, inner, inner.y + 2, access_word(s), access_tone(s), t);
-        label(f, inner, inner.y + 3, access_sentence(s), Tone::Normal, t);
-        label(
-            f,
-            inner,
-            inner.y + 5,
-            &format!("{} · asks {}", network_word(s), ask_word(s).to_lowercase()),
-            Tone::Normal,
-            t,
-        );
-        label(f, inner, inner.y + 7, "How it is enforced", Tone::Muted, t);
-        for (i, l) in [
-            format!(
-                "Sandbox profile   {}",
-                s.sandbox.as_deref().unwrap_or("unknown")
-            ),
-            format!(
-                "Child processes   {}",
-                s.confinement.as_deref().unwrap_or("unknown")
-            ),
-            format!(
-                "Host tools        {}",
-                s.network.as_deref().unwrap_or("unknown")
-            ),
-        ]
-        .iter()
-        .enumerate()
-        {
-            label(f, inner, inner.y + 8 + i as u16, l, Tone::Muted, t);
-        }
-        label(
-            f,
-            inner,
-            inner.y + 12,
-            "Asking less often never widens this boundary, and a saved permission never widens the one already running.",
-            Tone::Muted,
-            t,
-        );
-        add_chip(
-            f,
-            g,
-            inner,
-            inner.y + 14,
-            "Change how often it asks",
-            Action::Approvals,
-            true,
-            ui,
-            t,
-        );
-        add_chip(
-            f,
-            g,
-            inner,
-            inner.y + 16,
-            "Open settings",
-            Action::Settings,
-            false,
-            ui,
-            t,
-        );
-    } else if ui.activity {
-        let lines: Vec<_> = s.history.iter().flat_map(|n| n.text.lines()).collect();
-        for (i, l) in lines.iter().skip(ui.local_scroll).enumerate() {
-            label(
-                f,
-                inner,
-                inner.y + 2 + i as u16,
-                l,
-                if l.starts_with("ERROR:") {
-                    Tone::Failure
-                } else {
-                    Tone::Normal
-                },
-                t,
-            );
-        }
-    } else if ui.help {
-        let keys: [(&str, &str); 16] = [
-            ("Enter", "send · Shift-Enter for a new line"),
-            ("Esc", "stop after this cell · again cancels the call"),
-            ("Shift-Tab", "how often Sterna asks before it acts"),
-            ("F2", "settings, applied as you choose"),
-            ("F3", "which model answers"),
-            ("F4", "the selected cell's diff"),
-            ("F5", "the selected cell's helpers"),
-            ("Ctrl-O", "expand or collapse the selected cell"),
-            ("Ctrl-T", "the instruments"),
-            ("Ctrl-B", "show or hide the session card"),
-            ("Ctrl-F", "hide or restore the chrome"),
-            (
-                "Ctrl-G",
-                "release the mouse to the terminal, and take it back",
-            ),
-            ("/", "commands · /help lists every one"),
-            ("@", "a path in this project"),
-            ("?", "this sheet, when the composer is empty"),
-            ("click", "any chip changes the thing it names"),
-        ];
-        for (i, (key, what)) in keys.iter().enumerate() {
-            let y = inner.y + 2 + i as u16;
-            label(f, inner, y, &format!("{key:<11}"), Tone::Accent, t);
-            row(
-                f,
-                Rect::new(inner.x + 11, y, inner.width.saturating_sub(11), 1),
-                what,
-                Tone::Normal,
-                t,
-            );
-        }
-    } else if let Some(command) = &ui.confirm {
-        label(
-            f,
-            inner,
-            inner.y + 3,
-            "This removes approval prompts, not sandbox restrictions.",
-            Tone::Warning,
-            t,
-        );
-        add_chip(
-            f,
-            g,
-            inner,
-            inner.y + 5,
-            "Confirm · Never ask",
-            Action::Rung(command.clone()),
-            true,
-            ui,
-            t,
-        );
-    } else if let Some(panel) = s.panel.as_ref().filter(|panel| panel.title == "Themes") {
-        super::sheets::draw_themes(f, g, inner, panel, s, t);
-    } else if let Some(panel) = s
-        .panel
-        .as_ref()
-        .filter(|panel| panel.title.starts_with("Setup"))
-    {
-        super::sheets::draw_wizard(f, g, inner, panel, t);
-    } else if let Some(panel) = &s.panel {
-        let start = panel
-            .selected
-            .saturating_sub(inner.height.saturating_sub(5) as usize);
-        for (i, r) in panel.rows.iter().enumerate().skip(start) {
-            add(
-                f,
-                g,
-                inner,
-                inner.y + 2 + (i - start) as u16,
-                &format!("{} {}", if i == panel.selected { "›" } else { " " }, r.text),
-                Action::PanelRow(i),
-                i == panel.selected,
-                t,
-            );
-        }
-    }
-}
-
-fn draw_settings(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    a: Rect,
-    p: &super::Preferences,
-    s: &ScreenState,
-    ui: &Workbench,
-) {
-    let y = a.y + 2;
-    // Both destinations are named, and the selected one is marked: a Global
-    // label must never be able to conceal a Project write.
-    let mut x = a.x;
-    for scope in [
-        crate::settings::Scope::Global,
-        crate::settings::Scope::Local,
-    ] {
-        let here = p.scope == scope;
-        let w = chrome::chip(
-            f,
-            g,
-            x,
-            y,
-            a.right(),
-            scope.label(),
-            Action::Scope(scope == crate::settings::Scope::Global),
-            here,
-            Tone::Normal,
-            ui.press,
-            s.theme,
-        );
-        x += w + 1;
-    }
-    row(
-        f,
-        Rect::new(x + 1, y, a.right().saturating_sub(x + 1).min(12), 1),
-        "F6 switches",
-        Tone::Muted,
-        s.theme,
-    );
-    if a.width > 32 {
-        chrome::chip(
-            f,
-            g,
-            a.right() - 15,
-            y,
-            a.right(),
-            "Undo · ^Z",
-            Action::Undo,
-            false,
-            Tone::Normal,
-            ui.press,
-            s.theme,
-        );
-    }
-    label(
-        f,
-        a,
-        y + 1,
-        &saved_in(&p.path, p.scope),
-        Tone::Muted,
-        s.theme,
-    );
-    let cat = CATEGORIES[p.category.min(5)];
-    let next = (p.category + 1) % CATEGORIES.len();
-    add(
-        f,
-        g,
-        a,
-        y + 3,
-        &format!("‹ {cat} ›   Tab: next category · type to search"),
-        Action::Category(next),
-        true,
-        s.theme,
-    );
-    if !p.query.is_empty() {
-        label(
-            f,
-            a,
-            y + 4,
-            &format!("Search: {}", p.query),
-            Tone::Normal,
-            s.theme,
-        );
-    }
-    let rows = p.rows();
-    // **Two lines per row, because the second one is the whole point.** The
-    // consequence used to be printed once, at the foot, for the selected row
-    // only -- so reading what four settings did meant moving the cursor four
-    // times and remembering what the last three had said. Guidance that
-    // disappears forces a person to re-derive it, and a settings panel is
-    // exactly where nobody should be re-deriving anything.
-    let stride = 2u16;
-    let capacity = ((a.height.saturating_sub(14).max(2)) / stride).max(1) as usize;
-    let start = p.selected.saturating_sub(capacity.saturating_sub(1));
-    for (i, spec) in rows.iter().enumerate().skip(start).take(capacity) {
-        let y = y + 5 + (i - start) as u16 * stride;
-        let selected = i == p.selected;
-        let text = format!("{} {}", if selected { "›" } else { " " }, spec.label);
-        let lw = (a.width / 2).min(31);
-        button(
-            f,
-            g,
-            Rect::new(a.x, y, lw, 1),
-            &text,
-            Action::Setting(i, None),
-            selected,
-            s.theme,
-        );
-        let options = super::Preferences::choices(spec);
-        let current = p.effective(spec.key);
-        let mut x = a.x + lw;
-        if options.is_empty() {
-            // `unset` is what a TOML table says when a key is absent, and it
-            // was reaching the screen as if it were a value someone chose.
-            let shown = if current == "unset" {
-                match spec.kind {
-                    crate::settings::Kind::Model => "choose a model".to_string(),
-                    _ => "not set".to_string(),
-                }
-            } else {
-                current.clone()
-            };
-            button(
-                f,
-                g,
-                Rect::new(x, y, a.right().saturating_sub(x), 1),
-                &format!("{shown}  ›"),
-                Action::Setting(i, None),
-                selected,
-                s.theme,
-            );
-        } else {
-            for value in options {
-                let w = chrome::chip(
-                    f,
-                    g,
-                    x,
-                    y,
-                    a.right(),
-                    human_value(&value),
-                    Action::Setting(i, Some(value.clone())),
-                    value == current,
-                    Tone::Normal,
-                    ui.press,
-                    s.theme,
-                );
-                if w == 0 {
-                    break;
-                }
-                x += w + 1;
-            }
-        }
-        // The consequence, under the row it belongs to, and the one mark
-        // that says a choice will not reach the session already running.
-        let mark = if crate::settings::applies_now(spec.key) {
-            String::new()
-        } else {
-            "  ·  next session".to_string()
-        };
-        row(
-            f,
-            Rect::new(a.x + 3, y + 1, a.width.saturating_sub(3), 1),
-            &clip(
-                &format!("{}{mark}", spec.description),
-                a.width.saturating_sub(4) as usize,
-            ),
-            if selected { Tone::Normal } else { Tone::Muted },
-            s.theme,
-        );
-    }
-    let bottom = a.bottom().saturating_sub(7);
-    row(
-        f,
-        Rect::new(a.x, bottom.saturating_sub(1), a.width, 1),
-        &"─".repeat(a.width as usize),
-        Tone::Line,
-        s.theme,
-    );
-    if let Some(spec) = rows.get(p.selected) {
-        // **The selected row in full, then where its value came from.** The
-        // row itself has room for one clipped line of its description; the
-        // foot has room for the whole of it, and for the one sentence that
-        // says whose value is in force -- never the dotted key, which nobody
-        // types here.
-        let lines = wrap_words(spec.description, a.width.saturating_sub(1) as usize);
-        for (n, line) in lines.iter().take(2).enumerate() {
-            label(f, a, bottom + n as u16, line, Tone::Normal, s.theme);
-        }
-        let effective = p.effective(spec.key);
-        let whose = if effective == "unset" {
-            "Not set · Sterna uses its own default".to_string()
-        } else {
-            let shown = human_value(&effective);
-            match p.saved(spec.key) {
-                Some(_) => format!(
-                    "{shown} · set in {}",
-                    match p.scope {
-                        crate::settings::Scope::Global => "your global settings",
-                        _ => "this project's settings",
-                    }
-                ),
-                None => format!(
-                    "{shown} · from {}",
-                    match p.origin(spec.key) {
-                        "built-in" => "Sterna's own default",
-                        "global" => "your global settings",
-                        "project" => "this project's settings",
-                        other => other,
-                    }
-                ),
-            }
-        };
-        let when = if crate::settings::applies_now(spec.key) {
-            "applies now"
-        } else {
-            "applies from the next session"
-        };
-        label(
-            f,
-            a,
-            bottom + 2,
-            &format!("{whose} · {when}"),
-            Tone::Muted,
-            s.theme,
-        );
-    }
-    if let Some((key, value)) = &p.editing {
-        label(
-            f,
-            a,
-            bottom + 3,
-            &format!("{key} = {value}"),
-            Tone::Accent,
-            s.theme,
-        );
-        label(
-            f,
-            a,
-            bottom + 4,
-            "Enter confirms this field · Esc cancels field only",
-            Tone::Warning,
-            s.theme,
-        );
-    } else {
-        label(
-            f,
-            a,
-            bottom + 3,
-            "↑↓ Select · ←→ Change · Enter Edit · Backspace Inherit",
-            Tone::Normal,
-            s.theme,
-        );
-    }
-    label(
-        f,
-        a,
-        a.bottom().saturating_sub(1),
-        &p.notice,
-        Tone::Normal,
-        s.theme,
-    );
-}
-/// A setting's value as the panel says it: a switch is On or Off.
-fn human_value(value: &str) -> &str {
-    match value {
-        "true" => "On",
-        "false" => "Off",
-        other => other,
-    }
-}
-
-/// Where a choice is saved, in the words a person uses for it -- never a
-/// temporary directory's full path.
-fn saved_in(path: &std::path::Path, scope: crate::settings::Scope) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let shown = match home
-        .as_deref()
-        .and_then(|home| path.strip_prefix(home).ok())
-    {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path
-            .iter()
-            .rev()
-            .take(2)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<std::path::PathBuf>()
-            .display()
-            .to_string(),
-    };
-    match scope {
-        crate::settings::Scope::Global => format!("Your settings, for every project · {shown}"),
-        _ => format!("This project only · {shown}"),
+    let drawn = super::sheet::draw(f, g, inner, &mut layer.sheet, t, press, hover);
+    if let (super::Source::Themes { .. }, Some(aside)) = (&layer.source, drawn.aside) {
+        let chosen = layer
+            .sheet
+            .focused()
+            .and_then(|item| item.id.strip_prefix("theme:"))
+            .and_then(Theme::parse)
+            .unwrap_or(s.theme);
+        super::sheets::draw_theme_preview(f, aside, chosen, s, t);
     }
 }
 
@@ -1926,8 +1349,68 @@ pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-pub(super) fn wrap_input(text: &str, width: usize) -> Vec<String> {
-    let mut d = Document::default();
-    d.push(text, Tone::Normal, None, width, 0);
-    d.rows.into_iter().map(|r| r.text).collect()
+/// The composer's width: the text width less the dock's edges and the
+/// prompt mark. Computed here once, for every composer computation.
+fn composer_width(a: Rect, s: &ScreenState) -> u16 {
+    let textwidth = a.width.saturating_sub(2).max(1);
+    let boxed = !s.fullscreen && a.width > 8;
+    let prompt = if boxed { 4 } else { u16::from(a.width > 6) * 3 };
+    textwidth
+        .saturating_sub(prompt.saturating_sub(1) + u16::from(boxed) * 2)
+        .max(1)
+}
+
+/// The composer's rows: the draft cut at its newlines and wherever a line
+/// reaches `width` columns, after a space where one fits. **Every
+/// character is kept** -- the rows joined, with the newlines between them,
+/// are the draft -- and each row carries the byte it starts at.
+pub(super) fn composer_lines(text: &str, width: usize) -> Vec<(usize, &str)> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for line in text.split('\n') {
+        let (mut at, mut rest) = (start, line);
+        loop {
+            let (mut used, mut cut, mut space) = (0, rest.len(), None);
+            for (i, c) in rest.char_indices() {
+                let w = Span::raw(c.to_string()).width();
+                if used + w > width {
+                    cut = i;
+                    break;
+                }
+                used += w;
+                if c == ' ' {
+                    space = Some(i + 1);
+                }
+            }
+            if cut == rest.len() {
+                rows.push((at, rest));
+                break;
+            }
+            // A row ends after its last space, or where it is full; it
+            // always takes at least one character, so a character wider
+            // than the composer still moves on.
+            let cut = space
+                .filter(|space| *space <= cut)
+                .unwrap_or(cut)
+                .max(rest.chars().next().map_or(1, char::len_utf8));
+            rows.push((at, &rest[..cut]));
+            at += cut;
+            rest = &rest[cut..];
+        }
+        start += line.len() + 1;
+    }
+    rows
+}
+
+/// The row and column the caret is drawn at: on the last row that starts
+/// at or before it, so a caret at a wrap is at the start of the next row.
+pub(super) fn caret(lines: &[(usize, &str)], text: &str, cursor: usize) -> (usize, usize) {
+    let row = lines
+        .iter()
+        .rposition(|(start, _)| *start <= cursor)
+        .unwrap_or(0);
+    let start = lines.get(row).map_or(0, |(start, _)| *start);
+    let col = Span::raw(&text[start.min(cursor)..cursor]).width();
+    (row, col)
 }

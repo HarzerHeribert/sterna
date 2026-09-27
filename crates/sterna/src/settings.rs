@@ -41,8 +41,8 @@ use crate::config::{AgentsMode, CompletionStyle, SternaConfig};
 use crate::sandbox::profile::Profile;
 
 pub use registry::{
-    Kind, SettingSpec, applies_now, check_value, live_command, permission_rule, shown_default,
-    spec, specs, validate,
+    Kind, SettingSpec, applies_now, check_value, hidden, live_command, permission_rule,
+    shown_default, spec, specs, validate,
 };
 
 const LOCAL_DIR: &str = ".sterna";
@@ -1307,7 +1307,7 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ("ui.theme", word(crate::tui::Theme::natural().name())),
         ("ui.statusline", word("full")),
         ("ui.sidebar", word("auto")),
-        ("ui.reduced_motion", toml::Value::Boolean(false)),
+        ("ui.background", word("auto")),
         ("ui.motion", word(crate::tui::Motion::default().name())),
         ("ui.stream", word(crate::tui::Stream::default().name())),
         ("session.mode", word("build")),

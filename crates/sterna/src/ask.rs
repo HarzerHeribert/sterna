@@ -120,6 +120,19 @@ impl Answer {
         }
     }
 
+    /// The card's row for this answer: what was asked and who chose what.
+    #[must_use]
+    pub fn row(&self, question: &str) -> String {
+        match (&self.choice, self.by) {
+            (Some(choice), AnsweredBy::Person) => format!("? {question} → you chose: {choice}"),
+            (Some(choice), AnsweredBy::Decision { .. }) => {
+                format!("? {question} → Sterna decided: {choice}")
+            }
+            (Some(choice), AnsweredBy::NoOne) => format!("? {question} → {choice}"),
+            (None, _) => format!("? {question} → nobody chose"),
+        }
+    }
+
     /// The observation the next turn reads. It names who answered, because a
     /// program that branches on the answer is entitled to know whether a
     /// person actually looked at it.

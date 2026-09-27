@@ -45,21 +45,22 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// historical fixture model explicitly. A test that already persisted a
 /// parent omits the CLI flag, preserving the production precedence rule.
 ///
-/// The check is scoped to **project and legacy only, never global** --
-/// every spawning helper in this file isolates the *child's* global scope to
-/// an empty directory (`GH-PANE-TEST-CONFIG-ISOLATION`), and this process's
-/// own ambient `XDG_CONFIG_HOME` is not that directory. Checking the real
-/// global here would let a developer's or a measurement's own
-/// `~/.config/sterna/config.toml` decide `persisted`, while the isolated child
-/// sees no such thing -- exactly the mismatch that made a real global config
-/// turn `--model` into a silently skipped flag and the session into a
-/// "no parent model selected" refusal.
+/// The check reads the project and **the child's own isolated global
+/// folder**, never this process's: every spawning helper in this file
+/// isolates the child's global scope to `<root>/global-config`
+/// (`GH-PANE-TEST-CONFIG-ISOLATION`), and a model choice is saved there
+/// (decision 6). Checking the real global here would let a developer's or a
+/// measurement's own `~/.config/sterna/config.toml` decide `persisted`,
+/// while the isolated child sees no such thing -- exactly the mismatch that
+/// made a real global config turn `--model` into a silently skipped flag
+/// and the session into a "no parent model selected" refusal.
 fn supply_test_model(command: &mut Command, root: &Path) {
-    let persisted = sterna::settings::Store::with_global(root, None)
-        .and_then(|store| store.load(None))
-        .ok()
-        .and_then(|loaded| loaded.config.model.parent)
-        .is_some();
+    let persisted =
+        sterna::settings::Store::with_global(root, Some(root.join("global-config").join("sterna")))
+            .and_then(|store| store.load(None))
+            .ok()
+            .and_then(|loaded| loaded.config.model.parent)
+            .is_some();
     if !persisted {
         command.arg("--model").arg(sterna::wire::MODEL);
     }
@@ -969,19 +970,20 @@ fn the_binary_with_no_arguments_starts_a_session_in_its_current_directory() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // Per-session rollouts: the id is generated, so the file is found rather
-    // than named. That a bare `sterna` uses cwd as its root is still the point.
-    let rollout = fs::read_dir(root.join(".sterna/sessions"))
+    // Per-session rollouts: the id is generated, so the folder is found
+    // rather than the file named. That a bare `sterna` uses cwd as its root
+    // is still the point; and EOF invents no turn, so nobody asked anything
+    // and the session is not kept.
+    let kept: Vec<_> = fs::read_dir(root.join(".sterna/sessions"))
         .expect("bare sterna did not use cwd as --root .")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .next()
-        .expect("bare sterna wrote no rollout");
-    let lines = rollout_lines(&rollout);
-    assert!(
-        lines.iter().all(|line| line["kind"] != "turn"),
-        "EOF must not invent a provider turn: {lines:?}"
-    );
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .collect();
+    assert!(kept.is_empty(), "EOF must not invent a turn: {kept:?}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4376,10 +4378,22 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         stdout.contains("model changed to claude-opus-4-8"),
         "{stdout}"
     );
-    let saved = std::fs::read_to_string(root.join(".sterna/config.toml")).unwrap();
+    // Saved for every project (decision 6), in the store's own spelling of
+    // the person's settings folder; the project gets no file for it.
+    let global = sterna::settings::Store::with_global(
+        &root,
+        Some(root.join("global-config").join("sterna")),
+    )
+    .unwrap()
+    .path(sterna::settings::Scope::Global);
+    let saved = std::fs::read_to_string(&global).unwrap();
     assert!(
         saved.contains("claude-opus-4-8"),
         "the choice was not written: {saved}"
+    );
+    assert!(
+        !root.join(".sterna/config.toml").exists(),
+        "a model choice wrote into the project"
     );
 
     // A second session, told nothing on its command line, starts there.
@@ -6170,8 +6184,10 @@ fn the_model_and_login_controls_reach_the_gateway_without_a_scope() {
         "/login must read entitlements through the gateway: {seen}"
     );
     assert!(
-        lines.contains(&"subscriptions connect anthropic --entitlement work@example.com --json"),
-        "/login must run the connect flow through the gateway: {seen}"
+        lines.contains(
+            &"subscriptions connect anthropic --entitlement work@example.com --json --no-browser"
+        ),
+        "/login must run the connect flow through the gateway, which opens no browser itself: {seen}"
     );
     assert!(
         !seen.contains("--scope"),
@@ -6277,7 +6293,8 @@ fn the_login_panel_lists_api_key_rows_after_the_accounts() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let Some(account) = stdout.find("work@example.com · user") else {
+    let Some(account) = stdout.find("Claude · work@example.com · ⚠ read first · sign in")
+    else {
         panic!("the account row must still be listed:\n{stdout}");
     };
     let Some(key) = stdout.find("anthropic · API key · not set") else {
@@ -6393,8 +6410,8 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
     assert!(
         seen.lines()
             .any(|line| line
-                == "subscriptions connect anthropic --entitlement work@example.com --json"),
-        "/login must run the connect flow through the gateway binary: {seen}"
+                == "subscriptions connect anthropic --entitlement work@example.com --json --no-browser"),
+        "/login must run the connect flow through the gateway binary, which opens no browser itself: {seen}"
     );
     assert!(
         !seen.contains("--scope"),
@@ -6580,7 +6597,7 @@ fn a_hosted_session_prefers_the_gateway_beside_the_binary_to_the_one_on_path() {
 
     let stdout = login("sess-gateway-on-path");
     assert!(
-        stdout.contains("work@example.com · user"),
+        stdout.contains("Claude · work@example.com · ⚠ read first · sign in"),
         "the gateway on PATH must have answered the catalogue:\n{stdout}"
     );
     let asked_on_path = fs::read_to_string(&path_record).unwrap();
@@ -6600,7 +6617,7 @@ fn a_hosted_session_prefers_the_gateway_beside_the_binary_to_the_one_on_path() {
     );
     let stdout = login("sess-gateway-beside");
     assert!(
-        stdout.contains("work@example.com · user"),
+        stdout.contains("Claude · work@example.com · ⚠ read first · sign in"),
         "the gateway beside the binary must have answered:\n{stdout}"
     );
     assert!(
@@ -7377,6 +7394,56 @@ fn a_saved_voice_is_removed_and_sterna_starts() {
     let stdout = String::from_utf8_lossy(&again.stdout);
     assert!(again.status.success(), "{stdout}");
     assert!(!stdout.contains("ui.voice"), "told only once: {stdout}");
+}
+
+/// `ui.reduced_motion` is gone -- motion off is the one switch. A file that
+/// still says `reduced_motion = true` starts, is told once what does the
+/// same now, and loses the line.
+#[test]
+fn a_saved_reduced_motion_is_removed_and_says_what_replaces_it() {
+    let root = scratch_dir("retired-reduced-motion");
+    fs::create_dir_all(root.join(".sterna")).unwrap();
+    let config = root.join(".sterna/config.toml");
+    fs::write(&config, "[ui]\nreduced_motion = true\ntheme = \"amber\"\n").unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_sterna"))
+            .arg("session")
+            .arg("--root")
+            .arg(&root)
+            .arg("--rollout")
+            .arg(root.join("rollout.jsonl"))
+            .arg("--model")
+            .arg(sterna::wire::MODEL)
+            .env("ANTHROPIC_BASE_URL", refused_base_url())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a saved reduced_motion stopped sterna:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("`ui.reduced_motion = true` is no longer a setting")
+            && stdout.contains("/motion off"),
+        "{stdout}"
+    );
+    let saved = fs::read_to_string(&config).unwrap();
+    assert!(!saved.contains("reduced_motion"), "{saved}");
+    assert!(
+        saved.contains("amber"),
+        "the rest of the file is kept: {saved}"
+    );
+    let again = run();
+    let stdout = String::from_utf8_lossy(&again.stdout);
+    assert!(again.status.success(), "{stdout}");
+    assert!(
+        !stdout.contains("reduced_motion"),
+        "told only once: {stdout}"
+    );
 }
 
 /// `/login custom` is one form: the URL, what it speaks, and a key. The

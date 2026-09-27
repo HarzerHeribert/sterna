@@ -43,13 +43,53 @@ impl RequestMode {
         }
     }
 
-    /// `build` is the settings registry's spelling of `execute`.
+    /// `build` is the settings registry's spelling of `execute`, and the
+    /// word every screen shows; either is accepted, in any case.
     pub fn parse(word: &str) -> Option<Self> {
-        match word.trim() {
+        match word.trim().to_ascii_lowercase().as_str() {
             "execute" | "build" => Some(Self::Execute),
             "explore" => Some(Self::Explore),
             "plan" => Some(Self::Plan),
             _ => None,
+        }
+    }
+
+    /// The word a screen shows: the chip's, the sheet's and every notice's.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Execute => "Build",
+            Self::Explore => "Explore",
+            Self::Plan => "Plan",
+        }
+    }
+
+    /// What choosing this mode does, in one sentence.
+    #[must_use]
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Self::Execute => "Edits files and runs commands, inside the session's boundary.",
+            Self::Explore => "Reads only. It can still write to its own scratch directory.",
+            Self::Plan => "Reads, and writes one file: the plan. Nothing else changes.",
+        }
+    }
+
+    /// The notice every route that sets the mode prints.
+    #[must_use]
+    pub fn now(self) -> String {
+        format!(
+            "Mode is now {} · {} Applies from the next request.",
+            self.label(),
+            self.sentence()
+        )
+    }
+
+    /// The word the settings file stores.
+    #[must_use]
+    pub fn setting(self) -> &'static str {
+        match self {
+            Self::Execute => "build",
+            other => other.name(),
         }
     }
 }

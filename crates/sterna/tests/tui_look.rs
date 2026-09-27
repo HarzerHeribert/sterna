@@ -4,7 +4,7 @@ use sterna::contract::{Conversation, Message, Role, ServedBy};
 use sterna::helpers::{HelperOutcome, HelperRecord};
 use sterna::runtime::handles::HandleTable;
 use sterna::tui::{
-    Activity, CellError, CellView, ContextTokens, Counted, Inspection, Notebook, ScreenState,
+    Activity, CellError, CellView, ContextTokens, Counted, Notebook, ScreenState,
     SidebarVisibility, SupervisorStatus, render_screen, screen_regions, slash_matches,
 };
 
@@ -308,7 +308,9 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // twice with two different descriptions. `/usage` (2026-09-23) shows
     // each subscription's limits. `/setup` (2026-09-25) is the first-start
     // wizard. `/bird` (2026-09-23) went on 2026-09-26: the parrots are themes.
-    assert_eq!(slash_matches("/").len(), 36);
+    // `/stream` worked and was in no list until the settings pass. `/resume`
+    // (2026-09-27) opens the resume sheet from inside a session.
+    assert_eq!(slash_matches("/").len(), 38);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();
@@ -350,7 +352,7 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
                 "browse models by agent, provider or intelligence"
             ),
             ("/motion".into(), "full, calm or off · how much moves"),
-            ("/mode".into(), "execute, explore (reads only) or plan"),
+            ("/mode".into(), "Build, Explore (reads only), Plan or auto"),
             ("/mouse".into(), "release or recapture the mouse · Ctrl-G")
         ]
     );
@@ -613,7 +615,7 @@ fn statusline_separates_request_context_from_cumulative_spend() {
     };
     let shown = text(&draw(200, 30, &state(), &conversation(), &unknown));
     assert!(
-        shown.contains("ctx 44.6k ·") && !shown.contains("window ?"),
+        shown.contains("context 44.6k tokens · provider count") && !shown.contains("window ?"),
         "{shown}"
     );
     assert!(!shown.contains("44.6k/400.0k"), "{shown}");
@@ -1151,19 +1153,6 @@ fn completion_scan_is_bounded_and_does_not_change_history() {
 }
 
 #[test]
-fn command_panels_erase_underlying_transcript_text() {
-    let c = Conversation {
-        system: String::new(),
-        messages: vec![Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(60))],
-    };
-    let mut state = state();
-    state.panel = Some(sterna::tui::Panel::text("Models", "one\ntwo"));
-    let shown = text(&draw(200, 40, &state, &c, &Notebook::default()));
-    assert!(shown.contains("Models"));
-    assert!(!shown.contains("STALE_TRANSCRIPT"));
-}
-
-#[test]
 fn local_file_diffs_are_visible_in_compact_and_expanded_views() {
     let c = Conversation {
         system: String::new(),
@@ -1497,52 +1486,6 @@ fn reduced_motion_freezes_the_helper_glyph_and_keeps_its_seconds() {
         still,
         lane(&state),
         "with motion on the glyph must move: {still}"
-    );
-}
-
-/// `/cell` gains one section in the inspector's existing vocabulary: what
-/// each helper was asked, and what came back.
-#[test]
-fn the_inspector_names_what_each_helper_was_asked_and_what_came_back() {
-    let notebook = helper_notebook(vec![helper_record("3 distinct root failures", true, 1100)]);
-    let mut state = state();
-    state.inspection = Inspection::open(1, &notebook);
-    let rendered = text(&draw(110, 30, &state, &conversation(), &notebook));
-
-    assert!(
-        rendered.contains("HELPERS · what was asked and what came back"),
-        "the section heads in the inspector's own vocabulary:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("reduce · 1.1s · 1 turn · no tools"),
-        "a toolless helper is visible as having held no tools:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("cargo build log, 4118 lines"),
-        "what it was asked:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("3 distinct root failures"),
-        "and what came back:\n{rendered}"
-    );
-}
-
-/// A failed call is named as a failure in the inspector too, never rendered
-/// as an answer.
-#[test]
-fn the_inspector_names_a_failed_helper_as_failed() {
-    let notebook = helper_notebook(vec![helper_record("request failed: 429", false, 400)]);
-    let mut state = state();
-    state.inspection = Inspection::open(1, &notebook);
-    let rendered = text(&draw(110, 30, &state, &conversation(), &notebook));
-
-    assert!(
-        rendered.contains("failed   request failed: 429"),
-        "a failure is labelled a failure:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("gave     request failed"),
-        "and never rendered as an answer:\n{rendered}"
     );
 }
 

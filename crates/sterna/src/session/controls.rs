@@ -1,6 +1,7 @@
 //! Human-invoked session inspection and configuration. No model dispatch.
 use super::*;
 use crate::config::AgentsMode;
+pub(super) mod sign_in;
 mod subagents;
 #[cfg(test)]
 use crate::config::SternaConfig;
@@ -13,7 +14,7 @@ use crate::tui::{Mode, Panel, PanelRow, TierModels};
 fn cell_limit(limits: &crate::config::Limits) -> String {
     match limits.cells {
         Some(cap) => format!("{cap} cells"),
-        None => "none (a task ends on evidence, not a count)".to_string(),
+        None => "none".to_string(),
     }
 }
 
@@ -60,6 +61,12 @@ struct Account {
 }
 
 pub(super) fn models(session: &Session<'_>) {
+    models_at(session, Tier::Parent);
+}
+
+/// The model picker, open on `tier`'s section: `/models`, bare `/subagents`
+/// and `/model helper` alike.
+pub(super) fn models_at(session: &Session<'_>, tier: Tier) {
     let mut catalogue = session
         .gateway
         .run(&["entitlements", "--json", "--refresh"], None)
@@ -99,10 +106,11 @@ pub(super) fn models(session: &Session<'_>) {
         show(session, unreachable_panel(session, "Models", "/model"));
         return;
     }
-    show(
-        session,
-        model_panel(catalogue, tier_models(session)).with_intelligence(scores),
-    );
+    let mut panel = model_panel(catalogue, tier_models(session)).with_intelligence(scores);
+    if let Some(assignment) = panel.assignment.as_mut() {
+        assignment.active = tier;
+    }
+    show(session, panel);
 }
 
 /// Words laid into lines no wider than `width`, continuation lines indented
@@ -137,10 +145,11 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
 fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
     let why = session.gateway.why_unreachable();
     let fix = if why.contains("not installed") {
-        "The Sterna installer puts it beside `sterna`; run the installer again, then try again."
+        "The Sterna installer puts it beside sterna; run the installer again, then try again."
     } else {
         "Fix what it said, then try again."
     };
+    let why = why.replace('`', "");
     // A sheet row is one line; the reason and the fix are laid into as
     // many as they need rather than clipped mid-word at the edge.
     let mut rows = Vec::new();
@@ -153,20 +162,19 @@ fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
     ] {
         let lines = wrap_line(&paragraph, 70);
         if lines.is_empty() {
-            rows.push(tui::PanelRow {
-                text: String::new(),
-                command: None,
-            });
+            rows.push(tui::PanelRow::info(String::new()));
         }
-        rows.extend(lines.into_iter().map(|text| tui::PanelRow {
-            text,
-            command: None,
-        }));
+        rows.extend(lines.into_iter().map(tui::PanelRow::info));
     }
-    rows.push(tui::PanelRow {
-        text: "Try again".into(),
-        command: Some(retry.to_string()),
-    });
+    // Asked again, the same sheet is redrawn with the time it was last
+    // asked, so a try that failed again is seen to have tried.
+    rows.push(tui::PanelRow::info(
+        match crate::workbench::voice::local_hhmm() {
+            Some(time) => format!("still not answering · {time}"),
+            None => "still not answering".to_string(),
+        },
+    ));
+    rows.push(tui::PanelRow::command("Try again", retry));
     let mut panel = Panel::rows(title, rows);
     panel.selected = panel.rows.len() - 1;
     panel
@@ -190,7 +198,7 @@ fn tier_models(session: &Session<'_>) -> TierModels {
             AgentsMode::Auto => None,
             AgentsMode::Off => Some("off".to_string()),
             AgentsMode::Pinned => config.agents.model.clone(),
-            AgentsMode::Roster => Some("favorite roster".into()),
+            AgentsMode::Roster => Some("favourites".into()),
         },
     }
 }
@@ -217,9 +225,97 @@ pub(super) fn publish_tiers(session: &Session<'_>) {
     }
 }
 
+/// The settings store this session writes through: the project, and the
+/// person's own settings folder when there is one.
+pub(super) fn store(session: &Session<'_>) -> Result<crate::settings::Store, String> {
+    crate::settings::Store::with_global(&session.project.root, session.settings_global.clone())
+}
+
+/// Where a choice made outside Settings is saved: globally (decision 6), or
+/// the project when this machine has no user settings folder.
+pub(super) fn home_scope(session: &Session<'_>) -> crate::settings::Scope {
+    if session.settings_global.is_some() {
+        crate::settings::Scope::Global
+    } else {
+        crate::settings::Scope::Local
+    }
+}
+
+/// Saves a choice made outside Settings: globally (decision 6), and in the
+/// project too for a key the project already sets, because there the
+/// project's value wins and a global save alone would change nothing here.
+/// A project that sets none of the keys is left untouched. A session running
+/// a named profile saves into that profile, which lives in the project.
+pub(super) fn save_home(
+    session: &Session<'_>,
+    edits: &[(String, Option<String>)],
+    profile: Option<&str>,
+) -> Result<crate::settings::Loaded, String> {
+    use crate::settings::Scope;
+    let store = store(session)?;
+    if profile.is_some() {
+        let snapshot = store.read(Scope::Local)?;
+        return store.save_profile(Scope::Local, &snapshot, edits, profile);
+    }
+    let scope = home_scope(session);
+    let snapshot = store.read(scope)?;
+    let mut loaded = store.save(scope, &snapshot, edits)?;
+    if scope == Scope::Global {
+        let project = store.read(Scope::Local)?;
+        let shadowed: Vec<_> = edits
+            .iter()
+            .filter(|(key, _)| crate::settings_session::value(&project.values, key).is_some())
+            .cloned()
+            .collect();
+        if !shadowed.is_empty() {
+            loaded = store.save(Scope::Local, &project, &shadowed)?;
+        }
+    }
+    Ok(loaded)
+}
+
+/// One route for a model choice -- `/model`, the picker and setup alike:
+/// the id is settled against what is served, saved, and put in force, the
+/// session's own model and the screen's with it.
+pub(super) fn use_model(session: &Session<'_>, tier: Tier, id: &str) -> Result<String, String> {
+    if tier != Tier::Parent && matches!(id, "off" | "auto" | "inherit") {
+        return assign_model(session, tier, id);
+    }
+    // Validate and persist before changing the live request model. A
+    // rejected control word or malformed id therefore leaves both the file
+    // and the running session unchanged.
+    let accounts = super::startup::served_accounts(session.gateway);
+    let model = super::startup::settle_model(id.to_string(), &accounts);
+    if !crate::models::chat_capable(&model) {
+        return Err(format!(
+            "{model} does not answer a conversation; /models lists the ones that do"
+        ));
+    }
+    // With a catalogue to hand, a model nobody serves is refused rather than
+    // saved and left to fail on the next request.
+    let served = super::startup::served_models(&accounts);
+    if !served.is_empty() && !served.contains(&model) {
+        return Err(format!(
+            "no connected account serves {model}; /models lists what they do"
+        ));
+    }
+    if tier != Tier::Parent {
+        return assign_model(session, tier, &model);
+    }
+    assign_model(session, tier, &model)?;
+    *session.model.borrow_mut() = model.clone();
+    // The effort a person chose survives a model change: `xhigh` and `max`
+    // have a wire form on every model, so taking the choice away would be
+    // taking away a level that works.
+    if let Some(ui) = session.ui {
+        ui.model(&model);
+    }
+    Ok(format!("model changed to {model}"))
+}
+
 /// Assigns a model to one tier, and persists the two that outlive the session.
 ///
-/// All three are written to `.sterna/config.toml`, under the active named
+/// All three are saved globally ([`home_scope`]), under the active named
 /// profile when selected. The effective configuration stays live and travels
 /// to delegated agents as a snapshot.
 ///
@@ -247,8 +343,6 @@ pub(super) fn assign_model(
         }
         Tier::Subagents => ("agents", "model", value == "off"),
     };
-    let store = crate::settings::Store::new(&session.project.root)?;
-    let snapshot = store.read(crate::settings::Scope::Local)?;
     let mut edits = vec![(
         format!("{section}.{key}"),
         if key_removed {
@@ -267,12 +361,7 @@ pub(super) fn assign_model(
         };
         edits.push(("agents.mode".into(), Some(mode.into())));
     }
-    let loaded = store.save_profile(
-        crate::settings::Scope::Local,
-        &snapshot,
-        &edits,
-        session.selected_profile.as_deref(),
-    )?;
+    let loaded = save_home(session, &edits, session.selected_profile.as_deref())?;
     // A live model choice must not activate unrelated preferences saved for restart.
     let mut live = session.config.borrow_mut();
     match tier {
@@ -348,7 +437,8 @@ pub(super) fn login(session: &Session<'_>, argument: Option<&str>) {
             .iter()
             .find(|entry| entry.connect_with.as_deref() == Some(provider))
             .map(|entry| entry.account.clone());
-        stream_connect(session, provider, declared.as_deref(), device_code);
+        let again = format!("/login {}", argument.unwrap_or_default().trim());
+        sign_in::start(session, provider, declared.as_deref(), device_code, again);
         return;
     }
     if account == "custom" {
@@ -381,7 +471,8 @@ pub(super) fn login(session: &Session<'_>, argument: Option<&str>) {
         return;
     };
 
-    stream_connect(session, &provider, Some(account), device_code);
+    let again = format!("/login {}", argument.unwrap_or_default().trim());
+    sign_in::start(session, &provider, Some(account), device_code, again);
 }
 
 /// A subscription the broker can sign in to: how the wizard names it, the
@@ -482,23 +573,20 @@ fn warning_before(subscription: &Subscription, accepted: bool) -> Option<&'stati
 /// make it a risk, with the choice to go on or back.
 fn warning_panel(subscription: &Subscription, warning: &str) -> Panel {
     let word = subscription.words[0];
-    Panel::rows(
-        format!("Sign in › {}", subscription.label),
-        vec![
-            tui::PanelRow {
-                text: format!("⚠ {warning}"),
-                command: None,
-            },
-            tui::PanelRow {
-                text: "Sign in anyway".into(),
-                command: Some(format!("/login {word} anyway")),
-            },
-            tui::PanelRow {
-                text: "Back".into(),
-                command: Some("/login subscription".into()),
-            },
-        ],
-    )
+    // The whole warning, laid into lines, and the sheet opens on Back: going
+    // on is the choice that has to be made on purpose.
+    let mut rows: Vec<_> = wrap_line(&format!("⚠ {warning}"), 70)
+        .into_iter()
+        .map(tui::PanelRow::info)
+        .collect();
+    rows.push(tui::PanelRow::command(
+        "Sign in anyway",
+        format!("/login {word} anyway"),
+    ));
+    rows.push(tui::PanelRow::command("Back", "/login subscription"));
+    let mut panel = Panel::rows(format!("Sign in › {}", subscription.label), rows);
+    panel.selected = panel.rows.len() - 1;
+    panel
 }
 
 /// `/login custom`: an endpoint's URL, what it speaks, and its key, asked one
@@ -610,13 +698,13 @@ fn key_form(provider: &str) -> crate::tui::Form {
     let form = Form::new(
         format!("Sign in › API key · {provider}"),
         format!(
-            "Paste your {provider} key below. It goes straight to the gateway's key store: it is never shown, logged, or written to a file."
+            "Paste your {provider} key below. It goes straight to the gateway's key store and is never logged or written to a file."
         ),
         vec![
             Field::new(
                 "API key",
                 Kind::Secret,
-                "paste here: Cmd+V, Ctrl+Shift+V or right-click · Ctrl-R shows it",
+                "paste here: Cmd+V or Ctrl+Shift+V · Ctrl-R shows it while you type",
             )
             .checked(key_shape),
         ],
@@ -708,7 +796,9 @@ pub(super) fn announce_missing_credential(session: &Session<'_>, started_the_gat
 /// One row per provider that declares a key, after the accounts: where the
 /// key resolves from now, and `/key <provider>` to enter one.
 fn key_rows(keys: &[crate::gateway::CredentialRow]) -> Vec<tui::PanelRow> {
-    keys.iter()
+    let mut keys: Vec<_> = keys.iter().collect();
+    keys.sort_by_key(|row| row.provider.to_lowercase());
+    keys.into_iter()
         .map(|row| {
             let state = match (row.source.as_deref(), row.native_store.as_deref()) {
                 (Some("file"), _) => "stored in the gateway's credential file".to_string(),
@@ -721,10 +811,10 @@ fn key_rows(keys: &[crate::gateway::CredentialRow]) -> Vec<tui::PanelRow> {
                 }
                 (None, _) => "not set".to_string(),
             };
-            tui::PanelRow {
-                text: format!("{} · API key · {state}", row.provider),
-                command: Some(format!("/key {}", row.provider)),
-            }
+            tui::PanelRow::command(
+                format!("{} · API key · {state}", row.provider),
+                format!("/key {}", row.provider),
+            )
         })
         .collect()
 }
@@ -762,7 +852,7 @@ pub(super) fn save_settings(
     scope: crate::settings::Scope,
     edits: &[(String, Option<String>)],
 ) -> Result<crate::settings::Loaded, String> {
-    let store = crate::settings::Store::new(&session.project.root)?;
+    let store = store(session)?;
     let snapshot = store.read(scope)?;
     store.save_profile(scope, &snapshot, edits, None)
 }
@@ -770,10 +860,7 @@ pub(super) fn save_settings(
 /// `/login`, the wizard's first step: three ways in, in the order a person
 /// reaches for them. Each row opens the next step; nothing asks for a file.
 fn sign_in_panel(catalogue: &Catalogue, keys: &[crate::gateway::CredentialRow]) -> Panel {
-    let row = |text: String, command: &str| tui::PanelRow {
-        text,
-        command: Some(command.to_string()),
-    };
+    let row = |text: String, command: &str| tui::PanelRow::opens(text, command);
     let connected = connected_subscriptions(catalogue);
     let stored = keys.iter().filter(|key| key.source.is_some()).count();
     let subscription = if connected.is_empty() {
@@ -806,10 +893,7 @@ fn sign_in_panel(catalogue: &Catalogue, keys: &[crate::gateway::CredentialRow]) 
 /// account is declared -- signing in declares it -- with each declared
 /// account listed by name, and any other account a login flow connects.
 fn subscription_panel(catalogue: &Catalogue) -> Panel {
-    let row = |text: String, command: String| tui::PanelRow {
-        text,
-        command: Some(command),
-    };
+    let row = |text: String, command: String| tui::PanelRow::opens(text, command);
     let state = |entry: &Account| {
         if entry.authenticated == Some(true) {
             "connected"
@@ -834,13 +918,14 @@ fn subscription_panel(catalogue: &Catalogue) -> Panel {
                 format!("/login {}", subscription.words[0]),
             ));
         }
+        // By the name it was declared with, and with the offer's warning;
+        // the gateway's scope word is not the person's.
         for entry in declared {
             rows.push(row(
                 format!(
-                    "{} · {} · {} · {}",
+                    "{} · {}{risk} · {}",
                     subscription.label,
                     entry.account,
-                    entry.scope,
                     state(entry)
                 ),
                 format!("/login {}", entry.account),
@@ -866,10 +951,9 @@ fn subscription_panel(catalogue: &Catalogue) -> Panel {
 fn key_panel(keys: &[crate::gateway::CredentialRow]) -> Panel {
     let mut rows = key_rows(keys);
     if rows.is_empty() {
-        rows.push(tui::PanelRow {
-            text: "The gateway names no provider that takes a key.".into(),
-            command: None,
-        });
+        rows.push(tui::PanelRow::info(
+            "The gateway names no provider that takes a key.",
+        ));
     }
     Panel::rows("Sign in › API key", rows)
 }
@@ -881,296 +965,31 @@ fn key_panel(keys: &[crate::gateway::CredentialRow]) -> Panel {
 /// never put in the editor, the conversation, the rollout, a panel or a log
 /// -- the panel this ends with names the *variable*, never the key.
 pub(super) fn key(session: &Session<'_>, provider: Option<&str>) {
+    // Bare, it is the list of providers that take a key.
     let Some(provider) = provider.filter(|value| !value.is_empty()) else {
-        show(
-            session,
-            Panel::text(
-                "API key",
-                "/key <provider> takes an API key for one provider -- `/key anthropic`. \
-                 /login lists the providers this gateway knows.",
-            ),
-        );
+        show(session, key_panel(&api_keys(session)));
         return;
     };
-    let Some(value) = fill(session, key_form(provider))
-        .and_then(|answers| answers.into_iter().next())
-        .filter(|value| !value.is_empty())
-    else {
-        session_println!("no key entered");
-        return;
-    };
-    match crate::gateway::store_credential(session.gateway, provider, &value) {
-        Some(variable) => show(
-            session,
-            Panel::text(
-                "API key",
-                format!("Stored the {variable} for {provider} in the gateway."),
-            ),
-        ),
-        None => show(
-            session,
-            Panel::text(
-                "API key",
-                format!(
-                    "The gateway did not store the key; run `inference-gateway credentials \
-                     set {provider}` in a shell to see why."
-                ),
-            ),
-        ),
-    }
-}
-
-/// Runs the sign-in, showing what the gateway reports as it arrives.
-///
-/// Streamed rather than awaited because the first line is the link a person
-/// must open and the last arrives minutes later. While it runs, an address
-/// pasted into the panel's prompt goes to the gateway's stdin, which is how a
-/// machine with no browser finishes: open the link anywhere, sign in, paste
-/// where the browser landed.
-fn stream_connect(
-    session: &Session<'_>,
-    provider: &str,
-    declared: Option<&str>,
-    device_code: bool,
-) {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-    use std::sync::mpsc::RecvTimeoutError;
-
-    // No account named: the gateway connects, and declares, the provider's
-    // default one.
-    let mut arguments = vec!["subscriptions", "connect", provider];
-    if let Some(account) = declared {
-        arguments.extend(["--entitlement", account]);
-    }
-    arguments.push("--json");
-    let account = declared.unwrap_or(match provider {
-        "openai" => "ChatGPT",
-        "anthropic" => "Claude",
-        other => other,
-    });
-    if device_code {
-        arguments.push("--device-code");
-    }
-    let unreachable = |text: &str| show(session, Panel::text("Connect an account", text));
-    let Some(mut command) = session.gateway.control_command(&arguments) else {
-        return unreachable("The inference gateway is not reachable.");
-    };
-    // Its own group, so a cancelled sign-in takes the broker's login (which
-    // holds the provider's callback port) down with the gateway.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let Ok(mut child) = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return unreachable("The inference gateway could not be started.");
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        return;
-    };
-    let mut pasted_to = child.stdin.take();
-    let (lines, arrived) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut panel = SignIn::new(account);
-    show(session, panel.render());
-    // Ctrl-C cancels the sign-in, as it cancels a tool call.
-    let token = crate::tools::invoke::CancellationToken::new();
-    session.interrupt.arm(token.clone());
+    let mut form = key_form(provider);
     loop {
-        match arrived.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) => {
-                if let Some(progress) = SignInProgress::read(&line) {
-                    session_println!("{}", panel.apply(progress));
-                    show(session, panel.render());
-                }
-            }
-            Err(RecvTimeoutError::Timeout) if token.is_cancelled() => {
-                #[cfg(unix)]
-                crate::tools::invoke::kill_group(child.id());
-                let _ = child.kill();
-                session.interrupt.consumed();
-                session_println!("Sign-in to {account} cancelled.");
-                break;
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if let (Some(ui), Some(pipe)) = (session.ui, pasted_to.as_mut())
-                    && let Some(pasted) = ui.try_secret()
-                    && writeln!(pipe, "{}", pasted.trim())
-                        .and_then(|()| pipe.flush())
-                        .is_ok()
-                {
-                    panel.pasted = true;
-                    show(session, panel.render());
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    drop(pasted_to);
-    let _ = child.wait();
-}
-
-/// One progress line the gateway's `subscriptions connect --json` writes.
-/// Unknown shapes are dropped rather than printed raw: this is another
-/// program's output and the panel is not a place to echo bytes nobody
-/// recognised.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SignInProgress {
-    Opened { link: String, browser_opened: bool },
-    DeviceCode { link: String, code: String },
-    Connected(Option<String>),
-    Failed(String),
-}
-
-impl SignInProgress {
-    fn read(line: &str) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
-        let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
-        Some(match text("state")? {
-            "opened" => Self::Opened {
-                link: text("authorize_url")?.to_owned(),
-                browser_opened: value
-                    .get("browser_opened")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-            },
-            "device_code" => Self::DeviceCode {
-                link: text("verification_url")?.to_owned(),
-                code: text("user_code")?.to_owned(),
-            },
-            "connected" => Self::Connected(text("account").map(str::to_owned)),
-            "failed" => Self::Failed(text("reason").unwrap_or("").to_owned()),
-            _ => return None,
-        })
-    }
-}
-
-/// The sign-in panel: what to do next, and every way to do it.
-#[derive(Debug, Default)]
-struct SignIn {
-    account: String,
-    link: Option<(String, bool)>,
-    device: Option<(String, String)>,
-    pasted: bool,
-    outcome: Option<String>,
-}
-
-impl SignIn {
-    fn new(account: &str) -> Self {
-        Self {
-            account: account.to_owned(),
-            ..Self::default()
-        }
-    }
-
-    /// Records `progress` and returns the line the chat keeps for it: the
-    /// whole link or code, so it can be read and selected after the panel is
-    /// gone.
-    fn apply(&mut self, progress: SignInProgress) -> String {
-        let account = self.account.clone();
-        match progress {
-            SignInProgress::Opened {
-                link,
-                browser_opened,
-            } => {
-                let note = format!("Sign-in link for {account}:\n{link}");
-                self.link = Some((link, browser_opened));
-                note
-            }
-            SignInProgress::DeviceCode { link, code } => {
-                let note = format!("Sign in to {account}: open {link} and enter the code {code}");
-                self.device = Some((link, code));
-                note
-            }
-            SignInProgress::Connected(label) => {
-                let said = match label {
-                    Some(label) => format!("{account} is connected as {label}."),
-                    None => format!("{account} is connected."),
-                };
-                self.outcome = Some(said.clone());
-                said
-            }
-            SignInProgress::Failed(reason) => {
-                self.outcome = Some(format!("failed: {reason}"));
-                format!("ERROR: signing in to {account} failed: {reason}")
-            }
-        }
-    }
-
-    fn render(&self) -> Panel {
-        let row = |text: String, command: Option<String>| tui::PanelRow { text, command };
-        let mut rows = Vec::new();
-        if let Some((link, browser_opened)) = &self.link {
-            rows.push(row(
-                if *browser_opened {
-                    "Sign in in the browser that just opened.".into()
-                } else {
-                    "Open the sign-in link in a browser.".into()
-                },
-                None,
-            ));
-            rows.push(row(
-                "⏎ open the sign-in link in your default browser".into(),
-                Some(format!("/open-link {link}")),
-            ));
-            rows.push(row(
-                "⏎ copy the sign-in link".into(),
-                Some(format!("/copy {link}")),
-            ));
-            rows.push(row(
-                "⏎ no browser here? paste the address the browser ended on".into(),
-                Some("/paste-callback".into()),
-            ));
-        }
-        if let Some((link, code)) = &self.device {
-            rows.push(row(format!("On any device, open {link}"), None));
-            rows.push(row(format!("and enter the code {code}"), None));
-            rows.push(row("⏎ copy the code".into(), Some(format!("/copy {code}"))));
-            rows.push(row(
-                "⏎ open the link in your default browser".into(),
-                Some(format!("/open-link {link}")),
-            ));
-        }
-        if self.pasted && self.outcome.is_none() {
-            rows.push(row("pasted; finishing the sign-in…".into(), None));
-        }
-        rows.push(row(
-            self.outcome.clone().unwrap_or_else(|| {
-                "waiting for the sign-in, then one request to check it works…".into()
-            }),
-            None,
-        ));
-        // The browser's last page is the broker's local callback, which has
-        // already closed by the time a person looks at it.
-        if self
-            .outcome
-            .as_deref()
-            .is_some_and(|said| !said.starts_with("failed:"))
+        let Some(value) = fill(session, form)
+            .and_then(|answers| answers.into_iter().next())
+            .filter(|value| !value.is_empty())
+        else {
+            session_println!("no key entered");
+            return;
+        };
+        if let Some(variable) = crate::gateway::store_credential(session.gateway, provider, &value)
         {
-            rows.push(row(
-                "The browser tab may say it cannot connect — that is expected once the sign-in has finished; you can close it."
-                    .into(),
-                None,
-            ));
+            session_println!("Stored the {variable} for {provider} in the gateway.");
+            return;
         }
-        let mut panel = Panel::rows(format!("Connecting {}", self.account), rows);
-        panel.selected = panel
-            .rows
-            .iter()
-            .position(|row| row.command.is_some())
-            .unwrap_or(0);
-        panel
+        // Refused: the same form again, saying so, rather than a sentence
+        // that sends the person to a shell.
+        form = key_form(provider).with_error(
+            0,
+            "the gateway did not store this key; check it is the whole key and paste it again",
+        );
     }
 }
 
@@ -1191,7 +1010,9 @@ fn model_panel(catalogue: Option<Catalogue>, tiers: TierModels) -> Panel {
                         _ => None,
                     };
                     let unavailable_reason = match (&connect, account.unavailable_reason) {
-                        (Some(_), _) => Some("not connected — press enter to connect".into()),
+                        // Enter on a model does nothing; the account's own
+                        // sign-in row above it is the way in.
+                        (Some(_), _) => Some("Not connected · sign in above".into()),
                         (None, existing) => existing,
                     };
                     // A subscription is a member of its provider's pool,
@@ -1231,9 +1052,14 @@ pub(super) fn command(
     name: &str,
     argument: Option<&str>,
     session: &Session<'_>,
-    transcript: &Transcript,
+    transcript: &mut Transcript,
 ) -> bool {
     match name {
+        // Bare, it is the picker's Subagents section: the one place the
+        // favourites and the pinned model are chosen.
+        "subagents" if argument.is_none_or(|a| a.trim().is_empty()) => {
+            models_at(session, Tier::Subagents);
+        }
         "subagents" => match subagents::assign(session, argument.unwrap_or_default()) {
             Ok(message) => session_println!("{message}"),
             Err(error) => session_println!("ERROR: {error}"),
@@ -1251,24 +1077,26 @@ pub(super) fn command(
                     if let Some(ui) = session.ui {
                         ui.effort(effort);
                     }
-                    session_println!("Effort: {} · applied to the next request", effort.name());
+                    session_println!("{}", effort.now());
                 } else {
                     session_println!("Use /effort default|low|medium|high|xhigh|max");
                 }
             } else {
-                let rows = ["default", "low", "medium", "high", "xhigh", "max"]
+                const LADDER: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+                let rows = LADDER
                     .iter()
-                    .map(|value| PanelRow {
-                        text: value.to_string(),
-                        command: Some(format!("/effort {value}")),
-                    })
+                    .map(|value| PanelRow::command(value.to_string(), format!("/effort {value}")))
                     .collect();
                 show(
                     session,
                     Panel {
                         title: format!("Effort · current {}", session.effort.get().name()),
                         rows,
-                        selected: 0,
+                        // It opens on the effort in force, like every sheet.
+                        selected: LADDER
+                            .iter()
+                            .position(|value| *value == session.effort.get().name())
+                            .unwrap_or(0),
                         ..Panel::default()
                     },
                 );
@@ -1278,39 +1106,33 @@ pub(super) fn command(
             None => {
                 session_println!(
                     "Mode: {}{}",
-                    session.mode.get().name(),
+                    session.mode.get().label(),
                     if session.mode_pinned.get() {
-                        " · pinned"
+                        ""
                     } else {
-                        " · not pinned; a confident read-only request may propose explore"
+                        " · auto: a confident read-only request may propose Explore"
                     }
                 );
             }
-            Some("auto") => {
+            Some(word) if word.eq_ignore_ascii_case("auto") => {
                 session.mode_pinned.set(false);
+                if let Some(ui) = session.ui {
+                    ui.mode(session.mode.get(), false);
+                }
                 session_println!(
-                    "Mode: {} · unpinned; a confident read-only request may propose explore",
-                    session.mode.get().name()
+                    "Mode: {} · auto: a confident read-only request may propose Explore",
+                    session.mode.get().label()
                 );
             }
             Some(word) => match Mode::parse(word) {
-                None => session_println!("Use /mode execute|explore|plan|auto"),
+                None => session_println!("Use /mode build|explore|plan|auto"),
                 Some(mode) => {
                     session.mode.set(mode);
                     session.mode_pinned.set(true);
                     if let Some(ui) = session.ui {
-                        ui.mode(mode);
+                        ui.mode(mode, true);
                     }
-                    session_println!(
-                        "Mode: {} · pinned · {} · applies from the next request",
-                        mode.name(),
-                        match mode {
-                            Mode::Execute => "session sandbox applies",
-                            Mode::Explore =>
-                                "reads run; writes only under agent scratch and documentation globs; the shell is read-only",
-                            Mode::Plan => "reads run; no change executes; the shell is read-only",
-                        }
-                    );
+                    session_println!("{}", mode.now());
                 }
             },
         },
@@ -1345,24 +1167,7 @@ pub(super) fn command(
             let c = &transcript.conversation;
             let estimated = estimate_request_tokens(c, &session.model.borrow());
             let bytes: usize = c.messages.iter().map(|m| message_text(m).len()).sum();
-            let measured = transcript
-                .notebook
-                .context
-                .map(|context| match context.cap {
-                    Some(cap) => format!(
-                        "Current request context: {}/{} tokens ({}%) · {}",
-                        context.used,
-                        cap,
-                        context.used.min(cap).saturating_mul(100) / cap.max(1),
-                        context.counted.as_str()
-                    ),
-                    None => format!(
-                        "Current request context: {} tokens · window unknown · {}",
-                        context.used,
-                        context.counted.as_str()
-                    ),
-                })
-                .unwrap_or_else(|| "Current request context: no request yet".into());
+            let measured = measured_context(transcript.notebook.context);
             show(
                 session,
                 Panel::text(
@@ -1405,35 +1210,84 @@ pub(super) fn command(
                 "Open /settings in an interactive terminal. CLI: sterna config --help",
             ),
         ),
+        // This folder's sessions, as a sheet: choosing one ends this session
+        // and starts that one here.
+        "resume" => show(
+            session,
+            super::resume::panel(&session.project.root, session.interrupt.session.as_str()),
+        ),
         "status" => {
-            show(
-                session,
-                Panel::text(
-                    "Session configuration",
-                    format!(
-                        "Model: {}\nMode: {}\nProject: {}\nSandbox: {} path rules · {} command patterns · network {}\nWeb: {}\nTask spend: tracked, uncapped\nCell limit: {} · {} seconds each · response {} bytes\nSupervisor: {}\nHelper effort: find {} · reduce {} · check {}\nLimits and helper effort: .sterna/config.toml (loaded at startup)\nPermissions: native global/project config (loaded at startup)\nPresentation: /theme · /sidebar · /statusline · /fullscreen",
-                        session.model.borrow(),
-                        session.mode.get().name(),
-                        session.project.root.display(),
-                        session.profile.rule_count(),
-                        session.profile.command_pattern_count(),
-                        session.profile.grants_network(),
-                        session.config().web.describe(),
-                        cell_limit(&session.config().limits),
-                        session.config().limits.cell_wall_clock_s,
-                        session.config().limits.response_bytes,
-                        session
-                            .config()
-                            .supervisor
-                            .model
-                            .as_deref()
-                            .unwrap_or("off"),
-                        session.config().helpers.effort.find.name(),
-                        session.config().helpers.effort.reduce.name(),
-                        session.config().helpers.effort.check.name(),
-                    ),
+            // The same facts the chips show, named the way they name them.
+            let config = session.config();
+            let (helpers_on, subagents) = tier_status(&config);
+            let model = session.model.borrow().clone();
+            let effort = session.effort.get();
+            let sent = effort.sent_for(&model);
+            let mut lines = vec![
+                format!("Model: {model}"),
+                match session
+                    .ladder
+                    .as_ref()
+                    .map(crate::permissions::Ladder::rung)
+                {
+                    Some(rung) => format!("Ask: {} · {}", rung.label(), rung.sentence()),
+                    None => "Ask: nobody is asked in this session".to_string(),
+                },
+                format!(
+                    "Mode: {}{}",
+                    session.mode.get().label(),
+                    if session.mode_pinned.get() {
+                        ""
+                    } else {
+                        " · auto"
+                    }
                 ),
-            );
+                if sent == effort {
+                    format!("Effort: {}", effort.name())
+                } else {
+                    format!("Effort: {} (sent as {})", effort.name(), sent.name())
+                },
+                format!(
+                    "Helpers: {}",
+                    match (helpers_on, config.helpers.model.as_deref()) {
+                        (true, Some(helper)) => format!("on · {helper}"),
+                        _ if config.helpers.enabled => "on, but no helper model chosen".into(),
+                        _ => "off".into(),
+                    }
+                ),
+                format!("Subagents: {subagents}"),
+                format!("Project: {}", session.project.root.display()),
+                format!(
+                    "Sandbox: {} path rules · {} command patterns · network {}",
+                    session.profile.rule_count(),
+                    session.profile.command_pattern_count(),
+                    if session.profile.grants_network() {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ),
+                format!("Web: {}", config.web.describe()),
+                format!(
+                    "Cell limit: {} · {} seconds each · response {} bytes",
+                    cell_limit(&config.limits),
+                    config.limits.cell_wall_clock_s,
+                    config.limits.response_bytes
+                ),
+                format!(
+                    "Supervisor: {}",
+                    config.supervisor.model.as_deref().unwrap_or("off")
+                ),
+                format!(
+                    "Helper effort: find {} · reduce {} · check {}",
+                    config.helpers.effort.find.name(),
+                    config.helpers.effort.reduce.name(),
+                    config.helpers.effort.check.name()
+                ),
+            ];
+            lines.push("Change any of these in Settings (F2).".into());
+            drop(config);
+            show(session, Panel::text("Session", lines.join("\n")));
         }
         "supervisor" => {
             let latest = match transcript.notebook.supervisor.as_ref() {
@@ -1467,7 +1321,7 @@ pub(super) fn command(
                 ),
             );
         }
-        "rollback" => rollback(session, argument),
+        "rollback" => rollback(session, argument, &mut transcript.notebook),
         "permissions" => match permissions(session, argument) {
             Ok(text) => show(session, Panel::text("Permissions", text)),
             Err(error) => session_println!("ERROR: {error}"),
@@ -1475,8 +1329,16 @@ pub(super) fn command(
         "models" | "entitlements" => {
             models(session);
         }
-        "login" => login(session, argument),
-        "wizard" | "setup" => super::setup::command(session, argument),
+        // Each of these can finish a setup step, so the opening chip that
+        // leads back into setup is recomputed after it.
+        "login" => {
+            login(session, argument);
+            super::setup::offer(session);
+        }
+        "wizard" | "setup" => {
+            super::setup::command(session, argument);
+            super::setup::offer(session);
+        }
         "pool" => pool(session, argument),
         "usage" => {
             let now = std::time::SystemTime::now()
@@ -1487,7 +1349,10 @@ pub(super) fn command(
                 super::usage::panel(super::usage::read(session).as_ref(), now),
             );
         }
-        "key" => key(session, argument),
+        "key" => {
+            key(session, argument);
+            super::setup::offer(session);
+        }
         _ => return false,
     }
     true
@@ -1527,7 +1392,26 @@ fn pool(session: &Session<'_>, argument: Option<&str>) {
     }
 }
 
-fn rollback(session: &Session<'_>, argument: Option<&str>) {
+/// The rollback preview: what the rollback would change, a danger row that
+/// confirms it, and Cancel -- where the sheet opens, and what Esc does.
+fn rollback_panel(preview: &str) -> Panel {
+    let mut panel = Panel::text(
+        "Rollback preview · confirmation required",
+        format!("The latest file-changing cell affected:\n{preview}"),
+    );
+    panel.rows.push(PanelRow::danger(
+        "Confirm rollback",
+        crate::workbench::Action::Command("/rollback confirm".into()),
+    ));
+    panel
+        .rows
+        .push(PanelRow::command("Cancel", "/rollback cancel"));
+    panel.selected = panel.rows.len() - 1;
+    panel.back = Some(crate::workbench::Action::Command("/rollback cancel".into()));
+    panel
+}
+
+fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::Notebook) {
     let count = session.rollbacks.borrow().len();
     let Some(last) = session
         .rollbacks
@@ -1549,23 +1433,7 @@ fn rollback(session: &Session<'_>, argument: Option<&str>) {
     match argument.filter(|value| !value.is_empty()) {
         None => {
             session.rollback_pending.set(Some(count));
-            let mut panel = Panel::text(
-                "Rollback preview · confirmation required",
-                format!(
-                    "The latest file-changing cell affected:\n{}",
-                    plan.preview()
-                ),
-            );
-            panel.rows.push(PanelRow {
-                text: "Confirm rollback".into(),
-                command: Some("/rollback confirm".into()),
-            });
-            panel.rows.push(PanelRow {
-                text: "Cancel".into(),
-                command: Some("/rollback cancel".into()),
-            });
-            panel.selected = panel.rows.len().saturating_sub(2);
-            show(session, panel);
+            show(session, rollback_panel(&plan.preview()));
         }
         Some("cancel") => {
             session.rollback_pending.set(None);
@@ -1580,9 +1448,20 @@ fn rollback(session: &Session<'_>, argument: Option<&str>) {
             }
             match plan.apply(session.profile) {
                 Ok(()) => {
-                    session.rollbacks.borrow_mut().pop();
+                    // The cell says its change was undone, and the notice is
+                    // one line; the preview of what came back follows it.
+                    let cell = session.rollbacks.borrow_mut().pop().map(|c| c.cell);
+                    if let Some(view) =
+                        cell.and_then(|cell| notebook.cells.get_mut(cell.checked_sub(1)?))
+                    {
+                        view.rolled_back = true;
+                    }
                     session.rollback_pending.set(None);
-                    session_println!("Rollback complete:\n{}", plan.preview());
+                    session_println!(
+                        "Rolled back cell {} · its changes are undone\n{}",
+                        cell.map_or_else(|| "?".to_string(), |cell| format!("{cell:03}")),
+                        plan.preview()
+                    );
                 }
                 Err(error) => {
                     session.rollback_pending.set(None);
@@ -1625,14 +1504,8 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
                 rung.name()
             ));
         };
-        let was = ladder.rung();
         ladder.set(rung);
-        return Ok(format!(
-            "permissions: {} → {} (Shift-Tab cycles; {} of the four rungs ask)",
-            was.name(),
-            rung.name(),
-            crate::permissions::Rung::NAMES.len() - 1
-        ));
+        return Ok(rung.now());
     }
     let saved = crate::settings_session::permissions(&session.project.root, argument)?;
     Ok(format!(
@@ -1643,8 +1516,55 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
     ))
 }
 
+/// `/context`'s line for the request just sent: its size, against the
+/// window when the window is known, and who counted it.
+fn measured_context(context: Option<crate::tui::ContextTokens>) -> String {
+    let Some(context) = context else {
+        return "Current request context: no request yet".into();
+    };
+    match context.cap {
+        Some(cap) => format!(
+            "Current request context: {}/{} tokens ({}%), {}",
+            context.used,
+            cap,
+            context.used.min(cap).saturating_mul(100) / cap.max(1),
+            context.counted.by()
+        ),
+        None => format!(
+            "Current request context: {} tokens, {}; the model's window size is not known",
+            context.used,
+            context.counted.by()
+        ),
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+
+    #[test]
+    fn the_context_line_says_who_counted_and_what_is_not_known() {
+        use crate::tui::{ContextTokens, Counted};
+        let line = super::measured_context(Some(ContextTokens {
+            used: 12,
+            cap: None,
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Gateway,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 12 tokens, counted by the provider; the model's window size is not known"
+        );
+        let line = super::measured_context(Some(ContextTokens {
+            used: 50,
+            cap: Some(200),
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Estimated,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 50/200 tokens (25%), estimated"
+        );
+    }
 
     #[test]
     fn only_the_gemini_relay_key_is_warned_about_and_the_warning_names_the_terms() {
@@ -1678,7 +1598,7 @@ mod tests {
             panel
                 .rows
                 .iter()
-                .filter_map(|row| row.command.clone())
+                .filter_map(|row| row.command_line().map(str::to_string))
                 .collect()
         };
         // Step one: three ways in.
@@ -1705,6 +1625,45 @@ mod tests {
         assert_eq!(subscription_provider("antigravity"), Some("google"));
     }
 
+    /// A model on an account that is not connected says so and points at
+    /// the account's own sign-in row; Enter on the model does nothing, so
+    /// it is not offered.
+    #[test]
+    fn a_model_on_an_unconnected_account_points_at_its_sign_in() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"openai-plus","provider":"openai","models":["m"],"scope":"subscription","selectable":true,"unavailable_reason":null,"authenticated":false,"connect_with":"openai"}]}"#,
+        )
+        .unwrap();
+        let panel = model_panel(Some(catalogue), TierModels::default());
+        let reasons = format!("{panel:?}");
+        assert!(
+            reasons.contains("Not connected · sign in above"),
+            "{reasons}"
+        );
+        assert!(!reasons.contains("press enter"), "{reasons}");
+    }
+
+    /// A declared subscription is listed by the name it was declared with
+    /// and keeps the offer's warning; the gateway's scope word is not shown.
+    #[test]
+    fn a_declared_subscription_keeps_its_words_and_its_warning() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"me@example.com","provider":"anthropic","models":[],"scope":"user","selectable":true,"unavailable_reason":null,"authenticated":true,"connect_with":"anthropic"}]}"#,
+        )
+        .unwrap();
+        let panel = subscription_panel(&catalogue);
+        let claude = panel
+            .rows
+            .iter()
+            .find(|row| row.text.starts_with("Claude"))
+            .unwrap();
+        assert_eq!(
+            claude.text,
+            "Claude · me@example.com · ⚠ read first · connected"
+        );
+        assert_eq!(claude.command_line(), Some("/login me@example.com"));
+    }
+
     #[test]
     fn a_subscription_whose_terms_forbid_it_is_warned_about_before_signing_in() {
         let claude = subscription_named("claude").unwrap();
@@ -1717,7 +1676,7 @@ mod tests {
         let commands: Vec<_> = panel
             .rows
             .iter()
-            .filter_map(|row| row.command.as_deref())
+            .filter_map(tui::PanelRow::command_line)
             .collect();
         assert_eq!(commands, ["/login claude anyway", "/login subscription"]);
         assert!(warning_before(claude, false).is_some(), "asked first");
@@ -1738,6 +1697,27 @@ mod tests {
         }
     }
 
+    /// A reflexive Enter on the rollback preview cancels: the sheet opens on
+    /// Cancel, confirming is a danger row, and Esc cancels too.
+    #[test]
+    fn the_rollback_preview_starts_on_cancel() {
+        let panel = rollback_panel("a.txt: restored");
+        assert_eq!(
+            panel.rows[panel.selected].command_line(),
+            Some("/rollback cancel")
+        );
+        let confirm = panel
+            .rows
+            .iter()
+            .find(|row| row.text == "Confirm rollback")
+            .unwrap();
+        assert_eq!(confirm.kind, crate::workbench::ItemKind::Danger);
+        assert_eq!(
+            panel.back,
+            Some(crate::workbench::Action::Command("/rollback cancel".into()))
+        );
+    }
+
     #[test]
     fn a_custom_endpoint_is_named_after_its_host() {
         assert_eq!(endpoint_name("https://api.together.xyz/v1"), "together");
@@ -1747,75 +1727,6 @@ mod tests {
     }
 
     use super::*;
-
-    /// The gateway's sign-in lines become progress; the link and code arrive
-    /// whole, and a line of another shape is dropped.
-    #[test]
-    fn sign_in_progress_reads_the_gateway_lines_whole() {
-        let link = "https://claude.ai/oauth/authorize?client_id=x&scope=user%3Aprofile&state=s";
-        assert_eq!(
-            SignInProgress::read(&format!(
-                r#"{{"state":"opened","authorize_url":"{link}","browser_opened":true}}"#
-            )),
-            Some(SignInProgress::Opened {
-                link: link.into(),
-                browser_opened: true
-            })
-        );
-        assert_eq!(
-            SignInProgress::read(
-                r#"{"state":"device_code","verification_url":"https://auth.openai.com/codex/device","user_code":"ABCD-EFGH"}"#
-            ),
-            Some(SignInProgress::DeviceCode {
-                link: "https://auth.openai.com/codex/device".into(),
-                code: "ABCD-EFGH".into()
-            })
-        );
-        assert_eq!(
-            SignInProgress::read(r#"{"state":"connected","account":"me@example.com"}"#),
-            Some(SignInProgress::Connected(Some("me@example.com".into())))
-        );
-        assert_eq!(SignInProgress::read("waiting for the browser"), None);
-    }
-
-    /// The panel offers every way through with the whole link behind each
-    /// row, starts on the first thing to do, and the chat keeps the link.
-    #[test]
-    fn the_sign_in_panel_opens_copies_or_takes_a_pasted_address() {
-        let link = "https://claude.ai/oauth/authorize?client_id=x&scope=user%3Aprofile&state=s";
-        let mut sign_in = SignIn::new("claude-max");
-        let note = sign_in.apply(SignInProgress::Opened {
-            link: link.into(),
-            browser_opened: false,
-        });
-        assert_eq!(note, format!("Sign-in link for claude-max:\n{link}"));
-        let panel = sign_in.render();
-        let commands: Vec<_> = panel
-            .rows
-            .iter()
-            .filter_map(|row| row.command.clone())
-            .collect();
-        assert_eq!(
-            commands,
-            vec![
-                format!("/open-link {link}"),
-                format!("/copy {link}"),
-                "/paste-callback".to_string(),
-            ]
-        );
-        assert_eq!(
-            panel.rows[panel.selected].command.as_deref(),
-            Some(&*format!("/open-link {link}"))
-        );
-        assert_eq!(
-            sign_in.apply(SignInProgress::Failed("status 400".into())),
-            "ERROR: signing in to claude-max failed: status 400"
-        );
-        assert_eq!(
-            sign_in.render().rows.last().unwrap().text,
-            "failed: status 400"
-        );
-    }
 
     #[test]
     fn model_catalogue_groups_by_provider_then_account_and_preserves_model_ids() {
@@ -1827,33 +1738,25 @@ mod tests {
                 {"account":"b-account", "provider":"a-provider", "scope":"declared", "models":["shared/id"]}
             ]
         })).unwrap();
-        let mut panel = model_panel(Some(catalogue), TierModels::default());
-        let headings: Vec<_> = panel
-            .rows
+        let panel = model_panel(Some(catalogue), TierModels::default());
+        let (groups, _) = panel
+            .catalogue()
+            .expect("a model panel carries its catalogue");
+        let routes: Vec<_> = groups
             .iter()
-            .filter(|row| row.command.is_none())
-            .map(|row| row.text.as_str())
+            .map(|g| format!("{} · {} · {}", g.provider, g.account, g.scope))
             .collect();
         assert_eq!(
-            headings,
+            routes,
             [
                 "a-provider · b-account · declared",
-                "a-provider · z-account · declared"
+                "a-provider · z-account · declared",
+                "z-provider · a-account · declared"
             ]
         );
-        let commands: Vec<_> = panel
-            .rows
-            .iter()
-            .filter_map(|row| row.command.as_deref())
-            .collect();
-        assert_eq!(
-            commands,
-            ["/model shared/id", "/model B/model", "/model shared/id"]
-        );
-        assert_eq!(panel.selected, 1);
-        panel.move_provider(true);
-        assert_eq!(panel.rows[0].text, "z-provider · a-account · declared");
-        assert_eq!(panel.rows[1].command.as_deref(), Some("/model shared/id"));
+        // Whitespace ids and empty ids are dropped; the rest are kept exactly,
+        // sorted and without duplicates.
+        assert_eq!(groups[1].models, ["B/model", "shared/id"]);
     }
 
     #[test]
@@ -1915,6 +1818,7 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: Some(root.join("user-settings")),
         };
         permissions(&session, Some("allow Read(**)")).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
@@ -1934,7 +1838,10 @@ mod tests {
     }
 
     /// Builds a session rooted at `root` and runs `body` against it.
-    fn with_session(root: &std::path::Path, body: impl FnOnce(&Session<'_>)) {
+    pub(in crate::session) fn with_session(
+        root: &std::path::Path,
+        body: impl FnOnce(&Session<'_>),
+    ) {
         with_selected_session(root, None, body)
     }
 
@@ -1986,8 +1893,71 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: Some(root.join("user-settings")),
         };
         body(&session);
+    }
+
+    /// A subscription's warning is read whole before signing in, and the
+    /// sheet opens on Back: going on is chosen on purpose.
+    #[test]
+    fn a_subscription_warning_is_whole_and_starts_on_back() {
+        let (claude, warning) = SUBSCRIPTIONS
+            .iter()
+            .find_map(|subscription| subscription.warning.map(|w| (subscription, w)))
+            .expect("one subscription carries a warning");
+        let panel = warning_panel(claude, warning);
+        let said: Vec<String> = panel
+            .rows
+            .iter()
+            .filter(|row| row.action.is_none())
+            .map(|row| row.text.clone())
+            .collect();
+        assert_eq!(
+            said.join(" ").split_whitespace().collect::<Vec<_>>(),
+            format!("⚠ {warning}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(panel.rows[panel.selected].text, "Back");
+    }
+
+    /// The providers that take a key are listed by name.
+    #[test]
+    fn the_key_list_is_in_name_order() {
+        let row = |provider: &str| crate::gateway::CredentialRow {
+            provider: provider.into(),
+            variable: None,
+            source: None,
+            native_store: None,
+        };
+        let panel = key_panel(&[row("openai"), row("Anthropic"), row("groq")]);
+        let names: Vec<_> = panel
+            .rows
+            .iter()
+            .map(|row| row.text.split(' ').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(names, ["Anthropic", "groq", "openai"]);
+    }
+
+    /// A model that cannot hold a conversation is refused on every route
+    /// and changes nothing.
+    #[test]
+    fn a_model_that_cannot_converse_is_refused() {
+        let root = std::env::temp_dir().join(format!("sterna-chat-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        with_session(&root, |session| {
+            let refused = use_model(session, Tier::Parent, "gpt-image-1").unwrap_err();
+            assert!(
+                refused.contains("does not answer a conversation"),
+                "{refused}"
+            );
+            assert!(use_model(session, Tier::Helpers, "whisper-1").is_err());
+            assert_eq!(*session.model.borrow(), "opus-5");
+            assert!(!root.join("user-settings").join("config.toml").exists());
+        });
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// A tier assignment takes effect now and survives the session, and an
@@ -2004,6 +1974,15 @@ mod tests {
         )
         .unwrap();
 
+        // What the next session loads: the project and the person's own
+        // settings, where a model choice is saved.
+        let load = || {
+            crate::settings::Store::with_global(&root, Some(root.join("user-settings")))
+                .unwrap()
+                .load(None)
+                .unwrap()
+                .config
+        };
         with_session(&root, |session| {
             assert_eq!(tier_models(session).parent, "opus-5");
             assert_eq!(tier_models(session).helper, None, "helpers ship off");
@@ -2012,23 +1991,29 @@ mod tests {
             // Live, with no restart -- the next cell's runtime is built from
             // this.
             assert_eq!(tier_models(session).helper.as_deref(), Some("gpt-5.6-luna"));
-            // Persisted, because `agent.rs` loads this file itself when a
+            // Persisted, because `agent.rs` loads the settings itself when a
             // delegated goal starts.
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.helpers.model.as_deref(), Some("gpt-5.6-luna"));
             // Choosing a model IS the opt-in, so an earlier `enabled = false`
-            // does not silently swallow it.
+            // does not silently swallow it: the project set it, so it is
+            // changed there, where it wins.
             assert!(saved.helpers.enabled);
+            assert!(
+                fs::read_to_string(&file)
+                    .unwrap()
+                    .contains("enabled = true")
+            );
             // And an unrelated setting survived the edit.
             assert_eq!(saved.limits.cells, Some(42));
 
             assign_model(session, Tier::Subagents, "claude-sonnet-5").unwrap();
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.agents.mode, AgentsMode::Pinned);
             assert_eq!(saved.agents.model.as_deref(), Some("claude-sonnet-5"));
 
             assign_model(session, Tier::Subagents, "off").unwrap();
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.agents.mode, AgentsMode::Off);
             assert_eq!(saved.agents.model, None);
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
@@ -2036,13 +2021,10 @@ mod tests {
             // Reversible, which is what makes the panel safe to press.
             assign_model(session, Tier::Helpers, "off").unwrap();
             assert_eq!(tier_models(session).helper, None);
-            assert_eq!(SternaConfig::load(&root).unwrap().helpers.model, None);
+            assert_eq!(load().helpers.model, None);
             assert!(assign_model(session, Tier::Subagents, "inherit").is_err());
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
-            assert_eq!(
-                SternaConfig::load(&root).unwrap().agents.mode,
-                AgentsMode::Off
-            );
+            assert_eq!(load().agents.mode, AgentsMode::Off);
 
             // A value the config refuses fails with the config's own sentence
             // and leaves the file byte-identical: one validator, not two.
@@ -2053,10 +2035,7 @@ mod tests {
             // The parent is remembered too: the tier a person changes most
             // was the only one that used to forget.
             assign_model(session, Tier::Parent, "claude-opus-4-8").unwrap();
-            assert_eq!(
-                SternaConfig::load(&root).unwrap().model.parent.as_deref(),
-                Some("claude-opus-4-8")
-            );
+            assert_eq!(load().model.parent.as_deref(), Some("claude-opus-4-8"));
             let before = fs::read_to_string(&file).unwrap();
             assert!(assign_model(session, Tier::Parent, "auto").is_err());
             assert_eq!(fs::read_to_string(&file).unwrap(), before);

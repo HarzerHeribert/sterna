@@ -249,10 +249,11 @@ fn context_window(
         }
         None => vec![
             Line::styled(
-                format!("context {}", super::compact_tokens(tokens.used)),
+                format!("context {} tokens", super::compact_tokens(tokens.used)),
                 Style::default().fg(ACCENT),
             ),
-            muted(format!("window unknown · {provenance}")),
+            muted(tokens.counted.by()),
+            muted("window size not known"),
         ],
     }
 }
@@ -511,10 +512,7 @@ pub(crate) fn expanded(
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "  LIVE INSTRUMENTS     ↑↓ request · Esc returns",
-            Style::default().fg(MUTED),
-        ),
+        Span::styled("  ↑↓ request · Esc returns", Style::default().fg(MUTED)),
     ]);
     frame.render_widget(
         Paragraph::new(heading),
@@ -685,6 +683,34 @@ pub(crate) fn expanded(
                 state,
             )),
             area,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_count_without_a_window_says_so_in_words() {
+        let lines = context_window(
+            Some(ContextTokens {
+                used: 12,
+                cap: None,
+                cap_source: crate::models::WindowSource::Unknown,
+                counted: super::super::Counted::Gateway,
+            }),
+            24,
+            &ScreenState::default(),
+        );
+        let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            text,
+            [
+                "context 12 tokens",
+                "counted by the provider",
+                "window size not known"
+            ]
         );
     }
 }

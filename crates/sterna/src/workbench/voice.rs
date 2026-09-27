@@ -24,7 +24,8 @@ impl Face {
             return Self::Asking;
         }
         match activity {
-            Activity::Idle | Activity::Starting => Self::Idle,
+            Activity::Idle | Activity::Starting | Activity::Stopped(_) => Self::Idle,
+            Activity::AwaitingYou => Self::Asking,
             Activity::Thinking | Activity::Waiting | Activity::Compacting | Activity::Searching => {
                 Self::Thinking
             }
@@ -75,10 +76,33 @@ pub fn status(activity: Activity, cell: Option<usize>, writing_cell: bool) -> St
         Activity::Searching => "searching".into(),
         Activity::Waiting => "waiting on a response · estimate unknown".into(),
         Activity::Compacting => "compacting · preparing bounded context".into(),
-        Activity::Failed => "action failed — inspect the cell".into(),
+        Activity::AwaitingYou => "waiting for you".into(),
+        // A failed request has no cell; a failed cell says so on its card.
+        Activity::Failed => "failed · the message above says why".into(),
         Activity::Complete => "complete".into(),
+        Activity::Stopped(crate::tui::Stopper::You) => "stopped · what ran stands".into(),
+        Activity::Stopped(crate::tui::Stopper::Interrupt) => {
+            "stopped by Ctrl-C · what ran stands".into()
+        }
     }
 }
+/// The status while the answer is in and its check is still running: the
+/// turn is not complete until the check has had its say.
+pub const CHECKING: &str = "answered · checking it";
+/// The one sentence for a control that waits for the turn to end.
+pub const BETWEEN_TURNS: &str = "Available when this turn ends · Esc stops it";
+/// A model, mode or effort chosen while a turn runs.
+pub const NEXT_REQUEST: &str = "Saved · applies from this turn's next request";
+/// A message held until the session is free.
+pub const QUEUED: &str = "Queued for when this turn ends · Esc takes the last one back";
+/// Ctrl-C over a draft, between turns.
+pub const DRAFT_CLEARED: &str = "Draft cleared · Ctrl-Z brings it back";
+/// Ctrl-C on an empty composer, between turns.
+pub const QUIT_ARMED: &str = "Ctrl-C again within 2 s to quit";
+/// Ctrl-D while the session is busy.
+pub const CTRL_D_BUSY: &str = "Ctrl-D quits between turns · /exit stops this turn and quits";
+/// Ctrl-C while a turn runs.
+pub const CTRL_C_STOPPING: &str = "Stopping · Ctrl-C again within 2 s quits";
 /// The three lines beside the bird inside a running cell: what is happening,
 /// how long it has been, and at whose cost.
 pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'static str, String) {
@@ -91,7 +115,7 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
         _ => "Model is responding",
     };
     let detail = if helper_waiting {
-        "Request sent · completion estimate unknown".to_string()
+        "Asked · waiting for its answer".to_string()
     } else {
         format!("Elapsed {elapsed} · nothing is assumed complete")
     };
@@ -99,19 +123,59 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
 }
 /// The one line on the composer's edge that teaches. It turns with the
 /// session -- one more cell, one more notice -- rather than with the clock,
-/// so it holds still while someone reads it.
-pub fn hint(n: usize) -> &'static str {
-    const HINTS: [&str; 8] = [
-        "Shift-Tab changes how often Sterna asks before it acts",
-        "F2 opens settings · every choice there applies to this session now",
-        "Ctrl-T opens the instruments · Esc closes them",
-        "Click any control in the top bar to change it",
-        "Esc once stops after the current cell · twice cancels the call",
-        "Ctrl-B shows or hides the session card · Ctrl-F hides the chrome",
-        "/diff opens the last cell's changes · F4 does the same",
-        "? lists every key · / for commands · @ for a path in this project",
+/// so it holds still while someone reads it. A hint that would not apply
+/// now is not offered: Escape stops only a running turn, and there is no
+/// diff before a cell has changed something.
+pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
+    const HINTS: [(&str, Needs); 8] = [
+        (
+            "Shift-Tab changes how often Sterna asks before it acts",
+            Needs::Nothing,
+        ),
+        (
+            "F2 opens settings · choices save themselves; most apply now",
+            Needs::Nothing,
+        ),
+        ("Ctrl-T opens telemetry · Esc closes it", Needs::Nothing),
+        (
+            "Click any control in the top bar to change it",
+            Needs::Nothing,
+        ),
+        (
+            "Esc once stops after the current cell · twice cancels the call",
+            Needs::Turn,
+        ),
+        (
+            "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
+            Needs::Nothing,
+        ),
+        (
+            "/diff opens the last cell's changes · F4 does the same",
+            Needs::Change,
+        ),
+        (
+            "? lists every key · / for commands · @ for a path in this project",
+            Needs::Nothing,
+        ),
     ];
-    HINTS[n % HINTS.len()]
+    let offered: Vec<&str> = HINTS
+        .iter()
+        .filter(|(_, needs)| match needs {
+            Needs::Nothing => true,
+            Needs::Turn => busy,
+            Needs::Change => changed,
+        })
+        .map(|(hint, _)| *hint)
+        .collect();
+    offered[n % offered.len()]
+}
+
+/// What a hint needs before it applies.
+#[derive(Clone, Copy)]
+enum Needs {
+    Nothing,
+    Turn,
+    Change,
 }
 /// The row for work still running behind the answer: `check` is the fresh
 /// checker, `learn` the notes writer. The answer above it stands either way.
@@ -175,6 +239,15 @@ pub fn suggestions(
 /// The local hour, for the greeting. `None` where the platform cannot say,
 /// and the greeting then simply has no time of day in it.
 pub fn local_hour() -> Option<u8> {
+    local_time().map(|(hour, _)| hour)
+}
+
+/// The local time as `HH:MM`, where the platform can say.
+pub fn local_hhmm() -> Option<String> {
+    local_time().map(|(hour, minute)| format!("{hour:02}:{minute:02}"))
+}
+
+fn local_time() -> Option<(u8, u8)> {
     #[cfg(unix)]
     {
         // SAFETY: `localtime_r` writes only into the `tm` we hand it, and
@@ -185,7 +258,10 @@ pub fn local_hour() -> Option<u8> {
             if libc::localtime_r(&now, &mut tm).is_null() {
                 return None;
             }
-            u8::try_from(tm.tm_hour).ok()
+            Some((
+                u8::try_from(tm.tm_hour).ok()?,
+                u8::try_from(tm.tm_min).ok()?,
+            ))
         }
     }
     #[cfg(not(unix))]
@@ -212,7 +288,8 @@ pub fn project_suggestions(root: &std::path::Path) -> Vec<(String, String)> {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
     let last_commit = git(&["log", "-1", "--format=%s"]).filter(|s| !s.is_empty());
-    let dirty = git(&["status", "--porcelain"])
+    // Sterna's own folder is not the person's change.
+    let dirty = git(&["status", "--porcelain", "--", ".", ":(exclude).sterna"])
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
     let has_tests = [
@@ -231,6 +308,55 @@ pub fn project_suggestions(root: &std::path::Path) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    /// Sterna's own folder in a project is not the person's change: a clean
+    /// repository with only `.sterna/` in it offers no review.
+    #[test]
+    fn sternas_own_folder_is_not_an_uncommitted_change() {
+        let root = std::env::temp_dir().join(format!("sterna-dirty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .is_ok_and(|out| out.status.success())
+        };
+        if !git(&["init", "-q"]) {
+            return;
+        }
+        std::fs::write(root.join(".sterna").join("config.toml"), "[ui]\n").unwrap();
+        let offered = project_suggestions(&root);
+        assert!(
+            !offered
+                .iter()
+                .any(|(label, _)| label.contains("uncommitted")),
+            "{offered:?}"
+        );
+        std::fs::write(root.join("notes.txt"), "mine\n").unwrap();
+        let offered = project_suggestions(&root);
+        assert!(
+            offered
+                .iter()
+                .any(|(label, _)| label == "review 1 uncommitted change"),
+            "{offered:?}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A hint that would not apply now is not offered.
+    #[test]
+    fn a_hint_applies_to_the_moment() {
+        for n in 0..16 {
+            let idle = hint(n, false, false);
+            assert!(!idle.starts_with("Esc"), "Esc stops nothing while idle");
+            assert!(!idle.starts_with("/diff"), "no diff before a change");
+        }
+        assert!((0..16).any(|n| hint(n, true, true).starts_with("Esc")));
+        assert!((0..16).any(|n| hint(n, true, true).starts_with("/diff")));
+    }
+
     #[test]
     fn every_line_states_the_fact_plainly() {
         for a in [
@@ -239,6 +365,8 @@ mod tests {
             Activity::Waiting,
             Activity::Failed,
             Activity::Complete,
+            Activity::AwaitingYou,
+            Activity::Stopped(crate::tui::Stopper::You),
         ] {
             assert!(!status(a, Some(2), false).is_empty());
         }

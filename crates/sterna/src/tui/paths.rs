@@ -33,7 +33,12 @@ thread_local! {
     static KNOWN: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
 }
 
-/// Whether `candidate` resolves to something that exists, remembered.
+/// Whether `candidate` resolves to something that exists.
+///
+/// **Only a yes is remembered**, and only until [`forget`]: a file that does
+/// not exist yet is asked about again, so the one a turn writes becomes
+/// clickable, and a turn's end forgets the rest, so a deleted one stops
+/// being underlined.
 fn exists(candidate: &str, root: &Path) -> bool {
     KNOWN.with(|known| {
         let mut known = known.borrow_mut();
@@ -43,11 +48,18 @@ fn exists(candidate: &str, root: &Path) -> bool {
         if known.len() >= REMEMBERED {
             known.clear();
         }
-        let resolved = resolve(candidate, root);
-        let answer = resolved.is_some_and(|path| path.exists());
-        known.insert(candidate.to_string(), answer);
+        let answer = resolve(candidate, root).is_some_and(|path| path.exists());
+        if answer {
+            known.insert(candidate.to_string(), answer);
+        }
         answer
     })
+}
+
+/// Forgets every path found so far: called when a turn ends or a cell
+/// captures a change, since either may have made or removed files.
+pub(crate) fn forget() {
+    KNOWN.with(|known| known.borrow_mut().clear());
 }
 
 /// A candidate as a path on this machine, or `None` when it is not one.
@@ -233,5 +245,21 @@ mod tests {
             let _ = exists(&format!("src/absent-{n}.rs"), &root());
         }
         KNOWN.with(|known| assert!(known.borrow().len() <= REMEMBERED));
+    }
+
+    /// A file that appears becomes a path at once, and one that is removed
+    /// stops being one once the turn that removed it has ended.
+    #[test]
+    fn a_new_file_becomes_a_path_and_a_removed_one_stops_being_one() {
+        let dir = std::env::temp_dir().join(format!("sterna-paths-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let line = "see src/fresh.rs";
+        assert!(found(line, &dir).is_empty());
+        std::fs::write(dir.join("src/fresh.rs"), "").unwrap();
+        assert_eq!(found(line, &dir).len(), 1, "a no was not remembered");
+        std::fs::remove_file(dir.join("src/fresh.rs")).unwrap();
+        forget();
+        assert!(found(line, &dir).is_empty(), "a yes was forgotten");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

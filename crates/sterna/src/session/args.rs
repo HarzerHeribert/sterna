@@ -21,7 +21,7 @@ use crate::tui;
 /// what the ruler's future `sterna` harness row will pass a statement through.
 /// Absent `--task`, terminals use the live composer; piped input is read
 /// one input per line until EOF.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "sterna session")]
 pub struct SessionArgs {
     /// The project root map line 2448 loads from.
@@ -57,6 +57,11 @@ pub struct SessionArgs {
     /// folder when given no value. A bare `sterna` always starts a new one.
     #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "")]
     pub resume: Option<String>,
+
+    /// A bare `--resume` at a terminal: the resume sheet opens over the
+    /// newest session. Set by the session, never typed.
+    #[arg(skip)]
+    pub pick: bool,
 
     /// List this folder's resumable sessions, newest first, and exit.
     #[arg(long)]

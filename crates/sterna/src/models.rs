@@ -84,6 +84,52 @@ pub fn normalise(model: &str) -> String {
     model.trim().to_ascii_lowercase().replace(['.', '_'], "-")
 }
 
+/// Whether `id` answers a conversation. An account's list also carries
+/// image, speech, embedding and batch ids, which cannot run a turn and are
+/// never offered as one.
+#[must_use]
+pub fn chat_capable(id: &str) -> bool {
+    const NOT_CHAT: [&str; 7] = [
+        "gpt-image-",
+        "dall-e-",
+        "whisper-",
+        "tts-",
+        "text-embedding-",
+        "omni-moderation",
+        "codex-auto-review",
+    ];
+    let id = normalise(id);
+    !id.ends_with(":batch") && !NOT_CHAT.iter().any(|prefix| id.starts_with(prefix))
+}
+
+/// How well `id` answers a search, best first: the exact id, then a prefix,
+/// then the terms side by side (`sonnet 5` in `claude-sonnet-5`), then every
+/// term a whole word somewhere in the id, then a plain substring.
+#[must_use]
+pub fn search_rank(id: &str, terms: &[String]) -> u8 {
+    let id = normalise(id);
+    let joined = normalise(&terms.join("-"));
+    let words: Vec<&str> = id.split(['-', '/', ':']).collect();
+    if id == joined {
+        0
+    } else if id.starts_with(&joined) {
+        1
+    } else if words.windows(terms.len().max(1)).any(|run| {
+        run.iter()
+            .zip(terms)
+            .all(|(word, term)| *word == normalise(term))
+    }) {
+        2
+    } else if terms
+        .iter()
+        .all(|term| words.contains(&normalise(term).as_str()))
+    {
+        3
+    } else {
+        4
+    }
+}
+
 /// Every model in `served`, carrying whatever the gateway has measured for
 /// it. Strongest first, unmeasured last by name.
 #[must_use]

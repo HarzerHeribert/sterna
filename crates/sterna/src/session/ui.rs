@@ -15,9 +15,12 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use editor::Editor;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 mod console_mode;
+mod decision;
+mod editor;
 mod links;
 mod terminal_input;
 
@@ -31,6 +34,14 @@ thread_local! { static STARTUP: RefCell<Option<Vec<String>>> = const { RefCell::
 /// terminal session.
 pub(super) fn sender() -> Option<mpsc::Sender<Update>> {
     OUTPUT.with(|output| output.borrow().clone())
+}
+
+/// Whether this screen is reached over SSH, where a browser or a file
+/// viewer would open on the wrong machine.
+pub(super) fn over_ssh() -> bool {
+    ["SSH_CONNECTION", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 pub(super) fn output(message: String) {
@@ -103,9 +114,9 @@ impl Drop for StartupNotes {
 /// is all `EnableMouseCapture` does there (`is_ansi_code_supported` is `false`
 /// on Windows, so it writes no `?1002`/`?1003` either). Without that call
 /// Sterna's wheel did nothing on Windows at all.
-const ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 /// The matching resets, in the same order.
-const DISABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
+const DISABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
 
 /// The longest the screen goes without a frame while input keeps arriving.
 /// A drag or a wheel delivers events faster than a full transcript re-render
@@ -133,6 +144,28 @@ fn disable_mouse_reporting() {
     let _ = io::stdout().flush();
 }
 
+/// Asks the terminal to tell Shift-Enter from Enter (the kitty keyboard
+/// protocol's first flag). A terminal without the protocol ignores the
+/// request, and Alt-Enter stays the newline everywhere. Windows reads
+/// console records, which carry the modifiers already.
+#[cfg(not(windows))]
+fn push_keyboard_protocol() {
+    let _ = execute!(
+        io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
+}
+#[cfg(windows)]
+fn push_keyboard_protocol() {}
+#[cfg(not(windows))]
+fn pop_keyboard_protocol() {
+    let _ = execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+}
+#[cfg(windows)]
+fn pop_keyboard_protocol() {}
+
 /// Also called by the existing second-SIGINT exit path, which skips Drop.
 pub(super) fn restore_terminal() {
     let _guard = super::lock(&DRAWING);
@@ -141,6 +174,7 @@ pub(super) fn restore_terminal() {
         console_mode::disable();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), DisableBracketedPaste);
+        pop_keyboard_protocol();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
     }
 }
@@ -166,11 +200,31 @@ pub(super) fn read_line() -> io::Result<Option<String>> {
     Ok(Some(line))
 }
 
+fn next_input(
+    inputs: &mpsc::Receiver<Input>,
+    changed: &dyn Fn(),
+) -> Result<Option<String>, String> {
+    loop {
+        match inputs.recv() {
+            Ok(Input::Submit(text)) => return Ok(Some(text)),
+            Ok(Input::Exit) => return Ok(None),
+            Ok(Input::Failed(error)) => return Err(error),
+            Ok(Input::Changed) => changed(),
+            Err(_) => return Err("terminal input closed".into()),
+        }
+    }
+}
+
 pub(super) enum Update {
     Approval(crate::approval::Request),
     /// A question a cell put to the person, waiting on the session thread.
     Ask(crate::ask::Request),
-    Snapshot(Box<(Conversation, Notebook, ServedBy, Activity)>),
+    /// The approval gate's memory, sent once when the gate is made, so the
+    /// Ask sheet can list and forget what was answered for the session.
+    Memory(crate::approval::Memory),
+    /// The transcript and how the turn stands; `None` when a control has
+    /// been answered, which leaves the turn's ending and its clock alone.
+    Snapshot(Box<(Conversation, Notebook, ServedBy, Option<Activity>)>),
     /// Open a form sheet. The terminal thread answers it on the form
     /// channel and on nothing else.
     Form(Box<tui::Form>),
@@ -179,25 +233,32 @@ pub(super) enum Update {
     Tiers(bool, String),
     /// A chip offered first on the opening screen: its label, and what it types.
     Suggest(String, String),
+    /// Take away the opening chip that sends this.
+    Unsuggest(String),
+    /// A sign-in started beside the session: how to stop it and feed it.
+    SignInStarted(super::controls::sign_in::Handle),
+    /// What a running sign-in says.
+    SignIn(super::controls::sign_in::Event),
     Delta(String),
     ToolDelta(String),
     /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
     Reasoning(String),
-    Mode(tui::Mode),
+    Mode(tui::Mode, bool),
     Effort(crate::wire::Effort),
     Panel(Box<tui::Panel>),
     Notice(String),
     /// Work behind the answer started (`true`) or ended, by lane name.
     Behind(&'static str, bool),
     Stop,
-    /// The session loop has taken the oldest queued message and is running
-    /// it; it is a task now and no longer waiting.
-    Dequeued,
 }
 enum Input {
     Submit(String),
     Exit,
     Failed(String),
+    /// Something the session reads changed on its own -- a sign-in that
+    /// finished in the background -- so what the opening screen offers is
+    /// worked out again.
+    Changed,
 }
 
 /// The person's two levers over a task already running, shared with the
@@ -215,15 +276,29 @@ enum Input {
 /// [`Interrupter::raise`]: super::Interrupter::raise
 #[derive(Default)]
 pub(super) struct Steer {
-    stop: AtomicBool,
+    /// A stop asked for, and by whom: the first Escape, or Ctrl-C.
+    stop: Mutex<Option<tui::Stopper>>,
     cancel: AtomicBool,
+    /// A model, mode or effort chosen while the turn runs, applied where
+    /// its next request begins (decision 9).
+    controls: Mutex<Vec<String>>,
 }
 
 impl Steer {
-    /// The first Escape. Idempotent: pressing it twice before the boundary
-    /// is read asks for the same thing.
-    fn request_stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+    /// The first Escape, or a Ctrl-C. Idempotent: pressing it twice before
+    /// the boundary is read asks for the same thing.
+    fn request_stop(&self, by: tui::Stopper) {
+        *super::lock(&self.stop) = Some(by);
+    }
+
+    /// A control for the turn's next request.
+    fn request_control(&self, command: String) {
+        super::lock(&self.controls).push(command);
+    }
+
+    /// The controls chosen since the last request, oldest first.
+    pub(super) fn take_controls(&self) -> Vec<String> {
+        std::mem::take(&mut *super::lock(&self.controls))
     }
 
     /// The second Escape.
@@ -234,14 +309,15 @@ impl Steer {
     /// Read once by the task loop at a cell boundary, and lowered by the
     /// read: a stop ends the turn it was asked during and never the next
     /// one.
-    pub(super) fn take_stop(&self) -> bool {
-        self.stop.swap(false, Ordering::SeqCst)
+    pub(super) fn take_stop(&self) -> Option<tui::Stopper> {
+        super::lock(&self.stop).take()
     }
 
     /// Lowers both levers when a task starts: a lever pulled before it began
-    /// was meant for a turn that has already ended.
+    /// was meant for a turn that has already ended. A control chosen
+    /// between turns is kept: it is for this one.
     pub(super) fn clear(&self) {
-        self.stop.store(false, Ordering::SeqCst);
+        *super::lock(&self.stop) = None;
         self.cancel.store(false, Ordering::SeqCst);
     }
 
@@ -277,6 +353,7 @@ impl LiveUi {
     ) -> crate::approval::Gate {
         let (gate, receiver) = crate::approval::Gate::channel(ladder);
         let updates = self.updates.clone();
+        let _ = updates.send(Update::Memory(gate.memory()));
         thread::spawn(move || {
             for request in receiver {
                 if updates.send(Update::Approval(request)).is_err() {
@@ -358,16 +435,11 @@ impl LiveUi {
     /// **Nothing typed into it reaches the editor, the transcript or the
     /// input history** -- it comes back here and nowhere else.
     pub(super) fn form(&self, form: tui::Form) -> Option<Vec<String>> {
-        // A paste nobody collected (a sign-in that ended first) must never
-        // answer a form that asks for a key.
+        // An answer nobody collected must never answer a form that asks
+        // for a key.
         while self.secrets.try_recv().is_ok() {}
         self.updates.send(Update::Form(Box::new(form))).ok()?;
         self.secrets.recv().ok().flatten()
-    }
-    /// What the person entered in a form the terminal opened on its own,
-    /// such as a sign-in panel's paste row, if anything has arrived.
-    pub(super) fn try_secret(&self) -> Option<String> {
-        self.secrets.try_recv().ok().flatten()?.into_iter().next()
     }
     pub(super) fn handler_cancellations(&self) -> Vec<String> {
         std::mem::take(&mut *super::lock(&self.handler_cancellations))
@@ -379,21 +451,10 @@ impl LiveUi {
     pub(super) fn steer_handle(&self) -> Arc<Steer> {
         Arc::clone(&self.steer)
     }
-    pub(super) fn next(&self) -> Result<Option<String>, String> {
-        match self.inputs.recv() {
-            Ok(Input::Submit(text)) => {
-                // **The queue empties when this loop takes from it, not when
-                // the screen guesses that it has.** Inferring it from the
-                // working-to-idle edge missed a task that started in the
-                // same breath the last one ended, and left a message
-                // standing in the queue while it was already the task.
-                let _ = self.updates.send(Update::Dequeued);
-                Ok(Some(text))
-            }
-            Ok(Input::Exit) => Ok(None),
-            Ok(Input::Failed(error)) => Err(error),
-            Err(_) => Err("terminal input closed".into()),
-        }
+    /// The next thing typed; `changed` runs, on the session's thread, for
+    /// each change that arrives before it.
+    pub(super) fn next(&self, changed: &dyn Fn()) -> Result<Option<String>, String> {
+        next_input(&self.inputs, changed)
     }
     pub(super) fn publish(
         &self,
@@ -405,7 +466,17 @@ impl LiveUi {
             transcript.conversation.clone(),
             transcript.notebook.clone(),
             served.clone(),
-            activity,
+            Some(activity),
+        ))));
+    }
+    /// A control has been answered: the screen takes the transcript as it
+    /// now stands and stops waiting, and no turn is reported.
+    pub(super) fn control_done(&self, transcript: &super::Transcript) {
+        let _ = self.updates.send(Update::Snapshot(Box::new((
+            transcript.conversation.clone(),
+            transcript.notebook.clone(),
+            ServedBy::default(),
+            None,
         ))));
     }
     /// A publisher onto this terminal's channel that borrows nothing.
@@ -426,8 +497,8 @@ impl LiveUi {
     pub(super) fn effort(&self, effort: crate::wire::Effort) {
         let _ = self.updates.send(Update::Effort(effort));
     }
-    pub(super) fn mode(&self, mode: tui::Mode) {
-        let _ = self.updates.send(Update::Mode(mode));
+    pub(super) fn mode(&self, mode: tui::Mode, pinned: bool) {
+        let _ = self.updates.send(Update::Mode(mode, pinned));
     }
     pub(super) fn panel(&self, panel: tui::Panel) {
         let _ = self.updates.send(Update::Panel(Box::new(panel)));
@@ -439,6 +510,18 @@ impl LiveUi {
         let _ = self
             .updates
             .send(Update::Suggest(label.into(), types.into()));
+    }
+    /// Hands the screen a sign-in that now runs beside the session.
+    pub(super) fn sign_in(&self, handle: super::controls::sign_in::Handle) {
+        let _ = self.updates.send(Update::SignInStarted(handle));
+    }
+    /// A sender for a thread that reports to the screen on its own.
+    pub(super) fn updates(&self) -> mpsc::Sender<Update> {
+        self.updates.clone()
+    }
+    /// Takes the opening chip that sends `types` away.
+    pub(super) fn unsuggest(&self, types: &str) {
+        let _ = self.updates.send(Update::Unsuggest(types.into()));
     }
 
     pub(super) fn tiers(&self, helpers_on: bool, subagents: &str) {
@@ -470,7 +553,7 @@ impl Publisher {
             conversation.clone(),
             notebook.clone(),
             served.clone(),
-            activity,
+            Some(activity),
         ))));
     }
 }
@@ -521,161 +604,6 @@ impl Drop for LiveUi {
     }
 }
 
-#[derive(Default)]
-struct Editor {
-    text: String,
-    cursor: usize,
-    selected: usize,
-    history: Vec<String>,
-    history_index: Option<usize>,
-    draft: String,
-}
-impl Editor {
-    fn previous(&self) -> usize {
-        self.text[..self.cursor]
-            .char_indices()
-            .last()
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    }
-    fn next(&self) -> usize {
-        self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(|c| self.cursor + c.len_utf8())
-            .unwrap_or(self.cursor)
-    }
-    fn insert(&mut self, text: &str) {
-        // Terminal transports may turn pasted LF into CR. Preserve either
-        // newline convention as one LF, while stripping other controls.
-        let mut text = text.chars().peekable();
-        let mut normalized = String::with_capacity(text.size_hint().0);
-        while let Some(c) = text.next() {
-            match c {
-                '\r' => {
-                    if text.peek() == Some(&'\n') {
-                        text.next();
-                    }
-                    normalized.push('\n');
-                }
-                '\n' | '\t' => normalized.push(c),
-                c if !c.is_control() => normalized.push(c),
-                _ => {}
-            }
-        }
-        self.text.insert_str(self.cursor, &normalized);
-        self.cursor += normalized.len();
-        self.selected = 0;
-    }
-    fn recall(&mut self, older: bool) {
-        if self.history.is_empty() {
-            return;
-        }
-        let index = match (self.history_index, older) {
-            (None, true) => {
-                self.draft = self.text.clone();
-                Some(self.history.len() - 1)
-            }
-            (Some(i), true) => Some(i.saturating_sub(1)),
-            (Some(i), false) if i + 1 < self.history.len() => Some(i + 1),
-            _ => None,
-        };
-        self.text = index
-            .map(|i| self.history[i].clone())
-            .unwrap_or_else(|| self.draft.clone());
-        self.history_index = index;
-        self.cursor = self.text.len();
-        self.selected = 0;
-    }
-    fn take(&mut self) -> String {
-        let text = std::mem::take(&mut self.text);
-        if self.history.last() != Some(&text) {
-            self.history.push(text.clone());
-        }
-        self.cursor = 0;
-        self.selected = 0;
-        self.history_index = None;
-        self.draft.clear();
-        text
-    }
-    fn key(&mut self, key: KeyEvent) -> bool {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('p') if control => self.recall(true),
-            KeyCode::Char('n') if control => self.recall(false),
-            KeyCode::Char('a') if control => self.cursor = 0,
-            KeyCode::Char('e') if control => self.cursor = self.text.len(),
-            KeyCode::Char('u') if control => {
-                self.text.drain(..self.cursor);
-                self.cursor = 0;
-            }
-            KeyCode::Char('k') if control => {
-                self.text.truncate(self.cursor);
-            }
-            KeyCode::Left => self.cursor = self.previous(),
-            KeyCode::Right => self.cursor = self.next(),
-            KeyCode::Home => {
-                self.cursor = self.text[..self.cursor]
-                    .rfind('\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(0)
-            }
-            KeyCode::End => {
-                self.cursor = self.text[self.cursor..]
-                    .find('\n')
-                    .map(|i| self.cursor + i)
-                    .unwrap_or(self.text.len())
-            }
-            KeyCode::Backspace => {
-                let prev = self.previous();
-                self.text.drain(prev..self.cursor);
-                self.cursor = prev;
-                self.selected = 0;
-            }
-            KeyCode::Delete => {
-                self.text.drain(self.cursor..self.next());
-                self.selected = 0;
-            }
-            KeyCode::Up | KeyCode::Down if !tui::slash_matches(&self.text).is_empty() => {
-                let count = tui::slash_matches(&self.text).len();
-                self.selected = if key.code == KeyCode::Down {
-                    (self.selected + 1) % count
-                } else {
-                    (self.selected + count - 1) % count
-                };
-            }
-            KeyCode::Up => self.recall(true),
-            KeyCode::Down => self.recall(false),
-            KeyCode::Tab => {
-                if let Some((name, _)) = tui::slash_matches(&self.text).get(self.selected) {
-                    self.text = format!("{name} ");
-                    self.cursor = self.text.len();
-                    self.selected = 0;
-                }
-            }
-            KeyCode::Enter
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
-            {
-                self.insert("\n")
-            }
-            KeyCode::Enter => {
-                if let Some((name, _)) = tui::slash_matches(&self.text).get(self.selected) {
-                    self.text = name.clone();
-                    self.cursor = self.text.len();
-                }
-                return true;
-            }
-            KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
-                self.insert(&c.to_string())
-            }
-            _ => {}
-        }
-        false
-    }
-}
-
 /// Dates every helper call still in flight from the frame it first appeared
 /// in, and writes that wall clock into the copy of the notebook this thread
 /// is about to draw.
@@ -719,18 +647,6 @@ fn tick_helper_clocks(notebook: &mut Notebook, since: &mut HashMap<(usize, usize
     }
 }
 
-/// Opens a cell's inspection: **the one path `/cell <n>` and a click on that
-/// cell's header both take**, so the two routes cannot drift into doing
-/// different things (`tui::hit`: every click has a keyboard twin).
-fn open_cell(state: &mut ScreenState, notebook: &Notebook, cell: usize) {
-    state.inspection = tui::Inspection::open(cell, notebook);
-    state.telemetry_open = false;
-    state.panel = None;
-    if state.inspection.is_none() {
-        state.note("No recorded cell at that number yet. Use /cells after an action.");
-    }
-}
-
 /// Shift-Tab: one rung along the permission ladder, and the line that says
 /// where it landed.
 ///
@@ -738,8 +654,8 @@ fn open_cell(state: &mut ScreenState, notebook: &Notebook, cell: usize) {
 /// approval gate reads on the session thread, so a person who moves *down*
 /// mid-task is asked about the very next call; moving *up* is their own act
 /// and the ladder records it for the rollout.
-fn rung_change(ladder: &crate::permissions::Ladder) -> String {
-    let mut moved = ladder.cycle();
+fn rung_change(state: &mut ScreenState, scope: crate::settings::Scope) -> String {
+    let mut to = state.permissions.rung().next();
     // **The key walks the rungs that ask; it cannot walk into the one that
     // does not.** Shift-Tab is one keystroke with no confirmation step, and
     // `full` is the rung where nothing is confirmed ever again -- reachable
@@ -751,16 +667,14 @@ fn rung_change(ladder: &crate::permissions::Ladder) -> String {
     //
     // A session *started* on `full` still leaves it here, because stepping
     // over a rung is not the same as being unable to leave one.
-    if moved.to == crate::permissions::Rung::Full {
-        moved = ladder.cycle();
+    if to == crate::permissions::Rung::Full {
+        to = to.next();
     }
-    // The new state, then what it means, then the way back. A notice that
-    // only named the rung left the reader to look up what they had just
-    // chosen -- on the one control that moves while a task is running.
+    // The new state, then what it means, then the way on: the notice every
+    // route that moves the rung prints, and one more sentence.
     format!(
-        "{} · {} Shift-Tab again for the next.",
-        moved.to.label(),
-        moved.to.sentence()
+        "{} Shift-Tab again for the next.",
+        crate::workbench::facts::set_rung(state, to, scope)
     )
 }
 
@@ -811,9 +725,12 @@ fn run(
     let setup = (|| {
         let _guard = super::lock(&DRAWING);
         enable_raw_mode()?;
+        // Asked before the key reader starts, so its replies are read here.
+        crate::tui::background::ask();
         let console = console_mode::select();
         ACTIVE.store(true, Ordering::SeqCst);
         execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        push_keyboard_protocol();
         enable_mouse_reporting()?;
         Terminal::new(CrosstermBackend::new(io::stdout())).map(|terminal| (terminal, console))
     })();
@@ -828,10 +745,21 @@ fn run(
             return Err(error);
         }
     };
+    if state.background == crate::tui::background::Background::Auto {
+        state.light = crate::tui::background::detected();
+    }
     let mut input = terminal_input::TerminalInput::new(console);
     let mut editor = Editor::default();
+    editor.root = state.settings_root.clone();
     let mut served = ServedBy::default();
     let mut busy = false;
+    // A sign-in running beside the session: its handle, its latest panel,
+    // whether that panel has been shown, and whether the open form is the
+    // one that takes its pasted address.
+    let mut sign_in = super::controls::sign_in::Running::default();
+    let mut sign_in_panel: Option<tui::Panel> = None;
+    let mut sign_in_shown = false;
+    let mut paste_form = false;
     // A prompt sent while idle, shown at once: the session records it only
     // after its preflight (the decision, the Scout, the acceptance lister),
     // and until then the snapshots it sends do not hold it yet.
@@ -845,7 +773,10 @@ fn run(
     let mut dirty = true;
     let mut last_drawn = Instant::now();
     let mut last_tick = Instant::now();
-    let mut task_started: Option<Instant> = None;
+    let mut clock = Clock::default();
+    // When an idle Ctrl-C armed the quit: a second one within the window
+    // ends the session, and the notice that says so goes when it lapses.
+    let mut quit_armed: Option<Instant> = None;
     let mut helper_clocks: HashMap<(usize, usize), Instant> = HashMap::new();
     let mut previous_rows = 0usize;
     let mut viewport_height = 10usize;
@@ -855,54 +786,28 @@ fn run(
     // When the position indicator came up, so it can go down again after
     // `tui::SCROLL_INDICATOR_LINGER` without a timer of its own.
     let mut last_scroll: Option<Instant> = None;
-    let mut approvals: std::collections::VecDeque<crate::approval::Request> =
-        std::collections::VecDeque::new();
-    let mut approval_scroll = 0u16;
-    // At most one question is ever outstanding: `ask` ends the cell that
-    // asked, and the session waits for the answer before the next turn.
-    let mut asking: Option<crate::ask::Request> = None;
-    let mut ask_selected = 0usize;
-    // `[a]` on an approval: the refused request and what has been typed
-    // for it so far. Esc puts the request back in front of the person.
-    let mut redirect: Option<(crate::approval::Request, String)> = None;
-    let mut settings_editor: Option<crate::settings_session::Editor> = None;
+    // The decision prompts -- approvals, a question, the words behind
+    // "another way" -- answered on purpose (`decision.rs`).
+    let mut prompts = decision::Prompts::default();
+    // Where the open form was drawn, so a click reaches its fields.
+    let mut form_hits: Vec<(ratatui::layout::Rect, crate::workbench::FormHit)> = Vec::new();
     loop {
         if !ACTIVE.load(Ordering::SeqCst) {
             break;
         }
-        let queued = approvals.len();
-        approvals.retain(crate::approval::Request::is_pending);
-        if approvals.len() != queued {
-            approval_scroll = 0;
+        if prompts.retain_pending() {
             dirty = true;
         }
         for update in updates.try_iter() {
             dirty = true;
             match update {
                 Update::Approval(request) => {
-                    approvals.push_back(request);
-                    state.panel = None;
-                    state.inspection = None;
-                    approval_scroll = 0;
+                    prompts.push_approval(request);
                 }
                 Update::Ask(request) => {
-                    // The decision model's own pick starts selected, so the
-                    // common answer is Enter and the person reads rather
-                    // than navigates.
-                    ask_selected = request
-                        .weights()
-                        .and_then(|weights| {
-                            request
-                                .question()
-                                .choices
-                                .iter()
-                                .position(|choice| choice == &weights.choice)
-                        })
-                        .unwrap_or(0);
-                    asking = Some(request);
-                    state.panel = None;
-                    state.inspection = None;
+                    prompts.ask(request);
                 }
+                Update::Memory(memory) => state.memory = Some(memory),
                 Update::Snapshot(snapshot) => {
                     let (c, n, s, activity) = *snapshot;
                     let completed = n
@@ -915,6 +820,10 @@ fn run(
                         .iter()
                         .filter(|cell| cell.execution.is_some())
                         .count();
+                    // A cell that ran may have made or removed files.
+                    if completed > previous {
+                        crate::tui::forget_paths();
+                    }
                     if completed > previous
                         && !state.reduced_motion
                         && n.cells.last().is_some_and(|cell| {
@@ -926,44 +835,54 @@ fn run(
                     {
                         state.completion_tick = Some(0);
                     }
-                    refresh_handler_panel(&mut state.panel, &notebook.handlers, &n.handlers);
+                    refresh_handler_panel(
+                        workbench.panel_mut("Standing handlers"),
+                        &notebook.handlers,
+                        &n.handlers,
+                    );
+                    workbench
+                        .turning_off
+                        .retain(|name| n.handlers.iter().any(|h| h.name == *name && h.active));
                     conversation = c;
-                    keep_sending(&mut conversation, &mut sending, activity);
+                    keep_sending(
+                        &mut conversation,
+                        &mut sending,
+                        activity.unwrap_or(Activity::Idle),
+                    );
                     state.messages_seen = conversation.messages.len();
                     notebook = n;
                     if s.is_known() {
                         served = s;
                     }
+                    if served.is_known() {
+                        state.connected = Some(true);
+                    }
+                    // A control answered: nothing waits any more, and the
+                    // last turn's ending, clock and pulse stay as they were.
+                    let Some(activity) = activity else {
+                        busy = false;
+                        continue;
+                    };
                     state.activity = activity;
                     state.streaming_text = None;
                     state.streaming_tool_input = None;
                     state.streaming_reasoning = None;
-                    if served.is_known() {
-                        state.connected = Some(true);
-                    }
-                    if matches!(
-                        activity,
-                        Activity::Idle | Activity::Complete | Activity::Failed
-                    ) {
+                    if !activity.working() {
+                        // The turn may have made or removed files.
+                        crate::tui::forget_paths();
                         // Cancellation may finish the waiting callback before
                         // the user answers. Remove stale confirmations then.
-                        approvals.clear();
-                        approval_scroll = 0;
-                        if let Some(start) = task_started.take() {
-                            state.pulse.elapsed_ms = start.elapsed().as_millis() as u64;
+                        prompts.clear_approvals();
+                        if let Some(ms) = clock.stop() {
+                            state.pulse.elapsed_ms = ms;
                         }
-                    } else if task_started.is_none() {
-                        task_started = Some(Instant::now());
+                    } else if clock.started.is_none() {
+                        // A turn started by a project command or skill,
+                        // which the screen sent as a control.
+                        clock.start();
+                        state.pulse = tui::Pulse::default();
                     }
-                    busy = matches!(
-                        activity,
-                        Activity::Thinking
-                            | Activity::Streaming
-                            | Activity::Executing
-                            | Activity::Searching
-                            | Activity::Waiting
-                            | Activity::Compacting
-                    );
+                    busy = activity.working();
                 }
                 Update::Delta(text) => {
                     state.pulse.receive(text.len());
@@ -999,34 +918,97 @@ fn run(
                     state.suggestions.retain(|(_, said)| *said != types);
                     state.suggestions.insert(0, (label, types));
                 }
+                Update::Unsuggest(types) => {
+                    state.suggestions.retain(|(_, said)| *said != types);
+                }
+                // A new sign-in replaces one still running: the older one
+                // is cancelled rather than left holding its callback port.
+                Update::SignInStarted(handle) => {
+                    state.signing_in = Some(handle.label.clone());
+                    // Replacing the hold cancels the older one.
+                    sign_in = super::controls::sign_in::Running(Some(handle));
+                    sign_in_shown = false;
+                }
+                Update::SignIn(super::controls::sign_in::Event::Note(message)) => {
+                    workbench.notice = message.lines().next().unwrap_or("").to_owned();
+                    state.note(message);
+                    state.landed_note();
+                }
+                // The panel opens once; after Esc it is kept, and the dock's
+                // "signing in" chip brings it back.
+                Update::SignIn(super::controls::sign_in::Event::Panel(panel)) => {
+                    if let Some(open) = workbench.panel_mut(&panel.title) {
+                        *open = (*panel).clone();
+                    } else if state
+                        .panel
+                        .as_ref()
+                        .is_some_and(|pending| pending.title == panel.title)
+                        || !sign_in_shown
+                    {
+                        // Not drawn yet, or never shown: this one opens.
+                        state.panel = Some((*panel).clone());
+                        sign_in_shown = true;
+                    }
+                    sign_in_panel = Some(*panel);
+                }
+                Update::SignIn(super::controls::sign_in::Event::Done) => {
+                    // Over on its own: nothing left to stop, and a setup
+                    // step it may have finished is counted again.
+                    sign_in.0 = None;
+                    state.signing_in = None;
+                    let _ = answers.inputs.send(Input::Changed);
+                }
                 Update::Tiers(helpers_on, subagents) => {
                     state.helpers_on = helpers_on;
                     state.subagents = Some(subagents);
                 }
-                Update::Mode(mode) => state.mode = mode,
-                Update::Effort(effort) => state.effort = effort,
-                Update::Panel(panel) => {
-                    state.panel = Some(replace_panel(state.panel.as_ref(), *panel))
+                Update::Mode(mode, pinned) => {
+                    state.mode = mode;
+                    state.mode_pinned = pinned;
                 }
+                Update::Effort(effort) => state.effort = effort,
+                // The screen's inbox: the workbench opens it as a sheet on the
+                // next frame, as the child of the row that asked for it.
+                Update::Panel(panel) => state.panel = Some(*panel),
                 Update::Notice(message) => {
                     workbench.notice = message.lines().next().unwrap_or("").to_owned();
                     state.note(message);
                     state.landed_note();
                 }
                 Update::Behind(lane, running) => state.lane(lane, running),
+                // The form draws over the sheet that opened it, which is
+                // still there when the form is done or put back.
                 Update::Form(form) => {
                     state.form = Some(*form);
-                    // A panel over a form would take the Enter that submits it.
-                    state.panel = None;
-                    state.inspection = None;
-                }
-                Update::Dequeued => {
-                    if !state.queued.is_empty() {
-                        state.queued.remove(0);
-                    }
                 }
                 Update::Stop => return Ok(()),
             }
+        }
+        // An approval or a question on screen mid-turn: the card and the dock
+        // say the turn waits for the person, and its clock stands still.
+        if clock.hold(busy && prompts.active(), &mut state.activity) {
+            dirty = true;
+        }
+        // The session is free: the oldest held message is the next turn.
+        if !busy && !state.queued.is_empty() {
+            let text = state.queued.remove(0);
+            if state.queued.is_empty() {
+                unqueue_notice(&mut state);
+            }
+            let Ok(pending) = submit(
+                text,
+                &mut state,
+                &mut clock,
+                &mut workbench,
+                answers.inputs,
+                conversation.messages.len(),
+            ) else {
+                return Ok(());
+            };
+            busy = true;
+            sending = pending;
+            keep_sending(&mut conversation, &mut sending, Activity::Thinking);
+            dirty = true;
         }
         // A stop that was asked for has been answered by the task ending;
         // the next Escape starts the ladder again from its gentle rung.
@@ -1052,8 +1034,8 @@ fn run(
                 state.animation_frame = state.animation_frame.wrapping_add(1);
             }
             state.advance_landing();
-            if let Some(start) = task_started {
-                state.pulse.elapsed_ms = start.elapsed().as_millis() as u64;
+            if let Some(ms) = clock.elapsed_ms() {
+                state.pulse.elapsed_ms = ms;
             }
             state.completion_tick = state
                 .completion_tick
@@ -1063,6 +1045,13 @@ fn run(
         }
         // A notice that has had its time on the dock's edge is cleared by
         // the next frame, and nothing else would draw one.
+        if quit_armed.is_some_and(|at| at.elapsed() >= super::DOUBLE_INTERRUPT_WINDOW) {
+            quit_armed = None;
+            if state.notice.as_deref() == Some(crate::workbench::voice::QUIT_ARMED) {
+                state.notice = None;
+            }
+            dirty = true;
+        }
         if workbench.notice_expired() {
             dirty = true;
         }
@@ -1084,6 +1073,7 @@ fn run(
             tick_helper_clocks(&mut notebook, &mut helper_clocks);
             state.input = editor.text.clone();
             state.cursor = Some(editor.cursor);
+            state.completions = editor.completions().rows();
             state.completion_selected = editor.selected;
             let _guard = super::lock(&DRAWING);
             if !ACTIVE.load(Ordering::SeqCst) {
@@ -1104,14 +1094,6 @@ fn run(
             let rows = document.rows.len();
             workbench.anchor_document(&document, &mut state, viewport_height);
             previous_rows = rows;
-            if let Some(inspection) = state.inspection.as_mut() {
-                inspection.clamp(
-                    &conversation,
-                    &notebook,
-                    regions.transcript.width,
-                    regions.transcript.height,
-                );
-            }
             terminal.draw(|frame| {
                 crate::workbench::render(
                     frame,
@@ -1121,23 +1103,11 @@ fn run(
                     &served,
                     &mut workbench,
                 );
-                if let Some(form) = state.form.as_ref() {
-                    crate::workbench::render_form(frame, form, state.theme);
-                }
-                if let Some((_, text)) = redirect.as_ref() {
-                    tui::render_redirect(frame, text, state.theme);
-                } else if let Some(request) = approvals.front() {
-                    tui::render_approval(
-                        frame,
-                        &request.action().confirmation(),
-                        approval_scroll,
-                        request.hint_line(),
-                    );
-                } else if let Some(request) = asking.as_ref() {
-                    tui::render_ask(frame, request, ask_selected, state.theme);
-                } else if let Some(settings) = settings_editor.as_ref() {
-                    settings.panel.render(frame, state.theme);
-                }
+                form_hits = match state.form.as_ref() {
+                    Some(form) => crate::workbench::render_form(frame, form, state.theme),
+                    None => Vec::new(),
+                };
+                prompts.draw(frame, state.theme);
             })?;
             io::stdout().flush()?;
             dirty = false;
@@ -1157,33 +1127,164 @@ fn run(
         }
         // Security prompts retain priority; no local control can answer them.
         // All ordinary pointer and local-panel events go to the new reducer.
-        if approvals.is_empty() && asking.is_none() && state.form.is_none() && redirect.is_none() {
+        // Ctrl-C over a selection copies it, even with a prompt up.
+        let copying = matches!(&input_event, Event::Key(key)
+            if key.code == KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL))
+            && state
+                .selection
+                .is_some_and(|selection| !selection.is_empty());
+        if prompts.active() && !copying {
+            let done = match &input_event {
+                Event::Key(key) if key.kind != KeyEventKind::Release => prompts.key(*key),
+                Event::Paste(text) => prompts.paste(text),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                        prompts.click(mouse.column, mouse.row)
+                    }
+                    MouseEventKind::ScrollUp => prompts.wheel(true),
+                    MouseEventKind::ScrollDown => prompts.wheel(false),
+                    _ => decision::Done::Nothing,
+                },
+                Event::Resize(_, _) => decision::Done::Redraw,
+                _ => decision::Done::Nothing,
+            };
+            match done {
+                decision::Done::Nothing => {}
+                decision::Done::Redraw => dirty = true,
+                // The same Ctrl-C as over a running turn: it stops the
+                // turn, and says so.
+                decision::Done::Interrupt => {
+                    super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
+                    state.stopping = true;
+                    steer.request_stop(tui::Stopper::Interrupt);
+                    state.note(crate::workbench::voice::CTRL_C_STOPPING);
+                    dirty = true;
+                }
+            }
+            continue;
+        }
+        if state.form.is_none() {
             state.input = editor.text.clone();
             state.cursor = Some(editor.cursor);
             if matches!(&input_event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown))
             {
                 last_scroll = Some(Instant::now());
             }
-            match workbench.event(&input_event, &mut state, &notebook, busy) {
+            let turn = busy && state.activity.working();
+            let mut effect = workbench.event(&input_event, &mut state, &notebook, turn);
+            // A popup row: a path completes in place; a command runs.
+            if let crate::workbench::Effect::Completion(index) = effect {
+                editor.selected = index;
+                effect = match editor.complete(index) {
+                    Some(true) => crate::workbench::Effect::Command(editor.take()),
+                    _ => crate::workbench::Effect::Consumed,
+                };
+            }
+            match effect {
                 crate::workbench::Effect::Insert(command) => {
-                    editor.text = command;
-                    editor.cursor = editor.text.len();
-                    editor.selected = 0;
+                    editor.replace(command);
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::Draft(message) => {
+                    editor.replace(if editor.text.trim().is_empty() {
+                        message
+                    } else {
+                        format!("{}\n\n{message}", editor.text.trim_end())
+                    });
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::PopupMove(down) => {
+                    editor.move_selection(down);
                     dirty = true;
                     continue;
                 }
                 crate::workbench::Effect::OpenPath(path) => {
-                    workbench.notice = if links::show(std::path::Path::new(&path)) {
-                        "Opened file."
-                    } else {
-                        "No application could open this file."
-                    }
-                    .into();
+                    let file = std::path::Path::new(&path);
+                    let named = state
+                        .settings_root
+                        .as_deref()
+                        .and_then(|root| file.strip_prefix(root).ok())
+                        .unwrap_or(file)
+                        .display()
+                        .to_string();
+                    workbench.notice = match links::show(file) {
+                        links::Shown::Opened => "Opened file.".into(),
+                        links::Shown::OverSsh => {
+                            links::copy(&path);
+                            "Can't open files over SSH · path copied".into()
+                        }
+                        links::Shown::Missing => format!("{named} no longer exists"),
+                        links::Shown::NoOpener => format!("Nothing here opens {named}"),
+                    };
                     dirty = true;
                     continue;
                 }
                 crate::workbench::Effect::Pass => {}
-                crate::workbench::Effect::Consumed => {
+                // A popup row was taken above, before this match.
+                crate::workbench::Effect::Consumed | crate::workbench::Effect::Completion(_) => {
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::Ignored => continue,
+                crate::workbench::Effect::OpenLink(link) => {
+                    say(
+                        &mut workbench,
+                        if links::open(&link) {
+                            "Opened in the browser."
+                        } else {
+                            "No browser available here; copy the link instead."
+                        },
+                    );
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::PasteCallback => {
+                    if sign_in.0.is_some() {
+                        state.form = Some(paste_callback_form());
+                        paste_form = true;
+                    } else {
+                        say(&mut workbench, "No sign-in is waiting for an address.");
+                    }
+                    dirty = true;
+                    continue;
+                }
+                // The resume sheet chose another session: this one ends as
+                // `/exit` ends it, and the chosen one starts in its place.
+                crate::workbench::Effect::Resume(id) => {
+                    super::resume::switch_to(id);
+                    if busy {
+                        steer.request_stop(tui::Stopper::You);
+                        steer.request_cancel();
+                    }
+                    let _ = answers.inputs.send(Input::Exit);
+                    return Ok(());
+                }
+                crate::workbench::Effect::CancelSignIn => {
+                    if let Some(handle) = &sign_in.0 {
+                        handle
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        say(
+                            &mut workbench,
+                            format!("Cancelling the sign-in to {}…", handle.label),
+                        );
+                    }
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::ReopenSignIn => {
+                    if let Some(panel) = &sign_in_panel {
+                        state.panel = Some(panel.clone());
+                    }
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::HandlerOff(name) => {
+                    super::lock(&handler_cancellations).push(name.clone());
+                    say(&mut workbench, format!("Turning off {name}…"));
                     dirty = true;
                     continue;
                 }
@@ -1196,45 +1297,39 @@ fn run(
                 }
                 crate::workbench::Effect::Copy(text) => {
                     links::copy(&text);
-                    workbench.notice = "Copied selection.".into();
+                    let said = if workbench.is_local() {
+                        "Copied."
+                    } else {
+                        "Copied selection."
+                    };
+                    say(&mut workbench, said);
                     dirty = true;
                     continue;
                 }
                 crate::workbench::Effect::Command(command) => {
-                    if let Some(link) = command.strip_prefix("/open-link ") {
-                        workbench.notice = if links::open(link) {
-                            "Opened in the browser."
-                        } else {
-                            "No browser available; copy the link."
+                    if command.trim() == "/exit" {
+                        ended_by("/exit");
+                        if busy {
+                            steer.request_stop(tui::Stopper::You);
+                            steer.request_cancel();
                         }
-                        .into();
-                    } else if let Some(text) = command.strip_prefix("/copy ") {
-                        links::copy(text);
-                        workbench.notice = "Copied.".into();
-                    } else if command == "/paste-callback" {
-                        state.form = Some(tui::Form::new(
-                            "Finish signing in",
-                            "Signing in on another device? Paste the address your browser ended on after you signed in.",
-                            vec![tui::form::Field::new(
-                                "Callback address",
-                                tui::form::Kind::Text,
-                                "the whole address from the browser's bar, starting with http",
-                            )],
-                        )
-                        .submit("finish"));
-                    } else if let Some(name) = command.strip_prefix("/handlers off ") {
-                        super::lock(&handler_cancellations).push(name.to_string());
-                        workbench.notice = format!("Handler {name}: cancellation requested.");
-                    } else if workbench.local_command(command.trim(), &mut state, &notebook) {
+                        let _ = answers.inputs.send(Input::Exit);
+                        return Ok(());
+                    }
+                    if workbench.local_command(command.trim(), &mut state, &notebook) {
                         // A control that acts on this screen is answered by
                         // this screen. Sending it to the model would spend a
                         // request to be told the command is unknown.
-                    } else if !busy {
-                        state.panel = None;
+                    } else if !(busy && state.activity.working()) {
                         busy = true;
+                        workbench.sent(&command, &state);
                         let _ = answers.inputs.send(Input::Submit(command));
+                    } else if crate::workbench::mid_turn(&command) {
+                        workbench.sent(&command, &state);
+                        steer.request_control(command);
+                        say(&mut workbench, crate::workbench::voice::NEXT_REQUEST);
                     } else {
-                        workbench.notice = "Finish the current turn before this action.".into();
+                        say(&mut workbench, crate::workbench::voice::BETWEEN_TURNS);
                     }
                     dirty = true;
                     continue;
@@ -1246,29 +1341,48 @@ fn run(
                 dirty = true;
             }
             Event::Mouse(mouse) => {
-                if settings_editor.is_some() {
-                    continue;
-                }
-                if !approvals.is_empty() {
-                    approval_scroll = match mouse.kind {
-                        MouseEventKind::ScrollUp => approval_scroll.saturating_sub(3),
-                        MouseEventKind::ScrollDown => approval_scroll.saturating_add(3),
-                        _ => approval_scroll,
-                    };
-                    dirty = true;
+                if let Some(form) = state.form.as_mut() {
+                    if mouse.kind == MouseEventKind::Up(crossterm::event::MouseButton::Left) {
+                        let hit = form_hits
+                            .iter()
+                            .rev()
+                            .find(|(r, _)| crate::workbench::contains(*r, mouse.column, mouse.row));
+                        match hit.map(|(_, hit)| *hit) {
+                            Some(crate::workbench::FormHit::Field(i)) => form.focus = i,
+                            Some(crate::workbench::FormHit::Word(i, word)) => {
+                                form.choose_word(i, word)
+                            }
+                            Some(crate::workbench::FormHit::Submit) => {
+                                if form.enter() {
+                                    let given = state.form.take().map(tui::Form::take);
+                                    answer_form(
+                                        given,
+                                        &mut paste_form,
+                                        sign_in.0.as_ref(),
+                                        answers.secrets,
+                                    );
+                                }
+                            }
+                            Some(crate::workbench::FormHit::Back) => {
+                                state.form = None;
+                                answer_form(
+                                    None,
+                                    &mut paste_form,
+                                    sign_in.0.as_ref(),
+                                    answers.secrets,
+                                );
+                            }
+                            None => {}
+                        }
+                        dirty = true;
+                    }
                     continue;
                 }
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 if up || mouse.kind == MouseEventKind::ScrollDown {
                     state.scrolling = true;
                     last_scroll = Some(Instant::now());
-                    if let Some(inspection) = state.inspection.as_mut() {
-                        inspection.scroll = if up {
-                            inspection.scroll.saturating_sub(3)
-                        } else {
-                            inspection.scroll.saturating_add(3)
-                        };
-                    } else if state.panel.is_none() && !state.telemetry_open {
+                    if !workbench.is_local() && !state.telemetry_open {
                         state.scrollback = if up {
                             state
                                 .scrollback
@@ -1282,147 +1396,17 @@ fn run(
                 }
             }
             Event::Paste(text) => {
-                if settings_editor.is_some() {
-                    continue;
-                }
-                if !approvals.is_empty() {
-                    continue;
-                }
                 // Pasting is how most keys are entered, so the masked prompt
                 // takes a paste before anything else can.
                 if let Some(form) = state.form.as_mut() {
                     form.push(&text);
-                } else if !state
-                    .panel
-                    .as_mut()
-                    .is_some_and(|panel| panel.search_insert(&text))
-                {
+                } else {
                     editor.insert(&text);
                 }
                 dirty = true;
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 dirty = true;
-                // The words behind `[a]`: every key is theirs until Enter
-                // sends them or Esc returns to the call.
-                if let Some((_, text)) = redirect.as_mut() {
-                    match key.code {
-                        KeyCode::Enter => {
-                            if let Some((request, text)) = redirect.take() {
-                                request.respond(crate::approval::Decision::Redirect(text));
-                            }
-                        }
-                        KeyCode::Esc => {
-                            if let Some((request, _)) = redirect.take() {
-                                approvals.push_front(request);
-                            }
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            super::INTERRUPT.store(true, Ordering::SeqCst);
-                            if let Some((request, _)) = redirect.take() {
-                                request.respond(crate::approval::Decision::Deny);
-                            }
-                        }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            text.clear();
-                        }
-                        KeyCode::Backspace => {
-                            text.pop();
-                        }
-                        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            text.push(c);
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                if let Some(request) = approvals.front() {
-                    let complete = request.action().confirmation().complete;
-                    let decision = match key.code {
-                        KeyCode::Char('o' | 'O') if complete && key.modifiers.is_empty() => {
-                            Some(crate::approval::Decision::AllowOnce)
-                        }
-                        KeyCode::Char('s' | 'S') if complete && key.modifiers.is_empty() => {
-                            Some(crate::approval::Decision::AllowForSession)
-                        }
-                        KeyCode::Char('d' | 'D') | KeyCode::Esc => {
-                            Some(crate::approval::Decision::Deny)
-                        }
-                        // Refuse, and say what to do instead: the request
-                        // leaves the queue for the prompt that takes the
-                        // words, and comes back to the front on Esc.
-                        KeyCode::Char('a' | 'A') if complete && key.modifiers.is_empty() => {
-                            if let Some(request) = approvals.pop_front() {
-                                redirect = Some((request, String::new()));
-                            }
-                            approval_scroll = 0;
-                            None
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            super::INTERRUPT.store(true, Ordering::SeqCst);
-                            Some(crate::approval::Decision::Deny)
-                        }
-                        KeyCode::Up => {
-                            approval_scroll = approval_scroll.saturating_sub(1);
-                            None
-                        }
-                        KeyCode::Down => {
-                            approval_scroll = approval_scroll.saturating_add(1);
-                            None
-                        }
-                        KeyCode::PageUp => {
-                            approval_scroll = approval_scroll.saturating_sub(10);
-                            None
-                        }
-                        KeyCode::PageDown => {
-                            approval_scroll = approval_scroll.saturating_add(10);
-                            None
-                        }
-                        KeyCode::Home => {
-                            approval_scroll = 0;
-                            None
-                        }
-                        _ => None,
-                    };
-                    if let Some(decision) = decision {
-                        if let Some(request) = approvals.pop_front() {
-                            request.respond(decision);
-                        }
-                        approval_scroll = 0;
-                    }
-                    continue;
-                }
-                // **Modal, and answered either way.** Escape is a choice
-                // ("decide yourself"), not a cancellation: a model waiting on
-                // a question nobody answered would only ask it again.
-                if let Some(request) = asking.as_ref() {
-                    let choices = request.question().choices.len();
-                    let answer = match tui::ask_key(key.code, ask_selected, choices) {
-                        tui::AskKey::Move(index) => {
-                            ask_selected = index;
-                            None
-                        }
-                        tui::AskKey::Confirm => Some(crate::ask::Answer {
-                            choice: request.question().choices.get(ask_selected).cloned(),
-                            by: crate::ask::AnsweredBy::Person,
-                        }),
-                        tui::AskKey::Dismiss => Some(crate::ask::Answer::dismissed()),
-                        tui::AskKey::Ignored => None,
-                    };
-                    if let Some(answer) = answer
-                        && let Some(request) = asking.take()
-                    {
-                        request.respond(answer);
-                        ask_selected = 0;
-                    }
-                    continue;
-                }
-                if let Some(settings) = settings_editor.as_mut() {
-                    if settings.key(key, &mut state) {
-                        settings_editor = None;
-                    }
-                    continue;
-                }
                 // **Modal, and first.** While a masked prompt is open every
                 // key belongs to it: none reaches the editor, the panel, the
                 // inspector or the input history.
@@ -1432,12 +1416,17 @@ fn run(
                         KeyCode::Enter => {
                             if form.enter() {
                                 let answers_given = state.form.take().map(tui::Form::take);
-                                let _ = answers.secrets.send(answers_given);
+                                answer_form(
+                                    answers_given,
+                                    &mut paste_form,
+                                    sign_in.0.as_ref(),
+                                    answers.secrets,
+                                );
                             }
                         }
                         KeyCode::Esc => {
                             state.form = None;
-                            let _ = answers.secrets.send(None);
+                            answer_form(None, &mut paste_form, sign_in.0.as_ref(), answers.secrets);
                         }
                         KeyCode::Tab | KeyCode::Down => form.move_focus(true),
                         KeyCode::BackTab | KeyCode::Up => form.move_focus(false),
@@ -1457,55 +1446,7 @@ fn run(
                     }
                     continue;
                 }
-                if let Some(inspection) = state.inspection.as_mut() {
-                    let handled = match key.code {
-                        KeyCode::Esc => {
-                            state.inspection = None;
-                            true
-                        }
-                        KeyCode::Left => {
-                            inspection.adjacent(false, &notebook);
-                            true
-                        }
-                        KeyCode::Right => {
-                            inspection.adjacent(true, &notebook);
-                            true
-                        }
-                        KeyCode::Up => {
-                            inspection.scroll = inspection.scroll.saturating_sub(1);
-                            true
-                        }
-                        KeyCode::Down => {
-                            inspection.scroll = inspection.scroll.saturating_add(1);
-                            true
-                        }
-                        KeyCode::PageUp => {
-                            inspection.scroll = inspection
-                                .scroll
-                                .saturating_sub(viewport_height.saturating_sub(3));
-                            true
-                        }
-                        KeyCode::PageDown => {
-                            inspection.scroll = inspection
-                                .scroll
-                                .saturating_add(viewport_height.saturating_sub(3));
-                            true
-                        }
-                        KeyCode::Home => {
-                            inspection.scroll = 0;
-                            true
-                        }
-                        KeyCode::End => {
-                            inspection.scroll = usize::MAX;
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        continue;
-                    }
-                }
-                if state.telemetry_open && state.panel.is_none() {
+                if state.telemetry_open && !workbench.is_local() {
                     match key.code {
                         KeyCode::Esc => {
                             state.telemetry_open = false;
@@ -1529,143 +1470,6 @@ fn run(
                         _ => {}
                     }
                 }
-                if let Some(panel) = state.panel.as_mut() {
-                    if panel.search.is_some() {
-                        match key.code {
-                            KeyCode::Left => {
-                                panel.move_provider(false);
-                                continue;
-                            }
-                            KeyCode::Right => {
-                                panel.move_provider(true);
-                                continue;
-                            }
-                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                panel.search_clear();
-                                continue;
-                            }
-                            // Ctrl-O, not a letter: this panel's plain keys
-                            // are its search box. Not Ctrl-S either, which a
-                            // terminal takes for flow control.
-                            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                panel.cycle_order();
-                                continue;
-                            }
-                            // Space stages rather than filters. The cost is
-                            // stated because it is real: the filter's terms
-                            // are whitespace-separated and AND-ed, so it is
-                            // now reachable one term at a time. Staging is
-                            // what a person does here repeatedly; a two-term
-                            // filter is not.
-                            KeyCode::Char(' ')
-                                if !key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                            {
-                                if let Some(said) = panel.stage() {
-                                    state.notice = Some(said);
-                                }
-                                continue;
-                            }
-                            KeyCode::Char(c)
-                                if !key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                            {
-                                panel.search_insert(&c.to_string());
-                                continue;
-                            }
-                            KeyCode::Backspace => {
-                                panel.search_backspace();
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    match key.code {
-                        KeyCode::Esc => {
-                            // The staged map dies with the panel, which is
-                            // the whole of "Esc throws the changes away".
-                            let discarded = panel.staged_commands().len();
-                            state.panel = None;
-                            if discarded > 0 {
-                                state.note(format!("discarded {discarded} staged change(s)"));
-                            }
-                        }
-                        KeyCode::Up => panel.move_selection(false, 1),
-                        KeyCode::Down => panel.move_selection(true, 1),
-                        // Which tier a chosen model is assigned to. Tab rather
-                        // than a letter because the model panel's plain keys
-                        // are its search box.
-                        KeyCode::Tab => {
-                            panel.cycle_tier();
-                        }
-                        KeyCode::PageUp => panel.move_selection(false, 10),
-                        KeyCode::PageDown => panel.move_selection(true, 10),
-                        KeyCode::Enter => {
-                            // Everything staged, in tier order. `Enter` on a
-                            // panel with nothing staged still applies the
-                            // highlighted row, which is what every non-model
-                            // panel -- themes, handlers, login -- relies on.
-                            let staged = panel.staged_commands();
-                            if !staged.is_empty() {
-                                if !busy {
-                                    state.panel = None;
-                                    busy = true;
-                                    for command in staged {
-                                        let _ = answers.inputs.send(Input::Submit(command));
-                                    }
-                                }
-                            } else if let Some(command) = panel
-                                .rows
-                                .get(panel.selected)
-                                .and_then(|r| r.command.clone())
-                            {
-                                if let Some(theme) =
-                                    command.strip_prefix("/theme ").and_then(tui::Theme::parse)
-                                {
-                                    state.theme = theme;
-                                    state.panel = None;
-                                    state.note(format!("Theme: {}", theme.name()));
-                                } else if let Some(link) = command.strip_prefix("/open-link ") {
-                                    state.note(if links::open(link) {
-                                        "Opened the link in your default browser."
-                                    } else {
-                                        "No browser can be opened here: copy the link instead."
-                                    });
-                                } else if let Some(text) = command.strip_prefix("/copy ") {
-                                    links::copy(text);
-                                    state.note("Copied to the clipboard through the terminal.");
-                                } else if command == "/paste-callback" {
-                                    state.form = Some(tui::Form::new(
-                            "Finish signing in",
-                            "Signing in on another device? Paste the address your browser ended on after you signed in.",
-                            vec![tui::form::Field::new(
-                                "Callback address",
-                                tui::form::Kind::Text,
-                                "the whole address from the browser's bar, starting with http",
-                            )],
-                        )
-                        .submit("finish"));
-                                } else if let Some(name) = command.strip_prefix("/handlers off ") {
-                                    super::lock(&handler_cancellations).push(name.to_string());
-                                    state.panel = None;
-                                    state.note(format!(
-                                        "handler {name}: cancellation queued for the next cell boundary"
-                                    ));
-                                } else if !busy {
-                                    state.panel = None;
-                                    busy = true;
-                                    let _ = answers.inputs.send(Input::Submit(command));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                        continue;
-                    }
-                }
                 if key.code == KeyCode::BackTab {
                     // The permission rung, not the request mode: this is the
                     // one a person reaches for constantly, and — unlike a
@@ -1673,11 +1477,21 @@ fn run(
                     // *while* a task runs, because that is when someone
                     // notices they are on the wrong rung. The request mode
                     // keeps `/mode` and its own sidebar field.
-                    state.notice = Some(rung_change(&state.permissions));
+                    // Offered back like every other route that moves it.
+                    let before = state.permissions.rung();
+                    let notice = rung_change(&mut state, workbench.scope());
+                    workbench.offer_back(
+                        notice,
+                        crate::workbench::Change {
+                            was: format!("Ask {}", before.label()),
+                            back: crate::workbench::Action::Rung(before.name().into()),
+                        },
+                    );
+                    dirty = true;
                     continue;
                 }
                 // **Escape, and only while a task runs.** Every panel,
-                // modal and inspection above this point takes its own
+                // modal and sheet above this point takes its own
                 // Escape and `continue`s, so reaching here means the
                 // composer is what the keyboard is pointed at -- and an
                 // Escape into an idle composer has never meant anything, so
@@ -1687,16 +1501,41 @@ fn run(
                 // second cancels the call in flight; `state.stopping` is
                 // what tells them apart, and the task's end lowers it.
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                    // An open popup is put away first; with it away, a
+                    // second Escape takes back the word it was for.
+                    if editor.dismiss() {
+                        continue;
+                    }
+                    if !busy && editor.dismissed() {
+                        editor.drop_popup_word();
+                        continue;
+                    }
+                    // A message still in the queue is taken back first, into
+                    // the composer, before Escape means stop.
+                    if let Some(taken) = state.queued.pop() {
+                        editor.text = if editor.text.trim().is_empty() {
+                            taken
+                        } else {
+                            format!("{taken}\n{}", editor.text)
+                        };
+                        editor.cursor = editor.text.len();
+                        if state.queued.is_empty() {
+                            unqueue_notice(&mut state);
+                            state.note("Took the queued message back into the composer.");
+                        } else {
+                            state.note(format!(
+                                "Took the last queued message back; {} still queued.",
+                                state.queued.len()
+                            ));
+                        }
+                        dirty = true;
+                        continue;
+                    }
                     if !busy {
-                        if state.queued.pop().is_some() {
-                            state.note(if state.queued.is_empty() {
-                                "Queue cleared.".to_string()
-                            } else {
-                                format!(
-                                    "Took the last queued message back; {} still queued.",
-                                    state.queued.len()
-                                )
-                            });
+                        // Idle with nothing typed, Escape leaves fullscreen.
+                        if state.fullscreen && editor.text.is_empty() {
+                            workbench.local_command("/fullscreen", &mut state, &notebook);
+                            dirty = true;
                         }
                         continue;
                     }
@@ -1705,7 +1544,7 @@ fn run(
                         state.note("Cancelling the call in flight.");
                     } else {
                         state.stopping = true;
-                        steer.request_stop();
+                        steer.request_stop(tui::Stopper::You);
                         state.note(
                             "Stopping after this cell · Esc again cancels the call in flight",
                         );
@@ -1715,34 +1554,54 @@ fn run(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
+                        // **One Ctrl-C, one meaning**, in this order. A
+                        // selection was copied before this, and a pending
+                        // approval took the key before that. A turn is
+                        // interrupted; a draft is cleared, and Ctrl-Z brings
+                        // it back; an empty composer arms the quit.
                         KeyCode::Char('c') => {
-                            if !busy && !editor.text.is_empty() {
-                                editor.text.clear();
-                                editor.cursor = 0;
+                            if busy && state.activity.working() {
+                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
+                                state.stopping = true;
+                                steer.request_stop(tui::Stopper::Interrupt);
+                                state.note(crate::workbench::voice::CTRL_C_STOPPING);
+                            } else if !editor.text.is_empty() {
+                                editor.clear();
+                                state.note(crate::workbench::voice::DRAFT_CLEARED);
                             } else {
-                                super::INTERRUPT.store(true, Ordering::SeqCst);
+                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
+                                state.notice = Some(crate::workbench::voice::QUIT_ARMED.into());
+                                quit_armed = Some(Instant::now());
                             }
+                            dirty = true;
                             continue;
                         }
                         KeyCode::Char('t') => {
                             state.telemetry_open = !state.telemetry_open;
-                            state.inspection = None;
-                            state.panel = None;
+                            workbench.close_all();
                             continue;
                         }
                         KeyCode::Char('o') => {
                             state.compact = !state.compact;
                             continue;
                         }
+                        // The same route as `/sidebar`: saved, noted, and
+                        // one undo away.
                         KeyCode::Char('b') => {
-                            state.sidebar = match state.sidebar {
-                                SidebarVisibility::Hidden => SidebarVisibility::Shown,
-                                _ => SidebarVisibility::Hidden,
+                            let word = match state.sidebar {
+                                SidebarVisibility::Hidden => "show",
+                                _ => "hide",
                             };
+                            workbench.local_command(
+                                &format!("/sidebar {word}"),
+                                &mut state,
+                                &notebook,
+                            );
                             continue;
                         }
+                        // The same route as `/fullscreen`, and said the same way.
                         KeyCode::Char('f') => {
-                            state.fullscreen = !state.fullscreen;
+                            workbench.local_command("/fullscreen", &mut state, &notebook);
                             continue;
                         }
                         // Give the pointer back to the terminal, and take it
@@ -1766,6 +1625,10 @@ fn run(
                             ended_by("Ctrl-D on an empty prompt");
                             let _ = answers.inputs.send(Input::Exit);
                             return Ok(());
+                        }
+                        KeyCode::Char('d') if editor.text.is_empty() => {
+                            state.note(crate::workbench::voice::CTRL_D_BUSY);
+                            continue;
                         }
                         _ => {}
                     }
@@ -1824,34 +1687,10 @@ fn run(
                         dirty = true;
                         continue;
                     }
-                    if matches!(
-                        editor.text.split_whitespace().next(),
-                        Some("/cell" | "/cells" | "/chat")
-                    ) {
-                        let text = editor.take();
-                        let mut words = text.split_whitespace();
-                        let command = words.next().unwrap_or_default();
-                        if command == "/chat" {
-                            state.inspection = None;
-                            state.telemetry_open = false;
-                        } else {
-                            let cell = match words.next() {
-                                Some(value) => value.parse::<usize>().unwrap_or(0),
-                                None => tui::Inspection::latest(&notebook).unwrap_or(0),
-                            };
-                            open_cell(&mut state, &notebook, cell);
-                            if state.inspection.is_some()
-                                && let Some(line) = &notebook.decision
-                            {
-                                state.note(line.clone());
-                            }
-                        }
-                        continue;
-                    }
                     if editor.text.trim() == "/telemetry" {
                         editor.take();
                         state.telemetry_open = !state.telemetry_open;
-                        state.panel = None;
+                        workbench.close_all();
                         state.notice = None;
                         continue;
                     }
@@ -1867,38 +1706,7 @@ fn run(
                     }
                     if editor.text.trim() == "/fullscreen" {
                         editor.take();
-                        state.fullscreen = !state.fullscreen;
-                        state.notice = None;
-                        continue;
-                    }
-                    if !busy && matches!(editor.text.trim(), "/settings" | "/statusline") {
-                        let status_only = editor.text.trim() == "/statusline";
-                        editor.take();
-                        match crate::settings_session::Editor::open(&state, status_only) {
-                            Ok(settings) => settings_editor = Some(settings),
-                            Err(error) => state.note(error),
-                        }
-                        continue;
-                    }
-                    if editor.text.split_whitespace().next() == Some("/theme") {
-                        let text = editor.take();
-                        match text.split_whitespace().nth(1) {
-                            Some(name) => {
-                                if let Some(theme) = tui::Theme::parse(name) {
-                                    state.theme = theme;
-                                    state.note(format!(
-                                        "Theme: {} · /theme opens the palette",
-                                        theme.name()
-                                    ));
-                                } else {
-                                    state.note("Unknown theme. /theme opens the palette.");
-                                }
-                            }
-                            None => {
-                                state.notice = None;
-                                state.panel = Some(tui::Theme::picker(state.theme));
-                            }
-                        }
+                        workbench.local_command("/fullscreen", &mut state, &notebook);
                         continue;
                     }
                     if editor.text.split_whitespace().next() == Some("/handlers") {
@@ -1906,7 +1714,7 @@ fn run(
                         let parts: Vec<_> = text.split_whitespace().collect();
                         match parts.as_slice() {
                             ["/handlers"] => {
-                                state.panel = Some(tui::handlers_panel(&notebook.handlers))
+                                state.panel = Some(tui::handlers_panel(&notebook.handlers));
                             }
                             ["/handlers", "off", name] => {
                                 if busy
@@ -1929,79 +1737,62 @@ fn run(
                         }
                         continue;
                     }
-                    // **Submitting while a task runs queues, it does not
-                    // refuse.** `LiveUi::next` blocks on this same channel
-                    // and the session loop reaches it the moment the task
-                    // ends, so a message sent now is simply the next one --
-                    // no new plumbing, and nothing to re-press. What it used
-                    // to do instead was keep the draft and say so in a
-                    // notice, which asked the person to watch for an ending
-                    // they had already stopped watching for.
-                    //
-                    // A slash command is not queued: those are this
-                    // terminal's own controls and several of them mean
-                    // nothing between tasks, so they keep saying what they
-                    // have always said.
-                    if busy {
+                    // /exit is honoured mid-turn: the turn is stopped and the
+                    // session ends when it has.
+                    if editor.text.trim() == "/exit" {
+                        editor.take();
+                        ended_by("/exit");
+                        if busy {
+                            steer.request_stop(tui::Stopper::You);
+                            steer.request_cancel();
+                        }
+                        let _ = answers.inputs.send(Input::Exit);
+                        return Ok(());
+                    }
+                    let turn = busy && state.activity.working();
+                    // A slash command mid-turn is a control: a model, mode
+                    // or effort applies from the turn's next request, and
+                    // the rest wait for the turn to end.
+                    if turn && editor.text.trim_start().starts_with('/') {
                         let text = editor.text.trim().to_string();
-                        if text.starts_with('/') {
-                            state.notice = Some(
-                                "Working. Your draft is kept; Ctrl-C interrupts tools; twice exits."
-                                    .into(),
-                            );
-                            continue;
+                        if crate::workbench::mid_turn(&text) {
+                            editor.take();
+                            workbench.sent(&text, &state);
+                            steer.request_control(text);
+                            state.notice = Some(crate::workbench::voice::NEXT_REQUEST.into());
+                        } else {
+                            state.notice = Some(crate::workbench::voice::BETWEEN_TURNS.into());
                         }
-                        let text = editor.take();
-                        if answers.inputs.send(Input::Submit(text.clone())).is_err() {
-                            return Ok(());
-                        }
-                        state.queued.push(text);
-                        state.notice = Some(
-                            "Queued for when this turn ends · Esc takes the last one back".into(),
-                        );
+                        dirty = true;
+                        continue;
+                    }
+                    // **A message sent while the session is busy is held in
+                    // Sterna's queue** and sent when it is free, so Escape
+                    // can take it back until then (decision 8).
+                    if busy && !editor.text.trim_start().starts_with('/') {
+                        state.queued.push(editor.take());
+                        state.notice = Some(crate::workbench::voice::QUEUED.into());
                         dirty = true;
                         continue;
                     }
                     let text = editor.take();
                     state.scrollback = 0;
                     state.notice = None;
-                    if text.trim() == "/exit" {
-                        ended_by("/exit");
-                        let _ = answers.inputs.send(Input::Exit);
+                    let Ok(pending) = submit(
+                        text,
+                        &mut state,
+                        &mut clock,
+                        &mut workbench,
+                        answers.inputs,
+                        conversation.messages.len(),
+                    ) else {
                         return Ok(());
-                    }
-                    if text.split_whitespace().next() == Some("/statusline") {
-                        let word = text.split_whitespace().nth(1).unwrap_or("");
-                        let said = match crate::settings_session::save_status(&mut state,word) {
-                            Ok(())=>"Status line saved for this project. Selected profile overrides still apply.".into(),
-                            Err(error)=>error,
-                        };
-                        state.note(said);
-                        continue;
-                    }
-                    if text.split_whitespace().next() == Some("/sidebar") {
-                        state.sidebar = match text.split_whitespace().nth(1) {
-                            Some("hide") => SidebarVisibility::Hidden,
-                            Some("show") => SidebarVisibility::Shown,
-                            _ => SidebarVisibility::Auto,
-                        };
-                        state.note("Sidebar: /sidebar auto|show|hide · Ctrl-B toggles");
-                        continue;
-                    }
+                    };
                     busy = true;
-                    task_started = Some(Instant::now());
-                    state.pulse = tui::Pulse::default();
-                    state.activity = Activity::Thinking;
-                    if !text.trim_start().starts_with('/') && !text.trim().is_empty() {
-                        sending = Some(Sending {
-                            text: text.clone(),
-                            recorded_at: conversation.messages.len(),
-                        });
+                    if pending.is_some() {
+                        sending = pending;
                         keep_sending(&mut conversation, &mut sending, Activity::Thinking);
                         dirty = true;
-                    }
-                    if answers.inputs.send(Input::Submit(text)).is_err() {
-                        return Ok(());
                     }
                 }
             }
@@ -2009,6 +1800,101 @@ fn run(
         }
     }
     Ok(())
+}
+
+/// Sends one input to the session. A message starts a turn and its clock,
+/// and comes back as the line the screen shows until the session records
+/// it; a slash command is a control and starts neither. `Err` when the
+/// session has gone.
+fn submit(
+    text: String,
+    state: &mut ScreenState,
+    clock: &mut Clock,
+    workbench: &mut crate::workbench::Workbench,
+    inputs: &mpsc::Sender<Input>,
+    recorded_at: usize,
+) -> Result<Option<Sending>, ()> {
+    let message = !text.trim_start().starts_with('/') && !text.trim().is_empty();
+    let pending = message.then(|| {
+        clock.start();
+        state.pulse = tui::Pulse::default();
+        state.activity = Activity::Thinking;
+        Sending {
+            text: text.clone(),
+            recorded_at,
+        }
+    });
+    workbench.sent(&text, state);
+    inputs.send(Input::Submit(text)).map_err(|_| ())?;
+    Ok(pending)
+}
+
+/// The queue notice goes when the queue is empty.
+fn unqueue_notice(state: &mut ScreenState) {
+    if state.notice.as_deref() == Some(crate::workbench::voice::QUEUED) {
+        state.notice = None;
+    }
+}
+
+/// A turn's clock: when it started, and how long it has stood still waiting
+/// on the person's answer, which is not time the turn spent working.
+#[derive(Default)]
+struct Clock {
+    started: Option<Instant>,
+    /// When the current wait on the person began.
+    waiting: Option<Instant>,
+    /// The waits already over.
+    held: Duration,
+    /// What the turn was doing when the wait began.
+    resumed: Activity,
+}
+
+impl Clock {
+    fn start(&mut self) {
+        *self = Self {
+            started: Some(Instant::now()),
+            ..Self::default()
+        };
+    }
+    fn elapsed_ms(&self) -> Option<u64> {
+        let held = self.held + self.waiting.map_or(Duration::ZERO, |at| at.elapsed());
+        self.started
+            .map(|start| start.elapsed().saturating_sub(held).as_millis() as u64)
+    }
+    /// The turn ended: its working time, and the clock is put away.
+    fn stop(&mut self) -> Option<u64> {
+        let ms = self.elapsed_ms();
+        *self = Self::default();
+        ms
+    }
+    /// Holds the clock while the turn waits on the person and shows it as
+    /// waiting for them; lets it run again, and restores what the turn was
+    /// doing, once they have answered. True when the screen changed.
+    fn hold(&mut self, waiting: bool, activity: &mut Activity) -> bool {
+        match (waiting, self.waiting) {
+            (true, None) => {
+                self.waiting = Some(Instant::now());
+                self.resumed = *activity;
+                *activity = Activity::AwaitingYou;
+                true
+            }
+            // A snapshot mid-wait said what the turn is doing underneath.
+            (true, Some(_)) if *activity != Activity::AwaitingYou => {
+                self.resumed = *activity;
+                *activity = Activity::AwaitingYou;
+                true
+            }
+            (false, Some(at)) => {
+                self.held += at.elapsed();
+                self.waiting = None;
+                if *activity == Activity::AwaitingYou {
+                    *activity = self.resumed;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A prompt the screen shows before the session has recorded it.
@@ -2043,63 +1929,113 @@ fn keep_sending(
     ));
 }
 
-/// A panel shown again under the same title keeps the row a person selected:
-/// a sign-in panel redraws while it waits, and a reset would move the cursor
-/// off the row about to be chosen.
-fn replace_panel(current: Option<&tui::Panel>, mut next: tui::Panel) -> tui::Panel {
-    // Only a row that does something is a choice worth keeping: a panel
-    // that first said only "waiting" must not hold its cursor on text.
-    if let Some(current) = current.filter(|current| {
-        current.title == next.title
-            && current
-                .rows
-                .get(current.selected)
-                .is_some_and(|row| row.command.is_some())
-    }) {
-        next.selected = current.selected.min(next.rows.len().saturating_sub(1));
-    }
-    next
-}
-
 /// The panel is an open view of task state, not a copy frozen at `/handlers`.
+///
+/// The rows carry the handler's name as their id, so the sheet keeps its
+/// focus on the same handler through counter and status changes.
 fn refresh_handler_panel(
-    panel: &mut Option<tui::Panel>,
+    panel: Option<&mut tui::Panel>,
     before: &[crate::runtime::handlers::HandlerInfo],
     after: &[crate::runtime::handlers::HandlerInfo],
 ) {
-    let Some(held) = panel.as_mut() else { return };
-    let mut refreshed = tui::handlers_panel(after);
-    if held.title != refreshed.title {
+    let Some(held) = panel else { return };
+    let _ = before;
+    *held = tui::handlers_panel(after);
+}
+
+/// The top sheet's notice when one is open, else the dock's.
+fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
+    let text = text.into();
+    match workbench.top_mut() {
+        Some(layer) => layer.sheet.notice = text,
+        None => workbench.notice = text,
+    }
+}
+
+/// A form's answer, to whoever asked: the sign-in running beside the session
+/// for a pasted address, else the session thread waiting on the form.
+fn answer_form(
+    given: Option<Vec<String>>,
+    paste_form: &mut bool,
+    sign_in: Option<&super::controls::sign_in::Handle>,
+    secrets: &mpsc::Sender<Option<Vec<String>>>,
+) {
+    if std::mem::take(paste_form) {
+        if let (Some(address), Some(handle)) =
+            (given.and_then(|given| given.into_iter().next()), sign_in)
+        {
+            let _ = handle.pastes.send(address);
+        }
         return;
     }
-    // Row zero is explanatory text. Keep the same handler selected through
-    // counter/status changes; a missing row returns selection to that header.
-    if let Some(index) = held.selected.checked_sub(1)
-        && let Some(selected) = before.get(index)
-    {
-        refreshed.selected = if after.get(index).is_some_and(|h| h.name == selected.name) {
-            index + 1
-        } else {
-            after
-                .iter()
-                .position(|h| h.name == selected.name)
-                .map_or(0, |index| index + 1)
-        };
-    }
-    *held = refreshed;
+    let _ = secrets.send(given);
+}
+
+/// The form that takes the address a browser ended on after signing in on
+/// another device.
+fn paste_callback_form() -> tui::Form {
+    tui::Form::new(
+        "Finish signing in",
+        "Signing in on another device? Paste the address your browser ended on after you signed in.",
+        vec![tui::form::Field::new(
+            "Callback address",
+            tui::form::Kind::Text,
+            "the whole address from the browser's bar, starting with http",
+        )],
+    )
+    .submit("finish")
 }
 
 #[cfg(test)]
 mod tests {
+    /// A change that arrives while the session waits is acted on where
+    /// the session is, and the wait goes on to what is typed next.
+    #[test]
+    fn a_change_is_acted_on_and_the_wait_goes_on() {
+        let (send, inputs) = std::sync::mpsc::channel();
+        send.send(super::Input::Changed).unwrap();
+        send.send(super::Input::Changed).unwrap();
+        send.send(super::Input::Submit("next".into())).unwrap();
+        let seen = std::cell::Cell::new(0);
+        let next = super::next_input(&inputs, &|| seen.set(seen.get() + 1));
+        assert_eq!(next, Ok(Some("next".into())));
+        assert_eq!(seen.get(), 2);
+    }
+    /// While the turn waits on the person the card says so and the clock
+    /// stands still; once they answer, the turn is what it was and the
+    /// clock runs again without the wait in it.
+    #[test]
+    fn the_clock_stands_still_while_the_turn_waits_on_you() {
+        use super::{Activity, Clock};
+        let mut clock = Clock::default();
+        clock.start();
+        let mut activity = Activity::Executing;
+        assert!(clock.hold(true, &mut activity));
+        assert_eq!(activity, Activity::AwaitingYou);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        assert!(
+            clock.elapsed_ms().unwrap() < 100,
+            "the wait on the person was counted as work"
+        );
+        assert!(clock.hold(false, &mut activity));
+        assert_eq!(activity, Activity::Executing);
+        assert!(clock.elapsed_ms().unwrap() < 100);
+        assert!(!clock.hold(false, &mut activity), "nothing changed");
+    }
+
     #[test]
     fn a_stop_is_read_once_so_it_ends_the_turn_it_was_asked_during() {
         let steer = super::Steer::default();
-        assert!(!steer.take_stop(), "nothing was asked for");
-        steer.request_stop();
-        steer.request_stop();
-        assert!(steer.take_stop(), "the stop never reached the task loop");
+        assert!(steer.take_stop().is_none(), "nothing was asked for");
+        steer.request_stop(crate::tui::Stopper::You);
+        steer.request_stop(crate::tui::Stopper::You);
+        assert_eq!(
+            steer.take_stop(),
+            Some(crate::tui::Stopper::You),
+            "the stop never reached the task loop"
+        );
         assert!(
-            !steer.take_stop(),
+            steer.take_stop().is_none(),
             "the stop survived its own turn and would end the next one"
         );
     }
@@ -2107,7 +2043,7 @@ mod tests {
     #[test]
     fn the_two_escapes_are_separate_levers() {
         let steer = super::Steer::default();
-        steer.request_stop();
+        steer.request_stop(crate::tui::Stopper::You);
         assert!(
             !steer.take_cancel(),
             "the gentle rung cancelled the call in flight"
@@ -2139,48 +2075,6 @@ mod tests {
         keep_sending(&mut recorded, &mut sending, Activity::Thinking);
         assert_eq!(recorded.messages.len(), 1);
         assert!(sending.is_none());
-    }
-
-    /// A panel redrawn under its title keeps the selected row; a different
-    /// panel starts where it chose to.
-    #[test]
-    fn a_redrawn_panel_keeps_the_selected_row() {
-        let rows = |n: usize| {
-            (0..n)
-                .map(|i| tui::PanelRow {
-                    text: format!("row {i}"),
-                    command: Some(format!("/row {i}")),
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut shown = tui::Panel::rows("Connecting claude-max", rows(4));
-        shown.selected = 2;
-        let again = replace_panel(
-            Some(&shown),
-            tui::Panel::rows("Connecting claude-max", rows(4)),
-        );
-        assert_eq!(again.selected, 2);
-        let shorter = replace_panel(
-            Some(&shown),
-            tui::Panel::rows("Connecting claude-max", rows(2)),
-        );
-        assert_eq!(shorter.selected, 1);
-        let other = replace_panel(Some(&shown), tui::Panel::rows("Themes", rows(4)));
-        assert_eq!(other.selected, 0);
-        let waiting = tui::Panel::rows(
-            "Connecting claude-max",
-            vec![tui::PanelRow {
-                text: "waiting for the sign-in…".into(),
-                command: None,
-            }],
-        );
-        let mut offered = tui::Panel::rows("Connecting claude-max", rows(4));
-        offered.selected = 3;
-        assert_eq!(
-            replace_panel(Some(&waiting), offered).selected,
-            3,
-            "a cursor on text is not kept over the new panel's choice"
-        );
     }
 
     /// A call in flight is dated from the frame it first appeared in, so its
@@ -2235,8 +2129,12 @@ mod tests {
         );
     }
 
+    /// The open handler panel is the task's state, not a copy: runs, a
+    /// handler going stale and the list emptying all reach it, a stale one
+    /// can no longer be turned off, and every row keeps its handler's name
+    /// as its id so the sheet's focus stays on it.
     #[test]
-    fn an_open_handler_panel_tracks_runs_disable_cancel_and_clear_with_selection() {
+    fn an_open_handler_panel_tracks_runs_disable_cancel_and_clear() {
         use crate::runtime::handlers::HandlerInfo;
         let mut before = vec![
             HandlerInfo {
@@ -2254,8 +2152,7 @@ mod tests {
                 active: true,
             },
         ];
-        let mut panel = Some(tui::handlers_panel(&before));
-        panel.as_mut().unwrap().selected = 2;
+        let mut panel = tui::handlers_panel(&before);
         for phase in 0..4 {
             let mut after = before.clone();
             match phase {
@@ -2272,113 +2169,47 @@ mod tests {
                 }
                 _ => after.clear(),
             }
-            refresh_handler_panel(&mut panel, &before, &after);
-            let held = panel.as_ref().unwrap();
-            assert_eq!(held.selected, if after.is_empty() { 0 } else { 2 });
+            refresh_handler_panel(Some(&mut panel), &before, &after);
+            if phase < 3 {
+                assert_eq!(panel.rows[2].id.as_deref(), Some("handler:second"));
+            }
             if phase == 0 {
-                assert!(held.rows[2].text.contains("1 runs · 1 drained"));
+                assert!(panel.rows[2].text.contains("1 runs · 1 drained"));
             }
             if phase == 1 {
-                assert!(held.rows[2].text.contains("stale"));
-                assert!(held.rows[2].text.contains("RuntimeTimeout"));
-                assert!(held.rows[2].command.is_none());
+                assert!(panel.rows[2].text.contains("stale"));
+                assert!(panel.rows[2].text.contains("RuntimeTimeout"));
+                assert!(!panel.rows[2].acts());
             }
             if phase == 2 {
-                assert!(held.rows[1].text.contains("stale"));
-                assert!(held.rows[1].command.is_none());
+                assert!(panel.rows[1].text.contains("stale"));
+                assert!(!panel.rows[1].acts());
             }
             if phase == 3 {
-                assert_eq!(held.rows.len(), 1);
-                assert!(held.rows[0].text.contains("No handlers in this task"));
+                assert_eq!(panel.rows.len(), 1);
+                assert!(panel.rows[0].text.contains("No handlers in this task"));
             }
             before = after;
         }
-    }
-
-    #[test]
-    fn handler_panel_selection_follows_a_surviving_row_and_leaves_other_panels_alone() {
-        use crate::runtime::handlers::HandlerInfo;
-        let before: Vec<_> = ["first", "second"]
-            .into_iter()
-            .map(|name| HandlerInfo {
-                name: name.into(),
-                runs: 0,
-                drained: 0,
-                error: None,
-                active: true,
-            })
-            .collect();
-        let mut panel = Some(tui::handlers_panel(&before));
-        panel.as_mut().unwrap().selected = 2;
-        refresh_handler_panel(&mut panel, &before, &before[1..]);
-        assert_eq!(panel.as_ref().unwrap().selected, 1);
-        assert!(panel.as_ref().unwrap().rows[1].text.starts_with("second"));
-        let mut other = Some(tui::Panel::text("Other", "keep"));
-        refresh_handler_panel(&mut other, &before, &[]);
-        assert_eq!(other.unwrap().rows[0].text, "keep");
-    }
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn editing_preserves_unicode_boundaries_and_multiline_paste() {
-        let mut editor = Editor::default();
-        editor.insert("a界\nb");
-        editor.key(key(KeyCode::Left));
-        editor.key(key(KeyCode::Backspace));
-        assert_eq!(editor.text, "a界b");
-        editor.key(key(KeyCode::Backspace));
-        assert_eq!(editor.text, "ab");
-        editor.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        assert_eq!(editor.text, "a\nb");
-    }
-    #[test]
-    fn paste_normalizes_terminal_newlines_without_admitting_controls() {
-        let mut editor = Editor::default();
-        editor.insert("first\rsecond\r\nthird\nfourth\tcolumn\x00\x1bfinal");
-        assert_eq!(editor.text, "first\nsecond\nthird\nfourth\tcolumnfinal");
-        assert_eq!(editor.cursor, editor.text.len());
-    }
-    #[test]
-    fn selection_changes_what_tab_completes() {
-        let mut editor = Editor::default();
-        editor.insert("/");
-        editor.key(key(KeyCode::Down));
-        editor.key(key(KeyCode::Tab));
-        assert_eq!(editor.text, "/models ");
-        assert_eq!(editor.cursor, editor.text.len());
-    }
-    #[test]
-    fn history_restores_an_unsent_draft() {
-        let mut editor = Editor::default();
-        editor.insert("sent");
-        editor.take();
-        editor.insert("draft");
-        editor.recall(true);
-        assert_eq!(editor.text, "sent");
-        editor.recall(false);
-        assert_eq!(editor.text, "draft");
     }
 
     /// Shift-Tab walks the permission ladder and wraps, and it does not
     /// touch the request mode.
     #[test]
     fn shift_tab_moves_the_rung_and_leaves_the_request_mode_alone() {
-        let state = ScreenState {
+        let mut state = ScreenState {
             permissions: crate::permissions::Ladder::new(crate::permissions::Rung::Manual),
             ..ScreenState::default()
         };
         let mode_before = state.mode;
         let mut seen = Vec::new();
         for _ in 0..3 {
-            let line = rung_change(&state.permissions);
-            // Where it landed, and what that does -- the rung's own two
-            // sentences, so this notice and the Ask surface cannot drift.
+            let line = rung_change(&mut state, crate::settings::Scope::Global);
+            // Where it landed, and what that does -- the notice every route
+            // prints, so this one and the Ask surface cannot drift.
             let rung = state.permissions.rung();
             assert!(
-                line.starts_with(rung.label()) && line.contains(rung.sentence()),
+                line.starts_with(&rung.now()),
                 "it says where it landed and what that means: {line}"
             );
             seen.push(state.permissions.rung());
@@ -2394,9 +2225,11 @@ mod tests {
             "one rung per press, wrapping to where it started"
         );
         assert_eq!(state.mode, mode_before, "the request mode is untouched");
+        // Three moves, not four: the step over Never asks is one move, so
+        // the gate never reads that rung, not even for an instant.
         assert_eq!(
             state.permissions.drain_moves().len(),
-            4,
+            3,
             "every move is recorded for the rollout"
         );
     }

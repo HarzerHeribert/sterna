@@ -184,6 +184,70 @@ fn explicit_denies_never_grantable_actions_and_missing_grants_never_reach_the_ga
     assert!(!fixture.0.join(".claude/settings.json").exists());
 }
 
+/// **The Auto rung runs what it promises to run.** With no `Bash(...)`
+/// pattern at all, a command line that only reads runs without asking; a
+/// line that writes is put to the person; neither is refused for being
+/// absent from a list nobody wrote.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn auto_rung_runs_a_read_only_command_with_no_allow_patterns() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
+        sterna::permissions::Rung::Auto,
+    ));
+    let responder = std::thread::spawn(move || {
+        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(asked.action().arguments()["command"], "touch made");
+        assert!(asked.respond(Decision::AllowOnce));
+        requests
+    });
+    let mut runtime = fixture
+        .runtime(None)
+        .with_approval_gate(gate.with_read_only(Vec::new()));
+    let outcome = runtime.run_cell(
+        r#"const said = [];
+           try { bash({command: "ls -la && git log --oneline -3"}); said.push("ran"); }
+           catch (e) { said.push(e.name); }
+           try { bash({command: "touch made"}); said.push("ran"); }
+           catch (e) { said.push(e.name); }
+           return said.join(",");"#,
+    );
+    match &outcome {
+        CellOutcome::Returned { value, .. } => assert!(
+            !format!("{value:?}").contains("PermissionDenied"),
+            "an unlisted command was refused on Auto: {value:?}"
+        ),
+        other => panic!("expected a return, got {other:?}"),
+    }
+    assert!(
+        fixture.0.join("made").exists(),
+        "the confirmed line did not run"
+    );
+    assert!(
+        responder.join().unwrap().try_recv().is_err(),
+        "the read-only line asked too"
+    );
+}
+
+/// Nobody to ask keeps the list: an unlisted line is refused, exactly as it
+/// was before the Auto rung learned to judge one.
+#[test]
+fn an_unattended_session_still_refuses_an_unlisted_command() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(
+        sterna::permissions::Ladder::new(sterna::permissions::Rung::Auto).unattended(),
+    );
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(
+        r#"try { bash({command: "touch made"}); }
+           catch (e) { return e.name; }
+           return "unexpected";"#,
+    );
+    returned(&outcome, "PermissionDenied");
+    assert!(requests.try_recv().is_err());
+    assert!(!fixture.0.join("made").exists());
+}
+
 #[test]
 fn an_unattached_runtime_stays_fail_closed_for_missing_grants() {
     let fixture = Fixture::new();
@@ -220,8 +284,11 @@ fn a_disconnected_host_and_a_dropped_request_deny_without_an_effect() {
     }
 }
 
+/// A call cancelled while it waits is reported as cancelled -- the way a
+/// running call is -- never as a refusal the model should work around, and
+/// an answer arriving after it changes nothing.
 #[test]
-fn cancellation_denies_the_pending_call_and_rejects_a_late_session_answer() {
+fn cancellation_cancels_the_pending_call_and_rejects_a_late_session_answer() {
     let fixture = Fixture::new();
     let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
         sterna::permissions::Rung::Manual,
@@ -246,7 +313,7 @@ fn cancellation_denies_the_pending_call_and_rejects_a_late_session_answer() {
            catch (e) { return e.name; }
            return "unexpected";"#,
     );
-    returned(&outcome, "PermissionDenied");
+    returned(&outcome, "Cancelled");
     finished.send(()).unwrap();
     responder.join().unwrap();
     assert!(gate.session_actions().is_empty());
@@ -810,11 +877,16 @@ fn a_hint_that_answers_in_time_is_shown_beside_the_confirmation() {
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
-    app.contains("fits the request: 0.91");
+    app.contains("APPROVE");
+    // The hint is words, not a score.
+    app.contains("looks like part of what you asked");
     assert_eq!(decisions.lock().unwrap().len(), 1);
+    // A key counts once the prompt has been up, quietly, for half a second.
+    app.settle(600);
     app.send(b"o");
     app.contains("done");
 }
@@ -826,10 +898,12 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     let sent = Instant::now();
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     assert!(
         sent.elapsed() < Duration::from_secs(2),
         "the confirmation waited on the decision model"
@@ -838,7 +912,7 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
     // by 2.5 s the request has failed and no hint was ever stored.
     app.settle(2_500);
     assert!(
-        !app.screen_text().contains("fits the request"),
+        !app.screen_text().contains("Jev:"),
         "a failed or slow decision must never show a line:\n{}",
         app.screen_text()
     );
@@ -853,14 +927,16 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"shadow\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     // No text to wait on distinguishes "recorded but not shown" from "not
     // asked yet", so this settles a fixed interval and checks both sides.
     app.settle(1_000);
     assert!(
-        !app.screen_text().contains("fits the request"),
+        !app.screen_text().contains("Jev:"),
         "shadow must never show the line:\n{}",
         app.screen_text()
     );
@@ -877,11 +953,13 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
 fn no_model_means_no_approval_hint_request() {
     let (base, decisions) = hint_provider(vec![]);
     let mut app = LiveApp::start(&base, "");
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
-    app.contains("Approve exact tool call");
+    app.contains("APPROVE");
     app.settle(1_000);
-    assert!(!app.screen_text().contains("fits the request"));
+    assert!(!app.screen_text().contains("Jev:"));
     assert_eq!(
         decisions.lock().unwrap().len(),
         0,

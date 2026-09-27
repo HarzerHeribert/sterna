@@ -41,7 +41,6 @@ pub mod session;
 pub mod settings;
 pub mod settings_commands;
 pub(crate) mod settings_session;
-pub mod settings_ui;
 pub mod spend;
 pub mod supervisor;
 pub mod telemetry;

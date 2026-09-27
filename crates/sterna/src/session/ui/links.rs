@@ -47,12 +47,27 @@ pub(super) fn open(url: &str) -> bool {
 /// refused here rather than by a dialog.
 ///
 /// Over SSH the window would open on the wrong machine, so nothing does.
-pub(super) fn show(path: &std::path::Path) -> bool {
+/// What became of a file a person asked to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shown {
+    Opened,
+    /// Over SSH a program here would open it on the wrong machine.
+    OverSsh,
+    /// It is not there any more.
+    Missing,
+    /// Nothing on this machine would open it.
+    NoOpener,
+}
+
+pub(super) fn show(path: &std::path::Path) -> Shown {
     let over_ssh = ["SSH_CONNECTION", "SSH_TTY"]
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
-    if over_ssh || !path.exists() {
-        return false;
+    if !path.exists() {
+        return Shown::Missing;
+    }
+    if over_ssh {
+        return Shown::OverSsh;
     }
     let mut command = if cfg!(target_os = "macos") {
         let mut command = Command::new("/usr/bin/open");
@@ -67,12 +82,17 @@ pub(super) fn show(path: &std::path::Path) -> bool {
         command.arg(path);
         command
     };
-    command
+    let opened = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success());
+    if opened {
+        Shown::Opened
+    } else {
+        Shown::NoOpener
+    }
 }
 
 /// The OSC 52 sequence asking the terminal to put `text` on the clipboard;
@@ -94,6 +114,13 @@ pub(super) fn copy(text: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// A file that is gone says so, whatever else is true of the session.
+    #[test]
+    fn a_missing_file_is_said_to_be_missing() {
+        let gone = std::env::temp_dir().join("sterna-links-no-such-file.rs");
+        assert_eq!(super::show(&gone), super::Shown::Missing);
+    }
+
     use super::*;
 
     #[test]

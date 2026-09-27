@@ -266,7 +266,7 @@ impl TerminalInput {
         // **A key release is dropped here and never reaches a caller.** It
         // carries no character, so it can neither extend a run nor end one,
         // and every consumer in this crate discards it on arrival anyway --
-        // `ui.rs`'s `Event::Key` arm, `workbench::input`, `settings_ui::key`.
+        // `ui.rs`'s `Event::Key` arm and `workbench::input`.
         //
         // Windows is why this is load-bearing, twice. crossterm's console
         // event source maps every `bKeyDown == false` record straight to
@@ -1005,8 +1005,8 @@ mod tests {
     /// **A key release never leaves this file — and an unsent Enter is what
     /// it costs when one does.**
     ///
-    /// Nothing downstream reads a release: `ui.rs`, `workbench::input` and
-    /// `settings_ui::key` each drop one on arrival. What a queued release
+    /// Nothing downstream reads a release: `ui.rs` and `workbench::input`
+    /// each drop one on arrival. What a queued release
     /// does instead is answer a question asked of the queue, and `ui.rs` asks
     /// one on every Enter — "is more input already behind this?", whose yes
     /// turns the Enter into a newline. On Windows crossterm emits a release

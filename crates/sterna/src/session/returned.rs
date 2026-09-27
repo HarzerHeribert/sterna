@@ -117,10 +117,6 @@ fn shape_field(
     let answer = match answer {
         Ok(answer) => answer,
         Err(error) => {
-            session_println!(
-                "decision: field `{}` shape: no answer ({error})",
-                field.name
-            );
             task_state.field_shapes.push(serde_json::json!({
                 "field": field.name,
                 "failed": error.to_string(),
@@ -133,18 +129,6 @@ fn shape_field(
     let reduced = wants_reduction
         .then(|| runtime.reduce_returned(&text))
         .flatten();
-    session_println!(
-        "decision: field `{}` reads as {} ({:.2}), {} ms{}",
-        field.name,
-        answer.choice,
-        answer.confidence,
-        answer.latency_ms,
-        match (&reduced, wants_reduction) {
-            (Some(_), _) => " · reduced",
-            (None, true) => " · not reduced",
-            (None, false) => "",
-        }
-    );
     task_state.field_shapes.push(serde_json::json!({
         "field": field.name,
         "choice": answer.choice,
@@ -239,7 +223,6 @@ pub(super) fn enrich(
         match crate::decide::enough(&model, &task_state.task, step.as_deref(), &glance, &names) {
             Ok(answer) => answer,
             Err(error) => {
-                session_println!("decision: enough: no answer ({error})");
                 task_state.prefetches.push(serde_json::json!({
                     "cell": turn.record.cell,
                     "candidates": names,
@@ -265,21 +248,6 @@ pub(super) fn enrich(
             fields.push(field);
         }
     }
-    session_println!(
-        "decision: enough {:.2}, {} ms · {}{}",
-        answer.noul,
-        answer.latency_ms,
-        match (wants, acting) {
-            (true, true) => "prefetched ",
-            (true, false) => "would prefetch (shadow) ",
-            (false, _) => "enough; named ",
-        },
-        if fetched.is_empty() {
-            names.join(", ")
-        } else {
-            fetched.join(", ")
-        }
-    );
     task_state.prefetches.push(serde_json::json!({
         "cell": turn.record.cell,
         "enough": answer.noul,

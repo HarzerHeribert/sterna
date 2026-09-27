@@ -314,3 +314,29 @@ fn an_unknown_ask_key_or_an_out_of_range_bar_is_refused_by_name() {
     let word = SternaConfig::parse("[ask]\njev = \"sometimes\"\n").unwrap_err();
     assert!(word.contains("sometimes"), "{word}");
 }
+
+/// **An answered question is not a failed cell.** `ask` ends its cell so the
+/// question can be put to the person; that ending is a yield carrying the
+/// question, never an unexplained termination.
+#[test]
+fn an_answered_ask_is_not_a_failed_cell() {
+    use sterna::runtime::{isolate::Runtime, outcome::CellOutcome};
+    let fixture = Fixture::new("");
+    let session = sterna::contract::SessionId::new("ask-yield");
+    let profile = sterna::sandbox::profile::Profile::compile(
+        &fixture.root,
+        Some(r#"{"permissions":{"allow":[]}}"#),
+    );
+    let mut runtime = Runtime::new(&profile, &session).with_ask(None);
+    let outcome = runtime.run_cell("ask(\"Which?\", [\"a\", \"b\"]);\nconsole.log(\"after\");");
+    match &outcome {
+        CellOutcome::Yielded { turn } => assert_eq!(
+            turn.ask.as_ref().map(|q| q.question.as_str()),
+            Some("Which?")
+        ),
+        CellOutcome::Threw { error, .. } => {
+            panic!("an asked question ended its cell as a throw: {error:?}")
+        }
+        CellOutcome::Returned { .. } => panic!("an asked question returned"),
+    }
+}

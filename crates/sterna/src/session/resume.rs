@@ -19,6 +19,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::SessionArgs;
@@ -117,7 +118,9 @@ fn rollout_path_for(root: &Path, id: &str) -> PathBuf {
 /// why it reads as a word rather than as a generated one.
 const LEGACY_ID: &str = "rollout";
 
-/// This folder's resumable sessions, newest first.
+/// This folder's resumable sessions, newest first: the ones a person asked
+/// something in. A session nobody asked anything in has nothing to go back
+/// to, and listed first it was the one a bare `--resume` opened.
 ///
 /// Ordered by the rollout file's own modification time rather than by the id,
 /// because a resumed session keeps its id and its *last* turn is what makes
@@ -142,13 +145,93 @@ fn resumable(root: &Path) -> Vec<(String, PathBuf, SystemTime)> {
     if let Ok(modified) = fs::metadata(&legacy).and_then(|meta| meta.modified()) {
         found.push((LEGACY_ID.to_string(), legacy, modified));
     }
+    found.retain(|(_, path, _)| !asked(path).is_empty());
     found.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.0.cmp(&a.0)));
     found
 }
 
+/// What a person asked in the session at `path`, in order. A person's own
+/// prompts are the turns that carry `blocks`; the synthetic ones Sterna
+/// writes (a cell's result, a stop) do not.
+fn asked(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| {
+            entry["kind"] == "turn" && entry["role"] == "user" && entry.get("blocks").is_some()
+        })
+        .filter_map(|entry| entry["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// At the end of a session: one nobody asked anything in is not kept -- its
+/// file and its event log go -- and `false` says there is nothing to come
+/// back to, so no line says how. Only a session this module named is
+/// forgotten; a `--rollout` or `--session` path is its caller's.
+pub(super) fn kept(path: &Path, named_here: bool) -> bool {
+    if !named_here || !asked(path).is_empty() {
+        return true;
+    }
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(path.with_extension("events.jsonl"));
+    false
+}
+
 /// The one line a person needs to get back in.
-pub(super) fn resume_hint(id: &SessionId) -> String {
+fn resume_hint(id: &SessionId) -> String {
     format!("session {id} — resume it with:  sterna --resume {id}")
+}
+
+/// The session this process is running: its id, where its turns go, and
+/// whether this module named that file (see [`kept`]). Set when the session
+/// is resolved, read however it ends.
+static RUNNING: Mutex<Option<(SessionId, PathBuf, bool)>> = Mutex::new(None);
+
+/// The session the resume sheet chose to go to next, once this one ends.
+static NEXT: Mutex<Option<String>> = Mutex::new(None);
+
+/// The resume sheet chose another session: this one ends, and that one
+/// starts in the same terminal.
+pub(super) fn switch_to(id: String) {
+    *super::lock(&NEXT) = Some(id);
+}
+
+/// The last line of a session, however it ends: how to come back, when
+/// there is anything to come back to.
+pub(super) fn goodbye() -> Option<String> {
+    let (id, path, named_here) = super::lock(&RUNNING).take()?;
+    kept(&path, named_here).then(|| resume_hint(&id))
+}
+
+/// The end of a session's run: the session the resume sheet chose next, or
+/// `None` with the goodbye said.
+pub(super) fn at_end() -> Option<String> {
+    let next = super::lock(&NEXT).take();
+    if let (Some(line), None) = (goodbye(), &next) {
+        super::ui::farewell(line);
+    }
+    next
+}
+
+/// Runs sessions one after another in this terminal for as long as the
+/// resume sheet chooses another one.
+pub(super) fn each(
+    mut args: SessionArgs,
+    mut run: impl FnMut(SessionArgs) -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    while let Some(next) = run(args.clone())? {
+        args.resume = Some(next);
+        args.pick = false;
+    }
+    Ok(())
+}
+
+/// A bare `--resume` at a terminal: the resume sheet, over the newest session.
+pub(super) fn offer(args: &SessionArgs, session: &super::Session<'_>, id: &SessionId) {
+    if args.pick {
+        super::controls::show(session, panel(&args.root, id.as_str()));
+    }
 }
 
 /// One row of the picker: a session, and what a person recognises it by.
@@ -161,24 +244,12 @@ struct Pickable {
     prompts: usize,
 }
 
-/// This folder's sessions as the picker lists them, newest first. A person's
-/// own prompts are the turns that carry `blocks`; the synthetic ones Sterna
-/// writes (a cell's result, a stop) do not.
+/// This folder's sessions as the picker lists them, newest first.
 fn pickable(root: &Path) -> Vec<Pickable> {
     resumable(root)
         .into_iter()
         .map(|(id, path, modified)| {
-            let asked: Vec<String> = fs::read_to_string(&path)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter(|entry| {
-                    entry["kind"] == "turn"
-                        && entry["role"] == "user"
-                        && entry.get("blocks").is_some()
-                })
-                .filter_map(|entry| entry["text"].as_str().map(str::to_string))
-                .collect();
+            let asked = asked(&path);
             let age = SystemTime::now()
                 .duration_since(modified)
                 .map_or_else(|_| "just now".to_string(), |since| ago(since.as_secs()));
@@ -188,168 +259,63 @@ fn pickable(root: &Path) -> Vec<Pickable> {
                 title: asked
                     .first()
                     .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-                    .unwrap_or_else(|| "(nothing asked yet)".into()),
+                    .unwrap_or_default(),
                 prompts: asked.len(),
             }
         })
         .collect()
 }
 
-/// A bare `--resume` at a terminal asks which session; anywhere else it is
-/// the newest. `false` is a person who closed the picker without choosing.
-pub(super) fn choose(args: &mut SessionArgs) -> Result<bool, String> {
+/// A bare `--resume` at a terminal opens the newest session with the resume
+/// sheet over it, so the choice is made inside the session, with a
+/// conversation behind it; anywhere else it is the newest.
+pub(super) fn choose(args: &mut SessionArgs) {
     use std::io::IsTerminal;
-    if args.resume.as_deref() != Some("")
-        || args.task.is_some()
-        || !std::io::stdin().is_terminal()
-        || !std::io::stdout().is_terminal()
-    {
-        return Ok(true);
-    }
-    match pick(&args.root)? {
-        Some(id) => {
-            args.resume = Some(id);
-            Ok(true)
-        }
-        None => Ok(false),
-    }
+    args.pick = args.resume.as_deref() == Some("")
+        && args.task.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
 }
 
-/// `sterna --resume` in a terminal: this folder's sessions to choose from, the
-/// way a person finds one -- by when, and by what they asked. `None` is a
-/// person who closed it without choosing.
-pub(super) fn pick(root: &Path) -> Result<Option<String>, String> {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-    use crossterm::terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    };
-    use ratatui::layout::Rect;
-    use ratatui::style::{Modifier, Style};
-    use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Borders, Paragraph};
-
+/// The resume sheet: this folder's sessions, newest first, each a row that
+/// switches to it by what was asked in it. The one running now is marked,
+/// and choosing it only puts the sheet away.
+pub(super) fn panel(root: &Path, current: &str) -> crate::tui::Panel {
+    use crate::tui::PanelRow;
+    use crate::workbench::Action;
     let sessions = pickable(root);
-    if sessions.is_empty() {
-        return Err("nothing to resume in this folder yet".into());
-    }
-    let folder = root
-        .canonicalize()
-        .ok()
-        .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| ".".into());
-    enable_raw_mode().map_err(|e| format!("could not open the picker: {e}"))?;
-    let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
-    let restore = || {
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
-        let _ = disable_raw_mode();
-    };
-    let mut terminal =
-        match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
-            Ok(terminal) => terminal,
-            Err(error) => {
-                restore();
-                return Err(format!("could not open the picker: {error}"));
-            }
-        };
-    let mut query = String::new();
-    let mut selected = 0usize;
-    let chosen = loop {
-        let shown: Vec<&Pickable> = sessions
-            .iter()
-            .filter(|s| {
-                let q = query.to_lowercase();
-                q.is_empty() || s.title.to_lowercase().contains(&q) || s.id.contains(&q)
-            })
-            .collect();
-        selected = selected.min(shown.len().saturating_sub(1));
-        let _ = terminal.draw(|frame| {
-            let area = frame.area();
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Resume a session · {folder} "));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            let width = inner.width as usize;
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled(" Search  ", Style::default().add_modifier(Modifier::DIM)),
-                    Span::raw(format!("{query}▏")),
-                ]),
-                Line::from(""),
-            ];
-            let room = inner.height.saturating_sub(4) as usize;
-            let start = selected.saturating_sub(room.saturating_sub(1));
-            for (i, s) in shown.iter().enumerate().skip(start).take(room) {
-                let right = format!(
-                    "{} prompt{}  {}",
-                    s.prompts,
-                    if s.prompts == 1 { "" } else { "s" },
-                    s.id
-                );
-                let left = format!(" {} {:<12} ", if i == selected { "›" } else { " " }, s.age);
-                let space = width.saturating_sub(left.chars().count() + right.chars().count() + 2);
-                let title: String = if s.title.chars().count() > space {
-                    s.title
-                        .chars()
-                        .take(space.saturating_sub(1))
-                        .chain(['…'])
-                        .collect()
-                } else {
-                    s.title.clone()
-                };
-                let pad = " ".repeat(space.saturating_sub(title.chars().count()));
-                let style = if i == selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(left, style),
-                    Span::styled(format!("{title}{pad}  "), style),
-                    Span::styled(right, style.add_modifier(Modifier::DIM)),
-                ]));
-            }
-            if shown.is_empty() {
-                lines.push(Line::from("   nothing matches"));
-            }
-            frame.render_widget(Paragraph::new(lines), inner);
-            let foot = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-            frame.render_widget(
-                Paragraph::new(" ↑↓ choose · Enter resume · type to search · Esc cancel")
-                    .style(Style::default().add_modifier(Modifier::DIM)),
-                foot,
+    let rows: Vec<PanelRow> = sessions
+        .iter()
+        .map(|s| {
+            let asked = format!(
+                "{} prompt{}",
+                s.prompts,
+                if s.prompts == 1 { "" } else { "s" }
             );
-        });
-        let Ok(Event::Key(key)) = event::read() else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
-        }
-        match key.code {
-            KeyCode::Esc => break None,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break None,
-            KeyCode::Enter => break shown.get(selected).map(|s| s.id.clone()),
-            KeyCode::Up => selected = selected.saturating_sub(1),
-            KeyCode::Down => selected = (selected + 1).min(shown.len().saturating_sub(1)),
-            KeyCode::PageUp => selected = selected.saturating_sub(10),
-            KeyCode::PageDown => selected = (selected + 10).min(shown.len().saturating_sub(1)),
-            KeyCode::Backspace => {
-                query.pop();
-                selected = 0;
+            if s.id == current {
+                PanelRow::run(
+                    format!("{} · this session · {asked}", s.title),
+                    Action::Close,
+                )
+            } else {
+                PanelRow::open(
+                    format!("{} · {} · {asked}", s.title, s.age),
+                    Action::Resume(s.id.clone()),
+                )
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                query.push(c);
-                selected = 0;
-            }
-            _ => {}
-        }
+            .with_id(s.id.clone())
+        })
+        .collect();
+    let mut panel = if rows.is_empty() {
+        crate::tui::Panel::text(
+            "Resume a session",
+            "Nothing to resume in this folder yet: a session is kept once something is asked in it.",
+        )
+    } else {
+        crate::tui::Panel::rows("Resume a session", rows)
     };
-    restore();
-    Ok(chosen)
+    panel.selected = sessions.iter().position(|s| s.id == current).unwrap_or(0);
+    panel
 }
 
 /// Which session this run is, and where its turns go.
@@ -402,6 +368,8 @@ pub(super) fn resolve_session(args: &SessionArgs) -> Result<(SessionId, PathBuf)
             (SessionId::new(id), path)
         }
     };
+    let named_here = args.rollout.is_none() && args.session.is_none();
+    *super::lock(&RUNNING) = Some((id.clone(), path.clone(), named_here));
     // The directory is part of deciding where the turns go, so it is made
     // here rather than by the caller: a resolved path nobody can open is not
     // a resolution.
@@ -433,6 +401,94 @@ mod tests {
         assert!(base36(1_800_000_000) > base36(1_700_000_000));
     }
 
+    /// A rollout in which a person asked `text` once.
+    fn asked_once(text: &str) -> String {
+        format!(
+            "{{\"kind\":\"session_start\"}}\n{{\"kind\":\"turn\",\"role\":\"user\",\"text\":\"{text}\",\"blocks\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}\n"
+        )
+    }
+
+    /// A session nobody asked anything in is not offered, and an older one
+    /// that was asked something is -- by what was asked.
+    #[test]
+    fn pickable_skips_a_session_with_no_prompt() {
+        let root = std::env::temp_dir().join(format!("sterna-pickable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(sessions_dir(&root)).unwrap();
+        fs::write(
+            rollout_path_for(&root, "asked"),
+            asked_once("fix the flaky test"),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(
+            rollout_path_for(&root, "empty"),
+            "{\"kind\":\"session_start\"}\n",
+        )
+        .unwrap();
+        let found = pickable(&root);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].id, "asked");
+        assert_eq!(found[0].title, "fix the flaky test");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// At the end, a session nobody asked anything in goes -- its file and
+    /// its event log -- and there is no line about coming back. One that was
+    /// asked something, or one whose path its caller named, is kept.
+    #[test]
+    fn an_empty_session_is_forgotten_and_a_named_one_is_kept() {
+        let root = std::env::temp_dir().join(format!("sterna-forget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(sessions_dir(&root)).unwrap();
+        let empty = rollout_path_for(&root, "empty");
+        fs::write(&empty, "{\"kind\":\"session_start\"}\n").unwrap();
+        fs::write(empty.with_extension("events.jsonl"), "{}\n").unwrap();
+        let asked = rollout_path_for(&root, "asked");
+        fs::write(&asked, asked_once("a question")).unwrap();
+        assert!(kept(&empty, false), "a caller's own path is never removed");
+        assert!(empty.exists());
+        assert!(kept(&asked, true));
+        assert!(asked.exists());
+        assert!(!kept(&empty, true));
+        assert!(!empty.exists() && !empty.with_extension("events.jsonl").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The resume sheet lists what was asked, marks the session running now
+    /// (choosing it only puts the sheet away) and opens on it; every other
+    /// row goes to its session.
+    #[test]
+    fn the_resume_sheet_marks_this_session_and_goes_to_the_others() {
+        use crate::workbench::Action;
+        let root = std::env::temp_dir().join(format!("sterna-sheet-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(sessions_dir(&root)).unwrap();
+        fs::write(
+            rollout_path_for(&root, "older"),
+            asked_once("build a habit tracker"),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(
+            rollout_path_for(&root, "newer"),
+            asked_once("fix the flaky test"),
+        )
+        .unwrap();
+        let panel = panel(&root, "newer");
+        assert_eq!(panel.title, "Resume a session");
+        assert_eq!(panel.selected, 0);
+        assert!(
+            panel.rows[0]
+                .text
+                .contains("fix the flaky test · this session")
+        );
+        assert_eq!(panel.rows[0].action, Some(Action::Close));
+        assert!(panel.rows[1].text.starts_with("build a habit tracker · "));
+        assert_eq!(panel.rows[1].action, Some(Action::Resume("older".into())));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn args_for(root: &std::path::Path) -> SessionArgs {
         SessionArgs::try_parse_from(["sterna session", "--root", root.to_str().unwrap()]).unwrap()
     }
@@ -455,9 +511,17 @@ mod tests {
                 .contains("nothing to resume")
         );
 
-        fs::write(rollout_path_for(&root, "older"), "{}\n").unwrap();
+        fs::write(
+            rollout_path_for(&root, "older"),
+            asked_once("an older question"),
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        fs::write(rollout_path_for(&root, "newer"), "{}\n").unwrap();
+        fs::write(
+            rollout_path_for(&root, "newer"),
+            asked_once("a newer question"),
+        )
+        .unwrap();
 
         // A bare `sterna` is always a new session, never one of these two.
         let (id, _) = resolve_session(&args_for(&root)).unwrap();
@@ -499,7 +563,7 @@ mod tests {
         let (one, two) = (base.join("alpha"), base.join("beta"));
         fs::create_dir_all(sessions_dir(&one)).unwrap();
         fs::create_dir_all(sessions_dir(&two)).unwrap();
-        fs::write(rollout_path_for(&one, "in-alpha"), "{}\n").unwrap();
+        fs::write(rollout_path_for(&one, "in-alpha"), asked_once("in alpha")).unwrap();
 
         let mut newest = args_for(&one);
         newest.resume = Some(String::new());
@@ -525,7 +589,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("sterna-legacy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".sterna")).unwrap();
-        fs::write(root.join(".sterna").join("rollout.jsonl"), "{}\n").unwrap();
+        fs::write(
+            root.join(".sterna").join("rollout.jsonl"),
+            asked_once("long ago"),
+        )
+        .unwrap();
 
         let found = resumable(&root);
         assert_eq!(found.len(), 1);

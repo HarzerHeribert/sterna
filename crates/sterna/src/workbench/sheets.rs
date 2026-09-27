@@ -1,189 +1,521 @@
-//! The sheets a person fills or chooses on: a form, the theme picker, the
-//! wizard's steps and the model picker. Each is drawn over the workbench's
-//! surface with the same small pieces the rest of it uses.
-use super::view::{add, button, label, row, wrap_words};
-use super::{Action, Geometry, Tone, chrome, document::clip};
-use crate::tui::{ScreenState, Theme};
+//! What each surface's sheet holds, built from that surface's own data on
+//! every frame, and the few things drawn beside a sheet rather than in it:
+//! the theme preview and the key form.
+use super::sheet::{Item, Kind, Sheet};
+use super::view::{label, row, wrap_words};
+use super::{Action, Layer, Source, Tone, Workbench, chrome, document::clip};
+use crate::permissions::Rung;
+use crate::tui::{Notebook, ScreenState, Theme};
 use ratatui::{Frame, layout::Rect, widgets::Clear};
 
-/// `/wizard`: each step a card -- what it is, then where it stands -- and
-/// any sentence of explanation as a paragraph above them.
-pub(super) fn draw_wizard(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    inner: Rect,
-    panel: &crate::tui::Panel,
-    t: Theme,
-) {
-    let mut y = inner.y + 2;
-    for (i, r) in panel.rows.iter().enumerate() {
-        if y + 2 >= inner.bottom() {
-            break;
-        }
-        if r.command.is_none() {
-            for line in wrap_words(&r.text, inner.width as usize) {
-                label(f, inner, y, &line, Tone::Normal, t);
-                y += 1;
-            }
-            y += 1;
+/// Rebuilds the top sheet's rows from its source and the session's state.
+/// Focus, scroll and the search are the sheet's own and survive.
+pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
+    let depth = ui.sheets.len();
+    if depth == 0 {
+        return;
+    }
+    // A fold lists the values of a row on the layer under it.
+    let fold = match &ui.sheets[depth - 1].source {
+        Source::Fold(id) if depth > 1 => ui.sheets[depth - 2]
+            .sheet
+            .items
+            .iter()
+            .find(|item| item.id == *id)
+            .cloned(),
+        _ => None,
+    };
+    let turning_off = ui.turning_off.clone();
+    // The undo chip rides beside the notice the newest change produced.
+    let undo = (ui.offer_undo && !ui.changes.is_empty()).then_some(Action::Undo);
+    let Layer { sheet, source, .. } = &mut ui.sheets[depth - 1];
+    sheet.root = depth == 1;
+    // A confirm, and a panel whose leaving is itself an answer (the rollback
+    // preview), are decisions: armed before a key answers them.
+    sheet.decision = match source {
+        Source::Confirm(_) => true,
+        Source::Panel(panel) => panel.back.is_some(),
+        _ => false,
+    };
+    sheet.undo = undo;
+    sheet.aside = 0;
+    sheet.tools.clear();
+    sheet.total = None;
+    sheet.matched = None;
+    let items = match source {
+        Source::Work => work(sheet, s),
+        Source::Ask => ask(sheet, s),
+        Source::Access => access(sheet, s),
+        Source::Confirm(rung) => confirm(sheet, rung),
+        Source::Keys => keys(sheet),
+        Source::Activity => activity(sheet, s),
+        Source::Themes { .. } => themes(sheet, s),
+        Source::Settings(p) => super::settings::items(sheet, p, s),
+        Source::Models(m) => super::models::items(sheet, m),
+        Source::Panel(panel) => panel_items(sheet, panel, &turning_off),
+        Source::Fold(_) => fold_items(sheet, fold),
+        Source::More(controls) => more_items(sheet, controls),
+    };
+    let _ = n;
+    // While a turn runs, a row that waits for it to end says so before it
+    // is clicked, in the one sentence every such refusal uses.
+    let items = if s.activity.working() {
+        items.into_iter().map(between_turns).collect()
+    } else {
+        items
+    };
+    sheet.set_items(items);
+}
+
+/// Disables a row that cannot act until the turn ends: a command other than
+/// a model, mode or effort, and the model picker, which the session builds.
+fn between_turns(item: Item) -> Item {
+    let waits = match &item.action {
+        Some(Action::Command(command)) => !super::mid_turn(command),
+        Some(Action::Models) => true,
+        _ => false,
+    };
+    if waits && item.disabled.is_none() {
+        item.disabled(Some(super::voice::BETWEEN_TURNS.into()))
+    } else {
+        item
+    }
+}
+
+/// One word for the work mode, as the chips and the sheet name it.
+fn work(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    use crate::tui::Mode;
+    sheet.title = "Work".into();
+    sheet.crumbs = vec!["what this session may do".into()];
+    let mut items: Vec<Item> = [Mode::Execute, Mode::Explore, Mode::Plan]
+        .into_iter()
+        .map(|mode| {
+            Item::choice(
+                format!("mode:{}", mode.setting()),
+                mode.label(),
+                s.mode == mode,
+                Action::Command(super::facts::mode_command(Some(mode))),
+            )
+            .detail(mode.sentence())
+        })
+        .collect();
+    // Unpinned is a state of its own: the session stays on its mode until a
+    // confident read-only request proposes Explore.
+    items.push(
+        Item::toggle(
+            "mode:auto",
+            "Auto",
+            !s.mode_pinned,
+            Action::Command(if s.mode_pinned {
+                super::facts::mode_command(None)
+            } else {
+                super::facts::mode_command(Some(s.mode))
+            }),
+        )
+        .detail("A confident read-only request may propose Explore."),
+    );
+    items
+}
+
+fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    sheet.title = "Ask".into();
+    sheet.crumbs = vec!["how often it stops to ask".into()];
+    let now = s.permissions.rung();
+    let mut items: Vec<Item> = [Rung::Manual, Rung::AcceptEdits, Rung::Auto, Rung::Full]
+        .into_iter()
+        .map(|rung| {
+            let id = format!("rung:{}", rung.name());
+            let action = Action::Rung(rung.name().into());
+            let item = if rung == Rung::Full && now != Rung::Full {
+                Item::danger(id, rung.label(), action)
+            } else {
+                Item::choice(id, rung.label(), rung == now, action)
+            };
+            item.detail(rung.sentence())
+        })
+        .collect();
+    // What was answered for the whole session is on this sheet too, where it
+    // can be taken back: a refusal that stays must stay visibly.
+    let remembered = s
+        .memory
+        .as_ref()
+        .map(crate::approval::Memory::entries)
+        .unwrap_or_default();
+    for (allowed, heading) in [
+        (true, "Allowed for this session"),
+        (false, "Denied for this session"),
+    ] {
+        let rows: Vec<_> = remembered.iter().filter(|r| r.allowed == allowed).collect();
+        if rows.is_empty() {
             continue;
         }
-        let (head, detail) = r.text.split_once(" · ").unwrap_or((r.text.as_str(), ""));
-        let chosen = i == panel.selected;
-        add(
-            f,
-            g,
-            inner,
-            y,
-            &format!("{} {head}", if chosen { "›" } else { " " }),
-            Action::PanelRow(i),
-            chosen,
-            t,
-        );
-        if !detail.is_empty() {
-            label(
-                f,
-                Rect::new(
-                    inner.x + 2,
-                    inner.y,
-                    inner.width.saturating_sub(2),
-                    inner.height,
-                ),
-                y + 1,
-                &clip(detail, inner.width.saturating_sub(2) as usize),
-                Tone::Muted,
-                t,
+        items.push(Item::heading(heading));
+        for row in rows {
+            items.push(
+                Item::run(
+                    format!("forget:{}", row.id),
+                    format!("Forget · {}", row.label),
+                    Action::Forget(row.id.clone()),
+                )
+                .detail(if allowed {
+                    "runs without asking until you forget it"
+                } else {
+                    "refused without asking until you forget it"
+                }),
             );
         }
-        y += 3;
     }
-    label(
-        f,
-        inner,
-        inner.bottom().saturating_sub(1),
-        "↑↓ choose · Enter open · Esc finish later",
-        Tone::Muted,
-        t,
-    );
+    items
 }
 
-/// `/theme`: the palettes on the left, each by a swatch of its accent, and
-/// the chosen one on the right as the screen will wear it -- a bird theme's
-/// bird, its name and its three colours.
-/// One line of the theme list as drawn.
-enum ThemeLine {
-    /// A family's heading.
-    Heading(crate::tui::Family),
-    /// The space before the next family.
-    Gap,
-    /// A theme, with its row in the picker.
-    Theme(usize, Theme),
+/// The boundary as a sentence, for the Access sheet and the chips.
+pub(super) fn access_sentence(s: &ScreenState) -> &'static str {
+    if s.full_access {
+        "Every file on this machine and every command line. Nothing is confined."
+    } else {
+        "Files inside this project, and the commands the profile admits. Your home directory is out of reach."
+    }
 }
 
-pub(super) fn draw_themes(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    inner: Rect,
+fn access(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    sheet.title = "Access".into();
+    sheet.crumbs = vec!["the boundaries it is actually running under".into()];
+    let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
+    vec![
+        Item::info(if s.full_access {
+            "▲ FULL ACCESS"
+        } else {
+            "This project"
+        })
+        .tone(if s.full_access {
+            Tone::Warning
+        } else {
+            Tone::Strong
+        }),
+        Item::info(access_sentence(s)),
+        Item::info(format!(
+            "network {} · asks {}",
+            s.network.as_deref().unwrap_or("unknown"),
+            s.permissions.rung().label().to_lowercase()
+        )),
+        Item::heading("How it is enforced"),
+        Item::info(format!("Sandbox profile   {}", unknown(&s.sandbox))).tone(Tone::Muted),
+        Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
+        Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted),
+        Item::info(
+            "Asking less often never widens this boundary, and a saved permission never widens the one already running.",
+        )
+        .tone(Tone::Muted),
+        Item::open("access:ask", "Change how often it asks", Action::Approvals),
+        Item::open("access:settings", "Open settings", Action::Settings),
+    ]
+}
+
+/// The one confirmation sheet, for the Never asks rung (`full`) and for
+/// full access (`access`). It opens on Cancel.
+fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
+    let (label, warning, yes) = if let Some(link) = what.strip_prefix("open:") {
+        (
+            "Open the page in your browser".to_string(),
+            "This opens your default browser on this computer.",
+            Action::OpenLink(link.to_string()),
+        )
+    } else if let Some(model) = what.strip_prefix("pin:") {
+        (
+            format!("Pin {model}"),
+            "This turns favourites off: every subagent runs on this one model.",
+            Action::Choose(model.to_string()),
+        )
+    } else if what == "access" {
+        (
+            "Full access".to_string(),
+            "From the next session Sterna applies no OS confinement to the commands it runs; \
+             this machine is the boundary. Denials and approval prompts still apply.",
+            Action::ConfirmSetting("permissions.full_access".into(), "true".into()),
+        )
+    } else {
+        (
+            Rung::parse(what).map_or_else(|| what.to_string(), |r| r.label().to_string()),
+            "This removes approval prompts, not sandbox restrictions.",
+            Action::ConfirmRung(what.to_string()),
+        )
+    };
+    sheet.title = "Confirm".into();
+    sheet.crumbs = vec![label.clone()];
+    vec![
+        Item::info(warning).tone(Tone::Warning),
+        Item::info("Nothing is confirmed until you choose it below; Esc goes back unchanged."),
+        Item::run("confirm:cancel", "Cancel", Action::Close).inline(),
+        Item::danger("confirm:yes", format!("Yes · {label}"), yes).inline(),
+    ]
+}
+
+/// Every key, and what it does: the one table the keys sheet is drawn from
+/// and the tests read. A row with an action is one click from doing it.
+pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
+    vec![
+        (
+            "Enter",
+            "send · Shift-Enter, Alt-Enter or Ctrl-J for a new line",
+            None,
+        ),
+        (
+            "Ctrl-Z",
+            "undo an edit to the draft · Ctrl-Shift-Z redoes it",
+            None,
+        ),
+        (
+            "Ctrl-K Ctrl-U",
+            "cut to the line's end or start · Ctrl-Y puts it back",
+            None,
+        ),
+        (
+            "Ctrl-W",
+            "delete the word before the caret · Alt-B Alt-F move by word",
+            None,
+        ),
+        ("@", "complete a path in this project", None),
+        (
+            "Esc",
+            "take back a queued message · else stop after this cell",
+            None,
+        ),
+        (
+            "Ctrl-C",
+            "copy a selection · else stop a turn · else clear the draft · twice quits",
+            None,
+        ),
+        (
+            "Shift-Tab",
+            "how often Sterna asks before it acts",
+            Some(Action::Approvals),
+        ),
+        (
+            "F2",
+            "settings · choices save themselves; most apply now",
+            Some(Action::Settings),
+        ),
+        ("F3", "which model answers", Some(Action::Models)),
+        ("F4", "the selected cell's diff", None),
+        ("F5", "the selected cell's helpers", None),
+        ("Ctrl-O", "expand or collapse the selected cell", None),
+        ("Alt-↑ ↓", "select the previous or next cell", None),
+        (
+            "Ctrl-T",
+            "telemetry: the live view of requests",
+            Some(Action::Telemetry),
+        ),
+        ("Ctrl-B", "show or hide the sidebar", None),
+        ("Ctrl-F", "hide or restore the chrome", None),
+        (
+            "Ctrl-G",
+            "release the mouse to the terminal, and take it back",
+            None,
+        ),
+        (
+            "PgUp PgDn",
+            "scroll the conversation · Ctrl-Home/End to either end",
+            None,
+        ),
+        (
+            "↑ ↓",
+            "the line above or below · history from the first or last line",
+            None,
+        ),
+        ("Ctrl-A E", "start or end of the line", None),
+        (
+            "Ctrl-K U",
+            "delete to the end or the start of the line",
+            None,
+        ),
+        ("/", "commands · /help lists every one", None),
+        ("?", "this sheet, when the composer is empty", None),
+        ("click", "any chip changes the thing it names", None),
+    ]
+}
+
+fn keys(sheet: &mut Sheet) -> Vec<Item> {
+    sheet.title = "Keys".into();
+    sheet.crumbs = vec!["every key, and what it does".into()];
+    keymap()
+        .into_iter()
+        .map(|(key, what, action)| {
+            let text = format!("{key:<11}{what}");
+            match action {
+                Some(action) => Item::open(format!("key:{key}"), text, action),
+                None => Item::info(text),
+            }
+        })
+        .collect()
+}
+
+fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    sheet.title = "Activity".into();
+    sheet.crumbs = vec!["local notices, newest last".into()];
+    let lines: Vec<Item> = s
+        .history
+        .iter()
+        .flat_map(|note| note.text.lines())
+        .map(|line| {
+            Item::info(line).tone(if line.starts_with("ERROR:") {
+                Tone::Failure
+            } else {
+                Tone::Normal
+            })
+        })
+        .collect();
+    if lines.is_empty() {
+        vec![Item::info("Nothing has happened yet.").tone(Tone::Muted)]
+    } else {
+        lines
+    }
+}
+
+fn themes(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    sheet.title = "Themes".into();
+    sheet.crumbs.clear();
+    sheet.aside = 34;
+    let mut items = Vec::new();
+    let mut family = None;
+    for theme in Theme::by_family() {
+        if family != Some(theme.family()) {
+            family = Some(theme.family());
+            items.push(Item::heading(format!(
+                "{} · {}",
+                theme.family().label(),
+                theme.family().blurb()
+            )));
+        }
+        let mut item = Item::choice(
+            format!("theme:{}", theme.name()),
+            theme.title(),
+            s.theme == theme,
+            Action::Theme(theme),
+        );
+        // The swatch and the name are one target.
+        if let Some(rgb) = super::theme::accent_value(theme) {
+            item = item.swatch(rgb);
+        }
+        items.push(item);
+    }
+    items
+}
+
+fn fold_items(sheet: &mut Sheet, parent: Option<Item>) -> Vec<Item> {
+    let Some(parent) = parent else {
+        return vec![Item::info("That list is no longer open.")];
+    };
+    sheet.title = parent.title.clone();
+    sheet.crumbs = vec!["every value".into()];
+    let Kind::Value { values, current } = parent.kind else {
+        return Vec::new();
+    };
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, (label, action))| {
+            Item::choice(format!("value:{label}"), label, Some(i) == current, action)
+        })
+        .collect()
+}
+
+/// The controls that had no room in their row, each one a row that does
+/// what the chip would have done.
+fn more_items(sheet: &mut Sheet, controls: &[(String, Action)]) -> Vec<Item> {
+    sheet.title = "More".into();
+    controls
+        .iter()
+        .enumerate()
+        .map(|(i, (label, action))| Item::open(format!("more:{i}"), label.clone(), action.clone()))
+        .collect()
+}
+
+/// The rows of a panel the session sent, and a search once it is longer
+/// than a screen is comfortable with.
+fn panel_items(
+    sheet: &mut Sheet,
     panel: &crate::tui::Panel,
+    turning_off: &std::collections::BTreeSet<String>,
+) -> Vec<Item> {
+    let mut parts = panel.title.split(" › ");
+    sheet.title = parts.next().unwrap_or_default().to_string();
+    sheet.crumbs = parts.map(str::to_string).collect();
+    if panel.rows.len() > 12 && sheet.query.is_none() {
+        sheet.query = Some(String::new());
+    }
+    let query = sheet
+        .query
+        .as_deref()
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    let mut items = Vec::new();
+    let mut focus = None;
+    for (i, row) in panel.rows.iter().enumerate() {
+        if !query.is_empty() && !row.text.to_lowercase().contains(&query) {
+            continue;
+        }
+        let id = row
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("row:{}", row.text));
+        let (title, detail) = match row.text.split_once(" · ") {
+            Some((head, rest)) if row.acts() => (head.to_string(), rest.to_string()),
+            _ => (row.text.clone(), String::new()),
+        };
+        let mut item = match &row.kind {
+            Kind::Info => Item::info(row.text.clone()),
+            Kind::Heading => Item::heading(row.text.clone()),
+            kind => {
+                let mut item = Item::info(title);
+                item.kind = kind.clone();
+                item.id = id;
+                item.action = row.action.clone();
+                item.detail(detail)
+            }
+        };
+        if let Some(Action::HandlerOff(name)) = &row.action
+            && turning_off.contains(name)
+        {
+            item = item.disabled(Some("turning off…".into()));
+        }
+        if i == panel.selected && row.acts() {
+            focus = Some(item.id.clone());
+        }
+        items.push(item);
+    }
+    if items.iter().all(|item| !item.focusable()) && !query.is_empty() {
+        items.push(Item::info("Nothing matches. Backspace removes a letter.").tone(Tone::Muted));
+    }
+    if let Some(total) = (!query.is_empty()).then(|| panel.rows.iter().filter(|r| r.acts()).count())
+    {
+        sheet.total = Some(total);
+    }
+    sheet.prefer = focus;
+    items
+}
+
+/// The chosen theme beside the list, as the screen will wear it: a bird
+/// theme's bird, its name and its three colours.
+pub(super) fn draw_theme_preview(
+    f: &mut Frame<'_>,
+    area: Rect,
+    chosen: Theme,
     s: &ScreenState,
     t: Theme,
 ) {
-    use super::plumage::{Mood, ROWS, WIDTH, sprite};
-    let theme_of = |row: &crate::tui::PanelRow| {
-        row.command
-            .as_deref()
-            .and_then(|command| command.strip_prefix("/theme "))
-            .and_then(Theme::parse)
-    };
-    let list = (inner.width / 2).clamp(24, 40);
-    let rows = inner.height.saturating_sub(4) as usize;
-    // The list as drawn: a heading where the family changes, then its
-    // themes. Selection still counts themes only, so a heading is never
-    // chosen and Up/Down step from theme to theme across families.
-    let mut lines: Vec<ThemeLine> = Vec::new();
-    let mut family = None;
-    for (i, r) in panel.rows.iter().enumerate() {
-        let Some(theme) = theme_of(r) else { continue };
-        if family != Some(theme.family()) {
-            if family.is_some() {
-                lines.push(ThemeLine::Gap);
-            }
-            family = Some(theme.family());
-            lines.push(ThemeLine::Heading(theme.family()));
-        }
-        lines.push(ThemeLine::Theme(i, theme));
-    }
-    let at = lines
-        .iter()
-        .position(|line| matches!(line, ThemeLine::Theme(i, _) if *i == panel.selected))
-        .unwrap_or(0);
-    let start = at.saturating_sub(rows.saturating_sub(1));
-    for (n, line) in lines.iter().enumerate().skip(start).take(rows) {
-        let y = inner.y + 2 + (n - start) as u16;
-        match line {
-            ThemeLine::Heading(heading) => {
-                let text = format!("{} · {}", heading.label().to_uppercase(), heading.blurb());
-                row(
-                    f,
-                    Rect::new(inner.x + 2, y, list.saturating_sub(2), 1),
-                    &text,
-                    Tone::Muted,
-                    t,
-                );
-            }
-            ThemeLine::Theme(i, theme) => {
-                let (i, theme) = (*i, *theme);
-                let swatch = match super::theme::accent(theme) {
-                    ratatui::style::Color::Rgb(r, g, b) => {
-                        Tone::Pixel(Some(u32::from_be_bytes([0, r, g, b])), None)
-                    }
-                    _ => Tone::Strong,
-                };
-                row(f, Rect::new(inner.x + 4, y, 2, 1), "██", swatch, t);
-                add(
-                    f,
-                    g,
-                    Rect::new(inner.x + 7, inner.y, list.saturating_sub(7), inner.height),
-                    y,
-                    &format!(
-                        "{} {}",
-                        if i == panel.selected { "›" } else { " " },
-                        theme.title()
-                    ),
-                    Action::PanelRow(i),
-                    i == panel.selected,
-                    t,
-                );
-            }
-            ThemeLine::Gap => {}
-        }
-    }
-    let Some(chosen) = panel.rows.get(panel.selected).and_then(theme_of) else {
-        return;
-    };
-    let x = inner.x + list + 3;
-    let area = Rect::new(
-        x,
-        inner.y + 2,
-        inner.right().saturating_sub(x),
-        inner.height.saturating_sub(4),
-    );
+    use super::plumage::{Mood, sprite};
     let Theme::Bird(bird) = chosen else {
-        label(f, area, area.y, chosen.title(), Tone::Strong, t);
-        label(
-            f,
-            area,
-            area.y + 1,
-            "no bird · the palette alone",
-            Tone::Muted,
-            t,
-        );
+        draw_palette_preview(f, area, chosen, t);
         return;
     };
     let plumage = bird.plumage();
     let mut y = area.y;
-    if s.truecolor && area.width as usize >= WIDTH && area.height as usize >= ROWS + 5 {
-        for cells in sprite(bird, Mood::Done) {
+    let drawing = sprite(bird, Mood::Done, s.light);
+    if s.truecolor
+        && area.width as usize >= drawing[0].len()
+        && area.height as usize >= drawing.len() + 5
+    {
+        for cells in drawing {
             for (dx, (glyph, fg, bg)) in cells.into_iter().enumerate() {
                 row(
                     f,
@@ -217,322 +549,54 @@ pub(super) fn draw_themes(
             f,
             area,
             y + 6,
-            "This terminal shows no true colour: the outline bird stands in.",
+            "This terminal shows no true colour, so the bird is not drawn.",
             Tone::Muted,
             t,
         );
     }
 }
 
-pub(super) fn draw_models(
-    f: &mut Frame<'_>,
-    g: &mut Geometry,
-    a: Rect,
-    m: &super::Navigator,
-    s: &ScreenState,
-) {
-    // **Three tabs, one list.** Which tier is being assigned is the first
-    // thing on the sheet; the list below is every reachable model, grouped
-    // under the account that serves it, and search narrows it -- no
-    // carousel to step through to find a provider.
-    let roles = [
-        ("Main", "answers you", m.current.parent.clone()),
-        (
-            "Helper",
-            "reads and summarises for Main",
-            m.current.helper.clone().unwrap_or_else(|| "off".into()),
-        ),
-        (
-            "Subagents",
-            "work in parallel",
-            m.current
-                .subagent
-                .clone()
-                .unwrap_or_else(|| "favourites".into()),
-        ),
-    ];
-    let mut x = a.x;
-    for (i, (name, _, _)) in roles.iter().enumerate() {
-        if m.target_key.is_some() && i != m.role {
-            continue;
-        }
-        let w = chrome::chip(
-            f,
-            g,
-            x,
-            a.y + 2,
-            a.right(),
-            name,
-            Action::ModelRole(i),
-            i == m.role,
-            Tone::Normal,
-            None,
-            s.theme,
-        );
-        x += w + 1;
-    }
-    if m.target_key.is_none() {
-        let tab = "Tab switches";
-        row(
-            f,
-            Rect::new(
-                a.right().saturating_sub(tab.len() as u16),
-                a.y + 2,
-                tab.len() as u16,
-                1,
-            ),
-            tab,
-            Tone::Muted,
-            s.theme,
-        );
-    }
-    let (name, purpose, now) = &roles[m.role.min(2)];
+/// A palette alone, as the screen will wear it: a heading, a chosen chip
+/// beside one that is not, and the roles' own colours.
+fn draw_palette_preview(f: &mut Frame<'_>, area: Rect, chosen: Theme, t: Theme) {
+    label(f, area, area.y, chosen.title(), Tone::Strong, t);
     label(
         f,
-        a,
-        a.y + 3,
-        &format!("{name} {purpose}. Now: {now}"),
+        area,
+        area.y + 1,
+        "no bird · the palette alone",
         Tone::Muted,
-        s.theme,
+        t,
     );
-    let mut y = a.y + 5;
-    if m.role == 2 && m.target_key.is_none() {
-        // The four favourites as cards, with what each holds: a slot is
-        // chosen with ←→, and Enter puts the highlighted model in it.
-        let slots: Vec<Option<&str>> = std::iter::once(None)
-            .chain(crate::config::SLOT_NAMES.iter().copied().map(Some))
-            .collect();
-        let width = (a.width / slots.len() as u16).max(1);
-        for (i, slot) in slots.iter().enumerate() {
-            let x = a.x + i as u16 * width;
-            let chosen = m.slot.as_deref() == *slot;
-            let title = slot.map_or("PINNED".to_string(), str::to_uppercase);
-            button(
-                f,
-                g,
-                Rect::new(x, y, width.saturating_sub(1), 1),
-                &format!("{} {title}", if chosen { "›" } else { " " }),
-                Action::Slot(slot.map(str::to_owned)),
-                chosen,
-                s.theme,
-            );
-            let holds = match slot {
-                Some(name) => m
-                    .assignment
-                    .slots
-                    .get(*name)
-                    .map_or("empty".to_string(), |held| {
-                        format!("{} · {}", held.model, held.effort.name())
-                    }),
-                None => m.current.subagent.clone().unwrap_or_else(|| "none".into()),
-            };
-            row(
-                f,
-                Rect::new(x + 2, y + 1, width.saturating_sub(3), 1),
-                &clip(&holds, width.saturating_sub(3) as usize),
-                if holds == "empty" {
-                    Tone::Muted
-                } else {
-                    Tone::Normal
-                },
-                s.theme,
-            );
-        }
-        y += 3;
-        let enabled = m.assignment.mode == crate::config::AgentsMode::Roster;
-        add(
-            f,
-            g,
-            a,
-            y,
-            if enabled {
-                "Favourites are on · turn them off"
-            } else {
-                "Favourites are off · turn them on"
-            },
-            Action::Command(format!("/subagents {}", if enabled { "off" } else { "on" })),
-            false,
-            s.theme,
+    label(f, area, area.y + 3, "A HEADING", Tone::Accent, chosen);
+    let on = "⟨ chosen ⟩";
+    let w = chrome::width(on);
+    if area.height > 4 && area.width > w {
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(on).style(super::theme::chip_on(chosen)),
+            Rect::new(area.x, area.y + 4, w, 1),
         );
-        y += 2;
-    }
-    let rows = m.candidates();
-    let placeholder = match (m.role, m.slot.as_deref()) {
-        (2, Some(slot)) => format!("search a model for {}", slot.to_uppercase()),
-        _ => "search models, providers or accounts".to_string(),
-    };
-    row(f, Rect::new(a.x, y, 2, 1), "┃ ", Tone::Accent, s.theme);
-    let count = format!(
-        "{} of {} · {}",
-        rows.len(),
-        m.catalogue_len(),
-        if m.all_sources {
-            "all accounts"
-        } else {
-            "connected accounts"
-        }
-    );
-    let cw = chrome::width(&count);
-    let query = if m.query.is_empty() {
-        placeholder
-    } else {
-        format!("{}▏", m.query)
-    };
-    row(
-        f,
-        Rect::new(a.x + 2, y, a.width.saturating_sub(cw + 4), 1),
-        &query,
-        if m.query.is_empty() {
-            Tone::Muted
-        } else {
-            Tone::Strong
-        },
-        s.theme,
-    );
-    row(
-        f,
-        Rect::new(a.right().saturating_sub(cw), y, cw, 1),
-        &count,
-        Tone::Muted,
-        s.theme,
-    );
-    y += 2;
-    // The list, with a header wherever the serving account changes. Sorted by
-    // intelligence the accounts interleave, so each row carries its own.
-    let mut lines: Vec<(Option<usize>, String)> = Vec::new();
-    let mut last_route = String::new();
-    for (i, c) in rows.iter().enumerate() {
-        if !m.measured_order && c.route != last_route {
-            lines.push((None, c.route.to_uppercase()));
-            last_route = c.route.clone();
-        }
-        let score = c.score.map(|v| format!("★ {v:.0}")).unwrap_or_default();
-        let lock = match (c.available, score.is_empty()) {
-            (true, _) => "",
-            (false, true) => "locked",
-            (false, false) => "locked · ",
-        };
-        let via = if m.measured_order {
-            format!("  {}", c.route)
-        } else {
-            String::new()
-        };
-        lines.push((Some(i), format!("{:<34}{lock}{score}{via}", c.model)));
-    }
-    let bottom = a.bottom().saturating_sub(5);
-    let capacity = bottom.saturating_sub(y).max(1) as usize;
-    let at = lines
-        .iter()
-        .position(|(i, _)| *i == Some(m.selected))
-        .unwrap_or(0);
-    let start = at.saturating_sub(capacity.saturating_sub(1));
-    for (n, (index, text)) in lines.iter().enumerate().skip(start).take(capacity) {
-        let ly = y + (n - start) as u16;
-        match index {
-            None => label(f, a, ly, text, Tone::Muted, s.theme),
-            Some(i) => add(
-                f,
-                g,
-                a,
-                ly,
-                &format!("{} {text}", if *i == m.selected { "›" } else { " " }),
-                Action::Model(*i),
-                *i == m.selected,
-                s.theme,
-            ),
-        }
-    }
-    if rows.is_empty() {
-        label(
+        row(
             f,
-            a,
-            y,
-            "No models match. Backspace removes a letter; Ctrl-U clears the search.",
-            Tone::Warning,
-            s.theme,
-        );
-    }
-    if let Some(c) = rows.get(m.selected) {
-        // A locked row says why before anything else: the header above it
-        // already names the account.
-        let detail = match c.reason.as_deref().filter(|_| !c.available) {
-            Some(reason) => format!("{} is locked · {reason}", c.model),
-            None => format!("{} · via {}", c.model, c.route),
-        };
-        label(
-            f,
-            a,
-            bottom,
-            &clip(&detail, a.width as usize),
-            if c.available {
-                Tone::Normal
-            } else {
-                Tone::Warning
-            },
-            s.theme,
-        );
-    }
-    label(f, a, bottom + 1, &m.notice, Tone::Warning, s.theme);
-    let enter = match (m.role, m.slot.as_deref(), m.target_key.is_some()) {
-        (_, _, true) => "Enter · save to these settings".to_string(),
-        (2, Some(slot), _) => format!("Enter · put in {}", slot.to_uppercase()),
-        (i, _, _) => format!("Enter · use for {}", roles[i.min(2)].0),
-    };
-    let w = chrome::chip(
-        f,
-        g,
-        a.x,
-        bottom + 2,
-        a.right(),
-        &enter,
-        Action::ChooseModel,
-        true,
-        Tone::Normal,
-        None,
-        s.theme,
-    );
-    let off = if m.target_key.is_some() {
-        Some(("Use the inherited value".to_string(), Action::UnsetModel))
-    } else if m.role == 2 && m.slot.is_some() {
-        Some((
-            "Empty this slot".to_string(),
-            Action::Command(format!(
-                "/subagents {} off",
-                m.slot.clone().unwrap_or_default()
-            )),
-        ))
-    } else if m.role > 0 {
-        Some((
-            "Turn this tier off".to_string(),
-            Action::Command(format!(
-                "/model {} off",
-                if m.role == 1 { "helper" } else { "subagent" }
-            )),
-        ))
-    } else {
-        None
-    };
-    if let Some((text, action)) = off {
-        chrome::chip(
-            f,
-            g,
-            a.x + w + 1,
-            bottom + 2,
-            a.right(),
-            &text,
-            action,
-            false,
+            Rect::new(area.x + w + 1, area.y + 4, area.width - w - 1, 1),
+            "⟨ another ⟩",
             Tone::Normal,
-            None,
-            s.theme,
+            chosen,
         );
     }
-    let keys = if m.role == 2 && m.target_key.is_none() {
-        "type to search · ↑↓ model · ←→ slot · Ctrl-A all accounts · Ctrl-O by intelligence"
-    } else {
-        "type to search · ↑↓ model · Ctrl-A all accounts · Ctrl-O by intelligence"
-    };
-    label(f, a, bottom + 3, keys, Tone::Muted, s.theme);
+    let mut x = area.x;
+    for (word, tone) in [
+        ("you", Tone::You),
+        ("helper", Tone::Helper),
+        ("detail", Tone::Muted),
+    ] {
+        let w = chrome::width(word);
+        if x + w > area.right() {
+            break;
+        }
+        row(f, Rect::new(x, area.y + 6, w, 1), word, tone, chosen);
+        x += w + 2;
+    }
 }
 
 /// Credential display is mask-only; no plaintext reaches a render buffer.
@@ -540,7 +604,25 @@ pub(super) fn draw_models(
 /// context, each field under its label with the one in focus outlined and
 /// its caret showing where a paste lands, the check or the error under it,
 /// and the keys that act on the sheet.
-pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
+/// Where a click lands on a form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormHit {
+    /// The field at this index: it takes the focus.
+    Field(usize),
+    /// One word of a choice field.
+    Word(usize, usize),
+    /// The submit chip: what Enter does.
+    Submit,
+    /// The header chip: what Esc does.
+    Back,
+}
+
+pub fn render_form(
+    f: &mut Frame<'_>,
+    form: &crate::tui::Form,
+    theme: Theme,
+) -> Vec<(Rect, FormHit)> {
+    let mut hits = Vec::new();
     use crate::tui::form::Kind;
     let a = f.area();
     f.render_widget(Clear, a);
@@ -568,19 +650,11 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
         Tone::Accent,
         theme,
     );
-    let back = "Esc · back";
-    row(
-        f,
-        Rect::new(
-            inner.right().saturating_sub(back.len() as u16),
-            inner.y,
-            back.len() as u16,
-            1,
-        ),
-        back,
-        Tone::Muted,
-        theme,
-    );
+    let back = "⟨ Esc · Back ⟩";
+    let back_w = chrome::width(back);
+    let back_r = Rect::new(inner.right().saturating_sub(back_w), inner.y, back_w, 1);
+    row(f, back_r, back, Tone::Accent, theme);
+    hits.push((back_r, FormHit::Back));
     let mut y = inner.y + 2;
     for line in wrap_words(&form.intro, inner.width as usize) {
         label(f, inner, y, &line, Tone::Normal, theme);
@@ -604,6 +678,8 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
         } else {
             field.label.to_uppercase()
         };
+        // The label, the value and the line under it are one target.
+        hits.push((Rect::new(inner.x, y, inner.width, 3), FormHit::Field(index)));
         label(
             f,
             inner,
@@ -630,6 +706,7 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
                         text
                     };
                     row(f, Rect::new(x, y, w + 1, 1), &text, tone, theme);
+                    hits.push((Rect::new(x, y, w + 1, 1), FormHit::Word(index, i)));
                     x += w + 2;
                 }
             }
@@ -656,7 +733,12 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
         let under = match (&form.error, field.verdict()) {
             (Some((at, error)), _) if *at == index => Some((format!("✕ {error}"), Tone::Failure)),
             (_, Some(Err(problem))) => Some((format!("✕ {problem}"), Tone::Warning)),
-            (_, Some(Ok(praise))) => Some((format!("✓ {praise}"), Tone::Success)),
+            (_, Some(Ok(crate::tui::form::Verdict::Fine(praise)))) => {
+                Some((format!("✓ {praise}"), Tone::Success))
+            }
+            (_, Some(Ok(crate::tui::form::Verdict::Warning(doubt)))) => {
+                Some((format!("! {doubt}"), Tone::Warning))
+            }
             _ if focused && !field.hint.is_empty() => Some((field.hint.clone(), Tone::Muted)),
             _ => None,
         };
@@ -685,6 +767,12 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
         .fields
         .get(form.focus)
         .is_some_and(|field| matches!(field.kind, Kind::Choice(_)));
+    let submit = format!("⟨ {} ⟩", form.submit);
+    let submit_w = chrome::width(&submit);
+    let foot = inner.bottom().saturating_sub(1);
+    let submit_r = Rect::new(inner.x, foot, submit_w.min(inner.width), 1);
+    row(f, submit_r, &submit, Tone::Accent, theme);
+    hits.push((submit_r, FormHit::Submit));
     let mut keys = format!("Enter {}", form.submit);
     if form.fields.len() > 1 {
         keys.push_str(" · Tab next field");
@@ -696,12 +784,13 @@ pub fn render_form(f: &mut Frame<'_>, form: &crate::tui::Form, theme: Theme) {
         keys.push_str(" · Ctrl-R show · paste here");
     }
     keys.push_str(" · Ctrl-U clear · Esc back");
-    label(
+    let x = inner.x + submit_w + 2;
+    row(
         f,
-        inner,
-        inner.bottom().saturating_sub(1),
+        Rect::new(x, foot, inner.right().saturating_sub(x), 1),
         &keys,
         Tone::Muted,
         theme,
     );
+    hits
 }

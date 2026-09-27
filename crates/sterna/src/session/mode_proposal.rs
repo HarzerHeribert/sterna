@@ -56,9 +56,7 @@ pub(super) fn propose(
     if intent.confidence < decisions.mode_above {
         if decisions.mode == crate::config::DecisionMode::On {
             session_println!(
-                "decision: {} {:.2} below mode_above; /mode explore to pin",
-                intent.choice,
-                intent.confidence
+                "This request looks read-only, not surely enough to explore it. /mode explore pins exploring."
             );
         }
         return proposal;
@@ -69,9 +67,7 @@ pub(super) fn propose(
             proposal.applied = true;
             proposal.narrow_mode = RequestMode::Explore;
             session_println!(
-                "decision: explore for this request ({} {:.2}); /mode execute to pin",
-                intent.choice,
-                intent.confidence
+                "Exploring for this request: it looks read-only. /mode execute pins executing."
             );
         }
         crate::config::DecisionMode::Shadow => proposal.would_apply = true,

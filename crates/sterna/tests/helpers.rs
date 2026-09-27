@@ -2168,3 +2168,30 @@ fn a_filter_that_writes_its_own_line_is_refused_and_nothing_is_lost() {
     assert_eq!(stats.filter_rejected, 1, "{stats:?}");
     assert_eq!(stats.failed, 1, "{stats:?}");
 }
+
+/// A helper whose request never reached anyone says it failed once.
+#[test]
+fn a_failed_helper_request_says_it_failed_once() {
+    let _environment = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    unsafe { std::env::set_var("ANTHROPIC_BASE_URL", &url) };
+    let outcome = sterna::helpers::run_once(
+        &REDUCER,
+        sterna::helpers::HelperRoute {
+            model: "test-helper-model",
+            effort: sterna::wire::Effort::Medium,
+            cap: None,
+        },
+        "a log line",
+    );
+    unsafe { std::env::remove_var("ANTHROPIC_BASE_URL") };
+    assert!(!outcome.ok, "{outcome:?}");
+    assert_eq!(
+        outcome.text.matches("request failed").count(),
+        1,
+        "{}",
+        outcome.text
+    );
+}
