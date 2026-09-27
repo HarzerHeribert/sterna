@@ -63,6 +63,8 @@ mod context;
 mod controls;
 mod ending;
 use ending::delivered_the_interrupt;
+mod interrupt;
+use interrupt::{DOUBLE_INTERRUPT_WINDOW, INTERRUPT, install_interrupt_handler, watch};
 mod mode_proposal;
 mod native;
 mod notices;
@@ -103,16 +105,6 @@ const TWO_BLOCKS: &str = "Mixed or multiple sterna-edit blocks are ambiguous; se
 /// off the cell's own trajectory so the session knows a Ctrl-C was delivered.
 const CANCELLED: &str = "Cancelled";
 
-/// A second Ctrl-C inside this window ends the session; a later one starts a
-/// new pair. Two seconds is long enough that a person who meant "again"
-/// reaches it and short enough that an interrupt an hour ago is not half of
-/// today's.
-const DOUBLE_INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
-
-/// How often the watcher asks whether the handler fired -- the same 20 ms
-/// `tools::invoke` polls its child with, so a Ctrl-C costs at most two polls.
-const INTERRUPT_POLL: Duration = Duration::from_millis(20);
-
 /// The status a shell reports for a process ended by SIGINT.
 const INTERRUPTED_EXIT: i32 = 130;
 
@@ -121,68 +113,6 @@ const INTERRUPTED_EXIT: i32 = 130;
 /// holding the rollout's write lock so the task loop cannot start another
 /// call inside it. See [`Interrupter::end_the_session`].
 const REAP_GRACE: Duration = Duration::from_millis(250);
-
-/// Raised by the signal handler and by nothing else.
-///
-/// **A handler may do exactly one async-signal-safe thing, and this is it.**
-/// Everything the interrupt means -- which token to cancel, whether it is the
-/// second of a pair, whether a rollout line is half written -- is decided by
-/// [`watch`] on an ordinary thread, where locks and allocation are legal.
-static INTERRUPT: AtomicBool = AtomicBool::new(false);
-static TERMINATE: AtomicBool = AtomicBool::new(false);
-
-/// Installs the process's SIGINT handler. Unix: `signal(2)`, whose BSD
-/// semantics on both platforms sterna ships for leave the handler installed
-/// across deliveries, so a second Ctrl-C reaches the same function.
-///
-/// `libc` is not a dependency of this crate on macOS and this is two lines of
-/// declaration, so the handler is declared rather than depended on -- the same
-/// choice `sandbox::macos` makes for `sandbox_init`.
-#[cfg(unix)]
-fn install_interrupt_handler() {
-    /// `SIGINT` on every unix sterna ships for.
-    const SIGINT: i32 = 2;
-
-    unsafe extern "C" {
-        fn signal(sig: i32, handler: usize) -> usize;
-    }
-
-    extern "C" fn on_interrupt(_sig: i32) {
-        INTERRUPT.store(true, Ordering::SeqCst);
-    }
-
-    extern "C" fn on_terminate(_sig: i32) {
-        TERMINATE.store(true, Ordering::SeqCst);
-    }
-    unsafe {
-        signal(SIGINT, on_interrupt as *const () as usize);
-        signal(15, on_terminate as *const () as usize);
-    };
-}
-
-/// The Windows half: the console's Ctrl-C routine sets the identical flag.
-///
-/// It runs on a thread of the console's own making rather than on top of the
-/// interrupted one, and returning `TRUE` says the event was handled -- which
-/// is what stops the default handler ending the process before [`watch`] has
-/// decided whether this was the first Ctrl-C or the second.
-#[cfg(windows)]
-fn install_interrupt_handler() {
-    use windows_sys::Win32::Foundation::TRUE;
-    use windows_sys::Win32::System::Console::{
-        CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler,
-    };
-    use windows_sys::core::BOOL;
-
-    unsafe extern "system" fn on_interrupt(event: u32) -> BOOL {
-        if event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT {
-            INTERRUPT.store(true, Ordering::SeqCst);
-        }
-        TRUE
-    }
-
-    unsafe { SetConsoleCtrlHandler(Some(on_interrupt), TRUE) };
-}
 
 /// The keyboard's end of the cancellation facility.
 ///
@@ -284,7 +214,7 @@ impl Interrupter {
     /// A new task starts with nothing pending -- unless the session is
     /// ending, for the same reason [`consumed`](Self::consumed) keeps it.
     fn start_clean(&self) {
-        INTERRUPT.store(false, Ordering::SeqCst);
+        INTERRUPT.store(0, Ordering::SeqCst);
         self.consumed();
     }
 
@@ -345,41 +275,6 @@ impl Interrupter {
             .into_iter()
             .for_each(|line| eprintln!("{line}"));
         std::process::exit(exit);
-    }
-}
-
-/// Turns the handler's flag into the session's decision, forever.
-///
-/// It is a thread because there is nowhere else to poll from: a task spends
-/// its whole life inside `send_turn` or inside `run_cell`, and neither
-/// returns to the loop while the call a Ctrl-C is meant to stop is running.
-fn watch(state: &Interrupter, steer: Option<Arc<ui::Steer>>) -> ! {
-    let mut first: Option<Instant> = None;
-    loop {
-        std::thread::sleep(INTERRUPT_POLL);
-        if TERMINATE.swap(false, Ordering::SeqCst) {
-            state.end_after_signal(143, "termination requested; ending the session");
-        }
-        // The second Escape reaches the token here, because this thread is
-        // the one that owns it -- but it stays out of the double-interrupt
-        // window above. Escape is the lever that must never end the
-        // session: a person pressing it twice is asking for their call
-        // back, not for their session to go away.
-        if steer.as_ref().is_some_and(|steer| steer.take_cancel()) {
-            state.by_signal.store(false, Ordering::SeqCst);
-            state.raise();
-            continue;
-        }
-        if !INTERRUPT.swap(false, Ordering::SeqCst) {
-            continue;
-        }
-        let now = Instant::now();
-        if first.is_some_and(|earlier| now.duration_since(earlier) <= DOUBLE_INTERRUPT_WINDOW) {
-            state.end_the_session();
-        }
-        first = Some(now);
-        state.by_signal.store(true, Ordering::SeqCst);
-        state.raise();
     }
 }
 

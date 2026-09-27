@@ -1135,7 +1135,7 @@ fn run(
                 decision::Done::Nothing => {}
                 decision::Done::Redraw => dirty = true,
                 decision::Done::Interrupt => {
-                    super::INTERRUPT.store(true, Ordering::SeqCst);
+                    super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
                     dirty = true;
                 }
             }
@@ -1528,7 +1528,7 @@ fn run(
                         // it back; an empty composer arms the quit.
                         KeyCode::Char('c') => {
                             if busy && state.activity.working() {
-                                super::INTERRUPT.store(true, Ordering::SeqCst);
+                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
                                 state.stopping = true;
                                 steer.request_stop(tui::Stopper::Interrupt);
                                 state.note(crate::workbench::voice::CTRL_C_STOPPING);
@@ -1536,7 +1536,7 @@ fn run(
                                 editor.clear();
                                 state.note(crate::workbench::voice::DRAFT_CLEARED);
                             } else {
-                                super::INTERRUPT.store(true, Ordering::SeqCst);
+                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
                                 state.notice = Some(crate::workbench::voice::QUIT_ARMED.into());
                                 quit_armed = Some(Instant::now());
                             }

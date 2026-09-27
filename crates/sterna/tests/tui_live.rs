@@ -2216,9 +2216,12 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
         requests.recv_timeout(Duration::from_secs(6)).is_err(),
         "a turn was sent after the person stopped the task"
     );
-    app.wait("the cell that was in flight kept its result", |screen| {
-        screen.contents().contains('2')
-    });
+    // The turn has ended, and said so: a bare `2` would match the session
+    // id in the header before anything ran.
+    app.wait(
+        "the cell that was in flight ran and the turn stopped",
+        |screen| screen.contents().contains("stopped · what ran stands"),
+    );
     assert!(
         app.child.try_wait().unwrap().is_none(),
         "stopping a turn ended the session"
@@ -2227,6 +2230,16 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
     app.send(b"\x03");
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Two Ctrl-C read in one go -- a quick double tap, or a terminal that
+/// sends both at once -- are two presses, and two presses end the session.
+#[test]
+fn two_ctrl_c_read_together_end_the_session() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x03\x03");
     assert_eq!(app.exited(), 130);
 }
 
