@@ -605,11 +605,15 @@ impl Profile {
     /// state. A rule whose subtree contains the project root is left out --
     /// the project must stay readable -- and so is every write-only rule.
     pub fn secret_paths(&self) -> Vec<PathBuf> {
-        self.never
+        let mut paths: Vec<PathBuf> = self
+            .never
             .iter()
             .filter(|rule| !rule.write_only && rule.except.is_none())
             .map(|rule| rule.path.clone())
-            .collect()
+            .collect();
+        // A registry token inside a toolchain home the sandbox writes.
+        paths.extend(self.toolchain_credentials());
+        paths
     }
 
     /// Every place a confined command may write, as subtrees: the project
@@ -632,6 +636,29 @@ impl Profile {
         places.extend(self.toolchain.iter().map(|(path, _)| path.clone()));
         places.extend(self.temp.iter().map(|(path, _)| path.clone()));
         places
+    }
+
+    /// Paths inside the writable places that stay read-only for a command:
+    /// code written there runs later outside the sandbox (a git hook, a git
+    /// config alias) or widens the next session (Sterna's own settings). A
+    /// worktree's repository keeps its hooks and config at the top of the
+    /// common directory rather than under `.git`.
+    pub fn protected_paths(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for root in std::iter::once(&self.root).chain(self.additional_roots.iter()) {
+            for name in [".git/hooks", ".git/config", ".sterna", ".claude"] {
+                out.push(root.join(name));
+            }
+        }
+        for (dir, _) in &self.repository {
+            if dir.join("HEAD").is_file() {
+                out.push(dir.join("hooks"));
+                out.push(dir.join("config"));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// This profile narrowed to `mode` for one request. Consuming, and it
@@ -995,42 +1022,6 @@ impl Profile {
             return denied(rule);
         }
         Ok(CommandGrant { executables })
-    }
-
-    /// Whether an executable already admitted by a `Bash(...)` command is
-    /// outside §4's never-grantable read roots. The command grant supplies
-    /// the positive authority; this method preserves the absolute refusals
-    /// when the OS layer turns that authority into a literal exec rule.
-    pub fn executable_is_refused(&self, path: &Path) -> bool {
-        if self.invalid_root.is_some() {
-            return true;
-        }
-        let resolved = resolve(path, Some(&self.root), self.home.as_deref());
-        let candidate = spelling(&resolved);
-        if device_refusal(&resolved).is_some() {
-            return true;
-        }
-        let never = self.never.iter().any(|never| {
-            !never.write_only
-                && contains_refusing(&never.prefix, &candidate)
-                && !never
-                    .except_spelling
-                    .as_ref()
-                    .is_some_and(|except| contains(except, &candidate))
-                && !(self
-                    .home
-                    .as_ref()
-                    .is_some_and(|home| spelling(home) == never.prefix)
-                    && self
-                        .additional_roots
-                        .iter()
-                        .any(|root| contains(&spelling(root), &candidate)))
-        });
-        let denied = self
-            .deny
-            .iter()
-            .any(|rule| rule.read && covers(&rule.glob, &candidate, true));
-        never || denied
     }
 
     /// [`Profile::check`], then the request mode: the question a tool call

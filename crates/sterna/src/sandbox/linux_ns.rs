@@ -21,10 +21,6 @@
 //! the id maps and the socket address are prepared in the parent
 //! ([`View::prepare`]); the child only makes system calls on them.
 
-// Wired into the Linux applier in the next change; until then only the
-// probe and the view are reached.
-#![allow(dead_code)]
-
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -67,32 +63,6 @@ pub(crate) struct View {
 unsafe impl Send for View {}
 unsafe impl Sync for View {}
 
-/// Paths inside a writable place that stay read-only for a command: code
-/// written there runs later outside the sandbox (a git hook, a git config
-/// alias) or widens the next session (Sterna's own settings).
-pub(crate) fn protected_paths(writable: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for root in writable {
-        for name in [".git/hooks", ".git/config", ".sterna", ".claude"] {
-            let path = root.join(name);
-            if path.exists() {
-                out.push(path);
-            }
-        }
-        // A worktree's repository keeps its hooks and config at the top of
-        // the common directory, not under `.git`.
-        for name in ["hooks", "config"] {
-            let path = root.join(name);
-            if root.join("HEAD").is_file() && path.exists() {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
 impl View {
     /// Prepares the view for one command. `hidden` are the secrets to cover,
     /// `protected` the paths to make read-only, `scratch` the writable
@@ -116,9 +86,11 @@ impl View {
                 })
             })
             .collect::<std::io::Result<Vec<_>>>()?;
+        // A link in the scratchpad's place is not the scratchpad: a bind
+        // would follow it.
         let writable_inside = scratch
             .iter()
-            .filter(|path| path.is_dir())
+            .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()))
             .map(|path| c_path(path))
             .collect::<std::io::Result<Vec<_>>>()?;
         let hidden = hidden
@@ -587,121 +559,5 @@ unsafe fn pump(a: libc::c_int, b: libc::c_int) {
                 }
             }
         }
-    }
-}
-
-/// The paths a read grant covers so that everything is readable except
-/// `excluded` and what lies beneath each.
-///
-/// Landlock's rules are additive and cannot subtract a path from a granted
-/// directory, so "everything but the secrets" is spelled as its complement:
-/// each directory on the way to an excluded path is walked, every sibling
-/// off that way is granted whole, and the excluded path itself is not. A
-/// directory on the way is returned in `listed` rather than granted, so its
-/// entries can be listed and nothing beneath it is readable by that rule.
-///
-/// `children` lists a directory's entries; injected so the walk is testable
-/// on any host. An entry that is a symbolic link is granted as itself,
-/// which grants nothing beyond the link: its target is covered, or not, by
-/// its own place in the walk.
-pub(crate) fn complement(
-    excluded: &[PathBuf],
-    children: &dyn Fn(&Path) -> Vec<PathBuf>,
-) -> Complement {
-    let mut out = Complement::default();
-    walk(Path::new("/"), excluded, children, &mut out);
-    out.granted.sort();
-    out.granted.dedup();
-    out.listed.sort();
-    out.listed.dedup();
-    out
-}
-
-/// What [`complement`] grants: whole subtrees, and directories that may only
-/// be listed.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Complement {
-    pub(crate) granted: Vec<PathBuf>,
-    pub(crate) listed: Vec<PathBuf>,
-}
-
-fn walk(
-    dir: &Path,
-    excluded: &[PathBuf],
-    children: &dyn Fn(&Path) -> Vec<PathBuf>,
-    out: &mut Complement,
-) {
-    out.listed.push(dir.to_path_buf());
-    for child in children(dir) {
-        if excluded.iter().any(|path| path == &child) {
-            continue;
-        }
-        if excluded.iter().any(|path| path.starts_with(&child)) {
-            walk(&child, excluded, children, out);
-        } else {
-            out.granted.push(child);
-        }
-    }
-}
-
-/// A directory's entries on this host, or none when it cannot be read.
-pub(crate) fn entries(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir)
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tree(dir: &Path) -> Vec<PathBuf> {
-        let names: &[&str] = match dir.to_str().unwrap() {
-            "/" => &["/usr", "/home", "/proc", "/etc"],
-            "/home" => &["/home/me", "/home/other"],
-            "/home/me" => &["/home/me/.ssh", "/home/me/code", "/home/me/.bashrc"],
-            _ => &[],
-        };
-        names.iter().map(PathBuf::from).collect()
-    }
-
-    /// Everything but the excluded paths is granted, and the directories on
-    /// the way to them are only listed.
-    #[test]
-    fn the_complement_grants_around_what_is_excluded() {
-        let excluded = [PathBuf::from("/home/me/.ssh"), PathBuf::from("/proc")];
-        let c = complement(&excluded, &tree);
-        let granted: Vec<&str> = c.granted.iter().map(|p| p.to_str().unwrap()).collect();
-        assert_eq!(
-            granted,
-            [
-                "/etc",
-                "/home/me/.bashrc",
-                "/home/me/code",
-                "/home/other",
-                "/usr"
-            ]
-        );
-        let listed: Vec<&str> = c.listed.iter().map(|p| p.to_str().unwrap()).collect();
-        assert_eq!(listed, ["/", "/home", "/home/me"]);
-        assert!(!c.granted.iter().any(|p| p.starts_with("/proc")));
-    }
-
-    #[test]
-    fn protected_paths_name_hooks_config_and_sternas_own() {
-        let root = std::env::temp_dir().join(format!("sterna-ns-protect-{}", std::process::id()));
-        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
-        std::fs::write(root.join(".git/config"), "").unwrap();
-        std::fs::create_dir_all(root.join(".sterna")).unwrap();
-        let paths = protected_paths(std::slice::from_ref(&root));
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(
-            paths,
-            [
-                root.join(".git/config"),
-                root.join(".git/hooks"),
-                root.join(".sterna")
-            ]
-        );
     }
 }

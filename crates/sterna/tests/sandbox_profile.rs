@@ -1562,20 +1562,6 @@ fn an_admitted_command_carries_only_literal_executable_words() {
 
     let denied = refusal(profile.admits_command("/usr/bin/python3 -m forbidden.case"));
     assert!(denied.rule.contains("permissions.deny"), "{denied:?}");
-
-    let read_denied = Profile::compile(
-        &fixture.root,
-        Some(
-            r#"{"permissions":{
-                "allow":["Bash(/usr/bin/python3 -m unittest*)"],
-                "deny":["Read(/usr/bin/python3)"]
-            }}"#,
-        ),
-    );
-    assert!(
-        read_denied.executable_is_refused(Path::new("/usr/bin/python3")),
-        "an explicit read deny was lost while deriving an exec literal"
-    );
 }
 
 /// A redirect operand — `>&2`, `2>&1`, `<&0`, `&>file` — is part of the

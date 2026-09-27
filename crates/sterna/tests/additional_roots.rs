@@ -7,8 +7,10 @@ use sterna::sandbox::profile::Profile;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
+    /// Under the build's scratch folder: the temp folders are writable
+    /// places of every profile, and these tests are about what is not.
     fn new() -> Self {
-        Self::under(&std::env::temp_dir())
+        Self::under(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")))
     }
     fn under(parent: &std::path::Path) -> Self {
         let path = parent.join(format!(
@@ -44,25 +46,22 @@ fn host_selected_home_subtree_is_accessible_without_granting_home_or_credentials
             .check("write", Access::Write, &fixture.0.join("extra/new"))
             .is_ok()
     );
-    assert!(!profile.executable_is_refused(&fixture.0.join("extra/script")));
+    // Without the added root it stays readable (reads are wide) and is
+    // not writable.
     assert!(
         fixture
             .profile()
-            .executable_is_refused(&fixture.0.join("extra/script"))
+            .check("write", Access::Write, &fixture.0.join("extra/new"))
+            .is_err()
     );
     for denied in [home.join(".ssh/id_rsa"), home.join(".config/credentials")] {
         assert!(profile.check("read", Access::Read, &denied).is_err());
         assert!(profile.check("write", Access::Write, &denied).is_err());
-        assert!(profile.executable_is_refused(&denied));
     }
-    // `~/.gitconfig` keeps every half this test is about — an additional
-    // root grants nothing around it, it is never writable and never
-    // executable. Its *read* is a derived host grant since 2026-09-17,
-    // because `git` will not start without it; that grant is pinned in
-    // `sandbox_profile.rs`, and it is not something `--add-dir` can widen.
+    // `~/.gitconfig` stays unwritable: an additional root grants nothing
+    // around it.
     let gitconfig = home.join(".gitconfig");
     assert!(profile.check("write", Access::Write, &gitconfig).is_err());
-    assert!(profile.executable_is_refused(&gitconfig));
     assert!(fixture.profile().with_additional_root(&home).is_err());
     assert!(
         fixture
@@ -84,23 +83,28 @@ fn explicit_root_is_canonical_relative_to_project_and_does_not_grant_its_sibling
     let original = fixture.profile();
     let profile = original.clone().with_additional_root("../extra").unwrap();
     assert_eq!(profile.additional_roots(), &[fixture.0.join("extra")]);
-    for access in [Access::Read, Access::Write] {
-        assert!(
-            profile
-                .check("test", access, &fixture.0.join("extra/new"))
-                .is_ok()
-        );
-        assert!(
-            original
-                .check("test", access, &fixture.0.join("extra/new"))
-                .is_err()
-        );
-        assert!(
-            profile
-                .check("test", access, &fixture.0.join("outside/new"))
-                .is_err()
-        );
-    }
+    // Reads are wide either way; the added root is what makes it writable,
+    // and its sibling stays unwritable.
+    assert!(
+        profile
+            .check("test", Access::Write, &fixture.0.join("extra/new"))
+            .is_ok()
+    );
+    assert!(
+        original
+            .check("test", Access::Write, &fixture.0.join("extra/new"))
+            .is_err()
+    );
+    assert!(
+        profile
+            .check("test", Access::Write, &fixture.0.join("outside/new"))
+            .is_err()
+    );
+    assert!(
+        original
+            .check("test", Access::Read, &fixture.0.join("extra/new"))
+            .is_ok()
+    );
     assert!(
         profile
             .check(
@@ -171,11 +175,6 @@ fn symlinks_do_not_extend_the_added_subtree() {
     symlink(fixture.0.join("outside"), fixture.0.join("extra/escape")).unwrap();
     assert!(
         profile
-            .check("read", Access::Read, &fixture.0.join("extra/escape/secret"))
-            .is_err()
-    );
-    assert!(
-        profile
             .check("write", Access::Write, &fixture.0.join("extra/escape/new"))
             .is_err()
     );
@@ -186,9 +185,9 @@ fn symlinks_do_not_extend_the_added_subtree() {
 fn macos_text_names_only_the_added_subtree_and_protects_its_configuration() {
     let fixture = Fixture::new();
     let profile = fixture.profile().with_additional_root("../extra").unwrap();
-    let text = sterna::sandbox::macos::profile_text(&profile, std::path::Path::new("/bin/cat"));
+    let text = sterna::sandbox::macos::profile_text(&profile);
     assert!(text.contains(&format!(
-        "(allow file-read* file-write* (subpath \"{}\"))",
+        "(allow file-write* (subpath \"{}\"))",
         fixture.0.join("extra").display()
     )));
     assert!(text.contains(&format!(
@@ -220,47 +219,31 @@ fn spawned_shell_can_use_extra_directory_but_cannot_escape_or_write_its_config()
         profile: &profile,
         session: &session,
     };
-    let args = Args::new().with("command", "printf allowed > ../extra/result; cat ../extra/result; cat ../outside/secret; printf forbidden > ../extra/.claude/settings.json");
+    let args = Args::new().with("command", "printf allowed > ../extra/result; cat ../extra/result; printf escaped > ../outside/escaped; printf forbidden > ../extra/.claude/settings.json");
     let result = invoke::run(&context, "bash", &args).unwrap();
     assert!(result.stdout.contains("allowed"));
-    assert!(!result.stdout.contains("outside secret"));
+    assert!(!fixture.0.join("outside/escaped").exists());
     assert_eq!(
         std::fs::read_to_string(fixture.0.join("extra/result")).unwrap(),
         "allowed"
     );
     assert!(!fixture.0.join("extra/.claude/settings.json").exists());
-    // A positive unconfined baseline distinguishes sandbox refusal from a
-    // fixture that was simply unreadable in the first place.
-    assert_eq!(
-        std::process::Command::new("/bin/cat")
-            .arg(fixture.0.join("outside/secret"))
-            .output()
-            .unwrap()
-            .stdout,
-        b"outside secret"
-    );
 }
 
 #[test]
 #[cfg(not(target_os = "windows"))]
-fn linux_broad_command_grant_includes_extra_executable_root_but_narrow_grant_does_not() {
+fn linux_grants_the_added_root_as_a_writable_place_and_nothing_beside_it() {
     let fixture = Fixture::new();
-    let broad = Profile::compile(
-        fixture.0.join("project"),
-        Some(r#"{"permissions":{"allow":["Bash"]}}"#),
-    )
-    .with_additional_root("../extra")
-    .unwrap();
-    let narrow = Profile::compile(
-        fixture.0.join("project"),
-        Some(r#"{"permissions":{"allow":["Bash(cat*)"]}}"#),
-    )
-    .with_additional_root("../extra")
-    .unwrap();
-    let binary = std::path::Path::new("/bin/cat");
-    let broad_rules = sterna::sandbox::linux::landlock_rules(&broad, binary);
-    let narrow_rules = sterna::sandbox::linux::landlock_rules(&narrow, binary);
-    assert!(broad_rules.executable.contains(&fixture.0.join("extra")));
-    assert!(!narrow_rules.executable.contains(&fixture.0.join("extra")));
-    assert!(!broad_rules.executable.contains(&fixture.0.join("outside")));
+    let profile = Profile::compile(fixture.0.join("project"), None)
+        .with_additional_root("../extra")
+        .unwrap();
+    let rules = sterna::sandbox::linux::landlock_rules(&profile);
+    assert!(
+        rules.read_write.contains(&fixture.0.join("extra")),
+        "{rules:?}"
+    );
+    assert!(
+        !rules.read_write.contains(&fixture.0.join("outside")),
+        "{rules:?}"
+    );
 }
