@@ -617,35 +617,34 @@ fn remembered_actions_do_not_cross_roots_or_override_a_later_profiles_deny() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn answering_the_gate_does_not_expand_the_os_sandbox() {
     let fixture = Fixture::new();
-    let outside = Fixture::new();
-    let private = outside.0.join("private");
-    std::fs::write(&private, "private contents\n").unwrap();
+    let target = unwritable_target("gate");
     let command = format!(
-        "if IFS= read -r contents < '{}'; then printf leaked; else printf confined; fi",
-        private.display()
+        "if printf leaked 2>/dev/null > '{}'; then printf leaked; else printf confined; fi",
+        target.display()
     );
-    // The same command can read the file without confinement, so the negative
-    // half below is an OS restriction, not a missing fixture or a bad command.
+    // The same command can write the file without confinement, so the
+    // negative half below is an OS restriction, not a missing fixture or a
+    // bad command.
     let unconfined = std::process::Command::new("bash")
         .args(["-c", &command])
         .output()
         .unwrap();
     assert_eq!(String::from_utf8(unconfined.stdout).unwrap(), "leaked");
+    std::fs::remove_file(&target).unwrap();
     let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let responder = std::thread::spawn(move || {
         let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(request.action().tool(), "bash");
         assert!(request.respond(Decision::AllowOnce));
     });
-    let mut runtime = fixture
-        .runtime(Some(r#"{"permissions":{"allow":["Bash"]}}"#))
-        .with_approval_gate(gate);
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
     let outcome = runtime.run_cell(&format!(
         "return bash({{command: {}}}).stdout;",
         serde_json::to_string(&command).unwrap()
     ));
     returned(&outcome, "confined");
     responder.join().unwrap();
+    assert!(!target.exists(), "the answered command wrote outside");
 }
 
 // -- the approval hint (F4, decision-model.md) ---------------------------

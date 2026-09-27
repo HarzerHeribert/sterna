@@ -60,7 +60,9 @@ fn read_reports_the_admitted_files_actual_mtime_and_does_not_widen_the_root() {
             .as_nanos()
     );
     let root = std::env::temp_dir().join(&stem);
-    let outside = std::env::temp_dir().join(format!("{stem}-outside"));
+    // Outside every writable place: not the project and not a temp folder.
+    let outside =
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{stem}-outside"));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("observed.txt"), "content").unwrap();
     std::fs::write(&outside, "secret").unwrap();
@@ -77,14 +79,17 @@ fn read_reports_the_admitted_files_actual_mtime_and_does_not_widen_the_root() {
         .run_cell("const file = await read({path: 'observed.txt'}); console.log(file.mtime);\n");
     assert_eq!(observed.turn().stdout_tail.trim(), expected);
 
+    // Reads are wide; the root the read was admitted under is what bounds a
+    // write, and reading a file did not widen it.
     let denied = runtime.run_cell(&format!(
-        "const escaped = await read({{path: {}}});\n",
+        "write({{path: {}, content: 'overwritten'}});\n",
         serde_json::to_string(&outside.to_string_lossy()).unwrap()
     ));
     assert!(
         matches!(denied, CellOutcome::Threw { ref error, .. } if error.class == "PermissionDenied"),
         "{denied:?}"
     );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_file(outside);
 }

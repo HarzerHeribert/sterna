@@ -264,7 +264,14 @@ fn excerpt_adds_no_filesystem_authority() {
     std::fs::write(fixture.root.join("inside.txt"), "inside\n").unwrap();
     let outside = fixture.root.with_extension("outside");
     std::fs::write(&outside, "secret\n").unwrap();
-    let mut runtime = fixture.runtime();
+    // Reads are wide now; a `deny` rule is what refuses one, and an excerpt
+    // must not reach past it.
+    let settings = serde_json::json!({
+        "permissions": {"deny": [format!("Read({})", outside.display())]}
+    })
+    .to_string();
+    let profile = Profile::compile(&fixture.root, Some(&settings));
+    let mut runtime = Runtime::new(&profile, &SessionId::new("bounded-excerpt-test"));
     let outcome = runtime.run_cell(&format!(
         "console.log(typeof globalThis.excerpt);\n\
          const escaped = await read({{path: {}}});\n",
