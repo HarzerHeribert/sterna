@@ -31,6 +31,10 @@ use sterna::web::{WebBroker, WebConfig, WebResponse, WebTransport};
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A throwaway project root with a `.claude/`, and a directory outside it.
+///
+/// The outside directory lives under Cargo's per-target scratch directory,
+/// not the machine's temp folder: temp is one of the sandbox's writable
+/// places, so an "outside" there would be inside a grant.
 struct Fixture {
     root: PathBuf,
     outside: PathBuf,
@@ -42,7 +46,7 @@ impl Fixture {
         let stem = format!("sterna-runtime-{}-{label}-{n}", std::process::id());
         let root = std::env::temp_dir().join(&stem);
         std::fs::create_dir_all(root.join(".claude")).unwrap();
-        let outside = std::env::temp_dir().join(format!("{stem}-outside"));
+        let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{stem}-outside"));
         std::fs::create_dir_all(&outside).unwrap();
         Self { root, outside }
     }
@@ -77,10 +81,19 @@ impl Drop for Fixture {
     }
 }
 
-/// `Bash(echo*)` is argv admission and grants no file access at all
+/// Every command line is admitted anyway; a `Bash(...)` allow only
+/// pre-approves on the Ask level and grants no file access at all
 /// (`sandbox-grants.md` §2) — which is why it is safe in a fixture.
 fn settings() -> String {
     r#"{"permissions":{"allow":["Bash(echo*)","Bash(cat*)"]}}"#.to_string()
+}
+
+/// Settings whose one rule refuses reading anything under `dir`: reading is
+/// granted everywhere nothing refuses, so a refused read needs a `deny`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn deny_reading(dir: &Path) -> String {
+    let dir = dir.to_string_lossy().replace('\\', "/");
+    format!(r#"{{"permissions":{{"deny":["Read({dir}/**)"]}}}}"#)
 }
 
 fn runtime(fixture: &Fixture, session: &SessionId) -> Runtime {
@@ -159,7 +172,7 @@ fn a_top_level_binding_persists_into_the_next_cell_and_a_redeclaration_replaces_
 fn a_named_runner_reexecutes_tools_across_cells_and_keeps_permission_checks() {
     let fixture = Fixture::new("named-runner");
     fixture.write(&fixture.root.join("verdict"), "first run\n");
-    let profile = fixture.profile_with(r#"{"permissions":{"allow":["Read(**)","Bash(cat*)"]}}"#);
+    let profile = fixture.profile_with(r#"{"permissions":{"deny":["Bash(echo *)"]}}"#);
     let session = SessionId::new("named-runner-session");
     let mut runtime = Runtime::new(&profile, &session);
     let first = runtime.run_cell(
@@ -184,7 +197,7 @@ fn a_named_runner_reexecutes_tools_across_cells_and_keeps_permission_checks() {
     );
     assert!(!second.turn().stdout_tail.contains("first run"));
 
-    let refused = runtime.run_cell("await verify(\"echo not-admitted\");");
+    let refused = runtime.run_cell("await verify(\"echo denied\");");
     assert_eq!(threw(&refused).class, "PermissionDenied");
     assert!(runtime.is_live("verify"));
 }
@@ -542,7 +555,8 @@ fn a_refused_call_throws_permission_denied_inside_the_program_and_is_catchable()
     let fixture = Fixture::new("denied");
     let secret = fixture.write(&fixture.outside.join("secret.txt"), "OUTSIDE-SECRET\n");
     let session = SessionId::new("denied-session");
-    let mut runtime = runtime(&fixture, &session);
+    let profile = fixture.profile_with(&deny_reading(&fixture.outside));
+    let mut runtime = Runtime::new(&profile, &session);
 
     let program = format!(
         "try {{\n  await read({{ path: {path:?} }});\n  return \"no throw\";\n}} catch (e) {{\n  \
@@ -879,10 +893,15 @@ fn the_isolate_has_no_ambient_authority() {
 #[test]
 fn a_refusal_carries_the_models_own_line_and_column_and_no_host_frame() {
     let fixture = Fixture::new("no-host-frame");
+    let secret = fixture.write(&fixture.outside.join("secret.txt"), "OUTSIDE-SECRET\n");
     let session = SessionId::new("no-host-frame");
-    let mut runtime = runtime(&fixture, &session);
+    let profile = fixture.profile_with(&deny_reading(&fixture.outside));
+    let mut runtime = Runtime::new(&profile, &session);
 
-    let outcome = runtime.run_cell("const secret = await read({ path: \"/etc/passwd\" });\n");
+    let outcome = runtime.run_cell(&format!(
+        "const secret = await read({{ path: {path:?} }});\n",
+        path = secret.to_string_lossy()
+    ));
     let CellOutcome::Threw { error, .. } = &outcome else {
         panic!("a refused read must throw: {outcome:?}");
     };
@@ -1610,14 +1629,15 @@ fn a_cells_trajectory_names_every_call_that_ran_as_checked() {
     let fixture = Fixture::new("trajectory");
     let file = fixture.write(&fixture.root.join("sub").join("one.txt"), "hello\n");
     let session = SessionId::new("trajectory-session");
-    let mut runtime = runtime(&fixture, &session);
+    let profile = fixture.profile_with(r#"{"permissions":{"deny":["Bash(rm *)"]}}"#);
+    let mut runtime = Runtime::new(&profile, &session);
 
     // The program spells the path with a `..` in it; the record carries the
     // path the child was given.
     let spelled = format!("{}/sub/../sub/one.txt", fixture.root.display());
     let program = format!(
         "const doc = await read({{ path: {spelled:?} }});\nconst out = await bash({{ command: \
-         \"echo two\" }});\nlet refused = \"\";\ntry {{ await bash({{ command: \"rm -rf /\" }}); \
+         \"echo two\" }});\nlet refused = \"\";\ntry {{ await bash({{ command: \"rm -rf gone\" }}); \
          }} catch (e) {{ refused = e.name; }}\n"
     );
     let outcome = runtime.run_cell(&program);
@@ -2864,14 +2884,18 @@ fn the_model_calls_where_ack_and_rest_on_the_batch_it_was_given() {
     assert_eq!(returned_string(&acked), "1/9999/2");
 }
 
-/// §5's refusal, seen from inside the model's own program: a `bg.run` outside
-/// the grant is a `PermissionDenied` **at the call**, and the handle table
-/// has no new row afterwards.
+/// §5's refusal, seen from inside the model's own program: a `bg.run` a
+/// `deny` pattern names is a `PermissionDenied` **at the call**, and the
+/// handle table has no new row afterwards.
 #[test]
 fn a_bg_run_outside_the_grant_throws_before_any_handle_exists() {
     let fixture = Fixture::new("bg-denied");
     let session = SessionId::new("bg-denied-session");
-    let mut runtime = runtime(&fixture, &session);
+    let profile = Profile::compile(
+        &fixture.root,
+        Some(r#"{"permissions":{"deny":["Bash(curl *)"]}}"#),
+    );
+    let mut runtime = Runtime::new(&profile, &session);
 
     let before = runtime.handle_names();
     let outcome = runtime.run_cell("const job = bg.run(\"curl https://example.com\");\n");

@@ -41,6 +41,10 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A throwaway project with a `.claude/`, a file inside the root, and a file
 /// outside it. Removed when the test finishes.
+///
+/// The outside directory lives under Cargo's per-target scratch directory,
+/// not the machine's temp folder: temp is one of the sandbox's writable
+/// places, so an "outside" there would be inside a grant.
 struct Fixture {
     root: PathBuf,
     outside: PathBuf,
@@ -52,7 +56,7 @@ impl Fixture {
         let stem = format!("sterna-tools-{}-{label}-{n}", std::process::id());
         let root = std::env::temp_dir().join(&stem);
         std::fs::create_dir_all(root.join(".claude")).unwrap();
-        let outside = std::env::temp_dir().join(format!("{stem}-outside"));
+        let outside = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{stem}-outside"));
         std::fs::create_dir_all(&outside).unwrap();
         Self { root, outside }
     }
@@ -81,10 +85,10 @@ impl Drop for Fixture {
     }
 }
 
-/// A settings document that admits one command prefix and nothing outside
-/// the project root. `Bash(echo*)` is argv admission and grants no file
-/// access at all (`sandbox-grants.md` §2) — which is exactly why it is safe
-/// to have in a fixture.
+/// A settings document with two `Bash(...)` allow patterns. Every command
+/// line is admitted anyway; an allow only pre-approves on the Ask level and
+/// grants no file access at all (`sandbox-grants.md` §2) — which is exactly
+/// why it is safe to have in a fixture.
 fn settings() -> String {
     r#"{"permissions":{"allow":["Bash(echo*)","Bash(cat*)"]}}"#.to_string()
 }
@@ -277,80 +281,29 @@ fn a_narrow_bash_call_executes_the_literal_python_it_admitted() {
     .expect("the literal Python command passed argv admission and spawned");
     assert_eq!(result.exit_code, Some(0), "{result:?}");
     assert_eq!(result.stdout.trim(), "literal-python-ran", "{result:?}");
-
-    let companion = sterna::sandbox::macos::python_framework_companion(&python)
-        .expect("Homebrew Python has its one framework launcher companion");
-    let denied_settings = format!(
-        r#"{{"permissions":{{
-            "allow":["Bash({} -c*)"],
-            "deny":["Read({})"]
-        }}}}"#,
-        python.display(),
-        companion.display()
-    );
-    let denied_profile = Profile::compile(&fixture.root, Some(&denied_settings));
-    let denied = invoke::run(
-        &context(&denied_profile, &session),
-        "bash",
-        &Args::new().with(
-            "command",
-            format!("{} -c 'print(\"denied-companion-ran\")'", python.display()),
-        ),
-    )
-    .expect("the Python argv remains admitted while its runtime companion is denied");
-    assert_ne!(denied.exit_code, Some(0), "{denied:?}");
-    assert!(
-        !denied.stdout.contains("denied-companion-ran"),
-        "{denied:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_read_deny_keeps_an_admitted_command_binary_out_of_the_os_grant() {
-    let fixture = Fixture::new("denied-command-binary");
-    let profile = Profile::compile(
-        &fixture.root,
-        Some(
-            r#"{"permissions":{
-                "allow":["Bash(/bin/echo*)"],
-                "deny":["Read(/bin/echo)"]
-            }}"#,
-        ),
-    );
-    let session = SessionId::new("denied-command-binary");
-    let result = invoke::run(
-        &context(&profile, &session),
-        "bash",
-        &Args::new().with("command", "/bin/echo denied-binary-ran"),
-    )
-    .expect("argv admission still permits the shell call");
-    assert_ne!(
-        result.exit_code,
-        Some(0),
-        "the read-denied binary ran: {result:?}"
-    );
-    assert!(
-        !result.stdout.contains("denied-binary-ran"),
-        "the read-denied binary ran: {result:?}"
-    );
 }
 
 /// Map line 2455 reaching a caller, and `sandbox-grants.md` §1.4.
 ///
 /// Two halves in one test on purpose: the in-root read must **succeed**, so
-/// a sandbox that refused everything fails here, and the outside read must
-/// come back as a returned refusal rather than a panic, a prompt or an
-/// escalation.
+/// a sandbox that refused everything fails here, and a read of a path a
+/// `deny` pattern names must come back as a returned refusal rather than a
+/// panic, a prompt or an escalation.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_tool_runs_confined_and_a_refusal_is_a_value() {
     let fixture = Fixture::new("confined");
     let inside = fixture.write(&fixture.root.join("inside.txt"), "inside-content\n");
     let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
-    let profile = fixture.profile();
+    let denied_dir = fixture.outside.to_string_lossy().replace('\\', "/");
+    let denying = Profile::compile(
+        &fixture.root,
+        Some(&format!(
+            r#"{{"permissions":{{"deny":["Read({denied_dir}/**)"]}}}}"#
+        )),
+    );
     let session = SessionId::new("confined");
-    let ctx = context(&profile, &session);
+    let ctx = context(&denying, &session);
 
     let ok = invoke::run(
         &ctx,
@@ -370,15 +323,10 @@ fn a_tool_runs_confined_and_a_refusal_is_a_value() {
         "read",
         &Args::new().with("path", &*outside.to_string_lossy()),
     )
-    .expect_err("a file outside every grant is refused");
+    .expect_err("a file a deny pattern names is refused");
     let denied = refused.denied().expect("a refusal, not a spawn failure");
     assert_eq!(denied.tool, "read");
-    assert!(
-        denied
-            .rule
-            .contains("the project root is the only readable root"),
-        "{denied}"
-    );
+    assert!(denied.rule.contains("in permissions.deny"), "{denied}");
     // The refusal names the resolved path, and it is a value: it is `Display`
     // and it did not end anything — the next call still works.
     assert!(denied.to_string().starts_with("PermissionDenied: read("));
@@ -393,32 +341,35 @@ fn a_tool_runs_confined_and_a_refusal_is_a_value() {
     );
 
     // The kernel half, and it is the half that proves *confinement* rather
-    // than the pre-call check. `Bash(cat*)` admits the command line and
-    // grants no file access whatsoever (§2), so nothing in process refuses
-    // this call: the child is spawned and the OS layer is the only thing
-    // between it and the file. `the_same_tool_reads_the_path_unconfined`
-    // runs the same command line without confinement and must read it.
+    // than the pre-call check. Every command line is admitted and nothing in
+    // process looks inside a shell redirection, so the child is spawned and
+    // the OS layer is the only thing between it and a write outside every
+    // writable place. `the_same_tools_reach_the_path_unconfined` runs the
+    // same command line without confinement and must write the file.
+    let plain = fixture.profile();
+    let ctx = context(&plain, &session);
+    let target = fixture.outside.join("escaped.txt");
     let escaped = invoke::run(
         &ctx,
         "bash",
-        &Args::new().with("command", format!("cat {}", outside.display())),
+        &Args::new().with("command", format!("echo escaped > {}", target.display())),
     )
     .expect("the command line is admitted, so the call reaches a child");
     assert!(
-        !escaped.stdout.contains("outside-secret"),
-        "a confined child read outside the project root: {escaped:?}"
+        !target.exists(),
+        "a confined child wrote outside every writable place: {escaped:?}"
     );
     assert_ne!(escaped.exit_code, Some(0), "{escaped:?}");
 }
 
 /// The paired half of the test above, and the reason it is a separate test
-/// with its own name: it runs the **same argv on the same file** without any
+/// with its own name: it runs the **same argv on the same path** without any
 /// confinement and without consulting the profile. If this fails, the
 /// refusal above proved nothing about the profile — the fixture, the binary
 /// or the platform would be the explanation.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn the_same_tool_reads_the_path_unconfined() {
+fn the_same_tools_reach_the_path_unconfined() {
     let fixture = Fixture::new("unconfined-control");
     let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
 
@@ -434,14 +385,15 @@ fn the_same_tool_reads_the_path_unconfined() {
     // And the same for the `bash` tool's command line, whose confined half is
     // the kernel assertion in `a_tool_runs_confined_and_a_refusal_is_a_value`.
     // Without this, a sandbox that refused every exec would pass that one.
+    let target = fixture.outside.join("escaped.txt");
     let shell = invoke::exec_grant(registry::lookup("bash").unwrap().executable().unwrap());
     let output = std::process::Command::new(&shell.binary)
         .arg("-c")
-        .arg(format!("cat {}", outside.display()))
+        .arg(format!("echo escaped > {}", target.display()))
         .output()
         .expect("the resolved `bash` runs");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "outside-secret\n");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "escaped\n");
 }
 
 /// `Profile::check` returns the resolved path and that is what reaches the
@@ -571,6 +523,11 @@ fn a_refusal_reaches_the_binary_as_a_value_and_the_session_continues() {
     let fixture = Fixture::new("binary-refusal");
     fixture.write(&fixture.root.join("inside.txt"), "still-here\n");
     let outside = fixture.write(&fixture.outside.join("secret.txt"), "outside-secret\n");
+    let denied_dir = fixture.outside.to_string_lossy().replace('\\', "/");
+    fixture.write(
+        &fixture.root.join(".sterna").join("config.toml"),
+        &format!("[permissions]\ndeny = [\"Read({denied_dir}/**)\"]\n"),
+    );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sterna"))
         .arg("session")
@@ -1154,13 +1111,11 @@ fn a_call_whose_stdout_exceeds_the_pipe_buffer_completes() {
     assert!(result.stderr.is_empty(), "{result:?}");
 }
 
-/// `macos::exec_scope` and `linux::exec_scope` decide "resolved" from
-/// `Path::is_absolute`, and `invoke::exec_grant` returns an absolute path only
-/// for a name it resolved on `PATH` and found runnable. The two agree exactly
-/// as long as every declared executable is a bare name: an absolute declared
-/// executable that does not resolve would be reported as resolved by the
-/// appliers and as fallen-back by the grant (the 61D verifier's finding 4).
-/// The registry is where that precondition could break, so it is pinned here.
+/// `invoke::exec_grant` returns an absolute path only for a name it resolved
+/// on `PATH` and found runnable, and Windows refuses an unresolved one rather
+/// than completing it from the project root. That holds as long as every
+/// declared executable is a bare name; the registry is where it could break,
+/// so it is pinned here.
 #[test]
 fn every_declared_executable_is_a_bare_name() {
     for tool in registry::ALL.iter() {
@@ -1173,7 +1128,7 @@ fn every_declared_executable_is_a_bare_name() {
             !executable.contains('/')
                 && !executable.contains('\\')
                 && !Path::new(executable).is_absolute(),
-            "{}: `{executable}` is not a bare name, and exec_scope would disagree with exec_grant about it",
+            "{}: `{executable}` is not a bare name, so exec_grant cannot resolve it on PATH",
             tool.name()
         );
     }
@@ -1346,20 +1301,15 @@ fn edit_accepts_literal_line_arrays_for_both_sides() {
 ///
 /// Inside the project root both are granted unconditionally — the root is the
 /// workspace (`sandbox-grants.md` §1.3), which is why a `Write(<root>/**)`
-/// pattern changes nothing there. **Outside** the root a grant is per-access,
-/// so a directory granted for reading alone is readable by `read` and refused
-/// to `write`. A `write` declared with `ArgKind::Path` would be allowed here.
+/// pattern changes nothing there. **Outside** every writable place reading is
+/// still granted (the sandbox is wide for reading) and writing is not, so the
+/// same file is readable by `read` and refused to `write`. A `write` declared
+/// with `ArgKind::Path` would be allowed here.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn write_is_refused_outside_the_root_where_only_reading_is_granted() {
     let fixture = Fixture::new("write-readonly");
-    let outside = fixture.outside.to_string_lossy().replace('\\', "/");
-    let profile = Profile::compile(
-        &fixture.root,
-        Some(&format!(
-            r#"{{"permissions":{{"allow":["Read({outside}/**)"]}}}}"#
-        )),
-    );
+    let profile = fixture.profile();
     let readable = fixture.outside.join("readable.txt");
     std::fs::write(&readable, "from outside\n").unwrap();
     let session = SessionId::new("write-readonly");
@@ -1371,7 +1321,7 @@ fn write_is_refused_outside_the_root_where_only_reading_is_granted() {
         "read",
         &Args::new().with("path", &*readable.to_string_lossy()),
     )
-    .expect("the read grant should let `read` through");
+    .expect("the wide read grant should let `read` through");
 
     // The same path, the other access, refused.
     let error = invoke::run(
@@ -1381,7 +1331,7 @@ fn write_is_refused_outside_the_root_where_only_reading_is_granted() {
             .with("path", &*readable.to_string_lossy())
             .with("content", "overwritten"),
     )
-    .expect_err("a read-only grant must refuse a write");
+    .expect_err("a place that is readable but not writable must refuse a write");
     assert!(
         matches!(error, invoke::ToolError::Denied(_)),
         "expected a refusal, got {error:?}"
