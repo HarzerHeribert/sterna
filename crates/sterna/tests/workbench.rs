@@ -530,6 +530,8 @@ fn every_theme_and_local_surface_keeps_terminal_background() {
     for theme in Theme::ALL {
         let mut s = s.clone();
         s.theme = theme;
+        // The accent as a true-colour terminal is sent it.
+        s.truecolor = true;
         for mode in 0..4 {
             let mut u = Workbench::default();
             match mode {
@@ -539,13 +541,16 @@ fn every_theme_and_local_surface_keeps_terminal_background() {
                 _ => {}
             }
             let b = draw(&c, &n, &s, &mut u, 100, 40);
-            let painted = b
+            // A bird's pixels are the one drawing that paints: the lower
+            // half of a half block is its colour.
+            let cells: Vec<_> = b
                 .content
                 .iter()
-                .filter(|cell| cell.bg != Color::Reset)
-                .count();
+                .filter(|cell| !["▀", "▄"].contains(&cell.symbol()))
+                .collect();
+            let painted = cells.iter().filter(|cell| cell.bg != Color::Reset).count();
             assert!(
-                b.content
+                cells
                     .iter()
                     .all(|cell| cell.bg == Color::Reset || cell.bg == theme_accent(theme)),
                 "{theme:?} mode {mode}: a background other than the accent"
@@ -4186,4 +4191,143 @@ fn the_theme_picker_has_a_seabirds_family() {
             .contains("Arctic Tern"),
         "{screen}"
     );
+}
+
+fn rgb_of(colour: Color) -> Option<u32> {
+    match colour {
+        Color::Rgb(r, g, b) => Some(u32::from_be_bytes([0, r, g, b])),
+        _ => None,
+    }
+}
+
+/// A terminal that shows no true colour is sent none: every colour is one
+/// of its 256.
+#[test]
+fn without_true_colour_no_rgb_is_emitted() {
+    let (c, n, mut s) = fixture();
+    s.truecolor = false;
+    s.theme = Theme::Neon;
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 140, 42);
+    for cell in b.content() {
+        assert!(
+            rgb_of(cell.fg).is_none() && rgb_of(cell.bg).is_none(),
+            "{:?} is sent as 24-bit colour",
+            cell.symbol()
+        );
+    }
+    u.open(Source::Themes { before: s.theme });
+    let b = draw(&c, &n, &s, &mut u, 140, 42);
+    assert!(b.content().iter().all(|cell| rgb_of(cell.fg).is_none()));
+}
+
+/// On a light terminal every coloured word reads against its white -- the
+/// roles, the accent of a pale theme, the ink on a chosen chip.
+#[test]
+fn a_light_terminal_gets_colours_that_read_on_it() {
+    use sterna::workbench::look::{LIGHT_GROUND, contrast};
+    let (c, n, mut s) = fixture();
+    s.truecolor = true;
+    s.light = true;
+    s.sidebar = sterna::tui::SidebarVisibility::Shown;
+    for theme in [
+        Theme::Neon,
+        Theme::Amber,
+        Theme::Bird(sterna::workbench::plumage::Bird::Cockatoo),
+    ] {
+        s.theme = theme;
+        let mut u = Workbench::default();
+        let mut buffers = vec![draw(&c, &n, &s, &mut u, 140, 40)];
+        u.open(Source::Work);
+        buffers.push(draw(&c, &n, &s, &mut u, 140, 40));
+        for b in buffers {
+            // Plumage is drawing, not text: its pixels keep their own rule.
+            for cell in b
+                .content()
+                .iter()
+                .filter(|cell| !["▀", "▄", "█"].contains(&cell.symbol()))
+            {
+                let Some(fg) = rgb_of(cell.fg) else { continue };
+                match rgb_of(cell.bg) {
+                    // Ink on a filled chip reads on the chip.
+                    Some(bg) => assert!(
+                        contrast(fg, bg) >= 4.5,
+                        "{theme:?}: {:?} is {fg:06x} on {bg:06x}",
+                        cell.symbol()
+                    ),
+                    None => assert!(
+                        contrast(fg, LIGHT_GROUND) >= 3.0,
+                        "{theme:?}: {:?} is {fg:06x} on a light ground",
+                        cell.symbol()
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// On a light terminal a bird wears its light palette: the tern's white
+/// is the grey its drawing names for a light ground.
+#[test]
+fn a_bird_on_a_light_terminal_wears_its_light_palette() {
+    let (_, _, mut s) = fixture();
+    s.truecolor = true;
+    s.theme = Theme::Bird(sterna::workbench::plumage::Bird::ArcticTern);
+    let empty = Conversation {
+        system: String::new(),
+        messages: vec![],
+    };
+    let colours = |s: &ScreenState| {
+        let mut u = Workbench::default();
+        let b = draw(&empty, &Notebook::default(), s, &mut u, 100, 30);
+        b.content()
+            .iter()
+            .filter(|cell| ["▀", "▄"].contains(&cell.symbol()))
+            .flat_map(|cell| [rgb_of(cell.fg), rgb_of(cell.bg)])
+            .flatten()
+            .collect::<std::collections::BTreeSet<u32>>()
+    };
+    let dark = colours(&s);
+    s.light = true;
+    let light = colours(&s);
+    assert!(dark.contains(&0xeef0f2) && !dark.contains(&0xdce1e6));
+    assert!(light.contains(&0xdce1e6) && !light.contains(&0xeef0f2));
+}
+
+/// Mono is monochrome: the person and the helpers are told apart by
+/// weight, not hue.
+#[test]
+fn mono_draws_the_person_and_the_helpers_without_hue() {
+    let (c, n, mut s) = fixture();
+    s.theme = Theme::Mono;
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    let cell_of = |needle: &str| {
+        let screen = text(&b);
+        let (y, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle}:\n{screen}"));
+        let x = line.chars().position(|_| true).unwrap()
+            + line[..line.find(needle).unwrap()].chars().count();
+        b[(x as u16, y as u16)].clone()
+    };
+    for needle in ["you", "◇ reduce"] {
+        let cell = cell_of(needle);
+        assert_eq!(cell.fg, Color::Reset, "{needle} has a hue in mono");
+    }
+}
+
+/// The background setting is in force the moment it is chosen.
+#[test]
+fn choosing_a_light_background_applies_now() {
+    let (_t, mut s, mut p) = prefs();
+    assert!(!s.light);
+    p.save("ui.background", Some("light".into()), &mut s)
+        .unwrap();
+    assert!(s.light);
+    p.save("ui.background", Some("dark".into()), &mut s)
+        .unwrap();
+    assert!(!s.light);
 }

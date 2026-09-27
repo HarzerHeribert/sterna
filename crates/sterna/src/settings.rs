@@ -1307,6 +1307,7 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ("ui.theme", word(crate::tui::Theme::natural().name())),
         ("ui.statusline", word("full")),
         ("ui.sidebar", word("auto")),
+        ("ui.background", word("auto")),
         ("ui.motion", word(crate::tui::Motion::default().name())),
         ("ui.stream", word(crate::tui::Stream::default().name())),
         ("session.mode", word("build")),

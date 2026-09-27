@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
         use std::io::IsTerminal;
         if std::io::stdout().is_terminal() && sterna::workbench::plumage::truecolor() {
-            for line in sterna::workbench::plumage::mark(false) {
+            for line in sterna::workbench::plumage::mark(sterna::tui::background::detected()) {
                 println!("{line}");
             }
         }

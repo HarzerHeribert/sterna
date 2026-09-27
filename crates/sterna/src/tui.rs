@@ -1,5 +1,6 @@
 //! Fullscreen presentation. The caller owns terminal lifecycle, input and ticks.
 
+pub mod background;
 mod controls;
 pub mod history;
 pub use history::{HistoryNote, NoteKind};
@@ -198,6 +199,12 @@ pub struct ScreenState {
     pub reduced_motion: bool,
     /// The terminal shows 24-bit colour, so a bird theme's sprite can be drawn.
     pub truecolor: bool,
+    /// The `ui.background` choice.
+    pub background: background::Background,
+    /// The ground is light: what [`ScreenState::background`] comes to on
+    /// this terminal, resolved when it is set and once the terminal has
+    /// answered.
+    pub light: bool,
     pub pulse: Pulse,
     /// How many of the notes in [`ScreenState::history`] are the session's
     /// own opening, and therefore belong to the card at the top rather than

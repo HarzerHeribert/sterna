@@ -386,8 +386,8 @@ fn themes(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
             Action::Theme(theme),
         );
         // The swatch and the name are one target.
-        if let ratatui::style::Color::Rgb(r, g, b) = super::theme::accent(theme) {
-            item = item.swatch(u32::from_be_bytes([0, r, g, b]));
+        if let Some(rgb) = super::theme::accent_value(theme) {
+            item = item.swatch(rgb);
         }
         items.push(item);
     }
@@ -498,20 +498,12 @@ pub(super) fn draw_theme_preview(
 ) {
     use super::plumage::{Mood, sprite};
     let Theme::Bird(bird) = chosen else {
-        label(f, area, area.y, chosen.title(), Tone::Strong, t);
-        label(
-            f,
-            area,
-            area.y + 1,
-            "no bird · the palette alone",
-            Tone::Muted,
-            t,
-        );
+        draw_palette_preview(f, area, chosen, t);
         return;
     };
     let plumage = bird.plumage();
     let mut y = area.y;
-    let drawing = sprite(bird, Mood::Done);
+    let drawing = sprite(bird, Mood::Done, s.light);
     if s.truecolor
         && area.width as usize >= drawing[0].len()
         && area.height as usize >= drawing.len() + 5
@@ -550,10 +542,53 @@ pub(super) fn draw_theme_preview(
             f,
             area,
             y + 6,
-            "This terminal shows no true colour: the outline bird stands in.",
+            "This terminal shows no true colour, so the bird is not drawn.",
             Tone::Muted,
             t,
         );
+    }
+}
+
+/// A palette alone, as the screen will wear it: a heading, a chosen chip
+/// beside one that is not, and the roles' own colours.
+fn draw_palette_preview(f: &mut Frame<'_>, area: Rect, chosen: Theme, t: Theme) {
+    label(f, area, area.y, chosen.title(), Tone::Strong, t);
+    label(
+        f,
+        area,
+        area.y + 1,
+        "no bird · the palette alone",
+        Tone::Muted,
+        t,
+    );
+    label(f, area, area.y + 3, "A HEADING", Tone::Accent, chosen);
+    let on = "⟨ chosen ⟩";
+    let w = chrome::width(on);
+    if area.height > 4 && area.width > w {
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(on).style(super::theme::chip_on(chosen)),
+            Rect::new(area.x, area.y + 4, w, 1),
+        );
+        row(
+            f,
+            Rect::new(area.x + w + 1, area.y + 4, area.width - w - 1, 1),
+            "⟨ another ⟩",
+            Tone::Normal,
+            chosen,
+        );
+    }
+    let mut x = area.x;
+    for (word, tone) in [
+        ("you", Tone::You),
+        ("helper", Tone::Helper),
+        ("detail", Tone::Muted),
+    ] {
+        let w = chrome::width(word);
+        if x + w > area.right() {
+            break;
+        }
+        row(f, Rect::new(x, area.y + 6, w, 1), word, tone, chosen);
+        x += w + 2;
     }
 }
 

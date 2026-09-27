@@ -1198,7 +1198,7 @@ impl Document {
             self.perched(species, face, s, &startup, width);
             return;
         }
-        let head = parrot.map(|species| super::plumage::head(species, mood(face, s)));
+        let head = parrot.map(|species| super::plumage::head(species, mood(face, s), s.light));
         let art_width = head.as_ref().map_or(1, |head| head[0].len());
         let art: Vec<Vec<(String, Tone)>> = match head {
             Some(head) => head
@@ -1272,7 +1272,7 @@ impl Document {
         startup: &[&str],
         width: usize,
     ) {
-        let bird = super::plumage::sprite(species, mood(face, s));
+        let bird = super::plumage::sprite(species, mood(face, s), s.light);
         let plumage = species.plumage();
         // The card is as wide and as tall as this bird's own drawing.
         let room = width.saturating_sub(bird[0].len() + 6);

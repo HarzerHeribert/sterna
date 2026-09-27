@@ -302,6 +302,12 @@ pub fn render(
     _served: &ServedBy,
     ui: &mut Workbench,
 ) {
+    // Every style this frame is drawn with reads the terminal's ground and
+    // colour depth from here.
+    super::look::set(super::look::Look {
+        light: s.light,
+        truecolor: s.truecolor,
+    });
     let a = f.area();
     f.render_widget(Clear, a);
     f.buffer_mut()

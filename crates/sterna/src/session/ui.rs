@@ -709,6 +709,8 @@ fn run(
     let setup = (|| {
         let _guard = super::lock(&DRAWING);
         enable_raw_mode()?;
+        // Asked before the key reader starts, so its replies are read here.
+        crate::tui::background::ask();
         let console = console_mode::select();
         ACTIVE.store(true, Ordering::SeqCst);
         execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
@@ -727,6 +729,9 @@ fn run(
             return Err(error);
         }
     };
+    if state.background == crate::tui::background::Background::Auto {
+        state.light = crate::tui::background::detected();
+    }
     let mut input = terminal_input::TerminalInput::new(console);
     let mut editor = Editor::default();
     editor.root = state.settings_root.clone();

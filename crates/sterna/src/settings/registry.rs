@@ -84,6 +84,7 @@ const THEMES: &[&str] = &[
 ];
 const STATUS_LINES: &[&str] = &["full", "compact", "hidden"];
 const SIDEBAR: &[&str] = &["auto", "show", "hide"];
+const BACKGROUNDS: &[&str] = &crate::tui::background::Background::NAMES;
 const STREAMS: &[&str] = &["actions", "code", "raw"];
 const MOTIONS: &[&str] = &["full", "calm", "off"];
 /// The working mode a session starts in. `build` is this file's word for the
@@ -373,6 +374,15 @@ static SPECS: &[SettingSpec] = &[
         description: "The accent colour. Your terminal's own background and transparency are left alone.",
         kind: Kind::Choice,
         choices: THEMES,
+        basic: true,
+        restart: false,
+    },
+    SettingSpec {
+        key: "ui.background",
+        label: "Background",
+        description: "Whether your terminal's background is dark or light, so every colour stays readable on it. Auto asks the terminal when Sterna starts.",
+        kind: Kind::Choice,
+        choices: BACKGROUNDS,
         basic: true,
         restart: false,
     },

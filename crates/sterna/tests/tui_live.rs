@@ -35,6 +35,9 @@ struct App {
     root: PathBuf,
     #[cfg(unix)]
     terminal_flags: Vec<u8>,
+    /// What this terminal answers when asked its background colour
+    /// (OSC 11); `None` is a terminal that ignores the question.
+    ground: Option<&'static str>,
 }
 impl App {
     fn start(base: &str) -> Self {
@@ -194,6 +197,7 @@ impl App {
             root,
             #[cfg(unix)]
             terminal_flags,
+            ground: None,
         }
     }
     /// Waits for a file the session was asked to write to appear.
@@ -258,9 +262,23 @@ impl App {
     /// position. **Row 1, column 1 is a true answer here**, not a placeholder:
     /// the emulator this fixture keeps is the only screen there is, and the
     /// cursor starts at its origin.
+    ///
+    /// It answers the background query the way a terminal does too: OSC 11
+    /// with its ground when it has one, and always the device attributes
+    /// (`ESC [ c`) that follow it, which every terminal reports.
     fn answer_cursor_query(&mut self, bytes: &[u8]) {
         if bytes.windows(4).any(|w| w == b"\x1b[6n") {
             let _ = self.input.write_all(b"\x1b[1;1R");
+            let _ = self.input.flush();
+        }
+        if let Some(ground) = self.ground
+            && bytes.windows(6).any(|w| w == b"\x1b]11;?")
+        {
+            let _ = write!(self.input, "\x1b]11;{ground}\x1b\\");
+            let _ = self.input.flush();
+        }
+        if bytes.windows(3).any(|w| w == b"\x1b[c") {
+            let _ = self.input.write_all(b"\x1b[?62;22c");
             let _ = self.input.flush();
         }
     }
@@ -2754,4 +2772,37 @@ fn a_true_colour_terminal_starts_with_a_parrot_perched_on_the_card() {
         let text = screen.contents();
         text.contains('▀') || text.contains('▄')
     });
+}
+
+/// A terminal that answers that its background is white gets the light
+/// palette: the person's label is drawn in the light "you" colour, and no
+/// part of the answer reaches the composer as typed text. (A Windows
+/// console is not asked; `COLORFGBG` or the setting decides there.)
+#[cfg(unix)]
+#[test]
+fn a_terminal_that_answers_light_gets_the_light_colours() {
+    let (base, _requests) = provider();
+    let mut app = App::start_in(
+        &base,
+        false,
+        None,
+        &[],
+        &|_| {},
+        &[("COLORTERM", "truecolor")],
+    );
+    app.ground = Some("rgb:ffff/ffff/ffff");
+    app.ready();
+    app.send(b"hello there\r");
+    app.wait("the person's label in the light colour", |screen| {
+        (0..30).any(|row| {
+            (0..80).any(|col| {
+                screen.cell(row, col).is_some_and(|cell| {
+                    cell.contents() == "y" && cell.fgcolor() == vt100::Color::Rgb(0x5b, 0x3f, 0xb5)
+                })
+            })
+        })
+    });
+    app.refute("the reply is not typed", "rgb:ffff");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
 }

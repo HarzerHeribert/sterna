@@ -33,6 +33,10 @@ pub(crate) fn presentation(state: &mut tui::ScreenState, values: &toml::Value) {
         .and_then(tui::Stream::parse)
         .unwrap_or_default();
     state.truecolor = crate::workbench::plumage::truecolor();
+    state.background = word("ui.background")
+        .and_then(tui::background::Background::parse)
+        .unwrap_or_default();
+    state.light = state.background.light();
 }
 pub(crate) fn permissions(root: &Path, argument: Option<&str>) -> Result<String, String> {
     let store = Store::new(root)?;

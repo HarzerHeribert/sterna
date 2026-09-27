@@ -12,6 +12,7 @@ mod chrome;
 mod document;
 pub mod facts;
 mod input;
+pub mod look;
 mod markdown;
 mod models;
 mod motion;

@@ -143,6 +143,7 @@ impl Preferences {
         observed.insert("permissions.mode", s.permissions.rung().name().to_string());
         observed.insert("ui.theme", s.theme.name().to_string());
         observed.insert("ui.motion", s.motion.name().to_string());
+        observed.insert("ui.background", s.background.name().to_string());
         observed.insert("ui.stream", s.stream.name().to_string());
         observed.insert(
             "ui.sidebar",
@@ -394,6 +395,10 @@ fn apply(s: &mut ScreenState, values: &toml::Value, keys: &[&str]) {
     for key in keys {
         match *key {
             "ui.theme" => s.theme = resolved.theme,
+            "ui.background" => {
+                s.background = resolved.background;
+                s.light = resolved.light;
+            }
             "ui.motion" => s.set_motion(resolved.motion),
             "ui.statusline" => s.status_line = resolved.status_line,
             "ui.sidebar" => s.sidebar = resolved.sidebar,

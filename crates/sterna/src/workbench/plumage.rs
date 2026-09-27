@@ -131,8 +131,9 @@ static SCARLET: Plumage = Plumage {
     title: "Scarlet Macaw",
     latin: "Ara macao",
     nest: "seen from a long way off",
-    accent: 0xff4a3d,
-    second: 0xf5c21b,
+    // Its yellow leads: its red is the colour of a failure on this screen.
+    accent: 0xf5c21b,
+    second: 0xff4a3d,
     highlight: 0x3d86e8,
     ground: 0x2c1515,
 };
@@ -151,8 +152,9 @@ static GREEN_WING: Plumage = Plumage {
     title: "Green-winged Macaw",
     latin: "Ara chloropterus",
     nest: "gentle, with a strong beak",
-    accent: 0xe0404f,
-    second: 0x43a867,
+    // Named for its green wing, which leads; its red is a failure's colour.
+    accent: 0x43a867,
+    second: 0xe0404f,
     highlight: 0x3d7fd6,
     ground: 0x2a1519,
 };
@@ -325,12 +327,16 @@ impl Art {
     /// The pixels in colour, on a canvas wide enough for the marks beside
     /// the head, from the first pixel row pair with anything drawn on it.
     fn pixels(&self, mood: Mood, light: bool) -> Vec<Vec<Option<u32>>> {
+        // On a light ground a letter takes its `_light` colour; one the
+        // drawing gives none and that would vanish into the ground (the
+        // cockatoo's white) is shaded just enough to hold its outline.
         let colour = |letter: char| {
-            light
-                .then(|| self.light.get(&letter))
-                .flatten()
-                .or_else(|| self.palette.get(&letter))
-                .copied()
+            let dark = self.palette.get(&letter).copied()?;
+            Some(match (light, self.light.get(&letter)) {
+                (false, _) => dark,
+                (true, Some(light)) => *light,
+                (true, None) => super::look::readable(dark, true, OUTLINE),
+            })
         };
         let (top, right) = (self.top(), self.head_right());
         let width = self.width().max(right + MARK_ROOM + 1);
@@ -429,6 +435,8 @@ impl Art {
     }
 }
 
+/// The least contrast a plumage colour keeps against a light ground.
+const OUTLINE: f64 = 1.4;
 /// Pixels to the right of the head kept for the think, work and done marks.
 const MARK_ROOM: usize = 4;
 /// How many pixel rows the header's head is: four cells.
@@ -438,20 +446,21 @@ const SEED: u32 = 0xe8c35a;
 const TICK: u32 = 0x5fd07a;
 const OOPS: u32 = 0xff5a52;
 
-/// The sprite for `bird` in `mood`, as rows of half-block cells.
-pub fn sprite(bird: Bird, mood: Mood) -> Vec<Vec<Cell>> {
-    cells(&bird.art().pixels(mood, false))
+/// The sprite for `bird` in `mood`, as rows of half-block cells, in its
+/// light-ground colours when `light`.
+pub fn sprite(bird: Bird, mood: Mood, light: bool) -> Vec<Vec<Cell>> {
+    cells(&bird.art().pixels(mood, light))
 }
 
 /// The bird's head alone, at the sprite's own resolution, in `mood`: what
 /// stands beside the conversation's card once the bird has left its perch.
 /// Four rows tall; as wide as the bird's head and its marks.
-pub fn head(bird: Bird, mood: Mood) -> Vec<Vec<Cell>> {
+pub fn head(bird: Bird, mood: Mood, light: bool) -> Vec<Vec<Cell>> {
     let art = bird.art();
     let (rows, left) = art.head_window();
     // `pixels` has dropped the empty rows above the drawing.
     let dropped = art.top() - art.top() % 2;
-    let grid = art.pixels(mood, false);
+    let grid = art.pixels(mood, light);
     let crop: Vec<Vec<Option<u32>>> = (rows.start - dropped..rows.end - dropped)
         .map(|y| {
             grid.get(y)
@@ -629,7 +638,7 @@ mod tests {
     #[test]
     fn the_head_is_four_rows_with_the_eye_and_the_beak() {
         for bird in Bird::ALL {
-            let head = head(bird, Mood::Idle);
+            let head = head(bird, Mood::Idle, false);
             assert_eq!(head.len(), 4, "{bird:?}");
             let art = bird.art();
             let (rows, left) = art.head_window();
@@ -638,6 +647,34 @@ mod tests {
                     rows.contains(&y) && x >= left,
                     "{bird:?} crop misses ({x}, {y})"
                 );
+            }
+        }
+    }
+
+    /// On a light ground no plumage vanishes: a colour the drawing gives
+    /// no light variant keeps an outline's worth of contrast.
+    #[test]
+    fn a_light_ground_loses_no_bird() {
+        use super::super::look::{LIGHT_GROUND, contrast};
+        for bird in Bird::ALL {
+            let art = bird.art();
+            let light = art.pixels(Mood::Idle, true);
+            for (y, row) in art
+                .letters
+                .iter()
+                .enumerate()
+                .skip(art.top() - art.top() % 2)
+            {
+                for (x, letter) in row.iter().enumerate() {
+                    let Some(letter) = letter.filter(|l| !art.light.contains_key(l)) else {
+                        continue;
+                    };
+                    let rgb = light[y - (art.top() - art.top() % 2)][x].unwrap();
+                    assert!(
+                        contrast(rgb, LIGHT_GROUND) >= OUTLINE - 0.05,
+                        "{bird:?} {letter} {rgb:06x} vanishes on a light ground"
+                    );
+                }
             }
         }
     }
