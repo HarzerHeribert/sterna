@@ -10,6 +10,7 @@
 //! surface.
 mod chrome;
 mod document;
+pub mod facts;
 mod input;
 mod models;
 mod motion;

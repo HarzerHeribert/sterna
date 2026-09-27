@@ -293,6 +293,12 @@ impl App {
     /// predicate holds, so a screen that was never brought up to date can
     /// satisfy an absence for entirely the wrong reason. Every absence in
     /// this file goes through here so that trap is paid for once.
+    /// The session's first frame is up. The header's model chip is not the
+    /// sign: at eighty columns how often it asks and which mode it is in
+    /// outrank the model's name, and the name gives way first.
+    fn ready(&mut self) {
+        self.contains("⠿ STERNA");
+    }
     fn refute(&mut self, description: &str, needle: &str) {
         self.settle(120);
         assert!(
@@ -566,7 +572,7 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
     "#,
     );
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
-    app.contains("fixture-model");
+    app.ready();
     // The dialog prints the call's resolved path, and at 80 columns a long
     // temp root (Windows: `\\?\C:\Users\<name>\AppData\Local\Temp\…`) wraps
     // it mid-name, so `once.txt` is not on one line. Wide enough never to.
@@ -625,7 +631,7 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     let base =
         approval_provider(r#"write({path: "cancelled.txt", content: "no"}); return "done";"#);
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"proceed\r");
     app.contains("APPROVE");
     app.send(b"\x03");
@@ -646,7 +652,7 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
 fn an_approval_ignores_keys_typed_before_it_was_shown() {
     let base = approval_provider(r#"write({path: "typed.txt", content: "no"}); return "done";"#);
     let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"write it\r");
     // Alone, so it sends: an Enter with more typing already behind it is a
     // newline in the draft.
@@ -806,9 +812,9 @@ fn held_cell_helper_provider() -> (String, mpsc::Receiver<serde_json::Value>, mp
 fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_returns() {
     let (base, requests, _release) = held_provider();
     let mut app = App::start_with_helpers(&base, "helper-tier");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     let task = "find where helper cancellation is implemented";
     app.send(format!("{task}\r").as_bytes());
 
@@ -842,7 +848,7 @@ fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_retur
 fn live_cell_helper_shows_its_lane_before_its_provider_returns() {
     let (base, requests, _release) = held_cell_helper_provider();
     let mut app = App::start_with_helpers(&base, "helper-tier");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"find this\r");
 
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -902,13 +908,13 @@ fn bare_sterna_opens_the_live_composer_in_its_current_project() {
 fn live_composition_completion_model_selection_busy_input_resize_and_exit() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.contains("Describe the next step");
     assert!(app.screen.screen().alternate_screen());
     app.send(b"/theme amber\r");
     app.contains("Theme: amber");
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     app.send(b"/mo");
     app.contains("set the parent, helper or subagent model");
     app.send(b"\tfixture-next\r");
@@ -989,14 +995,14 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"fail this\r");
     app.contains("ERROR:");
     app.contains("request failed");
     app.send(b"/theme amber\r");
     app.contains("Theme: amber");
     app.send(b"/effort medium\r");
-    app.contains("Effort: medium");
+    app.contains("Effort is now medium");
     app.send(b"/mo");
     app.contains("set the parent, helper or subagent model");
     app.send(b"\x15/exit\r");
@@ -1007,7 +1013,7 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
 #[test]
 fn double_ctrl_c_restores_the_terminal_before_exit() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"\x03");
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
@@ -1019,7 +1025,7 @@ fn double_ctrl_c_restores_the_terminal_before_exit() {
 fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     // Shift-Tab is the ladder's key, not the request mode's: it moves the
     // rung and leaves the mode where it was. The two axes are independent —
     // `sandbox-grants.md` §10 — and this is the live proof of it.
@@ -1044,9 +1050,9 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
         "Never asks",
     );
     app.send(b"/mode explore\r");
-    app.contains("Mode: explore");
+    app.contains("Mode is now Explore");
     app.send(b"/mode plan\r");
-    app.contains("Mode: plan");
+    app.contains("Mode is now Plan");
     app.send(b"plan this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     // The mode line is task context: it rides in the task's own message.
@@ -1066,7 +1072,7 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     // changes nothing runs, and writes are refused by the profile.
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"/mode execute\r");
-    app.contains("Mode: execute");
+    app.contains("Mode is now Build");
     app.send(b"/context\r");
     app.contains("Next request:");
     app.send(b"\x1b");
@@ -1077,7 +1083,7 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     // and `/exit` sent into that gap never reach the composer, which is the
     // macOS and Windows cells' "session did not exit" with the frame still
     // on screen. The statusline's own note is the outcome waited for next;
-    // `fixture-model` was on screen all along and waited for nothing.
+    // the header was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
         !screen.contains("Next request:") && !screen.contains("Esc · Close")
@@ -1101,18 +1107,30 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
     app.contains("Auto-review");
+    // Typed in full, by its label or its file word, it is still confirmed
+    // on the one sheet every route to it uses, and that sheet opens on
+    // Cancel.
     app.send(b"/permissions full\r");
-    app.contains("→ full");
-    // The panel arrives as a runtime update, so it can still be settling
-    // when the line it carries first appears; a key sent into that gap is
-    // read by the composer underneath and not by the panel.
+    app.contains("CONFIRM");
     app.settle(120);
+    app.send(b"\r");
+    app.wait("Cancel goes back unchanged", |screen| {
+        !screen.contents().contains("CONFIRM")
+    });
+    app.refute("a reflexive Enter changes nothing", "Ask is now");
+    app.send(b"/permissions never asks\r");
+    app.contains("CONFIRM");
+    app.settle(120);
+    app.send(b"\x1b[B");
+    app.settle(60);
+    app.send(b"\r");
+    app.contains("Ask is now Never asks");
+    // And the session bar says so, in the word it shows everywhere else.
     app.send(b"\x1b");
-    app.wait("the permissions panel closes on Escape", |screen| {
+    app.wait("the confirmation closes", |screen| {
         !screen.contents().contains("Esc · Close") && !screen.contents().contains("Esc · Back")
     });
-    // And the session bar says so, in the word it shows everywhere else.
-    app.contains("Never asks");
+    app.contains("⟨ Never asks ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -1123,7 +1141,7 @@ fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
     use std::os::unix::fs::PermissionsExt;
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let executable = app.root.join("no-gateway");
     std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"accounts\":[{\"account\":\"z-account\",\"provider\":\"fixture\",\"models\":[\"z-model\"],\"scope\":\"provider-declared\"},{\"account\":\"a-account\",\"provider\":\"fixture\",\"models\":[\"b-model\",\"a-model\"],\"scope\":\"provider-declared\"}]}'\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1154,7 +1172,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     use std::os::unix::fs::PermissionsExt;
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let models: Vec<_> = (0..304)
         .rev()
         .map(|i| format!("vendor/model-{i:03}"))
@@ -1253,7 +1271,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
 fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/motion off\r");
     app.contains("Motion reduced");
     app.send(b"/telemetry\r");
@@ -1296,7 +1314,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
 #[test]
 fn theme_picker_applies_local_palettes_without_a_request() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/theme\r");
     app.contains("THEMES");
     app.contains("violet");
@@ -1424,7 +1442,7 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
 fn a_fragmented_click_report_does_not_become_prompt_text() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send_split_mouse_report(b"[<0;10;5M");
     app.send_split_mouse_report(b"[<0;10;5m");
     app.settle(200);
@@ -1461,7 +1479,7 @@ fn a_fragmented_click_report_does_not_become_prompt_text() {
 fn a_report_whose_halves_are_a_third_of_a_second_apart_is_still_not_typed() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     let gap = Duration::from_millis(300);
     app.send_report_split_by(b"[<65;101;28M", gap);
     app.send_report_split_by(b"[<0;10;5M", gap);
@@ -1557,7 +1575,7 @@ fn a_fragmented_wheel_report_still_scrolls_the_transcript() {
 fn fragmented_mouse_reports_do_not_become_prompt_text() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send_split_mouse_report(b"[<65;101;28M");
     app.send(b"WHEEL_INPUT_OK\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1618,7 +1636,7 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
         }
     });
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"register noise handler\r");
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.send(b"/handlers\r");
@@ -1666,7 +1684,7 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
 #[test]
 fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.resize(160);
     // The editor names the file the store will write, in the store's own
     // spelling: on Windows that is the canonical long-name form of a temp
@@ -1724,7 +1742,7 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
 #[test]
 fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     let project = app.root.join(".sterna/config.toml");
     std::fs::create_dir_all(project.parent().unwrap()).unwrap();
     let original = "# retained on cancel\n[ui]\nstatusline = \"full\"\n";
@@ -1761,7 +1779,7 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
 #[test]
 fn statusline_compact_shortcut_persists_without_contacting_inference() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     let project = app.root.join(".sterna/config.toml");
 
     app.send(b"/statusline compact\r");
@@ -1777,7 +1795,7 @@ fn statusline_compact_shortcut_persists_without_contacting_inference() {
 fn typed_newlines_compose_one_message_and_a_lone_enter_still_sends_it() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     // No bracketed-paste markers, which is exactly what another program
     // typing into the pty produces. The separator is `\r`, not `\n`: in raw
     // mode crossterm reads `\n` as Ctrl+J and only `\r` as Enter, so `\r` is
@@ -1899,7 +1917,7 @@ fn said(request: &serde_json::Value) -> String {
 fn live_a_message_sent_while_working_is_queued_and_becomes_the_next_task() {
     let (base, requests, release) = serving_provider(ANSWERING);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"first task\r");
     let first = requests.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(said(&first).contains("first task"), "{first}");
@@ -1976,7 +1994,7 @@ fn a_bare_resume_opens_a_picker_of_this_folders_sessions() {
 fn live_a_stop_left_over_from_a_finished_task_does_not_stop_the_next() {
     let (base, requests, release) = serving_provider(ANSWERING);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"first task\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.send(b"\x1b");
@@ -2003,7 +2021,7 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
     // a test that let the task finish on its own would prove nothing.
     let (base, requests, release) = serving_provider(UNFINISHED);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"a task to stop\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
 
@@ -2038,7 +2056,7 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
 fn live_a_second_escape_escalates_to_the_call_in_flight_and_still_spares_the_session() {
     let (base, requests, release) = serving_provider(UNFINISHED);
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"a task to interrupt\r");
     let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
 
@@ -2111,7 +2129,7 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
 fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"\x1bOQ"); // F2 opens settings on the everyday category
     app.contains("SETTINGS");
     // Reasoning effort is the second row; one Down and one Right is the
@@ -2119,7 +2137,7 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     app.send(b"\x1b[B");
     app.settle(60);
     app.send(b"\x1b[C");
-    app.contains("Reasoning effort is now");
+    app.contains("Effort is now low");
     app.send(b"\x1b");
     // The strip reads the running session. If the choice had only reached
     // the file, this would still say `default`.
@@ -2150,7 +2168,7 @@ fn workbench_final_answer_survives_the_actual_provider_and_terminal_loop() {
 #[test]
 fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     // A note to select, not a task: a turn in flight would make the `/exit`
     // below an Enter a running turn ignores, and on Windows a refused
     // connection is slow enough to still be in flight.
@@ -2306,7 +2324,7 @@ fn walk_a_turn(bird: bool) {
         &[]
     };
     let mut app = App::start_in(&base, false, Some("helper-tier"), &[], &|_| {}, colours);
-    app.contains("fixture-model");
+    app.ready();
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
         app.settle(90);
@@ -2355,6 +2373,19 @@ fn a_parrot_theme_walks_the_same_turn() {
     walk_a_turn(true);
 }
 
+/// **The session card names the rung in force.** The startup line that
+/// froze the rung the session began on is gone, and the card's own line
+/// moves with Shift-Tab.
+#[test]
+fn the_card_names_the_rung_in_force() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.contains("Ask: Auto-review");
+    app.refute("the frozen startup line", "permissions: auto");
+    app.send(b"\x1b[Z");
+    app.contains("Ask: Every call");
+}
+
 /// **Every effort level is open on any model**: the word rides the request
 /// and the gateway carries it, so `xhigh` and `max` are not refused for a
 /// model that is not Claude -- a refusal there left the strip's effort chip
@@ -2362,11 +2393,11 @@ fn a_parrot_theme_walks_the_same_turn() {
 #[test]
 fn xhigh_and_max_are_taken_on_a_model_that_is_not_claude() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"/effort xhigh\r");
-    app.contains("Effort: xhigh");
+    app.contains("Effort is now xhigh");
     app.send(b"/effort max\r");
-    app.contains("Effort: max");
+    app.contains("Effort is now max");
 }
 
 /// **Leaving with Ctrl-D says how to come back**, after the screen is gone:
@@ -2374,7 +2405,7 @@ fn xhigh_and_max_are_taken_on_a_model_that_is_not_claude() {
 #[test]
 fn ctrl_d_leaves_the_resume_line_in_the_terminal() {
     let mut app = App::start("http://127.0.0.1:1");
-    app.contains("fixture-model");
+    app.ready();
     app.send(b"\x04");
     assert_eq!(app.exited(), 0);
     assert!(!app.screen.screen().alternate_screen());
@@ -2402,7 +2433,7 @@ fn a_true_colour_terminal_starts_with_a_parrot_perched_on_the_card() {
         &|_| {},
         &[("COLORTERM", "truecolor")],
     );
-    app.contains("fixture-model");
+    app.ready();
     app.wait("the parrot's half-block sprite on the card", |screen| {
         let text = screen.contents();
         text.contains('▀') || text.contains('▄')

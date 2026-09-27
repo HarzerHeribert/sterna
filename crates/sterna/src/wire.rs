@@ -80,6 +80,13 @@ impl Effort {
             _ => None,
         }
     }
+    /// The notice every route that sets the effort prints.
+    pub fn now(self) -> String {
+        format!(
+            "Effort is now {} · applies from the next request",
+            self.name()
+        )
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Default => "default",

@@ -1218,12 +1218,13 @@ pub(super) fn command(
                     if let Some(ui) = session.ui {
                         ui.effort(effort);
                     }
-                    session_println!("Effort: {} · applied to the next request", effort.name());
+                    session_println!("{}", effort.now());
                 } else {
                     session_println!("Use /effort default|low|medium|high|xhigh|max");
                 }
             } else {
-                let rows = ["default", "low", "medium", "high", "xhigh", "max"]
+                const LADDER: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+                let rows = LADDER
                     .iter()
                     .map(|value| PanelRow::command(value.to_string(), format!("/effort {value}")))
                     .collect();
@@ -1232,7 +1233,11 @@ pub(super) fn command(
                     Panel {
                         title: format!("Effort · current {}", session.effort.get().name()),
                         rows,
-                        selected: 0,
+                        // It opens on the effort in force, like every sheet.
+                        selected: LADDER
+                            .iter()
+                            .position(|value| *value == session.effort.get().name())
+                            .unwrap_or(0),
                         ..Panel::default()
                     },
                 );
@@ -1242,39 +1247,33 @@ pub(super) fn command(
             None => {
                 session_println!(
                     "Mode: {}{}",
-                    session.mode.get().name(),
+                    session.mode.get().label(),
                     if session.mode_pinned.get() {
-                        " · pinned"
+                        ""
                     } else {
-                        " · not pinned; a confident read-only request may propose explore"
+                        " · auto: a confident read-only request may propose Explore"
                     }
                 );
             }
-            Some("auto") => {
+            Some(word) if word.eq_ignore_ascii_case("auto") => {
                 session.mode_pinned.set(false);
+                if let Some(ui) = session.ui {
+                    ui.mode(session.mode.get(), false);
+                }
                 session_println!(
-                    "Mode: {} · unpinned; a confident read-only request may propose explore",
-                    session.mode.get().name()
+                    "Mode: {} · auto: a confident read-only request may propose Explore",
+                    session.mode.get().label()
                 );
             }
             Some(word) => match Mode::parse(word) {
-                None => session_println!("Use /mode execute|explore|plan|auto"),
+                None => session_println!("Use /mode build|explore|plan|auto"),
                 Some(mode) => {
                     session.mode.set(mode);
                     session.mode_pinned.set(true);
                     if let Some(ui) = session.ui {
-                        ui.mode(mode);
+                        ui.mode(mode, true);
                     }
-                    session_println!(
-                        "Mode: {} · pinned · {} · applies from the next request",
-                        mode.name(),
-                        match mode {
-                            Mode::Execute => "session sandbox applies",
-                            Mode::Explore =>
-                                "reads run; writes only under agent scratch and documentation globs; the shell is read-only",
-                            Mode::Plan => "reads run; no change executes; the shell is read-only",
-                        }
-                    );
+                    session_println!("{}", mode.now());
                 }
             },
         },
@@ -1370,34 +1369,77 @@ pub(super) fn command(
             ),
         ),
         "status" => {
-            show(
-                session,
-                Panel::text(
-                    "Session configuration",
-                    format!(
-                        "Model: {}\nMode: {}\nProject: {}\nSandbox: {} path rules · {} command patterns · network {}\nWeb: {}\nTask spend: tracked, uncapped\nCell limit: {} · {} seconds each · response {} bytes\nSupervisor: {}\nHelper effort: find {} · reduce {} · check {}\nLimits and helper effort: .sterna/config.toml (loaded at startup)\nPermissions: native global/project config (loaded at startup)\nPresentation: /theme · /sidebar · /statusline · /fullscreen",
-                        session.model.borrow(),
-                        session.mode.get().name(),
-                        session.project.root.display(),
-                        session.profile.rule_count(),
-                        session.profile.command_pattern_count(),
-                        session.profile.grants_network(),
-                        session.config().web.describe(),
-                        cell_limit(&session.config().limits),
-                        session.config().limits.cell_wall_clock_s,
-                        session.config().limits.response_bytes,
-                        session
-                            .config()
-                            .supervisor
-                            .model
-                            .as_deref()
-                            .unwrap_or("off"),
-                        session.config().helpers.effort.find.name(),
-                        session.config().helpers.effort.reduce.name(),
-                        session.config().helpers.effort.check.name(),
-                    ),
+            // The same facts the chips show, named the way they name them.
+            let config = session.config();
+            let (helpers_on, subagents) = tier_status(&config);
+            let model = session.model.borrow().clone();
+            let effort = session.effort.get();
+            let sent = effort.sent_for(&model);
+            let mut lines = vec![
+                format!("Model: {model}"),
+                match session
+                    .ladder
+                    .as_ref()
+                    .map(crate::permissions::Ladder::rung)
+                {
+                    Some(rung) => format!("Ask: {} · {}", rung.label(), rung.sentence()),
+                    None => "Ask: nobody is asked in this session".to_string(),
+                },
+                format!(
+                    "Mode: {}{}",
+                    session.mode.get().label(),
+                    if session.mode_pinned.get() {
+                        ""
+                    } else {
+                        " · auto"
+                    }
                 ),
-            );
+                if sent == effort {
+                    format!("Effort: {}", effort.name())
+                } else {
+                    format!("Effort: {} (sent as {})", effort.name(), sent.name())
+                },
+                format!(
+                    "Helpers: {}",
+                    match (helpers_on, config.helpers.model.as_deref()) {
+                        (true, Some(helper)) => format!("on · {helper}"),
+                        _ if config.helpers.enabled => "on, but no helper model chosen".into(),
+                        _ => "off".into(),
+                    }
+                ),
+                format!("Subagents: {subagents}"),
+                format!("Project: {}", session.project.root.display()),
+                format!(
+                    "Sandbox: {} path rules · {} command patterns · network {}",
+                    session.profile.rule_count(),
+                    session.profile.command_pattern_count(),
+                    if session.profile.grants_network() {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ),
+                format!("Web: {}", config.web.describe()),
+                format!(
+                    "Cell limit: {} · {} seconds each · response {} bytes",
+                    cell_limit(&config.limits),
+                    config.limits.cell_wall_clock_s,
+                    config.limits.response_bytes
+                ),
+                format!(
+                    "Supervisor: {}",
+                    config.supervisor.model.as_deref().unwrap_or("off")
+                ),
+                format!(
+                    "Helper effort: find {} · reduce {} · check {}",
+                    config.helpers.effort.find.name(),
+                    config.helpers.effort.reduce.name(),
+                    config.helpers.effort.check.name()
+                ),
+            ];
+            lines.push("Change any of these in Settings (F2).".into());
+            drop(config);
+            show(session, Panel::text("Session", lines.join("\n")));
         }
         "supervisor" => {
             let latest = match transcript.notebook.supervisor.as_ref() {
@@ -1592,14 +1634,8 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
                 rung.name()
             ));
         };
-        let was = ladder.rung();
         ladder.set(rung);
-        return Ok(format!(
-            "permissions: {} → {} (Shift-Tab cycles; {} of the four rungs ask)",
-            was.name(),
-            rung.name(),
-            crate::permissions::Rung::NAMES.len() - 1
-        ));
+        return Ok(rung.now());
     }
     let saved = crate::settings_session::permissions(&session.project.root, argument)?;
     Ok(format!(

@@ -172,9 +172,15 @@ pub struct ScreenState {
     pub selection: Option<selection::Selection>,
     pub theme: Theme,
     pub settings_root: Option<std::path::PathBuf>,
+    /// The person's own settings folder. `None` -- a test, a machine with no
+    /// home -- saves nothing globally, so no test reaches the real one.
+    pub settings_global: Option<std::path::PathBuf>,
     pub settings_profile: Option<String>,
     pub settings_models: Vec<String>,
     pub mode: Mode,
+    /// Whether the mode is pinned. Unpinned, a confident read-only request
+    /// may propose Explore, and the chip says `· auto`.
+    pub mode_pinned: bool,
     /// The permission rung, shared live with the approval gate: Shift-Tab
     /// moves it from this thread while a task runs.
     pub permissions: crate::permissions::Ladder,
@@ -531,7 +537,10 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "/key".to_string(),
                     "enter a provider API key · /key anthropic",
                 ),
-                ("/effort".to_string(), "configure response reasoning effort"),
+                (
+                    "/effort".to_string(),
+                    "default, low, medium, high, xhigh or max",
+                ),
                 (
                     "/context".to_string(),
                     "inspect current context and token usage",
@@ -549,9 +558,12 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 (
                     "/permissions".to_string(),
-                    "inspect or configure next-session grants",
+                    "how often it asks · Every call, Commands, Auto-review or Never asks",
                 ),
-                ("/mode".to_string(), "execute, explore (reads only) or plan"),
+                (
+                    "/mode".to_string(),
+                    "Build, Explore (reads only), Plan or auto",
+                ),
                 // Three commands that worked and were in no list, which is
                 // how a command that works comes to look like one Sterna does
                 // not have -- the same defect `/exit` was fixed for.

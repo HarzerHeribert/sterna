@@ -187,7 +187,7 @@ pub(super) enum Update {
     ToolDelta(String),
     /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
     Reasoning(String),
-    Mode(tui::Mode),
+    Mode(tui::Mode, bool),
     Effort(crate::wire::Effort),
     Panel(Box<tui::Panel>),
     Notice(String),
@@ -431,8 +431,8 @@ impl LiveUi {
     pub(super) fn effort(&self, effort: crate::wire::Effort) {
         let _ = self.updates.send(Update::Effort(effort));
     }
-    pub(super) fn mode(&self, mode: tui::Mode) {
-        let _ = self.updates.send(Update::Mode(mode));
+    pub(super) fn mode(&self, mode: tui::Mode, pinned: bool) {
+        let _ = self.updates.send(Update::Mode(mode, pinned));
     }
     pub(super) fn panel(&self, panel: tui::Panel) {
         let _ = self.updates.send(Update::Panel(Box::new(panel)));
@@ -742,8 +742,8 @@ fn open_cell(state: &mut ScreenState, notebook: &Notebook, cell: usize) {
 /// approval gate reads on the session thread, so a person who moves *down*
 /// mid-task is asked about the very next call; moving *up* is their own act
 /// and the ladder records it for the rollout.
-fn rung_change(ladder: &crate::permissions::Ladder) -> String {
-    let mut moved = ladder.cycle();
+fn rung_change(state: &mut ScreenState, scope: crate::settings::Scope) -> String {
+    let mut to = state.permissions.rung().next();
     // **The key walks the rungs that ask; it cannot walk into the one that
     // does not.** Shift-Tab is one keystroke with no confirmation step, and
     // `full` is the rung where nothing is confirmed ever again -- reachable
@@ -755,16 +755,14 @@ fn rung_change(ladder: &crate::permissions::Ladder) -> String {
     //
     // A session *started* on `full` still leaves it here, because stepping
     // over a rung is not the same as being unable to leave one.
-    if moved.to == crate::permissions::Rung::Full {
-        moved = ladder.cycle();
+    if to == crate::permissions::Rung::Full {
+        to = to.next();
     }
-    // The new state, then what it means, then the way back. A notice that
-    // only named the rung left the reader to look up what they had just
-    // chosen -- on the one control that moves while a task is running.
+    // The new state, then what it means, then the way on: the notice every
+    // route that moves the rung prints, and one more sentence.
     format!(
-        "{} · {} Shift-Tab again for the next.",
-        moved.to.label(),
-        moved.to.sentence()
+        "{} Shift-Tab again for the next.",
+        crate::workbench::facts::set_rung(state, to, scope)
     )
 }
 
@@ -989,7 +987,10 @@ fn run(
                     state.helpers_on = helpers_on;
                     state.subagents = Some(subagents);
                 }
-                Update::Mode(mode) => state.mode = mode,
+                Update::Mode(mode, pinned) => {
+                    state.mode = mode;
+                    state.mode_pinned = pinned;
+                }
                 Update::Effort(effort) => state.effort = effort,
                 // The screen's inbox: the workbench opens it as a sheet on the
                 // next frame, as the child of the row that asked for it.
@@ -1242,6 +1243,7 @@ fn run(
                         // request to be told the command is unknown.
                     } else if !busy {
                         busy = true;
+                        workbench.sent(&command, &state);
                         let _ = answers.inputs.send(Input::Submit(command));
                     } else {
                         say(
@@ -1434,7 +1436,7 @@ fn run(
                     // *while* a task runs, because that is when someone
                     // notices they are on the wrong rung. The request mode
                     // keeps `/mode` and its own sidebar field.
-                    state.notice = Some(rung_change(&state.permissions));
+                    state.notice = Some(rung_change(&mut state, workbench.scope()));
                     continue;
                 }
                 // **Escape, and only while a task runs.** Every panel,
@@ -1731,6 +1733,7 @@ fn run(
                         keep_sending(&mut conversation, &mut sending, Activity::Thinking);
                         dirty = true;
                     }
+                    workbench.sent(&text, &state);
                     if answers.inputs.send(Input::Submit(text)).is_err() {
                         return Ok(());
                     }
@@ -2028,19 +2031,19 @@ mod tests {
     /// touch the request mode.
     #[test]
     fn shift_tab_moves_the_rung_and_leaves_the_request_mode_alone() {
-        let state = ScreenState {
+        let mut state = ScreenState {
             permissions: crate::permissions::Ladder::new(crate::permissions::Rung::Manual),
             ..ScreenState::default()
         };
         let mode_before = state.mode;
         let mut seen = Vec::new();
         for _ in 0..3 {
-            let line = rung_change(&state.permissions);
-            // Where it landed, and what that does -- the rung's own two
-            // sentences, so this notice and the Ask surface cannot drift.
+            let line = rung_change(&mut state, crate::settings::Scope::Global);
+            // Where it landed, and what that does -- the notice every route
+            // prints, so this one and the Ask surface cannot drift.
             let rung = state.permissions.rung();
             assert!(
-                line.starts_with(rung.label()) && line.contains(rung.sentence()),
+                line.starts_with(&rung.now()),
                 "it says where it landed and what that means: {line}"
             );
             seen.push(state.permissions.rung());
@@ -2056,9 +2059,11 @@ mod tests {
             "one rung per press, wrapping to where it started"
         );
         assert_eq!(state.mode, mode_before, "the request mode is untouched");
+        // Three moves, not four: the step over Never asks is one move, so
+        // the gate never reads that rung, not even for an instant.
         assert_eq!(
             state.permissions.drain_moves().len(),
-            4,
+            3,
             "every move is recorded for the rollout"
         );
     }

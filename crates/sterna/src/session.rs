@@ -632,7 +632,11 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
     } else if let Some(model) = default_decisions.filter(|_| !terminal) {
         session_println!("decisions: {model} (the gateway serves a TypeSafe account)");
     }
-    session_println!("{}", startup::permissions_line(&ladder));
+    // A terminal draws the rung live on the session card instead, so the
+    // line cannot go stale the moment Shift-Tab moves it.
+    if !terminal {
+        session_println!("{}", startup::permissions_line(&ladder));
+    }
 
     // `sandbox-grants.md` §1.5: computed once, at session start, immutable
     // for the session's life. Reloading a persisted configuration must never
@@ -750,9 +754,11 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
                     let mut state = tui::ScreenState {
                         model: started_on.clone(),
                         mode: initial_mode,
+                        mode_pinned: initial_mode_pinned,
                         permissions: ladder.clone(),
                         effort: initial_effort,
                         settings_root: Some(args.root.clone()),
+                        settings_global: crate::project::workflows::user_directory(),
                         settings_profile: args.profile.clone(),
                         compact: true,
                         pretty: true,

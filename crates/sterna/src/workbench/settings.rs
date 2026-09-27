@@ -54,7 +54,7 @@ pub struct Preferences {
 }
 impl Preferences {
     pub fn open(s: &ScreenState) -> Result<Self, String> {
-        Self::with_global(s, crate::project::workflows::user_directory())
+        Self::with_global(s, s.settings_global.clone())
     }
     /// Tests and embedded hosts can supply a global directory without process-wide environment edits.
     pub fn with_global(s: &ScreenState, global: Option<PathBuf>) -> Result<Self, String> {
@@ -306,6 +306,13 @@ impl Preferences {
         self.notice.clear();
         Ok(())
     }
+    /// Reads the files again after something outside this sheet saved to
+    /// them -- a chip, Shift-Tab, a typed command.
+    pub fn refresh(&mut self) {
+        if let Err(error) = self.reload() {
+            self.notice = error;
+        }
+    }
     fn reload(&mut self) -> Result<(), String> {
         let store = Store::with_global(&self.root, self.global.clone())?;
         self.snapshot = store.read(self.scope)?;
@@ -428,15 +435,24 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, _s: &ScreenState) ->
             .detail(detail)
         } else {
             let current = options.iter().position(|v| *v == effective);
-            let values = options
+            let mut values: Vec<_> = options
                 .iter()
                 .map(|v| {
                     (
-                        human_value(v).to_string(),
+                        human_value(&super::facts::shown(spec.key, v)).to_string(),
                         Action::Setting(i, Some(v.clone())),
                     )
                 })
                 .collect();
+            // Helpers switched on with no model to run them on do nothing,
+            // and the row says so instead of a bare On.
+            if spec.key == "helpers.enabled"
+                && effective == "true"
+                && p.effective("helpers.model") == "unset"
+            {
+                detail = format!("On, but no helper model chosen · {detail}");
+                values.push(("choose a model".to_string(), Action::SettingsAt(3)));
+            }
             Item::value(id, spec.label, values, current).detail(detail)
         };
         items.push(item);

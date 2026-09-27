@@ -50,42 +50,38 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
 }
 
 /// One word for the work mode, as the chips and the sheet name it.
-pub(super) fn mode_word(mode: crate::tui::Mode) -> &'static str {
-    match mode {
-        crate::tui::Mode::Execute => "Build",
-        crate::tui::Mode::Explore => "Explore",
-        crate::tui::Mode::Plan => "Plan",
-    }
-}
-
 fn work(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    use crate::tui::Mode;
     sheet.title = "Work".into();
     sheet.crumbs = vec!["what this session may do".into()];
-    [
-        (
-            crate::tui::Mode::Execute,
-            "Edits files and runs commands, inside the session's boundary.",
-        ),
-        (
-            crate::tui::Mode::Explore,
-            "Reads only. It can still write to its own scratch directory.",
-        ),
-        (
-            crate::tui::Mode::Plan,
-            "Reads, and writes one file: the plan. Nothing else changes.",
-        ),
-    ]
-    .into_iter()
-    .map(|(mode, help)| {
-        Item::choice(
-            format!("mode:{}", mode.name()),
-            mode_word(mode),
-            s.mode == mode,
-            Action::Command(format!("/mode {}", mode.name())),
+    let mut items: Vec<Item> = [Mode::Execute, Mode::Explore, Mode::Plan]
+        .into_iter()
+        .map(|mode| {
+            Item::choice(
+                format!("mode:{}", mode.setting()),
+                mode.label(),
+                s.mode == mode,
+                Action::Command(super::facts::mode_command(Some(mode))),
+            )
+            .detail(mode.sentence())
+        })
+        .collect();
+    // Unpinned is a state of its own: the session stays on its mode until a
+    // confident read-only request proposes Explore.
+    items.push(
+        Item::toggle(
+            "mode:auto",
+            "Auto",
+            !s.mode_pinned,
+            Action::Command(if s.mode_pinned {
+                super::facts::mode_command(None)
+            } else {
+                super::facts::mode_command(Some(s.mode))
+            }),
         )
-        .detail(help)
-    })
-    .collect()
+        .detail("A confident read-only request may propose Explore."),
+    );
+    items
 }
 
 fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {

@@ -41,8 +41,14 @@ pub(super) fn label(f: &mut Frame<'_>, a: Rect, y: u16, text: &str, tone: Tone, 
 }
 
 /// One word for the work mode, as the footer and the session bar both name it.
-fn work_word(s: &ScreenState) -> &'static str {
-    super::sheets::mode_word(s.mode)
+/// Explore and Plan change what a request may do, so while one of them is
+/// in force its chip is drawn as a warning and never dropped.
+fn work_tone(s: &ScreenState) -> Tone {
+    if s.mode == crate::tui::Mode::Execute {
+        Tone::Normal
+    } else {
+        Tone::Warning
+    }
 }
 /// The access profile, named by what it does to your work. The counts and the
 /// applier are under the sentence, on the Access surface.
@@ -62,15 +68,6 @@ fn network_word(s: &ScreenState) -> &'static str {
 }
 fn ask_word(s: &ScreenState) -> &'static str {
     s.permissions.rung().label()
-}
-/// What the rung means, as the session card says it: what Sterna stops for.
-fn ask_before(s: &ScreenState) -> &'static str {
-    match s.permissions.rung() {
-        crate::permissions::Rung::Manual => "every call",
-        crate::permissions::Rung::AcceptEdits => "every command",
-        crate::permissions::Rung::Auto => "risky commands",
-        crate::permissions::Rung::Full => "nothing",
-    }
 }
 fn access_tone(s: &ScreenState) -> Tone {
     if s.full_access {
@@ -172,12 +169,13 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         a,
         chrome::width(brand) + 1 + chrome::width(&project) + 2,
         &[
-            (format!("{model} ▾"), Action::Models, Tone::Normal, 2),
+            (format!("{model} ▾"), Action::Models, Tone::Normal, 3),
             // How often it asks outranks which mode it is in, and both
             // outrank the model's name: at eighty columns a session must
-            // still say whether it will ask before running anything.
+            // still say whether it will ask before running anything, and
+            // whether it may change anything at all.
             (ask_word(s).to_string(), Action::Approvals, ask_tone(s), 1),
-            (work_word(s).to_string(), Action::Work, Tone::Normal, 3),
+            (super::facts::mode_word(s), Action::Work, work_tone(s), 2),
             (
                 if s.full_access {
                     "▲ FULL ACCESS".to_string()
@@ -805,13 +803,13 @@ fn session_card(
         ),
         (network_word(s).into(), Tone::Muted, Some(Action::Access)),
         (
-            format!("asks before {}", ask_before(s)),
+            s.permissions.rung().asks().to_string(),
             ask_tone(s),
             Some(Action::Approvals),
         ),
         (
-            format!("mode {}", work_word(s).to_lowercase()),
-            Tone::Normal,
+            format!("mode {}", super::facts::mode_word(s)),
+            work_tone(s),
             Some(Action::Work),
         ),
         (String::new(), Tone::Normal, None),
@@ -821,14 +819,17 @@ fn session_card(
             Tone::Normal,
             Some(Action::Models),
         ),
+        // Two lines, two targets: the effort steps where it stands, and
+        // the helpers open the settings that turn them on.
         (
-            format!(
-                "effort {} · helpers {}",
-                s.effort.sent_for(s.model.as_deref().unwrap_or("")).name(),
-                if s.helpers_on { "on" } else { "off" }
-            ),
+            super::facts::effort_word(s),
             Tone::Muted,
             Some(Action::Effort),
+        ),
+        (
+            format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
+            Tone::Muted,
+            Some(Action::SettingsAt(2)),
         ),
     ];
     if let Some(word) = &s.subagents {
@@ -872,7 +873,7 @@ fn session_card(
             Some(Action::SettingsAt(2)),
         ));
     }
-    for helper in helpers {
+    for (i, helper) in helpers.iter().enumerate() {
         lines.push((
             format!(
                 "{} · {}",
@@ -890,7 +891,8 @@ fn session_card(
             } else {
                 Tone::Failure
             },
-            None,
+            // The same lane the card shows, opened there.
+            Some(Action::Helper(n.cells.len(), i)),
         ));
     }
     for (i, (text, tone, action)) in lines.iter().enumerate() {
@@ -1082,20 +1084,11 @@ fn dock_bottom(
     let limit = a.right().saturating_sub(rw + 3);
     let mut x = a.x + 3;
     if s.status_line != StatusLine::Hidden {
-        // **A chip says only what differs from Sterna's own default.** Four
-        // chips that read "default", "off", "off", "actions" are four words a
-        // newcomer cannot use yet; a setting someone changed is one they
-        // know, and it stays one click from changing back.
-        let effort = s.effort.sent_for(s.model.as_deref().unwrap_or("")).name();
+        // **A chip says only what differs from Sterna's own default** --
+        // except the effort, which is a control stepped in place: a chip
+        // that vanished at `default` could not be stepped again.
         let items = [
-            (
-                if s.effort == crate::wire::Effort::Default {
-                    String::new()
-                } else {
-                    format!("effort {effort}")
-                },
-                Action::Effort,
-            ),
+            (super::facts::effort_word(s), Action::Effort),
             (
                 if s.helpers_on {
                     "◇ helpers on".to_string()

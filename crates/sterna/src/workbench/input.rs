@@ -39,8 +39,54 @@ impl Workbench {
         }
         saved
     }
+    /// Where a rung, mode or effort chosen now is saved: the scope Settings
+    /// is open on, else the global settings (decision 6).
+    pub fn scope(&self) -> crate::settings::Scope {
+        self.sheets
+            .iter()
+            .rev()
+            .find_map(|layer| match &layer.source {
+                Source::Settings(p) => Some(p.scope),
+                _ => None,
+            })
+            .unwrap_or(crate::settings::Scope::Global)
+    }
+    /// A command is on its way to the session: the mode or effort it sets
+    /// is saved here, whichever chip, row or keyboard sent it.
+    pub fn sent(&mut self, command: &str, s: &ScreenState) {
+        super::facts::saving(s, command, self.scope());
+        if let Some(p) = self.preferences_mut() {
+            p.refresh();
+        }
+    }
+    /// Every route that moves the rung. Never asks is confirmed first, on a
+    /// sheet that opens on Cancel; any other rung is set at once, saved,
+    /// and offered back.
+    fn rung(&mut self, rung: crate::permissions::Rung, s: &mut ScreenState) {
+        let before = s.permissions.rung();
+        if rung == crate::permissions::Rung::Full && before != rung {
+            self.push(Source::Confirm("full".into()));
+            return;
+        }
+        let notice = super::facts::set_rung(s, rung, self.scope());
+        if let Some(p) = self.preferences_mut() {
+            p.refresh();
+        }
+        self.say(notice);
+        if let Some(layer) = self.sheets.last_mut() {
+            layer.sheet.undo = (before != rung).then(|| Action::Rung(before.name().into()));
+        }
+    }
     pub fn local_command(&mut self, text: &str, s: &mut ScreenState, n: &Notebook) -> bool {
         let parts: Vec<_> = text.split_whitespace().collect();
+        // A rung is named by its label or its file word, and a label can be
+        // two words: `/permissions every call`.
+        if let ["/permissions", rest @ ..] = parts.as_slice()
+            && let Some(rung) = crate::permissions::Rung::parse(&rest.join(" "))
+        {
+            self.rung(rung, s);
+            return true;
+        }
         match parts.as_slice() {
             ["/settings"] => {
                 self.open_settings(s);
@@ -645,18 +691,14 @@ impl Workbench {
             // strip is the next word before the finger has left the mouse,
             // because `/effort` was always a live control and this is it.
             Action::Effort => {
-                const LADDER: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
-                let here = LADDER
-                    .iter()
-                    .position(|w| *w == s.effort.name())
-                    .unwrap_or(0);
                 // What it was is offered back beside the notice the step
                 // produces: reversibility over confirmation.
                 self.undo = Some((
                     format!("effort {}", s.effort.name()),
                     format!("/effort {}", s.effort.name()),
                 ));
-                return Effect::Command(format!("/effort {}", LADDER[(here + 1) % LADDER.len()]));
+                let next = super::facts::next_effort(s.effort);
+                return Effect::Command(format!("/effort {}", next.name()));
             }
             Action::UndoLive => {
                 if let Some((_, command)) = self.undo.take() {
@@ -824,27 +866,23 @@ impl Workbench {
                 }
             }
             Action::Rung(rung) => {
-                if rung == "full" && s.permissions.rung() != crate::permissions::Rung::Full {
-                    self.push(Source::Confirm(rung));
-                } else if let Some(r) = crate::permissions::Rung::parse(&rung) {
-                    let before = s.permissions.rung();
-                    s.permissions.set(r);
-                    self.say(format!("Ask is now {}", r.label()));
-                    if let Some(layer) = self.sheets.last_mut() {
-                        layer.sheet.undo = Some(Action::Rung(before.name().into()));
-                    }
+                if let Some(rung) = crate::permissions::Rung::parse(&rung) {
+                    self.rung(rung, s);
                 }
             }
             Action::ConfirmRung(rung) => {
-                if let Some(r) = crate::permissions::Rung::parse(&rung) {
-                    s.permissions.set(r);
+                if let Some(rung) = crate::permissions::Rung::parse(&rung) {
                     if matches!(
                         self.sheets.last().map(|l| &l.source),
                         Some(Source::Confirm(_))
                     ) {
                         self.sheets.pop();
                     }
-                    self.say(format!("Ask is now {}", r.label()));
+                    let notice = super::facts::set_rung(s, rung, self.scope());
+                    if let Some(p) = self.preferences_mut() {
+                        p.refresh();
+                    }
+                    self.say(notice);
                 }
             }
             Action::Theme(theme) => {
@@ -912,6 +950,30 @@ impl Workbench {
             return Effect::Consumed;
         };
         if let Some(value) = value {
+            // The rung, the mode and the effort have one setter each, and a
+            // settings row is one more route to it.
+            match spec.key {
+                "permissions.mode" => {
+                    if let Some(rung) = crate::permissions::Rung::parse(&value) {
+                        self.rung(rung, s);
+                    }
+                    return Effect::Consumed;
+                }
+                "session.mode" | "session.effort" => {
+                    // The session answers the command with this same line;
+                    // the sheet says it where the person is looking.
+                    p.notice = match spec.key {
+                        "session.mode" => crate::tui::Mode::parse(&value).map(|m| m.now()),
+                        _ => crate::wire::Effort::parse(&value).map(|e| e.now()),
+                    }
+                    .unwrap_or_default();
+                    if let Some(command) = crate::settings::live_command(spec.key, Some(&value)) {
+                        return Effect::Command(command);
+                    }
+                    return Effect::Consumed;
+                }
+                _ => {}
+            }
             if spec.key.starts_with("permissions.") || spec.key == "agents.mode" {
                 p.editing = Some((spec.key.into(), value));
             } else {

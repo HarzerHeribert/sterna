@@ -179,6 +179,7 @@ fn prefs() -> (Temp, ScreenState, Preferences) {
     let t = Temp::new();
     let s = ScreenState {
         settings_root: Some(t.0.clone()),
+        settings_global: Some(t.0.join("user")),
         ..Default::default()
     };
     let p = Preferences::with_global(&s, Some(t.0.join("user"))).unwrap();
@@ -1044,7 +1045,6 @@ fn screenshot() {
     s.subagents = Some("off".into());
     for note in [
         "session tlqdct-yqr — resume it with:  sterna --resume tlqdct-yqr",
-        "permissions: auto — edits run, a command that only reads runs, anything else is confirmed",
         "sandbox: --yolo — the project root and every command line are granted; native permission denials and the never-grantable set still apply",
         "sandbox: argv admission is a word scan over each part of a command line, not a shell",
         "sandbox: full access — Sterna applies no OS confinement to the children it spawns",
@@ -1262,7 +1262,7 @@ fn the_top_bar_is_chips_and_each_one_hits_its_own_control() {
     for chip in [
         "⟨ fixture-main ▾ ⟩",
         "⟨ Auto-review ⟩",
-        "⟨ Build ⟩",
+        "⟨ Build · auto ⟩",
         "⟨ Settings ⟩",
         "⟨ ? ⟩",
     ] {
@@ -1309,8 +1309,8 @@ fn a_bare_question_mark_opens_the_key_sheet_and_escape_closes_it() {
 }
 
 /// The composer is a dock: its top edge says what the session is doing and
-/// its bottom edge carries a chip for each setting changed from Sterna's own
-/// default -- and none at all for someone still on the defaults.
+/// its bottom edge carries the effort, which is stepped in place, and a chip
+/// for each other setting changed from Sterna's own default.
 #[test]
 fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     let (c, n, mut s) = fixture();
@@ -1323,7 +1323,8 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     assert!(top.contains("✓ complete"), "{top}");
     let bottom = screen.lines().last().unwrap();
     assert!(bottom.starts_with("╰─"), "{bottom}");
-    for default in ["effort", "helpers", "subagents", "stream"] {
+    assert!(bottom.contains("⟨ effort default ⟩"), "{bottom}");
+    for default in ["helpers", "subagents", "stream"] {
         assert!(
             !bottom.contains(default),
             "a default is not a chip: {bottom}"
@@ -2271,4 +2272,212 @@ fn hover_redraws_only_when_the_target_changes() {
         Effect::Consumed
     );
     assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, focused);
+}
+
+/// The session card names the rung in force now -- after Shift-Tab, the
+/// Ask sheet or a typed command -- never the one the session started on,
+/// and the line is the way to the Ask sheet.
+#[test]
+fn the_greeting_names_the_rung_in_force() {
+    use sterna::permissions::{Ladder, Rung};
+    let (c, n, mut s) = fixture();
+    s.note("session tlqdct-yqr — resume it with:  sterna --resume tlqdct-yqr");
+    s.startup_notes = Some(1);
+    s.permissions = Ladder::new(Rung::Auto);
+    s.permissions.set(Rung::Manual);
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
+    let (y, card) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("Ask: "))
+        .unwrap_or_else(|| panic!("no rung line on the card:\n{screen}"));
+    assert!(
+        card.contains(Rung::Manual.label()) && card.contains(Rung::Manual.asks()),
+        "{card}"
+    );
+    assert!(!screen.contains("permissions: auto"), "{screen}");
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(r, a)| *a == Action::Approvals && r.y as usize == y),
+        "the line opens the Ask sheet"
+    );
+}
+
+/// The effort chip is a control stepped in place, so it stays on the dock
+/// at `default` and says what a model is actually sent.
+#[test]
+fn the_effort_chip_stays_on_the_dock_at_default() {
+    let (c, n, mut s) = fixture();
+    s.effort = sterna::wire::Effort::Default;
+    let mut u = Workbench::default();
+    draw(&c, &n, &s, &mut u, 140, 42);
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(r, a)| *a == Action::Effort && r.y == 41),
+        "an effort chip on the dock at default"
+    );
+    s.model = Some("gpt-5.5".into());
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
+    assert!(screen.contains("effort default (low)"), "{screen}");
+    // The ladder steps from the stored value, so the first step is a change.
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Effort),
+        Effect::Command("/effort low".into())
+    );
+}
+
+/// The rung has one setter: the Ask sheet, a typed label and a settings row
+/// all reach it, each saves it, and each prints the same notice. Never asks
+/// is confirmed first on every route.
+#[test]
+fn every_route_to_the_rung_saves_it_and_says_the_same() {
+    use sterna::permissions::Rung;
+    let (t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
+        .unwrap()
+        .path(sterna::settings::Scope::Global);
+    let mut u = Workbench::default();
+    u.open(Source::Ask);
+    draw(&c, &n, &s, &mut u, 100, 40);
+    click_item(&mut u, &mut s, &n, "rung:manual");
+    assert_eq!(s.permissions.rung(), Rung::Manual);
+    assert_eq!(u.top().unwrap().sheet.notice, Rung::Manual.now());
+    let saved = std::fs::read_to_string(&global).unwrap_or_default();
+    assert!(saved.contains("\"manual\""), "saved globally: {saved}");
+
+    let mut u = Workbench::default();
+    assert!(u.local_command("/permissions commands", &mut s, &n));
+    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+    assert_eq!(u.notice, Rung::AcceptEdits.now());
+    assert!(u.local_command("/permissions Never asks", &mut s, &n));
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+
+    let row = p
+        .rows()
+        .iter()
+        .position(|spec| spec.key == "permissions.mode")
+        .unwrap();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let item = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "setting:permissions.mode")
+        .unwrap();
+    assert!(row < item);
+    // Every call, Commands, Auto-review, Never asks: the fourth chip.
+    let chips = u.top().unwrap().sheet.items[item].clone();
+    assert!(format!("{chips:?}").contains("Never asks"), "{chips:?}");
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3)));
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+}
+
+/// A mode or effort command on its way to the session is saved once,
+/// whichever route sent it; Auto pins nothing and saves nothing.
+#[test]
+fn a_mode_or_effort_on_its_way_out_is_saved() {
+    let (t, s, _p) = prefs();
+    let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
+        .unwrap()
+        .path(sterna::settings::Scope::Global);
+    let mut u = Workbench::default();
+    u.sent("/effort high", &s);
+    u.sent("/mode plan", &s);
+    let saved = std::fs::read_to_string(&global).unwrap();
+    assert!(saved.contains("effort = \"high\""), "{saved}");
+    assert!(saved.contains("mode = \"plan\""), "{saved}");
+    u.sent("/mode auto", &s);
+    assert!(
+        std::fs::read_to_string(&global)
+            .unwrap()
+            .contains("mode = \"plan\"")
+    );
+}
+
+/// The Work sheet speaks the chip's words and has a row for Auto.
+#[test]
+fn the_work_sheet_names_modes_the_way_the_chip_does() {
+    let (c, n, mut s) = fixture();
+    s.mode_pinned = false;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
+    assert!(screen.contains("Build · auto"), "{screen}");
+    u.open(Source::Work);
+    draw(&c, &n, &s, &mut u, 140, 42);
+    let labels: Vec<_> = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .map(|item| item.title.clone())
+        .collect();
+    assert_eq!(labels, ["Build", "Explore", "Plan", "Auto"]);
+    // Auto on: choosing it again pins the mode in force.
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "mode:auto"),
+        Effect::Command("/mode build".into())
+    );
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "mode:plan"),
+        Effect::Command("/mode plan".into())
+    );
+}
+
+/// Plan and Explore change what a request may do, so their chip is a
+/// warning that a narrow terminal keeps after the model and the rung have
+/// given way.
+#[test]
+fn the_mode_chip_is_kept_on_a_narrow_terminal_in_plan() {
+    let (c, n, mut s) = fixture();
+    s.mode = sterna::tui::Mode::Plan;
+    s.mode_pinned = true;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 60, 30));
+    let header = screen.lines().next().unwrap();
+    assert!(header.contains("Plan"), "{header}");
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(r, a)| *a == Action::Work && r.y == 0)
+    );
+}
+
+/// The sidebar's effort and helpers are two targets: stepping the effort
+/// never happens from the helpers line, and a helper's own line opens it.
+#[test]
+fn the_sidebar_splits_effort_from_helpers() {
+    let (c, n, mut s) = fixture();
+    s.helpers_on = false;
+    let mut u = Workbench::default();
+    draw(&c, &n, &s, &mut u, 140, 42);
+    let side = |a: &Action| {
+        u.geometry
+            .hits
+            .iter()
+            .filter(|(r, act)| act == a && r.x > 100)
+            .map(|(r, _)| r.y)
+            .collect::<Vec<_>>()
+    };
+    let effort = side(&Action::Effort);
+    let helpers = side(&Action::SettingsAt(2));
+    assert!(!effort.is_empty() && !helpers.is_empty());
+    assert!(effort.iter().all(|y| !helpers.contains(y)));
+    assert!(
+        !side(&Action::Helper(1, 0)).is_empty(),
+        "the helper line opens its lane"
+    );
 }

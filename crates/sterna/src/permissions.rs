@@ -90,13 +90,34 @@ impl Rung {
         }
     }
 
+    /// The same promise as [`Self::sentence`], short enough for a sidebar
+    /// line and the session card.
+    #[must_use]
+    pub fn asks(self) -> &'static str {
+        match self {
+            Self::Manual => "asks before every call",
+            Self::AcceptEdits => "asks before every command",
+            Self::Auto => "asks before commands other than reads and builds",
+            Self::Full => "never asks",
+        }
+    }
+
+    /// The notice every route that moves the rung prints.
+    #[must_use]
+    pub fn now(self) -> String {
+        format!("Ask is now {} · {}", self.label(), self.sentence())
+    }
+
+    /// The file's word or the screen's, in any case: `manual` and
+    /// `Every call` are the same rung.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
-        match word.trim() {
-            "manual" => Some(Self::Manual),
-            "accept-edits" | "accept_edits" | "acceptedits" => Some(Self::AcceptEdits),
-            "auto" => Some(Self::Auto),
-            "full" => Some(Self::Full),
+        let word = word.trim().to_ascii_lowercase();
+        match word.as_str() {
+            "manual" | "every call" => Some(Self::Manual),
+            "accept-edits" | "accept_edits" | "acceptedits" | "commands" => Some(Self::AcceptEdits),
+            "auto" | "auto-review" => Some(Self::Auto),
+            "full" | "never asks" => Some(Self::Full),
             _ => None,
         }
     }

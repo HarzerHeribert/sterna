@@ -1151,12 +1151,18 @@ impl Document {
         // The header already names the project and the model, so the card
         // says only what the header cannot: a greeting, and what happened
         // at start that is worth reading.
-        let second = startup.first().copied().unwrap_or("").to_string();
+        let room = width.saturating_sub(art_width + 4);
         let facts = [
-            (voice::greeting(s.local_hour), Tone::Strong),
+            (voice::greeting(s.local_hour), Tone::Strong, None),
             (
-                clip(&second, width.saturating_sub(art_width + 4)),
+                clip(&rung_line(s), room),
                 Tone::Muted,
+                Some(Action::Approvals),
+            ),
+            (
+                clip(startup.first().copied().unwrap_or(""), room),
+                Tone::Muted,
+                None,
             ),
             (
                 if startup.len() > 1 {
@@ -1165,10 +1171,10 @@ impl Document {
                     String::new()
                 },
                 Tone::Line,
+                None,
             ),
-            (String::new(), Tone::Muted),
         ];
-        for (glyph, (text, tone)) in art.into_iter().zip(facts) {
+        for (glyph, (text, tone, action)) in art.into_iter().zip(facts) {
             // Without a bird no row is drawn that has nothing to say.
             if parrot.is_none() && text.is_empty() {
                 continue;
@@ -1181,7 +1187,7 @@ impl Document {
             }
             spans.push(("  ".to_string(), Tone::Normal));
             spans.push((text, tone));
-            self.line(spans, None, 0);
+            self.line(spans, action, 0);
         }
         self.rule(width, 0);
         self.blank(0);
@@ -1201,19 +1207,25 @@ impl Document {
         let plumage = species.plumage();
         let room = width.saturating_sub(WIDTH + 6);
         let mut facts = vec![
-            (voice::greeting(s.local_hour), Tone::Strong),
-            (format!("{} · {}", plumage.title, plumage.nest), Tone::Muted),
+            (voice::greeting(s.local_hour), Tone::Strong, None),
+            (
+                format!("{} · {}", plumage.title, plumage.nest),
+                Tone::Muted,
+                None,
+            ),
+            (rung_line(s), Tone::Muted, Some(Action::Approvals)),
         ];
         facts.extend(
             startup
                 .iter()
                 .take(2)
-                .map(|note| (note.to_string(), Tone::Muted)),
+                .map(|note| (note.to_string(), Tone::Muted, None)),
         );
         if startup.len() > 2 {
             facts.push((
                 format!("+{} more · /activity", startup.len() - 2),
                 Tone::Line,
+                None,
             ));
         }
         let top = 4usize.min(super::plumage::ROWS.saturating_sub(facts.len()));
@@ -1223,11 +1235,13 @@ impl Document {
                 row.into_iter()
                     .map(|(glyph, fg, bg)| (glyph.to_string(), Tone::Pixel(fg, bg))),
             );
-            if let Some((text, tone)) = y.checked_sub(top).and_then(|i| facts.get(i)) {
+            let mut action = None;
+            if let Some((text, tone, act)) = y.checked_sub(top).and_then(|i| facts.get(i)) {
                 spans.push(("    ".to_string(), Tone::Normal));
                 spans.push((clip(text, room), *tone));
+                action = act.clone();
             }
-            self.line(spans, None, 0);
+            self.line(spans, action, 0);
         }
         self.rule(width, 0);
         self.blank(0);
@@ -1981,6 +1995,13 @@ fn mood(face: voice::Face, s: &ScreenState) -> super::plumage::Mood {
         voice::Face::Done => Mood::Done,
         voice::Face::Oops => Mood::Oops,
     }
+}
+
+/// The session card's rung line, drawn from the ladder every frame: the
+/// rung in force, never the one the session started on.
+fn rung_line(s: &ScreenState) -> String {
+    let rung = s.permissions.rung();
+    format!("Ask: {} · {}", rung.label(), rung.asks())
 }
 
 #[cfg(test)]
