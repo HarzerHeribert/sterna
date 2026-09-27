@@ -820,6 +820,69 @@ fn direct_save_and_undo_use_the_native_store() {
     ctrl(&mut u, &mut s, &n, 'z');
     assert_eq!(u.top().unwrap().sheet.notice, "Nothing to undo.");
 }
+/// Every action a click reaches on screen: the chips drawn, and the ones
+/// folded into a `⟨ +N ▾ ⟩` chip's list.
+fn reachable(u: &Workbench) -> Vec<Action> {
+    let mut all = Vec::new();
+    for (_, action) in &u.geometry.hits {
+        match action {
+            Action::More(folded) => all.extend(folded.iter().map(|(_, a)| a.clone())),
+            other => all.push(other.clone()),
+        }
+    }
+    all
+}
+/// A settings sheet narrower than its section strip folds the sections it
+/// cannot draw into `⟨ +N ▾ ⟩`, as every chip row does: none is cut off,
+/// and one chosen from the fold opens.
+#[test]
+fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    for width in [80, 50] {
+        draw(&c, &n, &s, &mut u, width, 30);
+        let reach = reachable(&u);
+        // Everyday, Display, Little helpers, Models & accounts, Subagents,
+        // Advanced, Tuning.
+        for i in 0..7 {
+            assert!(
+                reach.contains(&Action::Sheet(Hit::Section(i))),
+                "{width} columns: section {i} cannot be reached"
+            );
+        }
+        for i in 0..2 {
+            assert!(
+                reach.contains(&Action::Sheet(Hit::Tool(i))),
+                "{width} columns: tool {i} cannot be reached"
+            );
+        }
+    }
+    draw(&c, &n, &s, &mut u, 80, 30);
+    let tuning = 6;
+    let fold = u
+        .geometry
+        .hits
+        .iter()
+        .find_map(|(_, a)| {
+            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(tuning))))
+                .then(|| a.clone())
+        })
+        .expect("Tuning is folded at 80 columns");
+    click(&mut u, &mut s, &n, fold);
+    draw(&c, &n, &s, &mut u, 80, 30);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.title == "Tuning")
+        .expect("the fold lists Tuning");
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(row)));
+    assert_eq!(u.preferences().unwrap().category, tuning);
+}
 #[test]
 fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
     let (_t, mut s, mut p) = prefs();

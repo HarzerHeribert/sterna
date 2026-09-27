@@ -521,6 +521,12 @@ impl Workbench {
                                 };
                                 self.apply(outcome, s, n, busy)
                             }
+                            // A fold on a sheet's own strip lists what it
+                            // holds over the sheet, which stays under it.
+                            Some(action @ Action::More(_)) => {
+                                let from_sheet = !self.sheets.is_empty();
+                                self.activate(action, s, n, busy, from_sheet)
+                            }
                             Some(action) => self.activate(action, s, n, busy, false),
                             // A click on the backdrop outside a sheet is Esc,
                             // except on a decision, which only its answers end.

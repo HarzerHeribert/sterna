@@ -949,10 +949,19 @@ pub fn draw(
     y += 1;
     // Sections, with `‹` and `›` as targets of their own, and the search at
     // the right end of the same line.
+    // The least the section strip needs: its arrows, the open section and
+    // the `⟨ +N ▾ ⟩` that holds the rest. The search's words give way
+    // before the strip loses its fold.
+    let strip = match sheet.sections.get(sheet.section) {
+        Some(open) if sheet.sections.len() > 1 => {
+            chrome::width(open) + chrome::width(" ●") + chrome::width("+99 ▾") + 14
+        }
+        _ => 0,
+    };
     let search = sheet.query.as_ref().map(|query| {
         let count = match sheet.total {
             Some(total) => format!(
-                " · {} of {total}",
+                "{} of {total}",
                 sheet.matched.unwrap_or_else(|| sheet
                     .items
                     .iter()
@@ -961,10 +970,18 @@ pub fn draw(
             ),
             None => String::new(),
         };
-        if query.is_empty() {
-            format!("⌕ type to filter{count}")
+        let said = match (query.is_empty(), count.is_empty()) {
+            (true, true) => "⌕ type to filter".to_string(),
+            (true, false) => format!("⌕ type to filter · {count}"),
+            (false, true) => format!("⌕ {query}▏"),
+            (false, false) => format!("⌕ {query}▏ · {count}"),
+        };
+        if chrome::width(&said) + 2 + strip <= area.width {
+            said
+        } else if query.is_empty() {
+            format!("⌕ {count}")
         } else {
-            format!("⌕ {query}▏{count}")
+            format!("⌕ {query}▏")
         }
     });
     if !sheet.sections.is_empty() || search.is_some() {
@@ -975,30 +992,22 @@ pub fn draw(
             chrome::text(f, Rect::new(x, y, 1, 1), "‹", Tone::Accent, t);
             hit(g, Rect::new(x, y, 1, 1), Hit::SectionStep(false));
             x += 2;
-            for (i, name) in sheet.sections.iter().enumerate() {
-                let label = if i == sheet.section {
-                    format!("{name} ●")
-                } else {
-                    name.clone()
-                };
-                let w = chrome::chip(
-                    f,
-                    g,
-                    x,
-                    y,
-                    limit.saturating_sub(2),
-                    &label,
-                    Action::Sheet(Hit::Section(i)),
-                    i == sheet.section,
-                    Tone::Normal,
-                    press,
-                    t,
-                );
-                if w == 0 {
-                    break;
-                }
-                x += w + 1;
-            }
+            // The sections that do not fit fold into `⟨ +N ▾ ⟩`, never the
+            // open one.
+            let sections: Vec<(String, Action, bool)> = sheet
+                .sections
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let label = if i == sheet.section {
+                        format!("{name} ●")
+                    } else {
+                        name.clone()
+                    };
+                    (label, Action::Sheet(Hit::Section(i)), i == sheet.section)
+                })
+                .collect();
+            x = chrome::chips(f, g, x, y, limit.saturating_sub(2), &sections, press, t);
             if x < limit {
                 chrome::text(f, Rect::new(x, y, 1, 1), "›", Tone::Accent, t);
                 hit(g, Rect::new(x, y, 1, 1), Hit::SectionStep(true));
@@ -1021,26 +1030,13 @@ pub fn draw(
         y += 1;
     }
     if !sheet.tools.is_empty() && y < bottom {
-        let mut x = area.x;
-        for (i, (label, _, on)) in sheet.tools.iter().enumerate() {
-            let w = chrome::chip(
-                f,
-                g,
-                x,
-                y,
-                area.right(),
-                label,
-                Action::Sheet(Hit::Tool(i)),
-                *on,
-                Tone::Normal,
-                press,
-                t,
-            );
-            if w == 0 {
-                break;
-            }
-            x += w + 1;
-        }
+        let tools: Vec<(String, Action, bool)> = sheet
+            .tools
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _, on))| (label.clone(), Action::Sheet(Hit::Tool(i)), *on))
+            .collect();
+        chrome::chips(f, g, area.x, y, area.right(), &tools, press, t);
         y += 1;
     }
     if y < bottom {
