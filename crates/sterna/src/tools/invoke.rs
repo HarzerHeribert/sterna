@@ -2455,7 +2455,11 @@ mod tests {
         let write_under = |bypassed: bool| {
             let profile = {
                 let p = Profile::compile(&root, Some(&settings));
-                if bypassed { p.with_os_sandbox_bypass() } else { p }
+                if bypassed {
+                    p.with_os_sandbox_bypass()
+                } else {
+                    p
+                }
             };
             let ctx = ToolContext {
                 profile: &profile,
@@ -2476,7 +2480,10 @@ mod tests {
 
         let bypassed = write_under(true).expect("the unconfined child spawns");
         assert_eq!(bypassed.confinement, Confinement::DangerouslyUnconfined);
-        assert!(target.exists(), "the unconfined child must write: {bypassed:?}");
+        assert!(
+            target.exists(),
+            "the unconfined child must write: {bypassed:?}"
+        );
 
         let _ = std::fs::remove_dir_all(base);
         let _ = std::fs::remove_dir_all(root);
