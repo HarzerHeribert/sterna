@@ -191,10 +191,7 @@ const STEPS: usize = 3;
 
 /// The wizard's overview: each step, whether it is done, and Enter to do it.
 fn overview(progress: &Progress) -> Panel {
-    let row = |text: String, command: &str| PanelRow {
-        text,
-        command: Some(command.to_string()),
-    };
+    let row = |text: String, command: &str| PanelRow::opens(text, command);
     let mark = |done: bool| if done { "✓" } else { "○" };
     let signed = if progress.signed_in.is_empty() {
         "a subscription or an API key".to_string()
@@ -248,60 +245,45 @@ fn models_panel(progress: &Progress) -> Panel {
     let Some(picks) = recommend(&progress.served) else {
         return Panel::rows(
             "Setup › Models",
-            vec![PanelRow {
-                text: "Sign in first: the models come from what you sign in to".into(),
-                command: Some("/login".into()),
-            }],
+            vec![PanelRow::opens(
+                "Sign in first: the models come from what you sign in to",
+                "/login",
+            )],
         );
     };
     Panel::rows(
         "Setup › Models",
         vec![
-            PanelRow {
-                text: format!(
+            PanelRow::command(
+                format!(
                     "Use Sterna's picks · main {} · helpers {} · subagents {}",
                     picks.main, picks.helpers, picks.subagents
                 ),
-                command: Some("/wizard models apply".into()),
-            },
-            PanelRow {
-                text: "Choose each one myself".into(),
-                command: Some("/models".into()),
-            },
-            PanelRow {
-                text: "Back".into(),
-                command: Some("/wizard".into()),
-            },
+                "/wizard models apply",
+            ),
+            PanelRow::opens("Choose each one myself", "/models"),
         ],
     )
 }
 
 /// The Jev step: what it is for, then the key and the switch.
 fn jev_panel(progress: &Progress) -> Panel {
-    let mut rows = vec![PanelRow {
-        text: "Jev answers Sterna's quick decisions: whether a command in auto mode is safe to run without asking, whether a long task is stuck, what kind of task a request is. It is a TypeSafe model and needs a TypeSafe API key.".into(),
-        command: None,
-    }];
+    let mut rows = vec![PanelRow::info(
+        "Jev answers Sterna's quick decisions: whether a command in auto mode is safe to run without asking, whether a long task is stuck, what kind of task a request is. It is a TypeSafe model and needs a TypeSafe API key.",
+    )];
     if !progress.jev_key {
-        rows.push(PanelRow {
-            text: "Add a TypeSafe API key".into(),
-            command: Some(format!("/key {}", startup::DECISIONS_PROVIDER)),
-        });
+        rows.push(PanelRow::opens(
+            "Add a TypeSafe API key",
+            format!("/key {}", startup::DECISIONS_PROVIDER),
+        ));
     } else if !progress.jev_on {
-        rows.push(PanelRow {
-            text: "Turn decisions on with Jev".into(),
-            command: Some("/wizard jev on".into()),
-        });
+        rows.push(PanelRow::command(
+            "Turn decisions on with Jev",
+            "/wizard jev on",
+        ));
     } else {
-        rows.push(PanelRow {
-            text: "Jev is on".into(),
-            command: None,
-        });
+        rows.push(PanelRow::info("Jev is on"));
     }
-    rows.push(PanelRow {
-        text: "Back".into(),
-        command: Some("/wizard".into()),
-    });
     Panel::rows("Setup › Jev", rows)
 }
 
@@ -373,19 +355,18 @@ fn record_seen(session: &Session<'_>) {
 fn update_panel(changes: &[(&Recommended, String)]) -> Panel {
     let mut rows: Vec<PanelRow> = changes
         .iter()
-        .map(|(entry, current)| PanelRow {
-            text: format!("{}: {current} → {} · {}", entry.key, entry.value, entry.why),
-            command: None,
+        .map(|(entry, current)| {
+            PanelRow::info(format!(
+                "{}: {current} → {} · {}",
+                entry.key, entry.value, entry.why
+            ))
         })
         .collect();
-    rows.push(PanelRow {
-        text: "Apply Sterna's new settings".into(),
-        command: Some("/wizard update apply".into()),
-    });
-    rows.push(PanelRow {
-        text: "Keep mine".into(),
-        command: Some("/wizard update keep".into()),
-    });
+    rows.push(PanelRow::command(
+        "Apply Sterna's new settings",
+        "/wizard update apply",
+    ));
+    rows.push(PanelRow::command("Keep mine", "/wizard update keep"));
     Panel::rows("Sterna's recommended settings changed", rows)
 }
 
@@ -441,9 +422,10 @@ pub(super) fn at_start(session: &Session<'_>, no_model: bool) {
         return;
     }
     let progress = progress(session);
+    // Never a sheet at start: a sheet would take the first keys the person
+    // types. The way into setup is a chip on the opening card.
     if no_model {
-        controls::show(session, overview(&progress));
-        return;
+        session_println!("No model selected yet: finish setup, or type /model <id>.");
     }
     // After an update that changed the recommendations: one line, never a
     // panel -- a panel at start would take the first keys the person types.

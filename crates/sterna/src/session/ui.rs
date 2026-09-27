@@ -103,9 +103,9 @@ impl Drop for StartupNotes {
 /// is all `EnableMouseCapture` does there (`is_ansi_code_supported` is `false`
 /// on Windows, so it writes no `?1002`/`?1003` either). Without that call
 /// Sterna's wheel did nothing on Windows at all.
-const ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 /// The matching resets, in the same order.
-const DISABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
+const DISABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
 
 /// The longest the screen goes without a frame while input keeps arriving.
 /// A drag or a wheel delivers events faster than a full transcript re-render
@@ -725,7 +725,6 @@ fn tick_helper_clocks(notebook: &mut Notebook, since: &mut HashMap<(usize, usize
 fn open_cell(state: &mut ScreenState, notebook: &Notebook, cell: usize) {
     state.inspection = tui::Inspection::open(cell, notebook);
     state.telemetry_open = false;
-    state.panel = None;
     if state.inspection.is_none() {
         state.note("No recorded cell at that number yet. Use /cells after an action.");
     }
@@ -865,7 +864,8 @@ fn run(
     // `[a]` on an approval: the refused request and what has been typed
     // for it so far. Esc puts the request back in front of the person.
     let mut redirect: Option<(crate::approval::Request, String)> = None;
-    let mut settings_editor: Option<crate::settings_session::Editor> = None;
+    // Where the open form was drawn, so a click reaches its fields.
+    let mut form_hits: Vec<(ratatui::layout::Rect, crate::workbench::FormHit)> = Vec::new();
     loop {
         if !ACTIVE.load(Ordering::SeqCst) {
             break;
@@ -881,7 +881,6 @@ fn run(
             match update {
                 Update::Approval(request) => {
                     approvals.push_back(request);
-                    state.panel = None;
                     state.inspection = None;
                     approval_scroll = 0;
                 }
@@ -900,7 +899,6 @@ fn run(
                         })
                         .unwrap_or(0);
                     asking = Some(request);
-                    state.panel = None;
                     state.inspection = None;
                 }
                 Update::Snapshot(snapshot) => {
@@ -926,7 +924,14 @@ fn run(
                     {
                         state.completion_tick = Some(0);
                     }
-                    refresh_handler_panel(&mut state.panel, &notebook.handlers, &n.handlers);
+                    refresh_handler_panel(
+                        workbench.panel_mut("Standing handlers"),
+                        &notebook.handlers,
+                        &n.handlers,
+                    );
+                    workbench
+                        .turning_off
+                        .retain(|name| n.handlers.iter().any(|h| h.name == *name && h.active));
                     conversation = c;
                     keep_sending(&mut conversation, &mut sending, activity);
                     state.messages_seen = conversation.messages.len();
@@ -1005,19 +1010,19 @@ fn run(
                 }
                 Update::Mode(mode) => state.mode = mode,
                 Update::Effort(effort) => state.effort = effort,
-                Update::Panel(panel) => {
-                    state.panel = Some(replace_panel(state.panel.as_ref(), *panel))
-                }
+                // The screen's inbox: the workbench opens it as a sheet on the
+                // next frame, as the child of the row that asked for it.
+                Update::Panel(panel) => state.panel = Some(*panel),
                 Update::Notice(message) => {
                     workbench.notice = message.lines().next().unwrap_or("").to_owned();
                     state.note(message);
                     state.landed_note();
                 }
                 Update::Behind(lane, running) => state.lane(lane, running),
+                // The form draws over the sheet that opened it, which is
+                // still there when the form is done or put back.
                 Update::Form(form) => {
                     state.form = Some(*form);
-                    // A panel over a form would take the Enter that submits it.
-                    state.panel = None;
                     state.inspection = None;
                 }
                 Update::Dequeued => {
@@ -1121,9 +1126,10 @@ fn run(
                     &served,
                     &mut workbench,
                 );
-                if let Some(form) = state.form.as_ref() {
-                    crate::workbench::render_form(frame, form, state.theme);
-                }
+                form_hits = match state.form.as_ref() {
+                    Some(form) => crate::workbench::render_form(frame, form, state.theme),
+                    None => Vec::new(),
+                };
                 if let Some((_, text)) = redirect.as_ref() {
                     tui::render_redirect(frame, text, state.theme);
                 } else if let Some(request) = approvals.front() {
@@ -1135,8 +1141,6 @@ fn run(
                     );
                 } else if let Some(request) = asking.as_ref() {
                     tui::render_ask(frame, request, ask_selected, state.theme);
-                } else if let Some(settings) = settings_editor.as_ref() {
-                    settings.panel.render(frame, state.theme);
                 }
             })?;
             io::stdout().flush()?;
@@ -1187,6 +1191,30 @@ fn run(
                     dirty = true;
                     continue;
                 }
+                crate::workbench::Effect::Ignored => continue,
+                crate::workbench::Effect::OpenLink(link) => {
+                    say(
+                        &mut workbench,
+                        if links::open(&link) {
+                            "Opened in the browser."
+                        } else {
+                            "No browser available here; copy the link instead."
+                        },
+                    );
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::PasteCallback => {
+                    state.form = Some(paste_callback_form());
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::HandlerOff(name) => {
+                    super::lock(&handler_cancellations).push(name.clone());
+                    say(&mut workbench, format!("Turning off {name}…"));
+                    dirty = true;
+                    continue;
+                }
                 crate::workbench::Effect::Cursor(offset) => {
                     editor.cursor = editor
                         .text
@@ -1196,45 +1224,28 @@ fn run(
                 }
                 crate::workbench::Effect::Copy(text) => {
                     links::copy(&text);
-                    workbench.notice = "Copied selection.".into();
+                    let said = if workbench.is_local() {
+                        "Copied."
+                    } else {
+                        "Copied selection."
+                    };
+                    say(&mut workbench, said);
                     dirty = true;
                     continue;
                 }
                 crate::workbench::Effect::Command(command) => {
-                    if let Some(link) = command.strip_prefix("/open-link ") {
-                        workbench.notice = if links::open(link) {
-                            "Opened in the browser."
-                        } else {
-                            "No browser available; copy the link."
-                        }
-                        .into();
-                    } else if let Some(text) = command.strip_prefix("/copy ") {
-                        links::copy(text);
-                        workbench.notice = "Copied.".into();
-                    } else if command == "/paste-callback" {
-                        state.form = Some(tui::Form::new(
-                            "Finish signing in",
-                            "Signing in on another device? Paste the address your browser ended on after you signed in.",
-                            vec![tui::form::Field::new(
-                                "Callback address",
-                                tui::form::Kind::Text,
-                                "the whole address from the browser's bar, starting with http",
-                            )],
-                        )
-                        .submit("finish"));
-                    } else if let Some(name) = command.strip_prefix("/handlers off ") {
-                        super::lock(&handler_cancellations).push(name.to_string());
-                        workbench.notice = format!("Handler {name}: cancellation requested.");
-                    } else if workbench.local_command(command.trim(), &mut state, &notebook) {
+                    if workbench.local_command(command.trim(), &mut state, &notebook) {
                         // A control that acts on this screen is answered by
                         // this screen. Sending it to the model would spend a
                         // request to be told the command is unknown.
                     } else if !busy {
-                        state.panel = None;
                         busy = true;
                         let _ = answers.inputs.send(Input::Submit(command));
                     } else {
-                        workbench.notice = "Finish the current turn before this action.".into();
+                        say(
+                            &mut workbench,
+                            "Finish the current turn before this action.",
+                        );
                     }
                     dirty = true;
                     continue;
@@ -1246,7 +1257,31 @@ fn run(
                 dirty = true;
             }
             Event::Mouse(mouse) => {
-                if settings_editor.is_some() {
+                if let Some(form) = state.form.as_mut() {
+                    if mouse.kind == MouseEventKind::Up(crossterm::event::MouseButton::Left) {
+                        let hit = form_hits
+                            .iter()
+                            .rev()
+                            .find(|(r, _)| crate::workbench::contains(*r, mouse.column, mouse.row));
+                        match hit.map(|(_, hit)| *hit) {
+                            Some(crate::workbench::FormHit::Field(i)) => form.focus = i,
+                            Some(crate::workbench::FormHit::Word(i, word)) => {
+                                form.choose_word(i, word)
+                            }
+                            Some(crate::workbench::FormHit::Submit) => {
+                                if form.enter() {
+                                    let given = state.form.take().map(tui::Form::take);
+                                    let _ = answers.secrets.send(given);
+                                }
+                            }
+                            Some(crate::workbench::FormHit::Back) => {
+                                state.form = None;
+                                let _ = answers.secrets.send(None);
+                            }
+                            None => {}
+                        }
+                        dirty = true;
+                    }
                     continue;
                 }
                 if !approvals.is_empty() {
@@ -1268,7 +1303,7 @@ fn run(
                         } else {
                             inspection.scroll.saturating_add(3)
                         };
-                    } else if state.panel.is_none() && !state.telemetry_open {
+                    } else if !workbench.is_local() && !state.telemetry_open {
                         state.scrollback = if up {
                             state
                                 .scrollback
@@ -1282,9 +1317,6 @@ fn run(
                 }
             }
             Event::Paste(text) => {
-                if settings_editor.is_some() {
-                    continue;
-                }
                 if !approvals.is_empty() {
                     continue;
                 }
@@ -1292,11 +1324,7 @@ fn run(
                 // takes a paste before anything else can.
                 if let Some(form) = state.form.as_mut() {
                     form.push(&text);
-                } else if !state
-                    .panel
-                    .as_mut()
-                    .is_some_and(|panel| panel.search_insert(&text))
-                {
+                } else {
                     editor.insert(&text);
                 }
                 dirty = true;
@@ -1417,12 +1445,6 @@ fn run(
                     }
                     continue;
                 }
-                if let Some(settings) = settings_editor.as_mut() {
-                    if settings.key(key, &mut state) {
-                        settings_editor = None;
-                    }
-                    continue;
-                }
                 // **Modal, and first.** While a masked prompt is open every
                 // key belongs to it: none reaches the editor, the panel, the
                 // inspector or the input history.
@@ -1505,7 +1527,7 @@ fn run(
                         continue;
                     }
                 }
-                if state.telemetry_open && state.panel.is_none() {
+                if state.telemetry_open && !workbench.is_local() {
                     match key.code {
                         KeyCode::Esc => {
                             state.telemetry_open = false;
@@ -1527,143 +1549,6 @@ fn run(
                             continue;
                         }
                         _ => {}
-                    }
-                }
-                if let Some(panel) = state.panel.as_mut() {
-                    if panel.search.is_some() {
-                        match key.code {
-                            KeyCode::Left => {
-                                panel.move_provider(false);
-                                continue;
-                            }
-                            KeyCode::Right => {
-                                panel.move_provider(true);
-                                continue;
-                            }
-                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                panel.search_clear();
-                                continue;
-                            }
-                            // Ctrl-O, not a letter: this panel's plain keys
-                            // are its search box. Not Ctrl-S either, which a
-                            // terminal takes for flow control.
-                            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                panel.cycle_order();
-                                continue;
-                            }
-                            // Space stages rather than filters. The cost is
-                            // stated because it is real: the filter's terms
-                            // are whitespace-separated and AND-ed, so it is
-                            // now reachable one term at a time. Staging is
-                            // what a person does here repeatedly; a two-term
-                            // filter is not.
-                            KeyCode::Char(' ')
-                                if !key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                            {
-                                if let Some(said) = panel.stage() {
-                                    state.notice = Some(said);
-                                }
-                                continue;
-                            }
-                            KeyCode::Char(c)
-                                if !key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                            {
-                                panel.search_insert(&c.to_string());
-                                continue;
-                            }
-                            KeyCode::Backspace => {
-                                panel.search_backspace();
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    match key.code {
-                        KeyCode::Esc => {
-                            // The staged map dies with the panel, which is
-                            // the whole of "Esc throws the changes away".
-                            let discarded = panel.staged_commands().len();
-                            state.panel = None;
-                            if discarded > 0 {
-                                state.note(format!("discarded {discarded} staged change(s)"));
-                            }
-                        }
-                        KeyCode::Up => panel.move_selection(false, 1),
-                        KeyCode::Down => panel.move_selection(true, 1),
-                        // Which tier a chosen model is assigned to. Tab rather
-                        // than a letter because the model panel's plain keys
-                        // are its search box.
-                        KeyCode::Tab => {
-                            panel.cycle_tier();
-                        }
-                        KeyCode::PageUp => panel.move_selection(false, 10),
-                        KeyCode::PageDown => panel.move_selection(true, 10),
-                        KeyCode::Enter => {
-                            // Everything staged, in tier order. `Enter` on a
-                            // panel with nothing staged still applies the
-                            // highlighted row, which is what every non-model
-                            // panel -- themes, handlers, login -- relies on.
-                            let staged = panel.staged_commands();
-                            if !staged.is_empty() {
-                                if !busy {
-                                    state.panel = None;
-                                    busy = true;
-                                    for command in staged {
-                                        let _ = answers.inputs.send(Input::Submit(command));
-                                    }
-                                }
-                            } else if let Some(command) = panel
-                                .rows
-                                .get(panel.selected)
-                                .and_then(|r| r.command.clone())
-                            {
-                                if let Some(theme) =
-                                    command.strip_prefix("/theme ").and_then(tui::Theme::parse)
-                                {
-                                    state.theme = theme;
-                                    state.panel = None;
-                                    state.note(format!("Theme: {}", theme.name()));
-                                } else if let Some(link) = command.strip_prefix("/open-link ") {
-                                    state.note(if links::open(link) {
-                                        "Opened the link in your default browser."
-                                    } else {
-                                        "No browser can be opened here: copy the link instead."
-                                    });
-                                } else if let Some(text) = command.strip_prefix("/copy ") {
-                                    links::copy(text);
-                                    state.note("Copied to the clipboard through the terminal.");
-                                } else if command == "/paste-callback" {
-                                    state.form = Some(tui::Form::new(
-                            "Finish signing in",
-                            "Signing in on another device? Paste the address your browser ended on after you signed in.",
-                            vec![tui::form::Field::new(
-                                "Callback address",
-                                tui::form::Kind::Text,
-                                "the whole address from the browser's bar, starting with http",
-                            )],
-                        )
-                        .submit("finish"));
-                                } else if let Some(name) = command.strip_prefix("/handlers off ") {
-                                    super::lock(&handler_cancellations).push(name.to_string());
-                                    state.panel = None;
-                                    state.note(format!(
-                                        "handler {name}: cancellation queued for the next cell boundary"
-                                    ));
-                                } else if !busy {
-                                    state.panel = None;
-                                    busy = true;
-                                    let _ = answers.inputs.send(Input::Submit(command));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                        continue;
                     }
                 }
                 if key.code == KeyCode::BackTab {
@@ -1727,7 +1612,7 @@ fn run(
                         KeyCode::Char('t') => {
                             state.telemetry_open = !state.telemetry_open;
                             state.inspection = None;
-                            state.panel = None;
+                            workbench.close_all();
                             continue;
                         }
                         KeyCode::Char('o') => {
@@ -1851,7 +1736,7 @@ fn run(
                     if editor.text.trim() == "/telemetry" {
                         editor.take();
                         state.telemetry_open = !state.telemetry_open;
-                        state.panel = None;
+                        workbench.close_all();
                         state.notice = None;
                         continue;
                     }
@@ -1871,42 +1756,12 @@ fn run(
                         state.notice = None;
                         continue;
                     }
-                    if !busy && matches!(editor.text.trim(), "/settings" | "/statusline") {
-                        let status_only = editor.text.trim() == "/statusline";
-                        editor.take();
-                        match crate::settings_session::Editor::open(&state, status_only) {
-                            Ok(settings) => settings_editor = Some(settings),
-                            Err(error) => state.note(error),
-                        }
-                        continue;
-                    }
-                    if editor.text.split_whitespace().next() == Some("/theme") {
-                        let text = editor.take();
-                        match text.split_whitespace().nth(1) {
-                            Some(name) => {
-                                if let Some(theme) = tui::Theme::parse(name) {
-                                    state.theme = theme;
-                                    state.note(format!(
-                                        "Theme: {} · /theme opens the palette",
-                                        theme.name()
-                                    ));
-                                } else {
-                                    state.note("Unknown theme. /theme opens the palette.");
-                                }
-                            }
-                            None => {
-                                state.notice = None;
-                                state.panel = Some(tui::Theme::picker(state.theme));
-                            }
-                        }
-                        continue;
-                    }
                     if editor.text.split_whitespace().next() == Some("/handlers") {
                         let text = editor.take();
                         let parts: Vec<_> = text.split_whitespace().collect();
                         match parts.as_slice() {
                             ["/handlers"] => {
-                                state.panel = Some(tui::handlers_panel(&notebook.handlers))
+                                state.panel = Some(tui::handlers_panel(&notebook.handlers));
                             }
                             ["/handlers", "off", name] => {
                                 if busy
@@ -2043,50 +1898,42 @@ fn keep_sending(
     ));
 }
 
-/// A panel shown again under the same title keeps the row a person selected:
-/// a sign-in panel redraws while it waits, and a reset would move the cursor
-/// off the row about to be chosen.
-fn replace_panel(current: Option<&tui::Panel>, mut next: tui::Panel) -> tui::Panel {
-    // Only a row that does something is a choice worth keeping: a panel
-    // that first said only "waiting" must not hold its cursor on text.
-    if let Some(current) = current.filter(|current| {
-        current.title == next.title
-            && current
-                .rows
-                .get(current.selected)
-                .is_some_and(|row| row.command.is_some())
-    }) {
-        next.selected = current.selected.min(next.rows.len().saturating_sub(1));
-    }
-    next
-}
-
 /// The panel is an open view of task state, not a copy frozen at `/handlers`.
+///
+/// The rows carry the handler's name as their id, so the sheet keeps its
+/// focus on the same handler through counter and status changes.
 fn refresh_handler_panel(
-    panel: &mut Option<tui::Panel>,
+    panel: Option<&mut tui::Panel>,
     before: &[crate::runtime::handlers::HandlerInfo],
     after: &[crate::runtime::handlers::HandlerInfo],
 ) {
-    let Some(held) = panel.as_mut() else { return };
-    let mut refreshed = tui::handlers_panel(after);
-    if held.title != refreshed.title {
-        return;
+    let Some(held) = panel else { return };
+    let _ = before;
+    *held = tui::handlers_panel(after);
+}
+
+/// The top sheet's notice when one is open, else the dock's.
+fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
+    let text = text.into();
+    match workbench.top_mut() {
+        Some(layer) => layer.sheet.notice = text,
+        None => workbench.notice = text,
     }
-    // Row zero is explanatory text. Keep the same handler selected through
-    // counter/status changes; a missing row returns selection to that header.
-    if let Some(index) = held.selected.checked_sub(1)
-        && let Some(selected) = before.get(index)
-    {
-        refreshed.selected = if after.get(index).is_some_and(|h| h.name == selected.name) {
-            index + 1
-        } else {
-            after
-                .iter()
-                .position(|h| h.name == selected.name)
-                .map_or(0, |index| index + 1)
-        };
-    }
-    *held = refreshed;
+}
+
+/// The form that takes the address a browser ended on after signing in on
+/// another device.
+fn paste_callback_form() -> tui::Form {
+    tui::Form::new(
+        "Finish signing in",
+        "Signing in on another device? Paste the address your browser ended on after you signed in.",
+        vec![tui::form::Field::new(
+            "Callback address",
+            tui::form::Kind::Text,
+            "the whole address from the browser's bar, starting with http",
+        )],
+    )
+    .submit("finish")
 }
 
 #[cfg(test)]
@@ -2141,48 +1988,6 @@ mod tests {
         assert!(sending.is_none());
     }
 
-    /// A panel redrawn under its title keeps the selected row; a different
-    /// panel starts where it chose to.
-    #[test]
-    fn a_redrawn_panel_keeps_the_selected_row() {
-        let rows = |n: usize| {
-            (0..n)
-                .map(|i| tui::PanelRow {
-                    text: format!("row {i}"),
-                    command: Some(format!("/row {i}")),
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut shown = tui::Panel::rows("Connecting claude-max", rows(4));
-        shown.selected = 2;
-        let again = replace_panel(
-            Some(&shown),
-            tui::Panel::rows("Connecting claude-max", rows(4)),
-        );
-        assert_eq!(again.selected, 2);
-        let shorter = replace_panel(
-            Some(&shown),
-            tui::Panel::rows("Connecting claude-max", rows(2)),
-        );
-        assert_eq!(shorter.selected, 1);
-        let other = replace_panel(Some(&shown), tui::Panel::rows("Themes", rows(4)));
-        assert_eq!(other.selected, 0);
-        let waiting = tui::Panel::rows(
-            "Connecting claude-max",
-            vec![tui::PanelRow {
-                text: "waiting for the sign-in…".into(),
-                command: None,
-            }],
-        );
-        let mut offered = tui::Panel::rows("Connecting claude-max", rows(4));
-        offered.selected = 3;
-        assert_eq!(
-            replace_panel(Some(&waiting), offered).selected,
-            3,
-            "a cursor on text is not kept over the new panel's choice"
-        );
-    }
-
     /// A call in flight is dated from the frame it first appeared in, so its
     /// lane's seconds keep counting while the cell that made it blocks the
     /// task thread. A call that has resolved keeps what it actually took.
@@ -2235,8 +2040,12 @@ mod tests {
         );
     }
 
+    /// The open handler panel is the task's state, not a copy: runs, a
+    /// handler going stale and the list emptying all reach it, a stale one
+    /// can no longer be turned off, and every row keeps its handler's name
+    /// as its id so the sheet's focus stays on it.
     #[test]
-    fn an_open_handler_panel_tracks_runs_disable_cancel_and_clear_with_selection() {
+    fn an_open_handler_panel_tracks_runs_disable_cancel_and_clear() {
         use crate::runtime::handlers::HandlerInfo;
         let mut before = vec![
             HandlerInfo {
@@ -2254,8 +2063,7 @@ mod tests {
                 active: true,
             },
         ];
-        let mut panel = Some(tui::handlers_panel(&before));
-        panel.as_mut().unwrap().selected = 2;
+        let mut panel = tui::handlers_panel(&before);
         for phase in 0..4 {
             let mut after = before.clone();
             match phase {
@@ -2272,50 +2080,28 @@ mod tests {
                 }
                 _ => after.clear(),
             }
-            refresh_handler_panel(&mut panel, &before, &after);
-            let held = panel.as_ref().unwrap();
-            assert_eq!(held.selected, if after.is_empty() { 0 } else { 2 });
+            refresh_handler_panel(Some(&mut panel), &before, &after);
+            if phase < 3 {
+                assert_eq!(panel.rows[2].id.as_deref(), Some("handler:second"));
+            }
             if phase == 0 {
-                assert!(held.rows[2].text.contains("1 runs · 1 drained"));
+                assert!(panel.rows[2].text.contains("1 runs · 1 drained"));
             }
             if phase == 1 {
-                assert!(held.rows[2].text.contains("stale"));
-                assert!(held.rows[2].text.contains("RuntimeTimeout"));
-                assert!(held.rows[2].command.is_none());
+                assert!(panel.rows[2].text.contains("stale"));
+                assert!(panel.rows[2].text.contains("RuntimeTimeout"));
+                assert!(!panel.rows[2].acts());
             }
             if phase == 2 {
-                assert!(held.rows[1].text.contains("stale"));
-                assert!(held.rows[1].command.is_none());
+                assert!(panel.rows[1].text.contains("stale"));
+                assert!(!panel.rows[1].acts());
             }
             if phase == 3 {
-                assert_eq!(held.rows.len(), 1);
-                assert!(held.rows[0].text.contains("No handlers in this task"));
+                assert_eq!(panel.rows.len(), 1);
+                assert!(panel.rows[0].text.contains("No handlers in this task"));
             }
             before = after;
         }
-    }
-
-    #[test]
-    fn handler_panel_selection_follows_a_surviving_row_and_leaves_other_panels_alone() {
-        use crate::runtime::handlers::HandlerInfo;
-        let before: Vec<_> = ["first", "second"]
-            .into_iter()
-            .map(|name| HandlerInfo {
-                name: name.into(),
-                runs: 0,
-                drained: 0,
-                error: None,
-                active: true,
-            })
-            .collect();
-        let mut panel = Some(tui::handlers_panel(&before));
-        panel.as_mut().unwrap().selected = 2;
-        refresh_handler_panel(&mut panel, &before, &before[1..]);
-        assert_eq!(panel.as_ref().unwrap().selected, 1);
-        assert!(panel.as_ref().unwrap().rows[1].text.starts_with("second"));
-        let mut other = Some(tui::Panel::text("Other", "keep"));
-        refresh_handler_panel(&mut other, &before, &[]);
-        assert_eq!(other.unwrap().rows[0].text, "keep");
     }
 
     fn key(code: KeyCode) -> KeyEvent {

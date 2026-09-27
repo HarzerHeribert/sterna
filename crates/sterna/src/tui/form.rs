@@ -212,6 +212,16 @@ impl Form {
             };
         }
     }
+    /// A click on one word of a choice: focus that field and choose it.
+    pub fn choose_word(&mut self, field: usize, word: usize) {
+        self.focus = field.min(self.fields.len().saturating_sub(1));
+        if let Some(field) = self.field()
+            && let Kind::Choice(words) = &field.kind
+            && word < words.len()
+        {
+            field.chosen = word;
+        }
+    }
     /// Ctrl-R: shows or hides the secret in focus.
     pub fn reveal(&mut self) {
         if let Some(field) = self.field()

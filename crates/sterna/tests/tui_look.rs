@@ -1151,19 +1151,6 @@ fn completion_scan_is_bounded_and_does_not_change_history() {
 }
 
 #[test]
-fn command_panels_erase_underlying_transcript_text() {
-    let c = Conversation {
-        system: String::new(),
-        messages: vec![Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(60))],
-    };
-    let mut state = state();
-    state.panel = Some(sterna::tui::Panel::text("Models", "one\ntwo"));
-    let shown = text(&draw(200, 40, &state, &c, &Notebook::default()));
-    assert!(shown.contains("Models"));
-    assert!(!shown.contains("STALE_TRANSCRIPT"));
-}
-
-#[test]
 fn local_file_diffs_are_visible_in_compact_and_expanded_views() {
     let c = Conversation {
         system: String::new(),

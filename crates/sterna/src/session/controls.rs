@@ -153,20 +153,11 @@ fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
     ] {
         let lines = wrap_line(&paragraph, 70);
         if lines.is_empty() {
-            rows.push(tui::PanelRow {
-                text: String::new(),
-                command: None,
-            });
+            rows.push(tui::PanelRow::info(String::new()));
         }
-        rows.extend(lines.into_iter().map(|text| tui::PanelRow {
-            text,
-            command: None,
-        }));
+        rows.extend(lines.into_iter().map(tui::PanelRow::info));
     }
-    rows.push(tui::PanelRow {
-        text: "Try again".into(),
-        command: Some(retry.to_string()),
-    });
+    rows.push(tui::PanelRow::command("Try again", retry));
     let mut panel = Panel::rows(title, rows);
     panel.selected = panel.rows.len() - 1;
     panel
@@ -485,18 +476,9 @@ fn warning_panel(subscription: &Subscription, warning: &str) -> Panel {
     Panel::rows(
         format!("Sign in › {}", subscription.label),
         vec![
-            tui::PanelRow {
-                text: format!("⚠ {warning}"),
-                command: None,
-            },
-            tui::PanelRow {
-                text: "Sign in anyway".into(),
-                command: Some(format!("/login {word} anyway")),
-            },
-            tui::PanelRow {
-                text: "Back".into(),
-                command: Some("/login subscription".into()),
-            },
+            tui::PanelRow::info(format!("⚠ {warning}")),
+            tui::PanelRow::command("Sign in anyway", format!("/login {word} anyway")),
+            tui::PanelRow::command("Back", "/login subscription"),
         ],
     )
 }
@@ -721,10 +703,10 @@ fn key_rows(keys: &[crate::gateway::CredentialRow]) -> Vec<tui::PanelRow> {
                 }
                 (None, _) => "not set".to_string(),
             };
-            tui::PanelRow {
-                text: format!("{} · API key · {state}", row.provider),
-                command: Some(format!("/key {}", row.provider)),
-            }
+            tui::PanelRow::command(
+                format!("{} · API key · {state}", row.provider),
+                format!("/key {}", row.provider),
+            )
         })
         .collect()
 }
@@ -770,10 +752,7 @@ pub(super) fn save_settings(
 /// `/login`, the wizard's first step: three ways in, in the order a person
 /// reaches for them. Each row opens the next step; nothing asks for a file.
 fn sign_in_panel(catalogue: &Catalogue, keys: &[crate::gateway::CredentialRow]) -> Panel {
-    let row = |text: String, command: &str| tui::PanelRow {
-        text,
-        command: Some(command.to_string()),
-    };
+    let row = |text: String, command: &str| tui::PanelRow::opens(text, command);
     let connected = connected_subscriptions(catalogue);
     let stored = keys.iter().filter(|key| key.source.is_some()).count();
     let subscription = if connected.is_empty() {
@@ -806,10 +785,7 @@ fn sign_in_panel(catalogue: &Catalogue, keys: &[crate::gateway::CredentialRow]) 
 /// account is declared -- signing in declares it -- with each declared
 /// account listed by name, and any other account a login flow connects.
 fn subscription_panel(catalogue: &Catalogue) -> Panel {
-    let row = |text: String, command: String| tui::PanelRow {
-        text,
-        command: Some(command),
-    };
+    let row = |text: String, command: String| tui::PanelRow::opens(text, command);
     let state = |entry: &Account| {
         if entry.authenticated == Some(true) {
             "connected"
@@ -866,10 +842,9 @@ fn subscription_panel(catalogue: &Catalogue) -> Panel {
 fn key_panel(keys: &[crate::gateway::CredentialRow]) -> Panel {
     let mut rows = key_rows(keys);
     if rows.is_empty() {
-        rows.push(tui::PanelRow {
-            text: "The gateway names no provider that takes a key.".into(),
-            command: None,
-        });
+        rows.push(tui::PanelRow::info(
+            "The gateway names no provider that takes a key.",
+        ));
     }
     Panel::rows("Sign in › API key", rows)
 }
@@ -1109,48 +1084,46 @@ impl SignIn {
     }
 
     fn render(&self) -> Panel {
-        let row = |text: String, command: Option<String>| tui::PanelRow { text, command };
+        use crate::workbench::Action;
+        let info = |text: &str| tui::PanelRow::info(text);
         let mut rows = Vec::new();
         if let Some((link, browser_opened)) = &self.link {
-            rows.push(row(
-                if *browser_opened {
-                    "Sign in in the browser that just opened.".into()
-                } else {
-                    "Open the sign-in link in a browser.".into()
-                },
-                None,
+            rows.push(info(if *browser_opened {
+                "Sign in in the browser that just opened."
+            } else {
+                "Open the sign-in link in a browser."
+            }));
+            rows.push(tui::PanelRow::run(
+                "open the sign-in link in your default browser",
+                Action::OpenLink(link.clone()),
             ));
-            rows.push(row(
-                "⏎ open the sign-in link in your default browser".into(),
-                Some(format!("/open-link {link}")),
+            rows.push(tui::PanelRow::run(
+                "copy the sign-in link",
+                Action::Copy(link.clone()),
             ));
-            rows.push(row(
-                "⏎ copy the sign-in link".into(),
-                Some(format!("/copy {link}")),
-            ));
-            rows.push(row(
-                "⏎ no browser here? paste the address the browser ended on".into(),
-                Some("/paste-callback".into()),
+            rows.push(tui::PanelRow::open(
+                "no browser here? paste the address the browser ended on",
+                Action::PasteCallback,
             ));
         }
         if let Some((link, code)) = &self.device {
-            rows.push(row(format!("On any device, open {link}"), None));
-            rows.push(row(format!("and enter the code {code}"), None));
-            rows.push(row("⏎ copy the code".into(), Some(format!("/copy {code}"))));
-            rows.push(row(
-                "⏎ open the link in your default browser".into(),
-                Some(format!("/open-link {link}")),
+            rows.push(tui::PanelRow::info(format!("On any device, open {link}")));
+            rows.push(tui::PanelRow::info(format!("and enter the code {code}")));
+            rows.push(tui::PanelRow::run(
+                "copy the code",
+                Action::Copy(code.clone()),
+            ));
+            rows.push(tui::PanelRow::run(
+                "open the link in your default browser",
+                Action::OpenLink(link.clone()),
             ));
         }
         if self.pasted && self.outcome.is_none() {
-            rows.push(row("pasted; finishing the sign-in…".into(), None));
+            rows.push(info("pasted; finishing the sign-in…"));
         }
-        rows.push(row(
-            self.outcome.clone().unwrap_or_else(|| {
-                "waiting for the sign-in, then one request to check it works…".into()
-            }),
-            None,
-        ));
+        rows.push(tui::PanelRow::info(self.outcome.clone().unwrap_or_else(
+            || "waiting for the sign-in, then one request to check it works…".into(),
+        )));
         // The browser's last page is the broker's local callback, which has
         // already closed by the time a person looks at it.
         if self
@@ -1158,18 +1131,12 @@ impl SignIn {
             .as_deref()
             .is_some_and(|said| !said.starts_with("failed:"))
         {
-            rows.push(row(
-                "The browser tab may say it cannot connect — that is expected once the sign-in has finished; you can close it."
-                    .into(),
-                None,
+            rows.push(info(
+                "The browser tab may say it cannot connect — that is expected once the sign-in has finished; you can close it.",
             ));
         }
         let mut panel = Panel::rows(format!("Connecting {}", self.account), rows);
-        panel.selected = panel
-            .rows
-            .iter()
-            .position(|row| row.command.is_some())
-            .unwrap_or(0);
+        panel.selected = panel.rows.iter().position(tui::PanelRow::acts).unwrap_or(0);
         panel
     }
 }
@@ -1258,10 +1225,7 @@ pub(super) fn command(
             } else {
                 let rows = ["default", "low", "medium", "high", "xhigh", "max"]
                     .iter()
-                    .map(|value| PanelRow {
-                        text: value.to_string(),
-                        command: Some(format!("/effort {value}")),
-                    })
+                    .map(|value| PanelRow::command(value.to_string(), format!("/effort {value}")))
                     .collect();
                 show(
                     session,
@@ -1556,14 +1520,12 @@ fn rollback(session: &Session<'_>, argument: Option<&str>) {
                     plan.preview()
                 ),
             );
-            panel.rows.push(PanelRow {
-                text: "Confirm rollback".into(),
-                command: Some("/rollback confirm".into()),
-            });
-            panel.rows.push(PanelRow {
-                text: "Cancel".into(),
-                command: Some("/rollback cancel".into()),
-            });
+            panel
+                .rows
+                .push(PanelRow::command("Confirm rollback", "/rollback confirm"));
+            panel
+                .rows
+                .push(PanelRow::command("Cancel", "/rollback cancel"));
             panel.selected = panel.rows.len().saturating_sub(2);
             show(session, panel);
         }
@@ -1678,7 +1640,7 @@ mod tests {
             panel
                 .rows
                 .iter()
-                .filter_map(|row| row.command.clone())
+                .filter_map(|row| row.command_line().map(str::to_string))
                 .collect()
         };
         // Step one: three ways in.
@@ -1717,7 +1679,7 @@ mod tests {
         let commands: Vec<_> = panel
             .rows
             .iter()
-            .filter_map(|row| row.command.as_deref())
+            .filter_map(tui::PanelRow::command_line)
             .collect();
         assert_eq!(commands, ["/login claude anyway", "/login subscription"]);
         assert!(warning_before(claude, false).is_some(), "asked first");
@@ -1790,22 +1752,23 @@ mod tests {
         });
         assert_eq!(note, format!("Sign-in link for claude-max:\n{link}"));
         let panel = sign_in.render();
-        let commands: Vec<_> = panel
+        let actions: Vec<_> = panel
             .rows
             .iter()
-            .filter_map(|row| row.command.clone())
+            .filter_map(|row| row.action.clone())
             .collect();
+        use crate::workbench::Action;
         assert_eq!(
-            commands,
+            actions,
             vec![
-                format!("/open-link {link}"),
-                format!("/copy {link}"),
-                "/paste-callback".to_string(),
+                Action::OpenLink(link.into()),
+                Action::Copy(link.into()),
+                Action::PasteCallback,
             ]
         );
         assert_eq!(
-            panel.rows[panel.selected].command.as_deref(),
-            Some(&*format!("/open-link {link}"))
+            panel.rows[panel.selected].action,
+            Some(Action::OpenLink(link.into()))
         );
         assert_eq!(
             sign_in.apply(SignInProgress::Failed("status 400".into())),
@@ -1827,33 +1790,25 @@ mod tests {
                 {"account":"b-account", "provider":"a-provider", "scope":"declared", "models":["shared/id"]}
             ]
         })).unwrap();
-        let mut panel = model_panel(Some(catalogue), TierModels::default());
-        let headings: Vec<_> = panel
-            .rows
+        let panel = model_panel(Some(catalogue), TierModels::default());
+        let (groups, _) = panel
+            .catalogue()
+            .expect("a model panel carries its catalogue");
+        let routes: Vec<_> = groups
             .iter()
-            .filter(|row| row.command.is_none())
-            .map(|row| row.text.as_str())
+            .map(|g| format!("{} · {} · {}", g.provider, g.account, g.scope))
             .collect();
         assert_eq!(
-            headings,
+            routes,
             [
                 "a-provider · b-account · declared",
-                "a-provider · z-account · declared"
+                "a-provider · z-account · declared",
+                "z-provider · a-account · declared"
             ]
         );
-        let commands: Vec<_> = panel
-            .rows
-            .iter()
-            .filter_map(|row| row.command.as_deref())
-            .collect();
-        assert_eq!(
-            commands,
-            ["/model shared/id", "/model B/model", "/model shared/id"]
-        );
-        assert_eq!(panel.selected, 1);
-        panel.move_provider(true);
-        assert_eq!(panel.rows[0].text, "z-provider · a-account · declared");
-        assert_eq!(panel.rows[1].command.as_deref(), Some("/model shared/id"));
+        // Whitespace ids and empty ids are dropped; the rest are kept exactly,
+        // sorted and without duplicates.
+        assert_eq!(groups[1].models, ["B/model", "shared/id"]);
     }
 
     #[test]

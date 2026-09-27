@@ -2650,19 +2650,22 @@ fn answer_command(
 /// built-ins, then the project's own commands and skills. `all` had a
 /// production caller nowhere before this package; this is that caller.
 fn offer_commands(session: &Session<'_>) {
-    let mut lines: Vec<String> = tui::slash_matches("/")
+    // A click puts the command in the composer, ready for its argument.
+    let row = |name: String, help: &str| {
+        let text = format!("{name} · {help}");
+        tui::PanelRow::run(text, crate::workbench::Action::Insert(format!("{name} ")))
+    };
+    let mut rows: Vec<tui::PanelRow> = tui::slash_matches("/")
         .into_iter()
-        .map(|(name, help)| format!("{name:<16} {help}"))
+        .map(|(name, help)| row(name, help))
         .collect();
     for command in commands::all(session.project) {
-        if !lines
-            .iter()
-            .any(|line| line.starts_with(&format!("/{} ", command.name)))
-        {
-            lines.push(format!("/{}", command.name));
+        let name = format!("/{}", command.name);
+        if !rows.iter().any(|r| r.text.starts_with(&format!("{name} "))) {
+            rows.push(row(name, "a project command"));
         }
     }
-    controls::show(session, tui::Panel::text("Commands", lines.join("\n")));
+    controls::show(session, tui::Panel::rows("Commands", rows));
 }
 
 /// Reads memory and the latest checkpoint through Glasshouse's MCP surface,

@@ -17,7 +17,10 @@ use sterna::{
     tui::{
         Activity, CellError, CellView, ModelGroup, Notebook, Panel, ScreenState, Theme, TierModels,
     },
-    workbench::{self, Action, CellTab, Document, Effect, Navigator, Preferences, Tone, Workbench},
+    workbench::{
+        self, Action, CellTab, Document, Effect, Navigator, Preferences, Source, Tone, Workbench,
+        sheet::Hit,
+    },
 };
 fn fixture() -> (Conversation, Notebook, ScreenState) {
     let mut m = Message::text(
@@ -136,6 +139,14 @@ fn click(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, a: Action) -> Eff
     mouse(u, s, n, MouseEventKind::Down(MouseButton::Left), r.x, r.y);
     mouse(u, s, n, MouseEventKind::Up(MouseButton::Left), r.x, r.y)
 }
+/// Clicks the top sheet's row with this id.
+fn click_item(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, id: &str) -> Effect {
+    let index = u
+        .top()
+        .and_then(|layer| layer.sheet.items.iter().position(|item| item.id == id))
+        .unwrap_or_else(|| panic!("no row {id}"));
+    click(u, s, n, Action::Sheet(Hit::Item(index)))
+}
 fn doc(c: &Conversation, n: &Notebook, s: &ScreenState, u: &Workbench) -> Document {
     Document::build(c, n, s, u, 100)
 }
@@ -249,7 +260,7 @@ fn local_notices_are_not_model_conversation() {
         row.spans
     );
     assert!(text(&draw(&c, &n, &s, &mut u, 100, 40)).contains("SETTINGS INTERNAL"));
-    u.activity = true;
+    u.open(Source::Activity);
     assert!(text(&draw(&c, &n, &s, &mut u, 100, 40)).contains("SETTINGS INTERNAL"));
 }
 #[test]
@@ -509,9 +520,12 @@ fn every_theme_and_local_surface_keeps_terminal_background() {
         s.theme = theme;
         for mode in 0..4 {
             let mut u = Workbench::default();
-            u.work = mode == 1;
-            u.approvals = mode == 2;
-            u.models = (mode == 3).then(navigator);
+            match mode {
+                1 => u.open(Source::Work),
+                2 => u.open(Source::Ask),
+                3 => u.open(Source::Models(Box::new(navigator()))),
+                _ => {}
+            }
             let b = draw(&c, &n, &s, &mut u, 100, 40);
             let painted = b
                 .content
@@ -562,10 +576,13 @@ fn resize_cannot_panic_or_leave_click_targets_offscreen() {
     ] {
         for mode in 0..5 {
             let mut u = Workbench::default();
-            u.work = mode == 1;
-            u.approvals = mode == 2;
-            u.models = (mode == 3).then(navigator);
-            u.activity = mode == 4;
+            match mode {
+                1 => u.open(Source::Work),
+                2 => u.open(Source::Ask),
+                3 => u.open(Source::Models(Box::new(navigator()))),
+                4 => u.open(Source::Activity),
+                _ => {}
+            }
             draw(&c, &n, &s, &mut u, w, h);
             for (r, _) in &u.geometry.hits {
                 assert!(r.right() <= w && r.bottom() <= h, "{w}x{h}: {r:?}");
@@ -674,7 +691,7 @@ fn modal_navigation_preserves_draft_and_transcript_position() {
     s.scrollback = 4;
     s.input = "keep my draft".into();
     let mut u = Workbench::default();
-    u.models = Some(navigator());
+    u.open(Source::Models(Box::new(navigator())));
     draw(&c, &n, &s, &mut u, 100, 40);
     mouse(&mut u, &mut s, &n, MouseEventKind::ScrollDown, 10, 8);
     key(&mut u, &mut s, &n, KeyCode::Char('a'));
@@ -694,13 +711,14 @@ fn unavailable_catalogue_is_hidden_and_cannot_be_selected() {
 }
 #[test]
 fn model_search_spaces_do_not_stage_models() {
-    let (_, n, mut s) = fixture();
+    let (c0, n, mut s) = fixture();
     let mut u = Workbench::default();
-    u.models = Some(navigator());
+    u.open(Source::Models(Box::new(navigator())));
     for c in "A helper".chars() {
         key(&mut u, &mut s, &n, KeyCode::Char(c));
     }
-    let m = u.models.as_mut().unwrap();
+    draw(&c0, &n, &s, &mut u, 100, 40);
+    let m = u.models_mut().unwrap();
     assert_eq!(m.query, "A helper");
     m.role = 1;
     assert_eq!(m.choose().unwrap(), "/model helper fixture-helper");
@@ -720,7 +738,7 @@ fn picker_never_offers_implicit_subagent_inheritance() {
     let mut u = Workbench::default();
     let mut m = navigator();
     m.role = 2;
-    u.models = Some(m);
+    u.open(Source::Models(Box::new(m)));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(
         screen.contains("PINNED") && screen.contains("QUICK"),
@@ -752,7 +770,7 @@ fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
     p.save("ui.theme", Some("ice".into()), &mut s).unwrap();
     let path = p.path.clone();
     let mut u = Workbench::default();
-    u.preferences = Some(p);
+    u.open(Source::Settings(Box::new(p)));
     key(&mut u, &mut s, &Notebook::default(), KeyCode::Esc);
     assert!(std::fs::read_to_string(path).unwrap().contains("ice"));
     assert_eq!(s.theme, Theme::Ice);
@@ -811,20 +829,20 @@ fn a_picker_marks_the_option_the_session_is_on() {
     s.mode = sterna::tui::Mode::Explore;
     s.permissions = sterna::permissions::Ladder::new(sterna::permissions::Rung::Manual);
     let mut u = Workbench::default();
-    u.work = true;
+    u.open(Source::Work);
     let work = text(&draw(&c, &n, &s, &mut u, 120, 24));
-    assert!(work.contains("▸ Explore  · now"), "{work}");
+    assert!(work.contains("Explore  ● now"), "{work}");
     assert!(
-        !work.contains("▸ Build"),
+        !work.contains("Build  ● now"),
         "only one is current:
 {work}"
     );
     let mut u = Workbench::default();
-    u.approvals = true;
+    u.open(Source::Ask);
     let ask = text(&draw(&c, &n, &s, &mut u, 120, 24));
-    assert!(ask.contains("▸ Every call  · now"), "{ask}");
+    assert!(ask.contains("Every call  ● now"), "{ask}");
     assert!(
-        !ask.contains("▸ Auto-review"),
+        !ask.contains("Auto-review  ● now"),
         "only one is current:
 {ask}"
     );
@@ -885,12 +903,21 @@ fn never_ask_requires_confirmation_without_changing_work_or_access() {
     let (c, n, mut s) = fixture();
     let mode = s.mode;
     let mut u = Workbench::default();
-    u.approvals = true;
+    u.open(Source::Ask);
     draw(&c, &n, &s, &mut u, 100, 40);
-    click(&mut u, &mut s, &n, Action::Rung("full".into()));
-    assert!(u.confirm.is_some());
+    click_item(&mut u, &mut s, &n, "rung:full");
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
+    // The confirmation starts on Cancel: a reflexive Enter changes nothing
+    // and goes back to the rungs.
+    draw(&c, &n, &s, &mut u, 100, 40);
     key(&mut u, &mut s, &n, KeyCode::Enter);
+    assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
+    assert!(u.showing(|source| matches!(source, Source::Ask)));
+    draw(&c, &n, &s, &mut u, 100, 40);
+    click_item(&mut u, &mut s, &n, "rung:full");
+    draw(&c, &n, &s, &mut u, 100, 40);
+    click_item(&mut u, &mut s, &n, "confirm:yes");
     assert_eq!(s.permissions.rung(), sterna::permissions::Rung::Full);
     assert_eq!(s.mode, mode);
 }
@@ -956,20 +983,24 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
     let mut m = navigator();
     m.role = 1;
     m.target_key = Some("helpers.model".into());
-    let chosen = m.candidates()[m.selected].model.clone();
-    let mut u = Workbench {
-        models: Some(m),
-        model_preference: Some((p, "helpers.model".into())),
-        ..Default::default()
-    };
+    let chosen = m.candidates()[m.selected].clone();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    u.push(Source::Models(Box::new(m)));
     let (c, n, _) = fixture();
     draw(&c, &n, &s, &mut u, 110, 40);
     assert!(matches!(
-        click(&mut u, &mut s, &n, Action::ChooseModel),
+        click_item(
+            &mut u,
+            &mut s,
+            &n,
+            &format!("model:{}:{}", chosen.route, chosen.model)
+        ),
         Effect::Consumed
     ));
+    let chosen = chosen.model;
     assert_eq!(s.model.as_deref(), Some("live-main"));
-    let p = u.preferences.as_ref().unwrap();
+    let p = u.preferences().unwrap();
     assert_eq!(p.scope, sterna::settings::Scope::Global);
     assert!(std::fs::read_to_string(path).unwrap().contains(&chosen));
 }
@@ -1057,15 +1088,15 @@ fn screenshot() {
     let b = draw(&c, &n, &s, &mut u, 140, 40);
     println!("\n===== DIFF 140x40 =====\n{}", text(&b));
     let mut u = Workbench::default();
-    u.access = true;
+    u.open(Source::Access);
     let b = draw(&c, &n, &s, &mut u, 140, 40);
     println!("\n===== ACCESS 140x40 =====\n{}", text(&b));
     let mut u = Workbench::default();
-    u.approvals = true;
+    u.open(Source::Ask);
     let b = draw(&c, &n, &s, &mut u, 140, 30);
     println!("\n===== ASK 140x30 =====\n{}", text(&b));
     let mut u = Workbench::default();
-    u.work = true;
+    u.open(Source::Work);
     let b = draw(&c, &n, &s, &mut u, 140, 30);
     println!("\n===== WORK 140x30 =====\n{}", text(&b));
     let mut sf = s.clone();
@@ -1110,7 +1141,7 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
     let mut u = Workbench::default();
     let mut nav = navigator();
     nav.query = "fixture-helper".into();
-    u.models = Some(nav);
+    u.open(Source::Models(Box::new(nav)));
     let b = draw(&c, &n, &s, &mut u, 80, 30);
     let screen = text(&b);
     assert!(screen.contains("fixture-helper"), "{screen}");
@@ -1265,15 +1296,16 @@ fn a_bare_question_mark_opens_the_key_sheet_and_escape_closes_it() {
         key(&mut u, &mut s, &n, KeyCode::Char('?')),
         Effect::Consumed
     );
-    assert!(u.help);
+    let keys = |u: &Workbench| u.showing(|source| matches!(source, Source::Keys));
+    assert!(keys(&u));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(screen.contains("KEYS"), "{screen}");
     assert!(screen.contains("Shift-Tab"), "{screen}");
     key(&mut u, &mut s, &n, KeyCode::Esc);
-    assert!(!u.help);
+    assert!(!keys(&u));
     s.input = "why?".into();
     assert_eq!(key(&mut u, &mut s, &n, KeyCode::Char('?')), Effect::Pass);
-    assert!(!u.help);
+    assert!(!keys(&u));
 }
 
 /// The composer is a dock: its top edge says what the session is doing and
@@ -1846,8 +1878,9 @@ fn the_theme_sheet_previews_the_chosen_bird() {
     use sterna::workbench::plumage::Bird;
     let (c, n, mut s) = fixture();
     s.truecolor = true;
-    s.panel = Some(Theme::picker(Theme::Bird(Bird::Hyacinth)));
+    s.theme = Theme::Bird(Bird::Hyacinth);
     let mut u = Workbench::default();
+    u.open(Source::Themes { before: s.theme });
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     for shown in [
         "neon",
@@ -1867,9 +1900,10 @@ fn the_theme_sheet_previews_the_chosen_bird() {
 fn the_theme_sheet_groups_themes_under_their_family() {
     use sterna::workbench::plumage::Bird;
     let (c, n, mut s) = fixture();
-    s.panel = Some(Theme::picker(Theme::Rose));
+    s.theme = Theme::Rose;
     let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    u.open(Source::Themes { before: s.theme });
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 50));
     let line = |needle: &str| {
         screen
             .lines()
@@ -1879,12 +1913,13 @@ fn the_theme_sheet_groups_themes_under_their_family() {
     let (classic, parrots) = (line("CLASSIC · "), line("PARROTS · "));
     assert!(classic < line("neon") && line("rose") < parrots, "{screen}");
     assert!(parrots < line("Amazon") && parrots < line("Sulphur-crested Cockatoo"));
-    // The last classic theme steps straight onto the first parrot.
-    let panel = s.panel.as_ref().unwrap();
-    let next = panel.rows.get(panel.selected + 1).unwrap();
+    // The last classic theme steps straight onto the first parrot, over
+    // the heading between them.
+    key(&mut u, &mut s, &n, KeyCode::Down);
+    let focused = u.top().unwrap().sheet.focused().unwrap().id.clone();
     assert_eq!(
-        next.command.as_deref(),
-        Some(format!("/theme {}", Theme::Bird(Bird::Amazon).name()).as_str())
+        focused,
+        format!("theme:{}", Theme::Bird(Bird::Amazon).name())
     );
 }
 
@@ -1901,8 +1936,10 @@ fn a_key_form_shows_bullets_where_the_paste_went_and_never_the_key() {
     );
     form.push(KEY);
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    t.draw(|f| workbench::render_form(f, &form, Theme::default()))
-        .unwrap();
+    t.draw(|f| {
+        workbench::render_form(f, &form, Theme::default());
+    })
+    .unwrap();
     let screen = text(t.backend().buffer());
     assert!(
         screen.contains(&"•".repeat(KEY.chars().count())),
@@ -1931,8 +1968,10 @@ fn a_key_form_carries_its_warning_on_the_sheet() {
     )
     .warn("Google's terms do not allow a subscription here.");
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    t.draw(|f| workbench::render_form(f, &form, Theme::default()))
-        .unwrap();
+    t.draw(|f| {
+        workbench::render_form(f, &form, Theme::default());
+    })
+    .unwrap();
     let screen = text(t.backend().buffer());
     assert!(
         screen.contains("⚠ Google's terms do not allow a subscription here."),
@@ -1940,23 +1979,296 @@ fn a_key_form_carries_its_warning_on_the_sheet() {
     );
 }
 
-/// On the Subagents tab ←→ walks the favourite slots, wrapping, so choosing
-/// where a model goes needs no function key.
+/// On the Subagents section the favourite slots are rows: ↓ walks them and
+/// Enter picks where a model goes, so choosing a slot needs no function key.
 #[test]
-fn arrows_walk_the_favourite_slots_on_the_subagents_tab() {
-    let (_, n, mut s) = fixture();
+fn the_favourite_slots_are_rows_on_the_subagents_section() {
+    let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
     let mut m = navigator();
     m.role = 2;
-    u.models = Some(m);
-    key(&mut u, &mut s, &n, KeyCode::Right);
-    assert_eq!(u.models.as_ref().unwrap().slot.as_deref(), Some("quick"));
-    key(&mut u, &mut s, &n, KeyCode::Left);
-    assert_eq!(u.models.as_ref().unwrap().slot, None, "back to pinned");
-    key(&mut u, &mut s, &n, KeyCode::Left);
+    u.open(Source::Models(Box::new(m)));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    // The sheet opens on the pinned row, the one the session is on.
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "slot:pinned");
+    key(&mut u, &mut s, &n, KeyCode::Down);
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    assert_eq!(u.models().unwrap().slot.as_deref(), Some("quick"));
+}
+
+/// **Every sheet speaks one grammar** (the interaction model in
+/// `docs/audit/tui-audit.md`). For each opener: the sheet opens on the value
+/// the session is on; Space does what Enter does; the wheel scrolls without
+/// moving focus; End and Home reach the last and first rows that act; and
+/// Esc on a child goes back to the parent with focus on the row that opened
+/// it.
+#[test]
+fn every_sheet_speaks_one_grammar() {
+    use sterna::tui::PanelRow;
+    type Opener = fn(&mut Workbench, &mut ScreenState, &Notebook, &Temp);
+    let openers: [(&str, Opener); 6] = [
+        ("ask", |u, s, n, _| {
+            s.permissions = sterna::permissions::Ladder::new(sterna::permissions::Rung::Auto);
+            let (c, _, _) = fixture();
+            draw(&c, n, s, u, 120, 40);
+            click(u, s, n, Action::Approvals);
+        }),
+        ("work", |u, s, n, _| {
+            s.mode = sterna::tui::Mode::Plan;
+            let (c, _, _) = fixture();
+            draw(&c, n, s, u, 120, 40);
+            click(u, s, n, Action::Work);
+        }),
+        ("themes", |u, s, _, _| {
+            s.theme = Theme::Rose;
+            u.open(Source::Themes { before: s.theme });
+        }),
+        ("wizard", |u, s, _, _| {
+            s.panel = Some(Panel::rows(
+                "Setup · 0 of 3 done",
+                vec![
+                    PanelRow::opens("○ 1 Sign in · a subscription or an API key", "/login"),
+                    PanelRow::opens(
+                        "○ 2 Models for each workload · after you sign in",
+                        "/wizard models",
+                    ),
+                    PanelRow::opens("○ 3 Jev, the decision model · needs a key", "/wizard jev"),
+                ],
+            ));
+            u.absorb_panel(s);
+        }),
+        ("keys", |u, s, n, _| {
+            let (c, _, _) = fixture();
+            draw(&c, n, s, u, 120, 40);
+            click(u, s, n, Action::Help);
+        }),
+        ("settings", |u, s, _, t| {
+            s.settings_root = Some(t.0.clone());
+            let p = Preferences::with_global(s, Some(t.0.join("user"))).unwrap();
+            u.open(Source::Settings(Box::new(p)));
+        }),
+    ];
+    let fresh = |open: Opener| {
+        let (c, n, mut s) = fixture();
+        let t = Temp::new();
+        let mut u = Workbench::default();
+        open(&mut u, &mut s, &n, &t);
+        draw(&c, &n, &s, &mut u, 120, 40);
+        (c, n, s, u, t)
+    };
+    for (name, open) in openers {
+        let (c, n, mut s, mut u, _t) = fresh(open);
+        let sheet = &u
+            .top()
+            .unwrap_or_else(|| panic!("{name}: nothing opened"))
+            .sheet;
+        let items = &sheet.items;
+        // (a) The current value, else the first row that acts.
+        let expected = items
+            .iter()
+            .position(|item| item.focusable() && item.is_current())
+            .or_else(|| {
+                items.iter().position(|item| {
+                    item.focusable() && item.kind != sterna::workbench::ItemKind::Danger
+                })
+            })
+            .unwrap();
+        assert_eq!(sheet.focus, expected, "{name}: opened on the wrong row");
+        let focused = sheet.focused().unwrap().id.clone();
+        // (b) Space is Enter.
+        let (_, n1, mut s1, mut u1, _t1) = fresh(open);
+        let (_, n2, mut s2, mut u2, _t2) = fresh(open);
+        let enter = key(&mut u1, &mut s1, &n1, KeyCode::Enter);
+        let space = key(&mut u2, &mut s2, &n2, KeyCode::Char(' '));
+        assert_eq!(enter, space, "{name}: Space did not do what Enter does");
+        assert_eq!(u1.sheets.len(), u2.sheets.len(), "{name}");
+        // (c) The wheel scrolls; focus stays.
+        mouse(&mut u, &mut s, &n, MouseEventKind::ScrollDown, 60, 20);
+        draw(&c, &n, &s, &mut u, 120, 40);
+        assert_eq!(
+            u.top().unwrap().sheet.focused().unwrap().id,
+            focused,
+            "{name}: the wheel moved focus"
+        );
+        // (d) End and Home reach the last and the first rows that act.
+        key(&mut u, &mut s, &n, KeyCode::End);
+        let sheet = &u.top().unwrap().sheet;
+        let last = sheet
+            .items
+            .iter()
+            .rposition(|item| item.focusable())
+            .unwrap();
+        assert_eq!(sheet.focus, last, "{name}: End");
+        key(&mut u, &mut s, &n, KeyCode::Home);
+        let sheet = &u.top().unwrap().sheet;
+        let first = sheet
+            .items
+            .iter()
+            .position(|item| item.focusable())
+            .unwrap();
+        assert_eq!(sheet.focus, first, "{name}: Home");
+    }
+    // (e) Esc on a child goes back to its parent, on the row that opened it.
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Access);
+    draw(&c, &n, &s, &mut u, 120, 40);
+    click_item(&mut u, &mut s, &n, "access:ask");
+    assert!(u.showing(|source| matches!(source, Source::Ask)));
+    assert_eq!(u.sheets.len(), 2, "the rungs open as Access's child");
+    draw(&c, &n, &s, &mut u, 120, 40);
+    key(&mut u, &mut s, &n, KeyCode::Esc);
+    assert!(u.showing(|source| matches!(source, Source::Access)));
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "access:ask");
+    key(&mut u, &mut s, &n, KeyCode::Esc);
+    assert!(u.sheets.is_empty(), "Esc at the root closes");
+}
+
+/// A panel the session sends opens as a sheet over the conversation, and
+/// nothing of the transcript behind it shows through.
+#[test]
+fn a_session_panel_opens_as_a_sheet_that_erases_the_transcript() {
+    let (mut c, n, mut s) = fixture();
+    c.messages
+        .push(Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(60)));
+    s.panel = Some(Panel::text("Models", "one\ntwo"));
+    let mut u = Workbench::default();
+    u.absorb_panel(&mut s);
+    let shown = text(&draw(&c, &n, &s, &mut u, 200, 40));
+    assert!(shown.contains("MODELS"), "{shown}");
+    assert!(!shown.contains("STALE_TRANSCRIPT"), "{shown}");
+}
+
+/// A panel the session sends again under the same title -- a sign-in that
+/// redraws while it waits -- replaces itself and keeps the row a person is
+/// on, even when that row's text changed.
+#[test]
+fn a_redrawn_panel_keeps_the_focused_row() {
+    use sterna::tui::PanelRow;
+    let (c, n, mut s) = fixture();
+    let rows = |runs: usize| {
+        vec![
+            PanelRow::info("Task-scoped"),
+            PanelRow::run(
+                format!("first · {runs} runs"),
+                Action::HandlerOff("first".into()),
+            )
+            .with_id("handler:first"),
+            PanelRow::run(
+                format!("second · {runs} runs"),
+                Action::HandlerOff("second".into()),
+            )
+            .with_id("handler:second"),
+        ]
+    };
+    s.panel = Some(Panel::rows("Standing handlers", rows(0)));
+    let mut u = Workbench::default();
+    u.absorb_panel(&mut s);
+    draw(&c, &n, &s, &mut u, 120, 40);
+    key(&mut u, &mut s, &n, KeyCode::Down);
     assert_eq!(
-        u.models.as_ref().unwrap().slot.as_deref(),
-        Some("heavy"),
-        "and it wraps"
+        u.top().unwrap().sheet.focused().unwrap().id,
+        "handler:second"
     );
+    s.panel = Some(Panel::rows("Standing handlers", rows(3)));
+    u.absorb_panel(&mut s);
+    draw(&c, &n, &s, &mut u, 120, 40);
+    assert_eq!(u.sheets.len(), 1, "the same panel replaced itself");
+    assert_eq!(
+        u.top().unwrap().sheet.focused().unwrap().id,
+        "handler:second"
+    );
+}
+
+/// The keys sheet is drawn from the one keymap table: every key in it is on
+/// the sheet, and a key that opens something is a row that opens it.
+#[test]
+fn the_keys_sheet_is_the_keymap() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Keys);
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 50));
+    for (key, what, _) in workbench::keymap() {
+        assert!(screen.contains(key), "{key} is missing:\n{screen}");
+        assert!(screen.contains(what), "{what} is missing:\n{screen}");
+    }
+    let acting = workbench::keymap()
+        .into_iter()
+        .filter(|(_, _, action)| action.is_some())
+        .count();
+    let rows = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .filter(|i| i.focusable())
+        .count();
+    assert_eq!(
+        rows, acting,
+        "every key that does something is a row that does it"
+    );
+}
+
+/// **A form takes the mouse**: every field is a target, each word of a
+/// choice is one, and the submit and back chips say what Enter and Esc do.
+#[test]
+fn a_form_is_clickable_field_by_field() {
+    use sterna::tui::form::{Field, Form, Kind};
+    let mut form = Form::new(
+        "Sign in › Custom endpoint",
+        "Any OpenAI- or Anthropic-compatible URL.",
+        vec![
+            Field::new("Address", Kind::Text, "https://…"),
+            Field::new(
+                "Protocol",
+                Kind::Choice(vec!["openai".into(), "anthropic".into()]),
+                "",
+            ),
+        ],
+    );
+    let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut hits = Vec::new();
+    t.draw(|f| hits = workbench::render_form(f, &form, Theme::default()))
+        .unwrap();
+    let has = |hit: workbench::FormHit| hits.iter().any(|(_, h)| *h == hit);
+    assert!(has(workbench::FormHit::Field(0)) && has(workbench::FormHit::Field(1)));
+    assert!(has(workbench::FormHit::Word(1, 1)));
+    assert!(has(workbench::FormHit::Submit) && has(workbench::FormHit::Back));
+    form.choose_word(1, 1);
+    assert_eq!(form.focus, 1);
+    assert_eq!(form.take()[1], "anthropic");
+}
+
+/// **Hover owes a frame only when the target under the pointer changes**,
+/// and it never moves focus.
+#[test]
+fn hover_redraws_only_when_the_target_changes() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Work);
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let focused = u.top().unwrap().sheet.focused().unwrap().id.clone();
+    let rects: Vec<_> = u
+        .geometry
+        .hits
+        .iter()
+        .filter(|(_, a)| matches!(a, Action::Sheet(Hit::Item(_))))
+        .map(|(r, _)| *r)
+        .collect();
+    let (a, b) = (rects[0], rects[rects.len() - 1]);
+    assert_eq!(
+        mouse(&mut u, &mut s, &n, MouseEventKind::Moved, a.x + 1, a.y),
+        Effect::Consumed
+    );
+    assert_eq!(
+        mouse(&mut u, &mut s, &n, MouseEventKind::Moved, a.x + 2, a.y),
+        Effect::Ignored,
+        "a move within one target owes no frame"
+    );
+    assert_eq!(
+        mouse(&mut u, &mut s, &n, MouseEventKind::Moved, b.x + 1, b.y),
+        Effect::Consumed
+    );
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, focused);
 }

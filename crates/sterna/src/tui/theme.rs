@@ -144,21 +144,6 @@ impl Theme {
             .into_iter()
             .flat_map(|family| Theme::ALL.into_iter().filter(move |t| t.family() == family))
     }
-    pub fn picker(current: Theme) -> super::Panel {
-        let themes: Vec<Theme> = Theme::by_family().collect();
-        super::Panel {
-            title: "Themes".into(),
-            selected: themes.iter().position(|t| *t == current).unwrap_or(0),
-            rows: themes
-                .iter()
-                .map(|t| super::PanelRow {
-                    text: format!("{} · {}", t.family().label(), t.title()),
-                    command: Some(format!("/theme {}", t.name())),
-                })
-                .collect(),
-            ..super::Panel::default()
-        }
-    }
 }
 
 /// The families themes come in. The picker shows one heading per family,

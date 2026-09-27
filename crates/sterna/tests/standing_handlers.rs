@@ -223,8 +223,8 @@ fn a_first_binding_equal_to_the_generated_id_cannot_be_renamed_by_an_alias() {
     assert!(!r.off_handler("later"));
     let panel = sterna::tui::handlers_panel(&r.handlers());
     assert_eq!(
-        panel.rows[1].command.as_deref(),
-        Some("/handlers off handler1")
+        panel.rows[1].action,
+        Some(sterna::workbench::Action::HandlerOff("handler1".into()))
     );
     assert!(r.off_handler("handler1"));
     assert!(!r.handlers()[0].active);
@@ -393,8 +393,8 @@ fn handler_panel_reports_real_lifecycle_without_source_or_payloads() {
     register(&mut r, "{}", "throw new Error('private source');");
     let panel = sterna::tui::handlers_panel(&r.handlers());
     assert_eq!(
-        panel.rows.last().unwrap().command.as_deref(),
-        Some("/handlers off noise")
+        panel.rows.last().unwrap().action,
+        Some(sterna::workbench::Action::HandlerOff("noise".into()))
     );
     batch(&mut r);
     r.run_handlers();

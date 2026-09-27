@@ -1034,7 +1034,7 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     // `fixture-model` was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
-        !screen.contains("Next request:") && !screen.contains("Esc closes")
+        !screen.contains("Next request:") && !screen.contains("Esc · Close")
     });
     app.send(b"/statusline compact\r");
     app.contains("Status line");
@@ -1063,7 +1063,7 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     app.settle(120);
     app.send(b"\x1b");
     app.wait("the permissions panel closes on Escape", |screen| {
-        !screen.contents().contains("Esc · Back")
+        !screen.contents().contains("Esc · Close") && !screen.contents().contains("Esc · Back")
     });
     // And the session bar says so, in the word it shows everywhere else.
     app.contains("Never asks");
@@ -1145,7 +1145,10 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     // full.
     app.contains("locked");
     app.contains("Pinned to another entitlement");
-    app.send(b"\r");
+    // The locked row is the first in the list; choosing it says why it is
+    // locked and chooses nothing.
+    app.send(b"\x1b[H\r");
+    app.settle(120);
     assert!(requests.try_recv().is_err());
     // Back to the routes this session can actually use: the locked account
     // is counted in the catalogue and gone from the list.
@@ -1249,10 +1252,17 @@ fn theme_picker_applies_local_palettes_without_a_request() {
     let mut app = App::start("http://127.0.0.1:1");
     app.contains("fixture-model");
     app.send(b"/theme\r");
-    app.contains("Themes");
+    app.contains("THEMES");
     app.contains("violet");
+    // The sheet opens on the theme in force; Enter applies the focused one
+    // at once and the sheet stays open.
     app.send(b"\x1b[B\x1b[B\x1b[B\x1b[B\r");
-    app.contains("Theme: violet");
+    app.contains("Theme is now violet");
+    app.contains("THEMES");
+    app.send(b"\x1b");
+    app.wait("theme sheet closed", |screen| {
+        !screen.contents().contains("THEMES")
+    });
     app.send(b"/theme cobalt\r");
     app.contains("Theme: cobalt");
     app.send(b"/theme mint\r");
@@ -1331,6 +1341,12 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
             emitted(&app.bytes, b"\x1b[?1002h"),
             "motion while a button is held must be requested: it is what a drag-selection reads"
         );
+        // Every pointer move: hover highlights the target under it, and a
+        // frame is drawn only when that target changes.
+        assert!(
+            emitted(&app.bytes, b"\x1b[?1003h"),
+            "any-motion reporting must be requested for hover"
+        );
         assert!(
             emitted(&app.bytes, b"\x1b[?1006h"),
             "SGR encoding must be requested"
@@ -1344,15 +1360,9 @@ fn mouse_reporting_asks_only_for_the_modes_the_ui_consumes() {
         assert!(
             emitted(shutdown, b"\x1b[?1000l")
                 && emitted(shutdown, b"\x1b[?1002l")
+                && emitted(shutdown, b"\x1b[?1003l")
                 && emitted(shutdown, b"\x1b[?1006l"),
             "every requested mode must be reset on exit"
-        );
-        // `?1003` reports every pointer move, held or not. Nothing consumes
-        // it, and an unread report is another chance for a read boundary to
-        // split it into typed text.
-        assert!(
-            !emitted(&app.bytes, b"?1003"),
-            "a motion mode nothing handles was negotiated"
         );
     }
 }
@@ -1566,43 +1576,43 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
     app.send(b"register noise handler\r");
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.send(b"/handlers\r");
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     app.contains("noise");
     app.contains("active");
     app.send(b"\x1b");
     app.wait("handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
+        !screen.contents().contains("STANDING HANDLERS")
     });
     app.send(b"/handlers off noise\r");
     app.contains("cancellation queued");
     app.send(b"/handlers\r");
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     app.contains("noise");
     app.resize(40);
-    app.contains("Standing handlers");
+    app.contains("STANDING HANDLERS");
     release.send(()).unwrap();
     // Keep the panel open across task completion, including on a narrow
     // terminal. Reopening it would conceal a stale snapshot regression.
     app.contains("No handlers in this task");
     app.send(b"\x1b");
     app.wait("completed handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
+        !screen.contents().contains("STANDING HANDLERS")
     });
     app.resize(80);
     app.contains("HANDLER CONTROL DONE");
     app.send(b"/handles\r");
-    app.contains("Last handle preview");
+    app.contains("LAST HANDLE PREVIEW");
     app.contains("stale");
     app.send(b"\x1b");
     app.wait("handle panel closed", |screen| {
-        !screen.contents().contains("Last handle preview")
+        !screen.contents().contains("LAST HANDLE PREVIEW")
     });
+    // With nothing standing, the answer is one line: a notice, not a sheet,
+    // so there is nothing to close before the next command.
     app.send(b"/handlers\r");
     app.contains("No handlers in this task");
-    app.send(b"\x1b");
-    app.wait("empty handler panel closed", |screen| {
-        !screen.contents().contains("Standing handlers")
-    });
+    app.settle(120);
+    assert!(!app.screen.screen().contents().contains("STANDING HANDLERS"));
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -1637,7 +1647,10 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     // The platform's own separator: `.sterna\config.toml` on Windows.
     app.contains("This project only · .sterna");
     app.contains("config.toml");
-    app.contains("⟨ Off ⟩ ⟨ On ⟩");
+    // Both values are chips, and the one in force carries its mark.
+    app.contains("⟨ Off");
+    app.contains("⟨ On");
+    app.contains(" ● ⟩");
     assert!(
         !app.screen
             .screen()
@@ -1680,7 +1693,7 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
     app.contains("Project");
     app.send(b"\x1b");
     app.wait("settings editor closes", |screen| {
-        !screen.contents().contains("F6 switches")
+        !screen.contents().contains("SETTINGS")
     });
     assert_eq!(
         std::fs::read_to_string(&project).unwrap(),

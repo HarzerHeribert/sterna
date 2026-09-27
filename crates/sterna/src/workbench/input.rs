@@ -1,5 +1,9 @@
 //! Input reduction for the new surface: click activates only on release.
-use super::{Action, CellTab, Workbench};
+//!
+//! While a sheet is open every key, click, wheel notch and paste is the
+//! sheet's (`sheet.rs` decides what each does); this module only carries out
+//! the [`Outcome`] it answers with.
+use super::{Action, CellTab, Layer, Outcome, Preferences, Source, Workbench};
 use crate::tui::{Notebook, ScreenState, Selection};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
@@ -8,10 +12,17 @@ pub enum Effect {
     Insert(String),
     OpenPath(String),
     Pass,
+    /// Handled; draw.
     Consumed,
+    /// Handled, and nothing on screen changed: no frame is owed.
+    Ignored,
     Command(String),
     Copy(String),
     Cursor(usize),
+    OpenLink(String),
+    /// Open the form that takes the address a browser ended on.
+    PasteCallback,
+    HandlerOff(String),
 }
 impl Workbench {
     /// Writes one presentation key to the project's own settings, and says
@@ -39,22 +50,11 @@ impl Workbench {
             // Bare `/statusline` used to land on the everyday category with
             // the status line nowhere in sight.
             ["/statusline"] => {
-                self.open_settings(s);
-                if let Some(p) = &mut self.preferences {
-                    p.category = 1;
-                    p.selected = p
-                        .rows()
-                        .iter()
-                        .position(|spec| spec.key == "ui.statusline")
-                        .unwrap_or(0);
-                }
+                self.open_settings_at(s, 1, Some("ui.statusline"));
                 true
             }
             ["/config"] => {
-                self.open_settings(s);
-                if let Some(p) = &mut self.preferences {
-                    p.category = 5;
-                }
+                self.open_settings_at(s, 5, None);
                 true
             }
             ["/diff"] => {
@@ -91,46 +91,41 @@ impl Workbench {
                 true
             }
             ["/chat"] => {
-                self.close();
+                self.close_all();
                 s.inspection = None;
                 s.telemetry_open = false;
                 true
             }
             ["/activity"] => {
-                self.close();
                 s.telemetry_open = false;
-                self.activity = true;
+                self.open(Source::Activity);
                 true
             }
             ["/telemetry"] => {
-                self.close();
+                self.close_all();
                 s.telemetry_open = true;
                 true
             }
             ["/mode"] => {
-                self.close();
-                self.work = true;
+                self.open(Source::Work);
                 true
             }
             ["/permissions"] => {
-                self.close();
-                self.approvals = true;
+                self.open(Source::Ask);
                 true
             }
             // Presentation is this layer's own business: a palette, a
             // status line, a sidebar and motion never reach the model, and
             // each one says what it did where a person can scroll back to it.
             ["/theme"] => {
-                self.close();
                 s.notice = None;
-                s.panel = Some(crate::tui::Theme::picker(s.theme));
+                self.open(Source::Themes { before: s.theme });
                 true
             }
             ["/theme", name] => {
                 match crate::tui::Theme::parse(name) {
                     Some(theme) => {
                         s.theme = theme;
-                        s.panel = None;
                         self.persist("ui.theme", theme.name(), s);
                         s.note(format!(
                             "Theme: {} · /theme opens the palette",
@@ -229,6 +224,28 @@ impl Workbench {
             _ => String::new(),
         }
     }
+    /// Opens settings on one category, and on one row of it when named.
+    pub fn open_settings_at(&mut self, s: &ScreenState, category: usize, key: Option<&str>) {
+        self.open_settings(s);
+        if let Some(Layer {
+            sheet,
+            source: Source::Settings(p),
+            ..
+        }) = self.sheets.last_mut()
+        {
+            p.category = category.min(super::settings::CATEGORIES.len() - 1);
+            sheet.prefer = key.map(|key| format!("setting:{key}"));
+        }
+    }
+    /// Opens a surface: as the only one from the chrome, as a child from a
+    /// sheet row.
+    fn show(&mut self, source: Source, from_sheet: bool) {
+        if from_sheet {
+            self.push(source);
+        } else {
+            self.open(source);
+        }
+    }
     pub fn event(&mut self, e: &Event, s: &mut ScreenState, n: &Notebook, busy: bool) -> Effect {
         match e {
             Event::Mouse(m) => {
@@ -236,6 +253,18 @@ impl Workbench {
                     return Effect::Consumed;
                 }
                 match m.kind {
+                    // **Hover never moves focus and never changes a value.**
+                    // It is drawn, and only when the target under the
+                    // pointer changes is a frame owed for it.
+                    MouseEventKind::Moved => {
+                        let before = self.hover.and_then(|(x, y)| self.geometry.hit_rect(x, y));
+                        self.hover = Some((m.column, m.row));
+                        if self.geometry.hit_rect(m.column, m.row) == before {
+                            Effect::Ignored
+                        } else {
+                            Effect::Consumed
+                        }
+                    }
                     MouseEventKind::Down(MouseButton::Left) => {
                         self.press = Some((m.column, m.row));
                         self.dragged = false;
@@ -243,7 +272,9 @@ impl Workbench {
                         Effect::Consumed
                     }
                     MouseEventKind::Drag(MouseButton::Left) => {
-                        if let Some(anchor) = self.press {
+                        if let Some(anchor) = self.press
+                            && self.sheets.is_empty()
+                        {
                             self.dragged = true;
                             s.selection = Some(Selection {
                                 anchor,
@@ -266,102 +297,56 @@ impl Workbench {
                         if anchor != Some((m.column, m.row)) {
                             return Effect::Consumed;
                         }
-                        if let Some(action) = self.geometry.hit(m.column, m.row) {
-                            if action == Action::Composer {
-                                let width = self.geometry.composer.width as usize;
-                                let lines = super::view::wrap_input(&s.input, width);
-                                let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
-                                let before = &s.input[..s.input.floor_char_boundary(cursor)];
-                                let cr = super::view::wrap_input(before, width)
-                                    .len()
-                                    .saturating_sub(1);
-                                let skip = cr.saturating_sub(
-                                    self.geometry.composer.height.saturating_sub(1) as usize,
-                                );
-                                let wanted =
-                                    m.row.saturating_sub(self.geometry.composer.y) as usize + skip;
-                                let col =
-                                    m.column.saturating_sub(self.geometry.composer.x) as usize;
-                                let mut offset = 0;
-                                for (i, line) in lines.iter().enumerate() {
-                                    if i == wanted {
-                                        let mut x = 0;
-                                        for (byte, ch) in line.char_indices() {
-                                            let w =
-                                                ratatui::text::Span::raw(ch.to_string()).width();
-                                            if x + w > col {
-                                                return Effect::Cursor(offset + byte);
-                                            }
-                                            x += w;
-                                        }
-                                        return Effect::Cursor(
-                                            (offset + line.len()).min(s.input.len()),
-                                        );
-                                    }
-                                    offset += line.len();
-                                    if s.input.as_bytes().get(offset) == Some(&b'\n') {
-                                        offset += 1;
-                                    }
-                                }
-                                return Effect::Cursor(s.input.len());
+                        match self.geometry.hit(m.column, m.row) {
+                            Some(Action::Composer) => self.composer_click(s, m.column, m.row),
+                            Some(Action::Sheet(hit)) => {
+                                let outcome = match self.sheets.last_mut() {
+                                    Some(layer) => layer.sheet.click(&hit),
+                                    None => Outcome::Nothing,
+                                };
+                                self.apply(outcome, s, n, busy)
                             }
-                            return self.activate(action, s, n, busy);
+                            Some(action) => self.activate(action, s, n, busy, false),
+                            // A click on the backdrop outside a sheet is Esc,
+                            // except on a decision, which only its answers end.
+                            None if self.backdrop(m.column, m.row) => self.back(busy),
+                            None => Effect::Consumed,
                         }
-                        Effect::Consumed
                     }
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                         let up = m.kind == MouseEventKind::ScrollUp;
-                        if let Some(p) = &mut self.preferences {
-                            p.selected = move_index(p.selected, up, 3, p.rows().len());
-                        } else if let Some(m) = &mut self.models {
-                            m.selected = move_index(m.selected, up, 3, m.candidates().len());
-                        } else if let Some(p) = &mut s.panel {
-                            p.selected = move_index(p.selected, up, 3, p.rows.len());
-                        } else if self.is_local() {
-                            self.local_scroll = if up {
-                                self.local_scroll.saturating_sub(3)
-                            } else {
-                                self.local_scroll.saturating_add(3)
-                            };
-                        } else {
-                            s.scrollback = if up {
-                                s.scrollback.saturating_add(3).min(
-                                    self.geometry
-                                        .rows
-                                        .saturating_sub(self.geometry.transcript.height as usize),
-                                )
-                            } else {
-                                s.scrollback.saturating_sub(3)
-                            };
-                            s.scrolling = true;
-                        }
                         s.selection = None;
+                        if let Some(layer) = self.sheets.last_mut() {
+                            // The wheel scrolls the view; the focused row
+                            // stays where it is.
+                            return match layer.sheet.wheel(up) {
+                                Outcome::Nothing => Effect::Ignored,
+                                _ => Effect::Consumed,
+                            };
+                        }
+                        s.scrollback = if up {
+                            s.scrollback.saturating_add(3).min(
+                                self.geometry
+                                    .rows
+                                    .saturating_sub(self.geometry.transcript.height as usize),
+                            )
+                        } else {
+                            s.scrollback.saturating_sub(3)
+                        };
+                        s.scrolling = true;
                         Effect::Consumed
                     }
-                    _ => Effect::Consumed,
+                    _ => Effect::Ignored,
                 }
             }
-            Event::Paste(text) => {
-                if let Some(p) = &mut self.preferences {
-                    if let Some((_, v)) = &mut p.editing {
-                        v.push_str(&text.chars().filter(|c| !c.is_control()).collect::<String>());
-                    } else {
-                        p.query.push_str(text);
-                        p.selected = 0;
-                    }
-                    return Effect::Consumed;
+            Event::Paste(text) => match self.sheets.last_mut() {
+                Some(layer) => {
+                    let outcome = layer.sheet.paste(text);
+                    self.apply(outcome, s, n, busy)
                 }
-                if let Some(m) = &mut self.models {
-                    m.query.push_str(text);
-                    m.selected = 0;
-                    return Effect::Consumed;
-                }
-                if self.is_local() || s.panel.is_some() {
-                    Effect::Consumed
-                } else {
-                    Effect::Pass
-                }
-            }
+                None if s.telemetry_open => Effect::Consumed,
+                None => Effect::Pass,
+            },
             Event::Key(k) => {
                 if k.kind == crossterm::event::KeyEventKind::Release {
                     return Effect::Consumed;
@@ -374,16 +359,25 @@ impl Workbench {
                     if !copied.is_empty() {
                         return Effect::Copy(copied);
                     }
+                    return Effect::Pass;
                 }
                 s.selection = None;
                 self.notice.clear();
-                if ctrl && k.code == KeyCode::Char('c') {
-                    self.close();
-                    return Effect::Pass;
+                if !self.sheets.is_empty() {
+                    super::sheets::build(self, s, n);
+                    if let Some(action) = self.accelerator(k) {
+                        return self.activate(action, s, n, busy, true);
+                    }
+                    let outcome = match self.sheets.last_mut() {
+                        Some(layer) => layer.sheet.key(*k),
+                        None => Outcome::Nothing,
+                    };
+                    return self.apply(outcome, s, n, busy);
                 }
-                // The instruments are a surface too: Esc leaves them, and
-                // ↑↓ walks the requests they list.
-                if s.telemetry_open && !self.is_local() && s.panel.is_none() {
+                // The instruments take the transcript's room and leave the
+                // composer where it is: Esc leaves them, ↑↓ walks the
+                // requests they list, and typing still reaches the draft.
+                if s.telemetry_open {
                     match k.code {
                         KeyCode::Esc => {
                             s.telemetry_open = false;
@@ -402,263 +396,8 @@ impl Workbench {
                         _ => {}
                     }
                 }
-                if k.code == KeyCode::Esc && (self.is_local() || s.panel.is_some()) {
-                    if let Some(p) = &mut self.preferences {
-                        if p.editing.take().is_some() {
-                            return Effect::Consumed;
-                        }
-                        if !p.query.is_empty() {
-                            p.query.clear();
-                            p.selected = 0;
-                            return Effect::Consumed;
-                        }
-                    }
-                    self.close();
-                    if let Some((preferences, _)) = self.model_preference.take() {
-                        self.preferences = Some(preferences);
-                    }
-                    s.panel = None;
-                    s.selection = None;
-                    return Effect::Consumed;
-                }
-                if let Some(p) = &mut self.preferences {
-                    if let Some((key, buffer)) = &mut p.editing {
-                        match k.code {
-                            KeyCode::Enter => {
-                                let (key, value) = (key.clone(), buffer.clone());
-                                match p.save(&key, Some(value), s) {
-                                    Ok(()) => {
-                                        p.editing = None;
-                                        if let Some(live) = p.take_live() {
-                                            return Effect::Command(live);
-                                        }
-                                    }
-                                    Err(e) => p.notice = e,
-                                }
-                            }
-                            KeyCode::Backspace => {
-                                buffer.pop();
-                            }
-                            KeyCode::Char('u') if ctrl => buffer.clear(),
-                            KeyCode::Char(c) if !ctrl => buffer.push(c),
-                            _ => {}
-                        }
-                        return Effect::Consumed;
-                    }
-                    let spec = p.rows().get(p.selected).copied();
-                    let result = match k.code {
-                        KeyCode::Up => {
-                            p.selected = p.selected.saturating_sub(1);
-                            Ok(())
-                        }
-                        KeyCode::Down => {
-                            p.selected = (p.selected + 1).min(p.rows().len().saturating_sub(1));
-                            Ok(())
-                        }
-                        KeyCode::PageUp => {
-                            p.selected = p.selected.saturating_sub(8);
-                            Ok(())
-                        }
-                        KeyCode::PageDown => {
-                            p.selected = (p.selected + 8).min(p.rows().len().saturating_sub(1));
-                            Ok(())
-                        }
-                        KeyCode::Tab => {
-                            p.category = (p.category + 1) % 6;
-                            p.query.clear();
-                            p.selected = 0;
-                            Ok(())
-                        }
-                        KeyCode::BackTab => {
-                            p.category = (p.category + 5) % 6;
-                            p.query.clear();
-                            p.selected = 0;
-                            Ok(())
-                        }
-                        KeyCode::F(6) => p.switch_scope(),
-                        KeyCode::Char('z') if ctrl => p.undo(s),
-                        KeyCode::Backspace => {
-                            if !p.query.is_empty() {
-                                p.query.pop();
-                                p.selected = 0;
-                                Ok(())
-                            } else if let Some(spec) = spec {
-                                p.save(spec.key, None, s)
-                            } else {
-                                Ok(())
-                            }
-                        }
-                        KeyCode::Left | KeyCode::Right => {
-                            if spec.is_some_and(|s| s.kind == crate::settings::Kind::Model) {
-                                if !busy {
-                                    self.browse_preference(spec.expect("model row").key);
-                                    return Effect::Command("/models".into());
-                                }
-                                Ok(())
-                            } else {
-                                p.cycle(k.code == KeyCode::Right, s)
-                            }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(spec) = spec {
-                                if spec.kind == crate::settings::Kind::Model {
-                                    if busy {
-                                        p.notice =
-                                            "Open model selection after the current turn.".into();
-                                        return Effect::Consumed;
-                                    }
-                                    self.browse_preference(spec.key);
-                                    return Effect::Command("/models".into());
-                                } else if super::Preferences::choices(spec).is_empty() {
-                                    p.editing = Some((spec.key.into(), p.effective(spec.key)));
-                                    Ok(())
-                                } else {
-                                    p.cycle(true, s)
-                                }
-                            } else {
-                                Ok(())
-                            }
-                        }
-                        KeyCode::Char(c) if !ctrl => {
-                            p.query.push(c);
-                            p.selected = 0;
-                            Ok(())
-                        }
-                        _ => Ok(()),
-                    };
-                    if let Err(e) = result {
-                        p.notice = e;
-                    }
-                    // **The one drain for every keyboard route into a save.**
-                    // Arrow, Enter, Backspace-to-inherit and Ctrl-Z all land
-                    // here, so the control a save owes the running session is
-                    // taken once, in the place they converge, rather than at
-                    // each of the four.
-                    if let Some(live) = p.take_live() {
-                        return Effect::Command(live);
-                    }
-                    return Effect::Consumed;
-                }
-                if let Some(m) = &mut self.models {
-                    match k.code {
-                        KeyCode::Up => m.selected = m.selected.saturating_sub(1),
-                        KeyCode::Down => {
-                            m.selected =
-                                (m.selected + 1).min(m.candidates().len().saturating_sub(1))
-                        }
-                        KeyCode::PageUp => m.selected = m.selected.saturating_sub(10),
-                        KeyCode::PageDown => {
-                            m.selected =
-                                (m.selected + 10).min(m.candidates().len().saturating_sub(1))
-                        }
-                        KeyCode::Tab if m.target_key.is_none() => {
-                            m.role = (m.role + 1) % 3;
-                            m.selected = 0;
-                        }
-                        // ←→ steps through the favourite slots, wrapping, on
-                        // the Subagents tab; elsewhere the list is one list.
-                        KeyCode::Left | KeyCode::Right if m.role == 2 && m.target_key.is_none() => {
-                            let slots: Vec<Option<&str>> = std::iter::once(None)
-                                .chain(crate::config::SLOT_NAMES.iter().copied().map(Some))
-                                .collect();
-                            let at = slots
-                                .iter()
-                                .position(|slot| *slot == m.slot.as_deref())
-                                .unwrap_or(0);
-                            let n = slots.len();
-                            let next = if k.code == KeyCode::Right {
-                                (at + 1) % n
-                            } else {
-                                (at + n - 1) % n
-                            };
-                            m.slot = slots[next].map(str::to_owned);
-                            m.select_current();
-                        }
-                        KeyCode::Char('o') if ctrl => m.measured_order = !m.measured_order,
-                        KeyCode::Char('u') if ctrl => {
-                            m.query.clear();
-                            m.selected = 0;
-                        }
-                        KeyCode::Char('a') if ctrl => {
-                            m.all_sources = !m.all_sources;
-                            m.selected = 0;
-                        }
-                        KeyCode::Enter => return self.activate(Action::ChooseModel, s, n, busy),
-                        KeyCode::Backspace => {
-                            m.query.pop();
-                            m.selected = 0;
-                        }
-                        KeyCode::Char(c) if !ctrl => {
-                            m.query.push(c);
-                            m.selected = 0;
-                        }
-                        _ => {}
-                    }
-                    return Effect::Consumed;
-                }
-                if self.confirm.is_some() {
-                    if k.code == KeyCode::Enter {
-                        let rung = self.confirm.clone().unwrap_or_default();
-                        return self.activate(Action::Rung(rung), s, n, busy);
-                    }
-                    return Effect::Consumed;
-                }
-                if self.work || self.approvals {
-                    let count = if self.work { 3 } else { 4 };
-                    match k.code {
-                        KeyCode::Up => self.local_scroll = self.local_scroll.saturating_sub(1),
-                        KeyCode::Down => self.local_scroll = (self.local_scroll + 1).min(count - 1),
-                        KeyCode::Enter => {
-                            let action = if self.work {
-                                Action::Command(format!(
-                                    "/mode {}",
-                                    ["execute", "explore", "plan"][self.local_scroll.min(2)]
-                                ))
-                            } else {
-                                Action::Rung(
-                                    ["manual", "accept-edits", "auto", "full"]
-                                        [self.local_scroll.min(3)]
-                                    .into(),
-                                )
-                            };
-                            return self.activate(action, s, n, busy);
-                        }
-                        _ => {}
-                    }
-                    return Effect::Consumed;
-                }
-                if self.activity || self.access {
-                    match k.code {
-                        KeyCode::Up | KeyCode::PageUp => {
-                            self.local_scroll = self.local_scroll.saturating_sub(3)
-                        }
-                        KeyCode::Down | KeyCode::PageDown => self.local_scroll += 3,
-                        _ => {}
-                    }
-                    return Effect::Consumed;
-                }
-                if let Some(p) = &mut s.panel {
-                    match k.code {
-                        KeyCode::Up => p.selected = p.selected.saturating_sub(1),
-                        KeyCode::Down => {
-                            p.selected = (p.selected + 1).min(p.rows.len().saturating_sub(1))
-                        }
-                        KeyCode::PageUp => p.selected = p.selected.saturating_sub(10),
-                        KeyCode::PageDown => {
-                            p.selected = (p.selected + 10).min(p.rows.len().saturating_sub(1))
-                        }
-                        KeyCode::Enter => {
-                            if let Some(cmd) = Self::panel_command(p) {
-                                return Effect::Command(cmd);
-                            }
-                        }
-                        _ => {}
-                    }
-                    return Effect::Consumed;
-                }
                 match k.code {
                     KeyCode::Char('t') if ctrl => {
-                        self.close();
                         s.telemetry_open = !s.telemetry_open;
                         Effect::Consumed
                     }
@@ -666,14 +405,14 @@ impl Workbench {
                         self.open_settings(s);
                         Effect::Consumed
                     }
-                    KeyCode::F(3) => self.activate(Action::Models, s, n, busy),
+                    KeyCode::F(3) => self.activate(Action::Models, s, n, busy, false),
                     KeyCode::F(4) => {
                         let cell = self.selected_cell.unwrap_or(n.cells.len());
-                        self.activate(Action::Tab(cell, CellTab::Diff), s, n, busy)
+                        self.activate(Action::Tab(cell, CellTab::Diff), s, n, busy, false)
                     }
                     KeyCode::F(5) => {
                         let cell = self.selected_cell.unwrap_or(n.cells.len());
-                        self.activate(Action::Tab(cell, CellTab::Helpers), s, n, busy)
+                        self.activate(Action::Tab(cell, CellTab::Helpers), s, n, busy, false)
                     }
                     // **Shift-Tab moves the rung; it does not open a place
                     // where a rung can be moved.** Opening the surface cost
@@ -690,8 +429,7 @@ impl Workbench {
                     // in the neighbouring product; with anything typed it is
                     // a question mark.
                     KeyCode::Char('?') if s.input.is_empty() && !ctrl => {
-                        self.close();
-                        self.help = true;
+                        self.open(Source::Keys);
                         Effect::Consumed
                     }
                     KeyCode::Char('o') if ctrl => self.activate(
@@ -699,11 +437,144 @@ impl Workbench {
                         s,
                         n,
                         busy,
+                        false,
                     ),
                     _ => Effect::Pass,
                 }
             }
             _ => Effect::Pass,
+        }
+    }
+    /// A key that stands for one of the top sheet's tool chips: F6 for the
+    /// settings scope, Ctrl-A and Ctrl-O for which accounts and which order
+    /// the model list shows. Each is also a chip on the sheet.
+    fn accelerator(&self, k: &crossterm::event::KeyEvent) -> Option<Action> {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match (&self.sheets.last()?.source, k.code) {
+            (Source::Settings(p), KeyCode::F(6)) => {
+                Some(Action::Scope(p.scope != crate::settings::Scope::Global))
+            }
+            (Source::Models(_), KeyCode::Char('a')) if ctrl => Some(Action::Sources),
+            (Source::Models(_), KeyCode::Char('o')) if ctrl => Some(Action::Scores),
+            _ => None,
+        }
+    }
+    /// Whether a point is outside the open sheet, on its backdrop, and the
+    /// sheet is one a backdrop click may dismiss.
+    fn backdrop(&self, x: u16, y: u16) -> bool {
+        let Some(layer) = self.sheets.last() else {
+            return false;
+        };
+        !layer.sheet.decision
+            && self
+                .geometry
+                .local
+                .is_some_and(|area| !super::contains(area, x, y))
+    }
+    /// Where a click in the composer puts the caret.
+    fn composer_click(&self, s: &ScreenState, column: u16, row: u16) -> Effect {
+        let width = self.geometry.composer.width as usize;
+        let lines = super::view::wrap_input(&s.input, width);
+        let cursor = s.cursor.unwrap_or(s.input.len()).min(s.input.len());
+        let before = &s.input[..s.input.floor_char_boundary(cursor)];
+        let cr = super::view::wrap_input(before, width)
+            .len()
+            .saturating_sub(1);
+        let skip = cr.saturating_sub(self.geometry.composer.height.saturating_sub(1) as usize);
+        let wanted = row.saturating_sub(self.geometry.composer.y) as usize + skip;
+        let col = column.saturating_sub(self.geometry.composer.x) as usize;
+        let mut offset = 0;
+        for (i, line) in lines.iter().enumerate() {
+            if i == wanted {
+                let mut x = 0;
+                for (byte, ch) in line.char_indices() {
+                    let w = ratatui::text::Span::raw(ch.to_string()).width();
+                    if x + w > col {
+                        return Effect::Cursor(offset + byte);
+                    }
+                    x += w;
+                }
+                return Effect::Cursor((offset + line.len()).min(s.input.len()));
+            }
+            offset += line.len();
+            if s.input.as_bytes().get(offset) == Some(&b'\n') {
+                offset += 1;
+            }
+        }
+        Effect::Cursor(s.input.len())
+    }
+    /// Carries out what the top sheet answered.
+    fn apply(&mut self, outcome: Outcome, s: &mut ScreenState, n: &Notebook, busy: bool) -> Effect {
+        match outcome {
+            Outcome::Nothing => Effect::Ignored,
+            Outcome::Redraw => Effect::Consumed,
+            Outcome::Act(action) => self.activate(action, s, n, busy, true),
+            Outcome::Back => self.back(busy),
+            Outcome::Section(section) => {
+                if let Some(layer) = self.sheets.last_mut() {
+                    match &mut layer.source {
+                        Source::Settings(p) => {
+                            p.category = section.min(super::settings::CATEGORIES.len() - 1);
+                            p.editing = None;
+                        }
+                        Source::Models(m) if m.target_key.is_none() => {
+                            m.role = section.min(2);
+                            m.select_current();
+                        }
+                        _ => {}
+                    }
+                }
+                Effect::Consumed
+            }
+            Outcome::Undo => self.activate(Action::Undo, s, n, busy, true),
+            Outcome::Fold(index) => {
+                let id = self
+                    .sheets
+                    .last()
+                    .and_then(|layer| layer.sheet.items.get(index))
+                    .map(|item| item.id.clone());
+                if let Some(id) = id {
+                    self.push(Source::Fold(id));
+                }
+                Effect::Consumed
+            }
+        }
+    }
+    /// Esc with nothing left to undo on the sheet: cancel a settings field
+    /// edit first, then back one layer. A session panel under it is asked
+    /// for again, so a list changed from its child is not shown stale.
+    fn back(&mut self, busy: bool) -> Effect {
+        if let Some(Layer {
+            source: Source::Settings(p),
+            ..
+        }) = self.sheets.last_mut()
+            && p.editing.take().is_some()
+        {
+            return Effect::Consumed;
+        }
+        self.sheets.pop();
+        self.child_of = None;
+        if let Some(parent) = self.sheets.last_mut() {
+            parent.sheet.root = false;
+            if !busy
+                && matches!(parent.source, Source::Panel(_))
+                && let Some(command) = parent.reopen.clone()
+            {
+                self.reopening = true;
+                return Effect::Command(command);
+            }
+        }
+        if let Some(first) = self.sheets.first_mut() {
+            first.sheet.root = true;
+        }
+        Effect::Consumed
+    }
+    /// The top sheet's notice, where a sheet is open; the dock's otherwise.
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        match self.sheets.last_mut() {
+            Some(layer) => layer.sheet.notice = text,
+            None => self.notice = text,
         }
     }
     fn activate(
@@ -712,9 +583,15 @@ impl Workbench {
         s: &mut ScreenState,
         n: &Notebook,
         busy: bool,
+        from_sheet: bool,
     ) -> Effect {
         match action {
-            Action::Insert(command) => return Effect::Insert(command),
+            Action::Insert(command) => {
+                // What is inserted is typed next, so the sheet that offered
+                // it gives the keyboard back.
+                self.close_all();
+                return Effect::Insert(command);
+            }
             Action::Path(path) => return Effect::OpenPath(path),
             Action::Cell(cell) => {
                 if cell > 0 {
@@ -746,13 +623,12 @@ impl Workbench {
                 };
             }
             Action::Latest => s.scrollback = 0,
-            Action::Settings => self.open_settings(s),
+            Action::Settings => match Preferences::open(s) {
+                Ok(p) => self.show(Source::Settings(Box::new(p)), from_sheet),
+                Err(e) => self.say(e),
+            },
             Action::SettingsAt(category) => {
-                self.open_settings(s);
-                if let Some(p) = &mut self.preferences {
-                    p.category = category.min(super::settings::CATEGORIES.len() - 1);
-                    p.selected = 0;
-                }
+                self.open_settings_at(s, category, None);
             }
             // **The whole point of the strip is that it acts where it
             // stands.** Stepping the effort opens nothing: the word on the
@@ -778,10 +654,7 @@ impl Workbench {
                     return Effect::Command(command);
                 }
             }
-            Action::Help => {
-                self.close();
-                self.help = true;
-            }
+            Action::Help => self.show(Source::Keys, from_sheet),
             // The dock's fourth chip steps in place, like the effort one.
             Action::Stream => {
                 s.stream = s.stream.next();
@@ -798,45 +671,35 @@ impl Workbench {
             }
             Action::Models => {
                 if busy {
-                    self.notice =
-                        "Change models after the current turn; in-flight calls retain their model."
-                            .into();
+                    self.say(
+                        "Change models after the current turn; in-flight calls retain their model.",
+                    );
                 } else {
-                    self.close();
+                    if from_sheet {
+                        self.child_of = Some("/models".into());
+                    } else {
+                        self.close_all();
+                    }
                     return Effect::Command("/models".into());
                 }
             }
-            Action::Work => {
-                self.close();
-                self.work = true;
+            Action::Work => self.show(Source::Work, from_sheet),
+            Action::Approvals => self.show(Source::Ask, from_sheet),
+            Action::Access => self.show(Source::Access, from_sheet),
+            Action::Activity => self.show(Source::Activity, from_sheet),
+            Action::Telemetry => {
+                self.close_all();
+                s.telemetry_open = true;
             }
-            Action::Approvals => {
-                self.close();
-                self.approvals = true;
-            }
-            Action::Access => {
-                self.close();
-                self.access = true;
-            }
-            Action::Activity => {
-                self.close();
-                self.activity = true;
-            }
-            Action::Close => {
-                self.close();
-                if let Some((p, _)) = self.model_preference.take() {
-                    self.preferences = Some(p);
-                }
-                s.panel = None;
-                s.selection = None;
-            }
+            Action::Close if self.sheets.is_empty() => s.telemetry_open = false,
+            Action::Close => return self.back(busy),
             Action::Scope(global) => {
                 let wanted = if global {
                     crate::settings::Scope::Global
                 } else {
                     crate::settings::Scope::Local
                 };
-                if let Some(p) = &mut self.preferences
+                if let Some(p) = self.preferences_mut()
                     && p.scope != wanted
                     && let Err(e) = p.switch_scope()
                 {
@@ -844,162 +707,216 @@ impl Workbench {
                 }
             }
             Action::Undo => {
-                if let Some(p) = &mut self.preferences {
+                if let Some(p) = self.preferences_mut() {
                     if let Err(e) = p.undo(s) {
                         p.notice = e;
                     }
                     if let Some(live) = p.take_live() {
                         return Effect::Command(live);
                     }
+                } else if let Some(Layer { sheet, .. }) = self.sheets.last_mut()
+                    && let Some(undo) = sheet.undo.take()
+                {
+                    return self.activate(undo, s, n, busy, true);
                 }
             }
-            Action::Category(c) => {
-                if let Some(p) = &mut self.preferences {
-                    p.category = c.min(5);
-                    p.selected = 0;
-                    p.query.clear();
-                }
-            }
-            Action::Setting(i, value) => {
-                if let Some(p) = &mut self.preferences {
-                    p.selected = i;
-                    let spec = p.rows().get(i).copied();
-                    if let Some(spec) = spec {
-                        if let Some(value) = value {
-                            if spec.key.starts_with("permissions.") || spec.key == "agents.mode" {
-                                p.editing = Some((spec.key.into(), value));
-                            } else {
-                                if let Err(e) = p.save(spec.key, Some(value), s) {
-                                    p.notice = e;
-                                }
-                                if let Some(live) = p.take_live() {
-                                    return Effect::Command(live);
-                                }
-                            }
-                        } else if spec.kind == crate::settings::Kind::Model {
-                            if !busy {
-                                self.browse_preference(spec.key);
-                                return Effect::Command("/models".into());
-                            } else {
-                                p.notice = "Change models after the current turn.".into();
-                            }
-                        } else if super::Preferences::choices(spec).is_empty() {
-                            p.editing = Some((spec.key.into(), p.effective(spec.key)));
-                        }
+            Action::Setting(i, value) => return self.setting(i, value, s, busy),
+            Action::FieldEdited(i) => {
+                let text = self.sheets.last().and_then(|layer| {
+                    match layer.sheet.items.get(i).map(|item| &item.kind) {
+                        Some(super::ItemKind::Field(field)) => Some(field.text.clone()),
+                        _ => None,
                     }
+                });
+                if let (Some(text), Some(p)) = (text, self.preferences_mut())
+                    && let Some((_, buffer)) = &mut p.editing
+                {
+                    *buffer = text;
                 }
             }
             Action::Slot(slot) => {
-                if let Some(m) = &mut self.models
+                if let Some(m) = self.models_mut()
                     && m.target_key.is_none()
                 {
                     m.slot = slot;
                     m.select_current();
                 }
             }
-            Action::ModelRole(r) => {
-                if let Some(m) = &mut self.models
-                    && m.target_key.is_none()
-                {
-                    m.role = r.min(2);
-                    m.selected = 0;
-                }
-            }
             Action::Model(i) => {
-                if let Some(m) = &mut self.models {
+                if let Some(m) = self.models_mut() {
                     m.selected = i;
                 }
+                return self.activate(Action::ChooseModel, s, n, busy, true);
             }
             Action::UnsetModel => {
-                if let Some((mut p, key)) = self.model_preference.take() {
-                    if let Err(e) = p.save(&key, None, s) {
-                        p.notice = e;
-                    }
-                    let live = p.take_live();
-                    self.close();
-                    self.preferences = Some(p);
-                    if let Some(live) = live {
-                        return Effect::Command(live);
-                    }
-                }
-            }
-            Action::ChooseModel => {
-                if let Some(m) = &mut self.models {
-                    if busy {
-                        m.notice = "The current turn must finish before changing models.".into();
-                    } else {
-                        match m.choose() {
-                            Ok(cmd) => {
-                                if let Some((mut preferences, key)) = self.model_preference.take() {
-                                    let selected =
-                                        m.candidates().get(m.selected).map(|c| c.model.clone());
-                                    if let Some(selected) = selected
-                                        && let Err(error) =
-                                            preferences.save(&key, Some(selected), s)
-                                    {
-                                        preferences.notice = error;
-                                    }
-                                    self.close();
-                                    self.preferences = Some(preferences);
-                                } else {
-                                    self.close();
-                                    return Effect::Command(cmd);
-                                }
-                            }
-                            Err(e) => m.notice = e,
+                let key = self.models().and_then(|m| m.target_key.clone());
+                if let Some(key) = key {
+                    self.sheets.pop();
+                    if let Some(p) = self.preferences_mut() {
+                        if let Err(e) = p.save(&key, None, s) {
+                            p.notice = e;
+                        }
+                        if let Some(live) = p.take_live() {
+                            return Effect::Command(live);
                         }
                     }
                 }
             }
+            Action::ChooseModel => {
+                if busy {
+                    self.say("The current turn must finish before changing models.");
+                    return Effect::Consumed;
+                }
+                let Some(m) = self.models() else {
+                    return Effect::Consumed;
+                };
+                match m.choose() {
+                    Ok(cmd) => {
+                        if let Some(key) = m.target_key.clone() {
+                            let selected = m.candidates().get(m.selected).map(|c| c.model.clone());
+                            self.sheets.pop();
+                            if let Some(p) = self.preferences_mut()
+                                && let Some(selected) = selected
+                                && let Err(error) = p.save(&key, Some(selected), s)
+                            {
+                                p.notice = error;
+                            }
+                        } else {
+                            self.close_all();
+                            return Effect::Command(cmd);
+                        }
+                    }
+                    Err(e) => self.say(e),
+                }
+            }
             Action::Sources => {
-                if let Some(m) = &mut self.models {
+                if let Some(m) = self.models_mut() {
                     m.all_sources = !m.all_sources;
                     m.selected = 0;
                 }
             }
             Action::Scores => {
-                if let Some(m) = &mut self.models {
+                if let Some(m) = self.models_mut() {
                     m.measured_order = !m.measured_order;
                     m.selected = 0;
                 }
             }
             Action::Command(cmd) => {
                 if busy {
-                    self.notice="This runtime change applies between turns; finish or stop the current turn first.".into();
+                    self.say("This runtime change applies between turns; finish or stop the current turn first.");
                 } else {
-                    self.close();
+                    if from_sheet {
+                        self.child_of = Some(cmd.clone());
+                    } else {
+                        self.close_all();
+                    }
                     return Effect::Command(cmd);
                 }
             }
             Action::Rung(rung) => {
-                if rung == "full" && self.confirm.as_deref() != Some("full") {
-                    self.close();
-                    self.confirm = Some(rung);
+                if rung == "full" && s.permissions.rung() != crate::permissions::Rung::Full {
+                    self.push(Source::Confirm(rung));
                 } else if let Some(r) = crate::permissions::Rung::parse(&rung) {
+                    let before = s.permissions.rung();
                     s.permissions.set(r);
-                    self.close();
-                    self.notice = format!(
-                        "permissions {rung} — Shift-Tab cycles, /permissions <rung> sets one"
-                    );
-                }
-            }
-            Action::PanelRow(i) => {
-                if let Some(p) = &mut s.panel {
-                    p.selected = i;
-                    if let Some(cmd) = Self::panel_command(p) {
-                        return Effect::Command(cmd);
+                    self.say(format!("Ask is now {}", r.label()));
+                    if let Some(layer) = self.sheets.last_mut() {
+                        layer.sheet.undo = Some(Action::Rung(before.name().into()));
                     }
                 }
+            }
+            Action::ConfirmRung(rung) => {
+                if let Some(r) = crate::permissions::Rung::parse(&rung) {
+                    s.permissions.set(r);
+                    if matches!(
+                        self.sheets.last().map(|l| &l.source),
+                        Some(Source::Confirm(_))
+                    ) {
+                        self.sheets.pop();
+                    }
+                    self.say(format!("Ask is now {}", r.label()));
+                }
+            }
+            Action::Theme(theme) => {
+                let before = s.theme;
+                s.theme = theme;
+                self.persist("ui.theme", theme.name(), s);
+                self.notice.clear();
+                self.say(format!("Theme is now {}", theme.title()));
+                if let Some(layer) = self.sheets.last_mut() {
+                    layer.sheet.undo = (before != theme).then_some(Action::Theme(before));
+                }
+            }
+            Action::OpenLink(link) => return Effect::OpenLink(link),
+            Action::Copy(text) => return Effect::Copy(text),
+            Action::PasteCallback => return Effect::PasteCallback,
+            Action::HandlerOff(name) => {
+                if self.turning_off.insert(name.clone()) {
+                    return Effect::HandlerOff(name);
+                }
+                self.say(format!("{name} is already turning off."));
+            }
+            Action::Sheet(hit) => {
+                let outcome = match self.sheets.last_mut() {
+                    Some(layer) => layer.sheet.click(&hit),
+                    None => Outcome::Nothing,
+                };
+                return self.apply(outcome, s, n, busy);
             }
             Action::Composer => {}
         }
         Effect::Consumed
     }
-}
-fn move_index(i: usize, up: bool, step: usize, len: usize) -> usize {
-    if up {
-        i.saturating_sub(step)
-    } else {
-        i.saturating_add(step).min(len.saturating_sub(1))
+    /// A settings row: a value chip saves, a model row opens the picker as
+    /// the settings' child, and any other row opens its value for editing --
+    /// or, while it is being edited, saves it.
+    fn setting(
+        &mut self,
+        i: usize,
+        value: Option<String>,
+        s: &mut ScreenState,
+        busy: bool,
+    ) -> Effect {
+        let Some(p) = self.preferences_mut() else {
+            return Effect::Consumed;
+        };
+        let Some(spec) = p.rows().get(i).copied() else {
+            return Effect::Consumed;
+        };
+        if let Some(value) = value {
+            if spec.key.starts_with("permissions.") || spec.key == "agents.mode" {
+                p.editing = Some((spec.key.into(), value));
+            } else {
+                if let Err(e) = p.save(spec.key, Some(value), s) {
+                    p.notice = e;
+                }
+                if let Some(live) = p.take_live() {
+                    return Effect::Command(live);
+                }
+            }
+        } else if spec.kind == crate::settings::Kind::Model {
+            if busy {
+                p.notice = "Change models after the current turn.".into();
+            } else {
+                self.browsing = Some(spec.key.to_string());
+                self.child_of = Some("/models".into());
+                return Effect::Command("/models".into());
+            }
+        } else if let Some((key, buffer)) = p.editing.clone()
+            && key == spec.key
+        {
+            match p.save(&key, Some(buffer), s) {
+                Ok(()) => {
+                    p.editing = None;
+                    if let Some(live) = p.take_live() {
+                        return Effect::Command(live);
+                    }
+                }
+                Err(e) => p.notice = e,
+            }
+        } else if super::Preferences::choices(spec).is_empty() {
+            p.editing = Some((spec.key.into(), p.effective(spec.key)));
+        }
+        Effect::Consumed
     }
 }

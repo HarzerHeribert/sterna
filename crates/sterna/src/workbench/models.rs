@@ -159,3 +159,183 @@ impl Navigator {
         ))
     }
 }
+
+/// The model sheet's rows: what the tier runs on now, the favourite slots on
+/// the Subagents section, then every model grouped under the account that
+/// serves it, and the way to turn the tier off.
+pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::Item> {
+    use super::{Action, Item};
+    const ROLES: [(&str, &str); 3] = [
+        ("Main", "answers you"),
+        ("Helper", "reads and summarises for Main"),
+        ("Subagents", "work in parallel"),
+    ];
+    if sheet.sections.is_empty() {
+        sheet.query = Some(m.query.clone());
+    }
+    sheet.sections = if m.target_key.is_some() {
+        vec![ROLES[m.role.min(2)].0.to_string()]
+    } else {
+        ROLES.iter().map(|(name, _)| (*name).to_string()).collect()
+    };
+    if m.target_key.is_some() {
+        sheet.section = 0;
+    } else {
+        sheet.section = m.role.min(2);
+    }
+    let query = sheet.query.clone().unwrap_or_default();
+    if query != m.query {
+        m.query = query;
+        m.selected = 0;
+    }
+    sheet.title = "Models".into();
+    sheet.crumbs = vec![ROLES[m.role.min(2)].0.to_string()];
+    sheet.tools = vec![
+        (
+            if m.all_sources {
+                "all accounts".to_string()
+            } else {
+                "connected accounts".to_string()
+            },
+            Action::Sources,
+            m.all_sources,
+        ),
+        (
+            if m.measured_order {
+                "order: intelligence".to_string()
+            } else {
+                "order: name".to_string()
+            },
+            Action::Scores,
+            m.measured_order,
+        ),
+    ];
+    sheet.total = Some(m.catalogue_len());
+    sheet.matched = Some(m.candidates().len());
+    if sheet.notice.is_empty() && !m.notice.is_empty() {
+        sheet.notice = std::mem::take(&mut m.notice);
+    }
+    let now = match m.role {
+        1 => m.current.helper.clone().unwrap_or_else(|| "off".into()),
+        2 => m
+            .current
+            .subagent
+            .clone()
+            .unwrap_or_else(|| "favourites".into()),
+        _ => m.current.parent.clone(),
+    };
+    let (name, purpose) = ROLES[m.role.min(2)];
+    let mut items = vec![Item::info(format!("{name} {purpose}. Now: {now}"))];
+    if m.role == 2 && m.target_key.is_none() {
+        let slots =
+            std::iter::once(None).chain(crate::config::SLOT_NAMES.iter().copied().map(Some));
+        for slot in slots {
+            let holds = match slot {
+                Some(name) => m
+                    .assignment
+                    .slots
+                    .get(name)
+                    .map_or("empty".to_string(), |held| {
+                        format!("{} · {}", held.model, held.effort.name())
+                    }),
+                None => m.current.subagent.clone().unwrap_or_else(|| "none".into()),
+            };
+            items.push(
+                Item::choice(
+                    format!("slot:{}", slot.unwrap_or("pinned")),
+                    slot.map_or("PINNED".to_string(), str::to_uppercase),
+                    m.slot.as_deref() == slot,
+                    Action::Slot(slot.map(str::to_owned)),
+                )
+                .detail(holds),
+            );
+        }
+        let enabled = m.assignment.mode == crate::config::AgentsMode::Roster;
+        items.push(Item::toggle(
+            "favourites",
+            "Favourites",
+            enabled,
+            Action::Command(format!("/subagents {}", if enabled { "off" } else { "on" })),
+        ));
+    }
+    let current = match m.role {
+        1 => m.current.helper.clone(),
+        2 => m
+            .slot
+            .as_deref()
+            .and_then(|name| m.assignment.slots.get(name).map(|s| s.model.clone()))
+            .or_else(|| {
+                m.slot
+                    .is_none()
+                    .then(|| m.current.subagent.clone())
+                    .flatten()
+            }),
+        _ => Some(m.current.parent.clone()),
+    };
+    let rows = m.candidates();
+    let mut last_route = String::new();
+    let mut selected = None;
+    for (i, c) in rows.iter().enumerate() {
+        if !m.measured_order && c.route != last_route {
+            items.push(Item::heading(c.route.clone()));
+            last_route = c.route.clone();
+        }
+        let score = c.score.map(|v| format!(" · ★ {v:.0}")).unwrap_or_default();
+        let locked = if c.available { "" } else { " · locked" };
+        let via = if m.measured_order {
+            format!(" · {}", c.route)
+        } else {
+            String::new()
+        };
+        let id = format!("model:{}:{}", c.route, c.model);
+        // The sheet opens on the model the tier runs on now, when that is in
+        // the list; otherwise on its own current value (a slot, say).
+        if i == m.selected && current.as_deref() == Some(c.model.as_str()) {
+            selected = Some(id.clone());
+        }
+        items.push(
+            Item::choice(
+                id,
+                format!("{}{locked}{score}{via}", c.model),
+                current.as_deref() == Some(c.model.as_str()),
+                Action::Model(i),
+            )
+            .disabled((!c.available).then(|| {
+                c.reason
+                    .clone()
+                    .unwrap_or_else(|| "This account is not available.".into())
+            })),
+        );
+    }
+    if rows.is_empty() {
+        items.push(Item::info(
+            "No models match. Backspace removes a letter; Esc clears the search.",
+        ));
+    }
+    let off = if m.target_key.is_some() {
+        Some(("Use the inherited value".to_string(), Action::UnsetModel))
+    } else if m.role == 2 && m.slot.is_some() {
+        Some((
+            "Empty this slot".to_string(),
+            Action::Command(format!(
+                "/subagents {} off",
+                m.slot.clone().unwrap_or_default()
+            )),
+        ))
+    } else if m.role > 0 {
+        Some((
+            "Turn this tier off".to_string(),
+            Action::Command(format!(
+                "/model {} off",
+                if m.role == 1 { "helper" } else { "subagent" }
+            )),
+        ))
+    } else {
+        None
+    };
+    if let Some((text, action)) = off {
+        items.push(Item::run("off", text, action));
+    }
+    sheet.prefer = selected;
+    items
+}

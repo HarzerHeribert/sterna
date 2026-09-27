@@ -39,7 +39,9 @@ use regions::{
 };
 use status::{compact_tokens, context_summary, footer_row};
 pub(crate) mod telemetry;
-pub use controls::{Assignment, Mode, ModelGroup, Panel, PanelRow, StatusLine, TierModels};
+pub use controls::{
+    Assignment, Catalogue, Mode, ModelGroup, Panel, PanelRow, StatusLine, TierModels,
+};
 pub(crate) use lane::helper_in_flight;
 use lane::{helper_fold, helper_lane, push_helper_lane};
 pub use telemetry::Pulse;
@@ -878,24 +880,27 @@ pub fn handlers_panel(handlers: &[crate::runtime::handlers::HandlerInfo]) -> Pan
         if handlers.is_empty() {
             "No handlers in this task."
         } else {
-            "Task-scoped · /handlers off <name>"
+            "Task-scoped · turn one off here or with /handlers off <name>"
         },
     );
     for h in handlers {
-        panel.rows.push(PanelRow {
-            text: format!(
-                "{} · {} · {} runs · {} drained{}",
-                h.name,
-                if h.active { "active" } else { "stale" },
-                h.runs,
-                h.drained,
-                h.error
-                    .as_ref()
-                    .map(|e| format!(" · {e}"))
-                    .unwrap_or_default()
-            ),
-            command: h.active.then(|| format!("/handlers off {}", h.name)),
-        });
+        let text = format!(
+            "{} · {} · {} runs · {} drained{}",
+            h.name,
+            if h.active { "active" } else { "stale" },
+            h.runs,
+            h.drained,
+            h.error
+                .as_ref()
+                .map(|e| format!(" · {e}"))
+                .unwrap_or_default()
+        );
+        let row = if h.active {
+            PanelRow::run(text, crate::workbench::Action::HandlerOff(h.name.clone()))
+        } else {
+            PanelRow::info(text)
+        };
+        panel.rows.push(row.with_id(format!("handler:{}", h.name)));
     }
     panel
 }
@@ -1040,14 +1045,6 @@ pub fn render_screen(
             notebook,
             inspection,
         );
-    }
-    if let Some(panel) = &state.panel {
-        frame.render_widget(Clear, regions.transcript);
-        frame.render_widget(
-            Block::default().style(Style::default().fg(Color::White).bg(Color::Reset)),
-            regions.transcript,
-        );
-        controls::render_panel(frame, regions.transcript, panel, state.theme);
     }
     ribbon::activity(frame, regions.activity, state);
     poster::notice(frame, regions.notice, state);

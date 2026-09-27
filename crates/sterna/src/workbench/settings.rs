@@ -1,4 +1,6 @@
 //! Direct local preferences over Sterna's existing typed, conflict-aware store.
+use super::Action;
+use super::sheet::{Field, Item, Sheet};
 use crate::settings::{Kind, Loaded, Scope, SettingSpec, Snapshot, Store};
 use crate::tui::ScreenState;
 use std::path::PathBuf;
@@ -330,4 +332,182 @@ fn label(key: &str) -> &str {
         .iter()
         .find(|spec| spec.key == key)
         .map_or(key, |spec| spec.label)
+}
+
+/// The settings sheet's rows: one per setting in the category or the search.
+///
+/// **The sheet owns the section and the search.** The category and query
+/// the rows are read through are copied from it on every build, so a Tab, a
+/// click on a section chip and a typed letter all reach the same list.
+pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, _s: &ScreenState) -> Vec<Item> {
+    if sheet.sections.is_empty() {
+        sheet.sections = CATEGORIES.iter().map(|c| (*c).to_string()).collect();
+        sheet.section = p.category.min(CATEGORIES.len() - 1);
+        sheet.query = Some(p.query.clone());
+    }
+    p.category = sheet.section.min(CATEGORIES.len() - 1);
+    p.query = sheet.query.clone().unwrap_or_default();
+    sheet.title = "Settings".into();
+    sheet.crumbs = vec![CATEGORIES[p.category].to_string()];
+    sheet.tools = vec![
+        (
+            Scope::Global.label().to_string(),
+            Action::Scope(true),
+            p.scope == Scope::Global,
+        ),
+        (
+            Scope::Local.label().to_string(),
+            Action::Scope(false),
+            p.scope == Scope::Local,
+        ),
+        ("Undo · Ctrl-Z".to_string(), Action::Undo, false),
+    ];
+    sheet.total = Some(crate::settings::specs().len());
+    if sheet.notice.is_empty() && !p.notice.is_empty() {
+        sheet.notice = std::mem::take(&mut p.notice);
+    }
+    let focused = sheet.items.get(sheet.focus).map(|item| item.id.clone());
+    let rows = p.rows();
+    // Where a save lands, named beside the scope chips: a Global label must
+    // never be able to conceal a Project write.
+    let mut items = vec![Item::info(saved_in(&p.path, p.scope)).tone(super::Tone::Muted)];
+    for (i, spec) in rows.iter().enumerate() {
+        let id = format!("setting:{}", spec.key);
+        let effective = p.effective(spec.key);
+        let when = if crate::settings::applies_now(spec.key) {
+            ""
+        } else {
+            " · next session"
+        };
+        let mut detail = format!("{}{when}", spec.description);
+        if focused.as_deref() == Some(id.as_str()) {
+            detail.push_str(" · ");
+            detail.push_str(&whose(p, spec.key, &effective));
+        }
+        let options = Preferences::choices(spec);
+        let editing = p
+            .editing
+            .as_ref()
+            .filter(|(key, _)| key == spec.key)
+            .map(|(_, value)| value.clone());
+        let item = if let Some(value) = editing {
+            Item::field(
+                id,
+                spec.label,
+                Field {
+                    cursor: value.len(),
+                    text: value,
+                    secret: false,
+                },
+            )
+            .act(Action::Setting(i, None))
+            .detail(format!("{} · Enter saves · Esc cancels", spec.key))
+        } else if spec.kind == Kind::Model {
+            let shown = if effective == "unset" {
+                "choose a model".to_string()
+            } else {
+                effective.clone()
+            };
+            Item::open(
+                id,
+                format!("{} · {shown}", spec.label),
+                Action::Setting(i, None),
+            )
+            .detail(detail)
+        } else if options.is_empty() {
+            let shown = if effective == "unset" {
+                "not set".to_string()
+            } else {
+                effective.clone()
+            };
+            Item::open(
+                id,
+                format!("{} · {shown}", spec.label),
+                Action::Setting(i, None),
+            )
+            .detail(detail)
+        } else {
+            let current = options.iter().position(|v| *v == effective);
+            let values = options
+                .iter()
+                .map(|v| {
+                    (
+                        human_value(v).to_string(),
+                        Action::Setting(i, Some(v.clone())),
+                    )
+                })
+                .collect();
+            Item::value(id, spec.label, values, current).detail(detail)
+        };
+        items.push(item);
+    }
+    if rows.is_empty() {
+        items.push(super::sheet::Item::info(format!(
+            "No setting matches \"{}\". Backspace removes a letter; Esc clears the search.",
+            p.query
+        )));
+    }
+    items
+}
+
+/// Where a row's value comes from, in the words a person uses for it --
+/// never the dotted key, which nobody types here.
+fn whose(p: &Preferences, key: &str, effective: &str) -> String {
+    if effective == "unset" {
+        return "not set · Sterna uses its own default".to_string();
+    }
+    let shown = human_value(effective);
+    match p.saved(key) {
+        Some(_) => format!(
+            "{shown} · set in {}",
+            match p.scope {
+                Scope::Global => "your global settings",
+                _ => "this project's settings",
+            }
+        ),
+        None => format!(
+            "{shown} · from {}",
+            match p.origin(key) {
+                "built-in" => "Sterna's own default",
+                "global" => "your global settings",
+                "project" => "this project's settings",
+                other => other,
+            }
+        ),
+    }
+}
+
+/// A setting's value as the sheet says it: a switch is On or Off.
+pub(super) fn human_value(value: &str) -> &str {
+    match value {
+        "true" => "On",
+        "false" => "Off",
+        other => other,
+    }
+}
+
+/// Where a choice is saved, in the words a person uses for it -- never a
+/// temporary directory's full path.
+fn saved_in(path: &std::path::Path, scope: Scope) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let shown = match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<PathBuf>()
+            .display()
+            .to_string(),
+    };
+    match scope {
+        Scope::Global => format!("Your settings, for every project · {shown}"),
+        _ => format!("This project only · {shown}"),
+    }
 }
