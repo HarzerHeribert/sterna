@@ -1,24 +1,27 @@
-import '@fontsource/jetbrains-mono/latin-400.css';
-import '@fontsource/jetbrains-mono/latin-700.css';
-import '@fontsource/jetbrains-mono/latin-800.css';
+import '@fontsource/barlow-condensed/latin-600.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
 import './style.css';
 
-// The only script on the page: copy the install line. Everything else is
-// static HTML, so the page reads the same with scripts off.
-for (const button of document.querySelectorAll('[data-copy]')) {
-  button.addEventListener('click', async () => {
-    const text = button.getAttribute('data-copy');
+// Copy: the clipboard can be refused (an insecure origin, a declined
+// prompt); then the command is selected so the reader can copy it by hand.
+for (const copy of document.querySelectorAll('.copy')) {
+  copy.addEventListener('click', async () => {
+    const text = document.getElementById(copy.dataset.copy);
     try {
-      await navigator.clipboard.writeText(text);
-      button.textContent = 'copied';
+      await navigator.clipboard.writeText(text.textContent);
+      copy.textContent = 'Copied';
     } catch {
       const range = document.createRange();
-      range.selectNodeContents(button.parentElement.querySelector('code'));
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      button.textContent = 'selected';
+      range.selectNodeContents(text);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      copy.textContent = 'Selected';
     }
-    setTimeout(() => { button.textContent = 'copy'; }, 1600);
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1600);
   });
 }
+
+const toggle = document.querySelector('.motion-toggle');
+import('./optics.js')
+  .then(({ startOptics }) => startOptics([...document.querySelectorAll('.optics')], toggle))
+  .catch(() => { toggle.hidden = true; });
