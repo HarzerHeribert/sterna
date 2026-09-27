@@ -35,13 +35,13 @@ pub enum Effect {
     ReopenSignIn,
     HandlerOff(String),
 }
-/// A control that may change while a turn runs: a model, mode or effort
-/// named in full applies from the turn's next request (decision 9). A bare
-/// one opens a sheet the session builds, and that waits for the turn.
+/// A control that may change while a turn runs: a model or effort named in
+/// full applies from the turn's next request (decision 9). A bare one opens
+/// a sheet the session builds, and that waits for the turn.
 pub fn mid_turn(command: &str) -> bool {
     let mut words = command.split_whitespace();
     match (words.next(), words.next()) {
-        (Some("/mode" | "/effort"), Some(_)) => true,
+        (Some("/effort"), Some(_)) => true,
         (Some("/model"), Some(word)) => {
             crate::spend::Tier::parse(word).is_none() || words.next().is_some()
         }
@@ -75,12 +75,6 @@ impl Workbench {
             self.changes.push(change);
             self.offer_undo = true;
         }
-    }
-    /// A change made outside the workbench -- Shift-Tab's rung -- said where
-    /// every notice is said and offered back beside it.
-    pub(crate) fn offer_back(&mut self, notice: String, change: super::Change) {
-        self.say(notice);
-        self.remember(change);
     }
     /// After a save on the open Settings: its change goes on the undo list
     /// and the command it owes the running session is handed back.
@@ -139,12 +133,6 @@ impl Workbench {
                         back: Action::Command(format!("/effort {}", s.effort.name())),
                     })
                 }
-                ["/mode", _] => Some(super::Change {
-                    was: format!("mode {}", super::facts::mode_word(s)),
-                    back: Action::Command(super::facts::mode_command(
-                        s.mode_pinned.then_some(s.mode),
-                    )),
-                }),
                 _ => None,
             };
             if let Some(change) = change {
@@ -155,35 +143,41 @@ impl Workbench {
             p.refresh();
         }
     }
-    /// Every route that moves the rung. Never asks is confirmed first, on a
-    /// sheet that opens on Cancel; any other rung is set at once, saved,
-    /// and offered back.
-    fn rung(&mut self, rung: crate::permissions::Rung, s: &mut ScreenState) {
-        let before = s.permissions.rung();
-        if rung == crate::permissions::Rung::Full && before != rung {
+    /// Every route that changes the sandbox level. Full access is confirmed
+    /// first, on a sheet that opens on Cancel; any other level is set at
+    /// once, saved, and offered back.
+    fn level(&mut self, level: crate::permissions::Level, s: &mut ScreenState) {
+        let before = s.level.level();
+        if level == crate::permissions::Level::Full && before != level {
             self.push(Source::Confirm("full".into()));
             return;
         }
-        let notice = super::facts::set_rung(s, rung, self.scope());
+        self.set_level(level, s);
+    }
+    /// Sets, saves and offers back: the one setter every route ends in.
+    fn set_level(&mut self, level: crate::permissions::Level, s: &mut ScreenState) {
+        let before = s.level.level();
+        let notice = super::facts::set_level(s, level);
         if let Some(p) = self.preferences_mut() {
             p.refresh();
         }
         self.say(notice);
-        if before != rung {
+        if before != level {
             self.remember(super::Change {
-                was: format!("Ask {}", before.label()),
-                back: Action::Rung(before.name().into()),
+                was: format!("Sandbox {}", before.label()),
+                back: Action::Level(before.name().into()),
             });
         }
     }
     pub fn local_command(&mut self, text: &str, s: &mut ScreenState, n: &Notebook) -> bool {
         let parts: Vec<_> = text.split_whitespace().collect();
-        // A rung is named by its label or its file word, and a label can be
-        // two words: `/permissions every call`.
-        if let ["/permissions", rest @ ..] = parts.as_slice()
-            && let Some(rung) = crate::permissions::Rung::parse(&rest.join(" "))
+        // A level is named by its label or its file word, and a label can
+        // be two words: `/sandbox full access`.
+        if let ["/sandbox", rest @ ..] = parts.as_slice()
+            && !rest.is_empty()
+            && let Some(level) = crate::permissions::Level::parse(&rest.join(" "))
         {
-            self.rung(rung, s);
+            self.level(level, s);
             return true;
         }
         match parts.as_slice() {
@@ -275,12 +269,8 @@ impl Workbench {
                 s.telemetry_open = true;
                 true
             }
-            ["/mode"] => {
-                self.open(Source::Work);
-                true
-            }
-            ["/permissions"] => {
-                self.open(Source::Ask);
+            ["/sandbox"] => {
+                self.open(Source::Sandbox);
                 true
             }
             // Presentation is this layer's own business: a palette, a
@@ -689,16 +679,9 @@ impl Workbench {
                         self.jump_cell = self.selected_cell;
                         Effect::Consumed
                     }
-                    // **Shift-Tab moves the rung; it does not open a place
-                    // where a rung can be moved.** Opening the surface cost
-                    // three cursor moves and an Enter to reach a choice the
-                    // key could have made by itself, which is four keystrokes
-                    // of ceremony on the single control a person touches most
-                    // -- and it is why the acceptance test for this path was
-                    // the one that kept flaking. Both neighbouring products
-                    // cycle here. The surface is still one click away on the
-                    // control itself, so the visible route and the fast route
-                    // are the same route, found in stages.
+                    // Shift-Tab means nothing outside a form: the sandbox
+                    // level is a setting, changed on its sheet, not a key
+                    // one press away from Full access.
                     KeyCode::BackTab => Effect::Pass,
                     // `?` on an empty composer is the sheet of keys, as it is
                     // in the neighbouring product; with anything typed it is
@@ -994,9 +977,7 @@ impl Workbench {
                     return Effect::Command("/models".into());
                 }
             }
-            Action::Work => self.show(Source::Work, from_sheet),
-            Action::Approvals => self.show(Source::Ask, from_sheet),
-            Action::Access => self.show(Source::Access, from_sheet),
+            Action::Sandbox => self.show(Source::Sandbox, from_sheet),
             Action::Activity => self.show(Source::Activity, from_sheet),
             Action::Telemetry => {
                 self.close_all();
@@ -1215,29 +1196,20 @@ impl Workbench {
                     return Effect::Command(cmd);
                 }
             }
-            Action::Rung(rung) => {
-                if let Some(rung) = crate::permissions::Rung::parse(&rung) {
-                    self.rung(rung, s);
+            Action::Level(word) => {
+                if let Some(level) = crate::permissions::Level::parse(&word) {
+                    self.level(level, s);
                 }
             }
-            Action::ConfirmRung(rung) => {
-                if let Some(rung) = crate::permissions::Rung::parse(&rung) {
+            Action::ConfirmLevel(word) => {
+                if let Some(level) = crate::permissions::Level::parse(&word) {
                     if matches!(
                         self.sheets.last().map(|l| &l.source),
                         Some(Source::Confirm(_))
                     ) {
                         self.sheets.pop();
                     }
-                    let before = s.permissions.rung();
-                    let notice = super::facts::set_rung(s, rung, self.scope());
-                    if let Some(p) = self.preferences_mut() {
-                        p.refresh();
-                    }
-                    self.say(notice);
-                    self.remember(super::Change {
-                        was: format!("Ask {}", before.label()),
-                        back: Action::Rung(before.name().into()),
-                    });
+                    self.set_level(level, s);
                 }
             }
             Action::ConfirmSetting(key, value) => {
@@ -1329,23 +1301,21 @@ impl Workbench {
             return Effect::Consumed;
         };
         if let Some(value) = value {
-            // The rung, the mode and the effort have one setter each, and a
-            // settings row is one more route to it.
+            // The level and the effort have one setter each, and a settings
+            // row is one more route to it.
             match spec.key {
-                "permissions.mode" => {
-                    if let Some(rung) = crate::permissions::Rung::parse(&value) {
-                        self.rung(rung, s);
+                "sandbox.level" => {
+                    if let Some(level) = crate::permissions::Level::parse(&value) {
+                        self.level(level, s);
                     }
                     return Effect::Consumed;
                 }
-                "session.mode" | "session.effort" => {
+                "session.effort" => {
                     // The session answers the command with this same line;
                     // the sheet says it where the person is looking.
-                    p.notice = match spec.key {
-                        "session.mode" => crate::tui::Mode::parse(&value).map(|m| m.now()),
-                        _ => crate::wire::Effort::parse(&value).map(|e| e.now()),
-                    }
-                    .unwrap_or_default();
+                    p.notice = crate::wire::Effort::parse(&value)
+                        .map(|e| e.now())
+                        .unwrap_or_default();
                     if let Some(command) = crate::settings::live_command(spec.key, Some(&value)) {
                         return Effect::Command(command);
                     }
@@ -1375,12 +1345,6 @@ impl Workbench {
                     self.child_of = Some(command.into());
                     return Effect::Command(command.into());
                 }
-            }
-            // Full access lifts the sandbox from the next session: it is
-            // confirmed first, on the sheet the Never asks rung uses.
-            if spec.key == "permissions.full_access" && value == "true" {
-                self.push(Source::Confirm("access".into()));
-                return Effect::Consumed;
             }
             if let Err(e) = p.save(spec.key, Some(value), s) {
                 p.notice = e;

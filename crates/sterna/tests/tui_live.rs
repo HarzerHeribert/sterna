@@ -615,7 +615,7 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         return "APPROVAL FINISHED";
     "#,
     );
-    let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
+    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
     app.ready();
     // The dialog prints the call's resolved path, and at 80 columns a long
     // temp root (Windows: `\\?\C:\Users\<name>\AppData\Local\Temp\…`) wraps
@@ -674,7 +674,7 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
 fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     let base =
         approval_provider(r#"write({path: "cancelled.txt", content: "no"}); return "done";"#);
-    let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
+    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
     app.ready();
     app.send(b"proceed\r");
     app.contains("APPROVE");
@@ -698,7 +698,7 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
 #[test]
 fn an_approval_ignores_keys_typed_before_it_was_shown() {
     let base = approval_provider(r#"write({path: "typed.txt", content: "no"}); return "done";"#);
-    let mut app = App::start_with_flags(&base, false, None, &["--ask-approval"]);
+    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
     app.ready();
     app.send(b"write it\r");
     // Alone, so it sends: an Enter with more typing already behind it is a
@@ -1078,41 +1078,17 @@ fn double_ctrl_c_restores_the_terminal_before_exit() {
 }
 
 #[test]
-fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung() {
+fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
     let (base, requests) = provider();
     let mut app = App::start(&base);
     app.ready();
-    // Shift-Tab is the ladder's key, not the request mode's: it moves the
-    // rung and leaves the mode where it was. The two axes are independent —
-    // `sandbox-grants.md` §10 — and this is the live proof of it.
-    //
-    // It moves the rung *in place* now. Opening a surface and walking three
-    // rows to a choice the key could have made is what this test used to
-    // spell out, and it is also what made it flaky-pass on two platforms:
-    // the moves could reach a surface that had not drawn the row they were
-    // moving through. One key, one wait, one named outcome.
-    app.contains("Auto-review");
+    app.contains("◼ Sandboxed");
+    // No key cycles the level: Shift-Tab outside a form does nothing to it.
     app.send(b"\x1b[Z");
-    app.contains("Every call");
-    app.send(b"\x1b[Z");
-    app.contains("Commands");
-    // And the rung that stops asking is not on this key's path: three more
-    // presses come back round to the start without ever passing it.
-    app.send(b"\x1b[Z");
-    app.contains("Auto-review");
-    app.send(b"\x1b[Z");
-    app.refute(
-        "Shift-Tab never reaches the rung that stops asking",
-        "Never asks",
-    );
-    app.send(b"/mode explore\r");
-    app.contains("Mode is now Explore");
-    app.send(b"/mode plan\r");
-    app.contains("Mode is now Plan");
-    app.send(b"plan this\r");
-    let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-    // The mode line is task context: it rides in the task's own message.
-    assert!(
+    app.refute("Shift-Tab moves nothing", "Sandbox is now");
+    app.contains("◼ Sandboxed");
+    // The last user message of a request: where task context rides.
+    let task = |request: &serde_json::Value| {
         request["messages"]
             .as_array()
             .unwrap()
@@ -1121,14 +1097,33 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
             .find(|message| message["role"] == "user")
             .unwrap()
             .to_string()
-            .contains("Request mode: plan"),
+    };
+    app.send(b"/plan plan this\r");
+    let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The plan line is task context: it rides in the task's own message.
+    assert!(
+        task(&request).contains("This is a plan request"),
         "{request}"
     );
-    // Plan runs cells under the plan narrowing (map line 2638): a cell that
-    // changes nothing runs, and writes are refused by the profile.
+    // Plan runs cells under the plan narrowing: a cell that changes
+    // nothing runs, and writes are refused by the profile.
     app.contains_line("LIVE RESULT INTACT");
-    app.send(b"/mode execute\r");
-    app.contains("Mode is now Build");
+    // One request: the next one works as usual.
+    app.send(b"now do it\r");
+    let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(task(&request).contains("now do it"), "{request}");
+    assert!(
+        !task(&request).contains("This is a plan request"),
+        "{request}"
+    );
+    app.wait("the second turn ends", |screen| {
+        screen
+            .contents()
+            .lines()
+            .filter(|line| line.trim() == "LIVE RESULT INTACT")
+            .count()
+            >= 2
+    });
     app.send(b"/context\r");
     app.contains("Next request:");
     app.send(b"\x1b");
@@ -1150,23 +1145,20 @@ fn slash_mode_walks_into_a_plan_mode_that_reads_while_shift_tab_moves_the_rung()
     assert_eq!(app.exited(), 0);
 }
 
-/// The rung Shift-Tab steps over keeps the route that spells it out.
+/// Full access typed as a command is confirmed on the one sheet every
+/// route to it uses, and that sheet opens on Cancel.
 ///
-/// **It is its own test, and a short one, on purpose.** It first rode along
-/// at the end of the mode walk above, after a provider turn, three mode
-/// changes and two panels -- and went red on macOS CI while passing locally,
+/// **It is its own test, and a short one, on purpose.** A probe about one
+/// command belongs in a session that is doing nothing else: riding along at
+/// the end of a longer walk it went red on macOS CI while passing locally,
 /// because by then nothing in that test was waiting for anything in
-/// particular. A probe about one command belongs in a session that is doing
-/// nothing else.
+/// particular.
 #[test]
-fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
+fn full_access_typed_as_a_command_is_confirmed_first() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
-    app.contains("Auto-review");
-    // Typed in full, by its label or its file word, it is still confirmed
-    // on the one sheet every route to it uses, and that sheet opens on
-    // Cancel.
-    app.send(b"/permissions full\r");
+    app.contains("◼ Sandboxed");
+    app.send(b"/sandbox full\r");
     app.contains("CONFIRM");
     // A key sooner than half a second is held back: the confirm arms first.
     app.settle(600);
@@ -1174,21 +1166,22 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     app.wait("Cancel goes back unchanged", |screen| {
         !screen.contents().contains("CONFIRM")
     });
-    app.refute("a reflexive Enter changes nothing", "Ask is now");
-    app.send(b"/permissions never asks\r");
+    app.refute("a reflexive Enter changes nothing", "Sandbox is now");
+    // By its label as well as its file word.
+    app.send(b"/sandbox full access\r");
     app.contains("CONFIRM");
     app.settle(600);
     app.send(b"\x1b[B");
     app.settle(60);
     app.send(b"\r");
-    app.contains("Ask is now Never asks");
+    app.contains("Sandbox is now Full access");
     // And the session bar says so, in the word it shows everywhere else.
     // The confirmation closed itself: no Escape is sent to the composer,
     // where one followed by `/exit` can read as Alt-/.
     app.wait("the confirmation closes", |screen| {
         !screen.contents().contains("Esc · Close") && !screen.contents().contains("Esc · Back")
     });
-    app.contains("⟨ Never asks ⟩");
+    app.contains("⟨ ▲ Full access ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -1223,7 +1216,7 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     app.contains("signing in to Grok ▸");
     // The session is free: a command answers while the sign-in waits.
     app.send(b"/status\r");
-    app.contains("Ask: Auto-review");
+    app.contains("Sandbox: Sandboxed");
     app.settle(200);
     app.send(b"\x1b");
     app.wait("the status sheet closes", |screen| {
@@ -2503,10 +2496,9 @@ fn esc_puts_the_popup_away_and_enter_runs_the_exact_command() {
     app.refute("the popup is put away", "browse models");
     app.send(b"\x1b");
     app.contains("Describe the next step");
-    app.send(b"/mode\r");
-    app.contains("WORK");
-    app.refute("Enter on /mode is not /models", "MODELS");
-    app.send(b"\x1b");
+    // `/cells` is listed before `/cell`, and the name typed in full wins.
+    app.send(b"/cell\r");
+    app.contains("No cell has run yet.");
     app.settle(200);
     app.send(b"\x03");
     thread::sleep(Duration::from_millis(100));
@@ -2643,22 +2635,22 @@ fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     assert_eq!(app.exited(), 0);
 }
 
-/// Shift-Tab moves the rung like every other route that moves it: saved,
-/// and offered back beside its notice, where a click takes it back.
+/// A typed level is set like every other route that sets it: saved, and
+/// offered back beside its notice, where a click takes it back.
 #[test]
-fn shift_tab_offers_the_rung_it_left_back() {
+fn a_typed_level_offers_the_one_it_left_back() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
     app.ready();
-    app.contains("⟨ Auto-review ⟩");
-    app.send(b"\x1b[Z");
-    app.contains("undo · Ask Auto-review");
-    app.refute("the rung moved", "⟨ Auto-review ⟩");
+    app.contains("⟨ ◼ Sandboxed ⟩");
+    app.send(b"/sandbox ask\r");
+    app.contains("undo · Sandbox Sandboxed");
+    app.contains("⟨ ◼ Ask ⟩");
     let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
     let (y, row) = rows
         .iter()
         .enumerate()
-        .find(|(_, row)| row.contains("undo · Ask Auto-review"))
+        .find(|(_, row)| row.contains("undo · Sandbox Sandboxed"))
         .unwrap();
     let x = row
         .char_indices()
@@ -2668,7 +2660,7 @@ fn shift_tab_offers_the_rung_it_left_back() {
     let y = y + 1;
     app.send(format!("\x1b[<0;{x};{y}M").as_bytes());
     app.send(format!("\x1b[<0;{x};{y}m").as_bytes());
-    app.contains("⟨ Auto-review ⟩");
+    app.contains("⟨ ◼ Sandboxed ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -2851,17 +2843,16 @@ fn a_parrot_theme_walks_the_same_turn() {
     walk_a_turn(true);
 }
 
-/// **The session card names the rung in force.** The startup line that
-/// froze the rung the session began on is gone, and the card's own line
-/// moves with Shift-Tab.
+/// **The session card names the level in force**, not the one the session
+/// began on: the card's own line moves with `/sandbox`.
 #[test]
-fn the_card_names_the_rung_in_force() {
+fn the_card_names_the_level_in_force() {
     let mut app = App::start("http://127.0.0.1:1");
     app.ready();
-    app.contains("Ask: Auto-review");
-    app.refute("the frozen startup line", "permissions: auto");
-    app.send(b"\x1b[Z");
-    app.contains("Ask: Every call");
+    app.contains("Sandbox: Sandboxed");
+    app.send(b"/sandbox ask\r");
+    app.contains("Sandbox: Ask");
+    app.refute("the card moved", "Sandbox: Sandboxed");
 }
 
 /// **Every effort level is open on any model**: the word rides the request

@@ -529,12 +529,6 @@ pub struct SessionFacts {
     pub root: String,
     /// `Write`/`Edit` globs the compiled profile actually holds.
     pub writable: Vec<String>,
-    /// How many `Bash(...)` patterns are admitted, ignored when
-    /// [`SessionFacts::all_commands`] is set.
-    pub command_patterns: usize,
-    /// Every command line is admitted — a bare `Bash` grant, which is what
-    /// `--yolo` synthesises.
-    pub all_commands: bool,
     /// Whether the sandbox grants network access.
     pub network: bool,
     /// Which tool definitions the request declares, so the preamble and the
@@ -549,30 +543,18 @@ pub struct SessionFacts {
 ///
 /// Pure in its argument, so the golden test that pins the binary's system
 /// bytes can build the same string without running a session.
-/// The system-prompt line naming the request mode in force, or `None` in
-/// `execute`. Information only: the narrowed profile is what refuses, so a
+/// The line telling a plan request what it may do, or `None` for an ordinary
+/// request. Information only: the narrowed profile is what refuses, so a
 /// model that ignores this line is refused all the same.
-pub fn request_mode_line(
-    mode: crate::sandbox::modes::RequestMode,
-    overlay: &crate::sandbox::modes::ModeOverlay,
-) -> Option<String> {
-    use crate::sandbox::modes::{READ_ONLY_COMMANDS, RequestMode};
-    let writes = match mode {
-        RequestMode::Execute => return None,
-        RequestMode::Plan => format!(
-            "write the plan to {} and answer with a short summary; every other write is refused",
-            crate::sandbox::modes::PLAN_FILE
-        ),
-        RequestMode::Explore => format!(
-            "write and edit are refused outside {}",
-            overlay.writable().join(", ")
-        ),
-    };
-    Some(format!(
-        "\nRequest mode: {}. Reading tools run; {writes}; bash runs only read-only commands ({}) with no redirect into a file; MCP tools are refused; network is unchanged. A refusal names the mode; do not retry it.\n",
-        mode.name(),
-        READ_ONLY_COMMANDS.join(", ")
-    ))
+pub fn request_mode_line(mode: crate::sandbox::modes::RequestMode) -> Option<String> {
+    use crate::sandbox::modes::{PLAN_FILE, READ_ONLY_COMMANDS, RequestMode};
+    match mode {
+        RequestMode::Work => None,
+        RequestMode::Plan => Some(format!(
+            "\nThis is a plan request. Reading tools run; write the plan to {PLAN_FILE} and answer with a short summary; every other write is refused; bash runs only read-only commands ({}) with no redirect into a file; MCP tools are refused. A refusal names the plan; do not retry it.\n",
+            READ_ONLY_COMMANDS.join(", ")
+        )),
+    }
 }
 
 /// How much of a plan file one request carries.
@@ -606,13 +588,6 @@ pub fn render_session_facts(facts: &SessionFacts) -> String {
             facts.writable.join(", ")
         )
     };
-    let commands = if facts.all_commands {
-        "every command line is admitted".to_string()
-    } else if facts.command_patterns == 0 {
-        "no command may be run at all".to_string()
-    } else {
-        format!("{} command pattern(s) admitted", facts.command_patterns)
-    };
     let whole_set = match facts.interface {
         abi::Interface::Cells => "The tools above are the whole set.",
         abi::Interface::Hybrid => {
@@ -626,12 +601,11 @@ pub fn render_session_facts(facts: &SessionFacts) -> String {
          {whole_set} To change existing source, call `context` with\n\
          its target symbol, let that result reach the next turn, then call `edit` with the\n\
          exact old text and replacement. Use `write` for new files or deliberate whole-file\n\
-         rewrites. File objects retain their bytes; do not print broad contents. Check the\n\
-         command you intend is\n\
-         admitted before you build a plan on `bash`.\n\n\
-         Sandbox: {writable}; {commands}; network: {network}. Anything outside that throws\n\
-         PermissionDenied, which is final — no cell widens a grant, so a refusal means\n\
-         choose another route or say plainly that the grant forbids it.",
+         rewrites. File objects retain their bytes; do not print broad contents.\n\n\
+         Sandbox: {writable}; every file is readable except secrets; every command line\n\
+         runs unless a deny rule refuses it; network: {network}. Anything outside that\n\
+         throws PermissionDenied, which is final — no cell widens a grant, so a refusal\n\
+         means choose another route or say plainly that the grant forbids it.",
         root = facts.root,
         network = if facts.network { "yes" } else { "no" },
     )

@@ -515,7 +515,7 @@ fn redirect_items(sheet: &mut Sheet, redirect: &Redirect) -> Vec<Item> {
 mod tests {
     use super::*;
     use crate::approval::{Admission, Gate};
-    use crate::permissions::{Ladder, Rung};
+    use crate::permissions::{Level, LiveLevel};
     use std::time::Duration;
 
     /// A write the Every call rung puts to the person, and the thread
@@ -559,7 +559,7 @@ mod tests {
     /// is on the list the Ask sheet shows.
     #[test]
     fn esc_denies_this_call_once_and_deny_is_remembered_visibly() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Esc);
@@ -580,7 +580,7 @@ mod tests {
     /// one, and is never remembered as a refusal.
     #[test]
     fn ctrl_c_cancels_the_call_and_remembers_nothing() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         let done = prompts.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -593,7 +593,7 @@ mod tests {
     /// once -- never on the session-wide chip or on Deny.
     #[test]
     fn enter_allows_once_from_where_the_prompt_opens() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         assert_eq!(prompts.sheet.focused().unwrap().id, "allow-once");
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn a_remembered_denial_is_listed_on_the_ask_sheet_and_forgotten_there() {
         use crate::workbench::{Source, Workbench, sheet::Hit};
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Char('d'));
@@ -617,7 +617,7 @@ mod tests {
             ..Default::default()
         };
         let mut u = Workbench::default();
-        u.open(Source::Ask);
+        u.open(Source::Sandbox);
         let draw = |u: &mut Workbench, s: &crate::tui::ScreenState| {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
@@ -685,7 +685,7 @@ mod tests {
     /// it names the call and every answer.
     #[test]
     fn the_prompt_draws_at_every_size() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = Prompts::default();
         prompts.push_approval(request);
@@ -746,7 +746,7 @@ mod tests {
     /// held -- it never answers the one behind it, which nobody has seen.
     #[test]
     fn a_second_press_never_answers_the_approval_behind_it() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (first, first_admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(first);
         let (second, second_admitted) = asked(&gate, &requests);
@@ -763,7 +763,7 @@ mod tests {
     /// after `a` land in its field rather than being held back again.
     #[test]
     fn words_typed_straight_after_another_way_are_kept() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Char('a'));
@@ -785,7 +785,7 @@ mod tests {
     /// answers nothing either.
     #[test]
     fn arrows_and_digits_never_answer_a_prompt() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         let start = prompts.sheet.focused().unwrap().id.clone();

@@ -155,10 +155,10 @@ struct CellLine<'a> {
     record: &'a CellRecord,
 }
 
-/// One move along the permission ladder. Its own kind, so `resume` passes
-/// over it and the conversation it rebuilds is unchanged.
+/// One change of the sandbox level. Its own kind, so `resume` passes over it
+/// and the conversation it rebuilds is unchanged.
 #[derive(Serialize, Deserialize)]
-struct PermissionsLine {
+struct LevelLine {
     kind: String,
     session_id: String,
     from: String,
@@ -320,16 +320,16 @@ impl Rollout {
         })
     }
 
-    /// One line per move along the permission ladder: which rungs, and when.
+    /// One line per change of the sandbox level: which levels, and when.
     ///
-    /// **A rung the person raised is a fact about the session, not a turn in
-    /// it.** Its own `kind` keeps it out of the conversation `resume`
-    /// rebuilds — that reader keeps the kinds it knows and ignores the rest —
-    /// while a person or an audit reading the file afterwards can see that
+    /// **A level the person changed is a fact about the session, not a turn
+    /// in it.** Its own `kind` keeps it out of the conversation `resume`
+    /// rebuilds -- that reader keeps the kinds it knows and ignores the rest
+    /// -- while a person or an audit reading the file afterwards can see that
     /// the session moved, and when.
-    pub fn record_permissions(&mut self, from: &str, to: &str, at_unix: u64) -> io::Result<()> {
-        self.append_line(&PermissionsLine {
-            kind: "permissions".into(),
+    pub fn record_level(&mut self, from: &str, to: &str, at_unix: u64) -> io::Result<()> {
+        self.append_line(&LevelLine {
+            kind: "sandbox".into(),
             session_id: self.session_id.as_str().into(),
             from: from.into(),
             to: to.into(),
@@ -337,21 +337,22 @@ impl Rollout {
         })
     }
 
-    /// Writes every ladder move since the last drain, and drops what it wrote.
+    /// Writes every level change since the last drain, and drops what it
+    /// wrote.
     ///
     /// A failed write is silent for the same reason a failed hook delivery
     /// is: a session that cannot append one bookkeeping line should still
-    /// finish the person's work. `None` is a session with no ladder — the
-    /// constructed ones in tests, which never ask anybody anything.
-    pub fn record_moves(&mut self, ladder: Option<&crate::permissions::Ladder>) {
-        let Some(ladder) = ladder else { return };
-        for moved in ladder.drain_moves() {
+    /// finish the person's work. `None` is a session with no live level --
+    /// the constructed ones in tests, which never ask anybody anything.
+    pub fn record_moves(&mut self, level: Option<&crate::permissions::LiveLevel>) {
+        let Some(level) = level else { return };
+        for moved in level.drain_moves() {
             let at = moved
                 .at
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            let _ = self.record_permissions(moved.from.name(), moved.to.name(), at);
+            let _ = self.record_level(moved.from.name(), moved.to.name(), at);
         }
     }
 

@@ -4,11 +4,9 @@
 //! and answers the one suspended Rust callback. The JavaScript cell stays on
 //! its stack throughout; no source or continuation is returned for replay.
 //! The immutable base profile must admit the call before a request is sent.
-//! Neither a decision nor a remembered decision can add a sandbox capability.
-//!
-//! The live terminal can install this seam for explicit exact-call approval.
-//! Interactive missing-grant approvals still require platform grants; see
-//! `docs/sandbox.md`.
+//! What reaches a person is decided by the session's sandbox level
+//! (`permissions::judge`): every edit and command on `Ask`, only a request to
+//! run outside the sandbox on `Sandboxed`, nothing on `Full`.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -97,8 +95,11 @@ pub enum Decision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {
     Allowed,
-    /// Refused now: by the person, or by the rung.
+    /// Refused now: by the person.
     Denied,
+    /// Refused because the level asks and nobody is at the terminal to
+    /// answer.
+    NobodyToAsk,
     /// Refused from memory: the person denied this exact call earlier in
     /// the session.
     DeniedEarlier,
@@ -194,58 +195,11 @@ pub struct Hint {
 struct Decisions {
     model: String,
     mode: crate::config::DecisionMode,
-    /// `[decisions] command_runs_above` — the confidence at or above which
-    /// this model's word lets a command line run without asking.
-    command_runs_above: f64,
     /// This gate's cumulative count of approval hints that answered.
     asked: Arc<AtomicU32>,
     /// This gate's cumulative count of approval-hint requests that failed
     /// or timed out.
     failed: Arc<AtomicU32>,
-}
-
-/// The decision model, asked the one question the static permission reader
-/// could not answer.
-///
-/// It exists for the length of one [`Gate::admit`] call and borrows the
-/// gate's own session-scoped state, so no second copy of the model name,
-/// the mode or the session's memory can drift from the gate's.
-struct ModelJudge<'a> {
-    decisions: &'a Decisions,
-    vouched: &'a crate::permissions::Judged<String>,
-}
-
-impl crate::permissions::CommandJudge for ModelJudge<'_> {
-    fn vouches_for(&self, line: &str) -> bool {
-        let key = line.to_string();
-        if let Some(remembered) = self.vouched.answer(&key) {
-            return remembered;
-        }
-        // Synchronous, and that is the right shape here: the alternative to
-        // waiting is asking the person, which costs far more than the
-        // `DECISION_TIMEOUT` this call is bounded by. It is reached only for
-        // the lines the static reader could not place, and only once per
-        // distinct line per session.
-        let answered = crate::decide::permission(&self.decisions.model, line);
-        match answered {
-            Ok(answer) => {
-                self.decisions.asked.fetch_add(1, Ordering::Relaxed);
-                let vouched = crate::decide::permission_for(
-                    self.decisions.mode,
-                    Some(&answer),
-                    self.decisions.command_runs_above,
-                );
-                self.vouched.remember(key, vouched);
-                vouched
-            }
-            // Not an answer, so not remembered: a timeout must not bar this
-            // line from ever being vouched for again in this session.
-            Err(_) => {
-                self.decisions.failed.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-        }
-    }
 }
 
 /// A concrete canonical call. Full argument values are available only by an
@@ -422,33 +376,21 @@ impl Drop for Pending {
 pub struct Gate {
     requests: mpsc::Sender<Request>,
     remembered: Arc<Mutex<BTreeSet<Action>>>,
-    /// Answers a person gave: allow-for-session, and refusals.
+    /// Refusals a person gave, remembered for the session.
     ///
-    /// **Only answers that could have been given differently are kept.** A
-    /// static verdict is recomputed on every call because it is already
-    /// deterministic — and because remembering it would make a person who
-    /// moves *down* the ladder mid-task keep the permissions of the rung
-    /// they left.
+    /// **Only answers that could have been given differently are kept.** The
+    /// level's own verdict is recomputed on every call, because remembering
+    /// it would make a person who moves to a stricter level mid-task keep
+    /// the freedom of the level they left.
     judged: Arc<crate::permissions::Judged<Action>>,
-    /// Which rung this session is on, live: the key handler moves it from
-    /// the UI thread while a task runs.
-    ladder: crate::permissions::Ladder,
-    /// `[modes] commands` — the person's own extra read-only segment
-    /// patterns, honoured by the ladder exactly as a narrowing mode honours
-    /// them.
-    read_only: Arc<Vec<String>>,
+    /// Which level this session is on, live: the settings sheet changes it
+    /// from the UI thread while a task runs.
+    level: crate::permissions::LiveLevel,
+    /// The person's own `Bash(...)` patterns in `permissions.allow`: command
+    /// lines that run without asking on `Ask`.
+    pre_approved: Arc<Vec<String>>,
     wait_clock: Option<Arc<WaitClock>>,
     decisions: Option<Decisions>,
-    /// What the decision model has already said about a command line.
-    ///
-    /// **A model answer is exactly the kind that could have been given
-    /// differently**, so unlike a static verdict it is remembered: the same
-    /// line asked twice gets the same answer for the rest of the session,
-    /// and a retry cannot turn a question into a run (the user, 2026-09-18,
-    /// on a classifier that "funktioniert meist wenn du es nochmal
-    /// probierst"). Only a real answer is remembered — a timeout is not an
-    /// answer and must not bar that line for the session.
-    vouched: Arc<crate::permissions::Judged<String>>,
     /// The current task's request text, attached to the clone a `Runtime`
     /// holds for one task (`with_task`) -- `Gate` itself is session-scoped
     /// and outlives any one task.
@@ -459,18 +401,17 @@ pub struct Gate {
 }
 
 impl Gate {
-    pub fn channel(ladder: crate::permissions::Ladder) -> (Self, mpsc::Receiver<Request>) {
+    pub fn channel(level: crate::permissions::LiveLevel) -> (Self, mpsc::Receiver<Request>) {
         let (requests, receiver) = mpsc::channel();
         (
             Self {
                 requests,
                 remembered: Arc::new(Mutex::new(BTreeSet::new())),
                 judged: Arc::new(crate::permissions::Judged::default()),
-                ladder,
-                read_only: Arc::new(Vec::new()),
+                level,
+                pre_approved: Arc::new(Vec::new()),
                 wait_clock: None,
                 decisions: None,
-                vouched: Arc::new(crate::permissions::Judged::default()),
                 task: None,
                 redirects: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             },
@@ -488,16 +429,15 @@ impl Gate {
             .and_then(|mut redirects| redirects.remove(action))
     }
 
-    /// The rung this gate is judging on, shared with whatever moves it.
-    pub fn ladder(&self) -> &crate::permissions::Ladder {
-        &self.ladder
+    /// The level this gate is judging on, shared with whatever changes it.
+    pub fn level(&self) -> &crate::permissions::LiveLevel {
+        &self.level
     }
 
-    /// Attaches `[modes] commands`, the person's own extra read-only segment
-    /// patterns, once at session start.
+    /// Attaches the person's own `Bash(...)` patterns once at session start.
     #[must_use]
-    pub fn with_read_only(mut self, patterns: Vec<String>) -> Self {
-        self.read_only = Arc::new(patterns);
+    pub fn with_pre_approved(mut self, patterns: Vec<String>) -> Self {
+        self.pre_approved = Arc::new(patterns);
         self
     }
 
@@ -508,12 +448,10 @@ impl Gate {
         mut self,
         model: Option<String>,
         mode: crate::config::DecisionMode,
-        command_runs_above: f64,
     ) -> Self {
         self.decisions = model.map(|model| Decisions {
             model,
             mode,
-            command_runs_above,
             asked: Arc::new(AtomicU32::new(0)),
             failed: Arc::new(AtomicU32::new(0)),
         });
@@ -566,69 +504,12 @@ impl Gate {
             .unwrap_or_default()
     }
 
-    /// Asks the decision model about every command line the cell already
-    /// spells out, together, before the cell runs.
-    ///
-    /// **It answers nothing that the gate would not answer the same way.**
-    /// Each line goes through the very judge [`Gate::admit`] uses, keyed by
-    /// the same exact line, so a line pre-judged here and then run answers
-    /// from memory instead of asking twice — and a line this never saw is
-    /// met by the gate exactly as before. No person is asked here: a
-    /// confirmation belongs beside the call that needs it, not in a queue at
-    /// the head of a program.
-    ///
-    /// The win is the waiting. Serially, in the middle of a cell, each
-    /// unplaced line costs its own round trip to the decision model; here
-    /// they are asked at once, so a cell with six unplaced lines waits once
-    /// rather than six times.
-    pub(crate) fn prejudge(&self, lines: &[String]) {
-        let Some(decisions) = self.decisions.clone() else {
-            return;
-        };
-        if decisions.mode == crate::config::DecisionMode::Off
-            || self.ladder.rung() != crate::permissions::Rung::Auto
-        {
-            return;
-        }
-        let unanswered: Vec<String> = lines
-            .iter()
-            .filter(|line| self.vouched.answer(line).is_none())
-            .cloned()
-            .collect();
-        if unanswered.is_empty() {
-            return;
-        }
-        // The same pause an approval takes: this is a wait on something
-        // outside the isolate, not the cell computing.
-        let _waiting = self.wait_clock.as_ref().map(WaitClock::pause);
-        let threads: Vec<_> = unanswered
-            .into_iter()
-            .map(|line| {
-                let decisions = decisions.clone();
-                let vouched = self.vouched.clone();
-                thread::spawn(move || {
-                    use crate::permissions::CommandJudge;
-                    ModelJudge {
-                        decisions: &decisions,
-                        vouched: &vouched,
-                    }
-                    .vouches_for(&line);
-                })
-            })
-            .collect();
-        for thread in threads {
-            let _ = thread.join();
-        }
-    }
-
     /// Whether this already-admitted call may run, asking the person when
-    /// the rung says to.
+    /// the level says to.
     ///
     /// The order is the whole policy: an answer already given stands, then
-    /// the rung judges, and only a judgement of *ask* reaches a person. A
-    /// session with no terminal to ask at runs what it would have asked
-    /// about — the profile is still the boundary, and refusing instead would
-    /// break every scripted run for a question nobody is there to answer.
+    /// the level judges, and only a judgement of *ask* reaches a person. A
+    /// question nobody is there to answer is a refusal, never a silent yes.
     pub(crate) fn admit(&self, action: Action, stopped: impl Fn() -> bool) -> Admission {
         let unless_stopped = |admission: Admission| {
             if stopped() {
@@ -654,29 +535,21 @@ impl Gate {
             return unless_stopped(Admission::Allowed);
         }
         drop(remembered);
-        let model = self.decisions.as_ref().and_then(|decisions| {
-            (decisions.mode != crate::config::DecisionMode::Off).then(|| ModelJudge {
-                decisions,
-                vouched: &self.vouched,
-            })
-        });
+        let effectful = crate::tools::registry::lookup(action.tool())
+            .is_none_or(|tool| tool.purity() == crate::tools::registry::Purity::Effectful);
+        let pre_approved =
+            |line: &str| crate::sandbox::profile::names_every_segment(line, &self.pre_approved);
         let reason = match crate::permissions::judge(
-            self.ladder.rung(),
+            self.level.level(),
             action.tool(),
             action.arguments(),
-            &self.read_only,
-            model
-                .as_ref()
-                .map(|judge| judge as &dyn crate::permissions::CommandJudge),
+            effectful,
+            &pre_approved,
         ) {
             crate::permissions::Verdict::Runs => return unless_stopped(Admission::Allowed),
-            crate::permissions::Verdict::Refuse(_) => {
-                self.judged.remember(action, false);
-                return Admission::Denied;
-            }
             crate::permissions::Verdict::Ask(why) => {
-                if self.ladder.is_unattended() {
-                    return unless_stopped(Admission::Allowed);
+                if self.level.is_unattended() {
+                    return unless_stopped(Admission::NobodyToAsk);
                 }
                 why
             }
@@ -823,7 +696,7 @@ impl Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{Ladder, Rung};
+    use crate::permissions::{Level, LiveLevel, OUTSIDE};
 
     fn bash(line: &str) -> Action {
         let mut arguments = std::collections::BTreeMap::new();
@@ -831,61 +704,66 @@ mod tests {
         Action::new("bash", std::path::Path::new("/tmp/root"), arguments)
     }
 
-    fn gate_with_a_model(rung: Rung) -> (Gate, mpsc::Receiver<Request>) {
-        let (gate, requests) = Gate::channel(Ladder::new(rung));
-        // A model name no request ever reaches: every test here answers from
-        // the gate's own memory, which is the property under test.
-        (
-            gate.with_decisions(
-                Some("unreachable-model".to_string()),
-                crate::config::DecisionMode::On,
-                0.85,
-            ),
-            requests,
-        )
+    fn outside(line: &str, why: &str) -> Action {
+        let mut arguments = std::collections::BTreeMap::new();
+        arguments.insert("command".to_string(), line.to_string());
+        arguments.insert(OUTSIDE.to_string(), why.to_string());
+        Action::new("bash", std::path::Path::new("/tmp/root"), arguments)
     }
 
-    /// **The pre-judgement and the gate share one memory, keyed by the exact
-    /// command line.** Without this the reading done at submit time buys
-    /// nothing: the call would ask again when it happens.
+    /// On `Sandboxed` a command runs without reaching anybody; asking to
+    /// leave the sandbox is put to the person.
     #[test]
-    fn a_line_already_vouched_for_runs_without_reaching_anybody() {
-        let (gate, requests) = gate_with_a_model(Rung::Auto);
-        gate.vouched
-            .remember("./scripts/build.sh --release".to_string(), true);
-        assert!(
-            gate.admit(bash("./scripts/build.sh --release"), || false)
-                .allowed()
-        );
+    fn sandboxed_asks_only_to_leave_the_sandbox() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+        assert!(gate.admit(bash("cargo test"), || false).allowed());
         assert!(
             requests.try_recv().is_err(),
-            "a remembered answer must cost no confirmation"
+            "a sandboxed command asks nobody"
         );
-    }
-
-    /// And a remembered *no* is a question, never a refusal — the ladder's
-    /// one structural property, held at the seam a person meets.
-    #[test]
-    fn a_line_vouched_against_is_put_to_the_person() {
-        let (gate, requests) = gate_with_a_model(Rung::Auto);
-        gate.vouched
-            .remember("rm -rf /var/tmp/x".to_string(), false);
-        let asking = std::thread::spawn(move || gate.admit(bash("rm -rf /var/tmp/x"), || false));
+        let asked = gate.clone();
+        let asking =
+            std::thread::spawn(move || asked.admit(outside("curl x", "needs x"), || false));
         let request = requests
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the person must be asked");
-        assert_eq!(request.action().tool(), "bash");
+            .expect("leaving the sandbox must be asked");
+        assert!(request.reason().is_some_and(|why| why.contains("needs x")));
         assert!(request.respond(Decision::AllowOnce));
         assert!(asking.join().unwrap().allowed());
+    }
+
+    /// With nobody to ask, a question is a refusal and never a silent yes.
+    #[test]
+    fn nobody_to_ask_is_a_refusal() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed).unattended());
+        assert_eq!(
+            gate.admit(outside("curl x", "needs x"), || false),
+            Admission::NobodyToAsk
+        );
+        assert!(requests.try_recv().is_err());
+        assert!(gate.admit(bash("cargo test"), || false).allowed());
+    }
+
+    /// `Ask` confirms a command unless the person's own pattern names it.
+    #[test]
+    fn ask_confirms_commands_the_person_did_not_pre_approve() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
+        let gate = gate.with_pre_approved(vec!["cargo test*".to_string()]);
+        assert!(gate.admit(bash("cargo test -q"), || false).allowed());
+        let asked = gate.clone();
+        let asking = std::thread::spawn(move || asked.admit(bash("rm -rf target"), || false));
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an unapproved command asks on Ask");
+        assert!(request.respond(Decision::DenyOnce));
+        assert_eq!(asking.join().unwrap(), Admission::Denied);
     }
 
     /// A refusal with words is a refusal: not admitted, remembered, and the
     /// words wait for the one refusal that reports them.
     #[test]
     fn a_redirect_refuses_like_a_denial_and_hands_its_words_over_once() {
-        let (gate, requests) = gate_with_a_model(Rung::Auto);
-        gate.vouched
-            .remember("rm -rf /var/tmp/x".to_string(), false);
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let asked = gate.clone();
         let asking = std::thread::spawn(move || asked.admit(bash("rm -rf /var/tmp/x"), || false));
         let request = requests
@@ -911,59 +789,6 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "a remembered refusal asks nobody"
-        );
-    }
-
-    /// `prejudge` is the `auto` rung's own machinery and nothing else's: the
-    /// rungs that ask about every command line must not have their questions
-    /// pre-answered, and `full` asks nothing to begin with.
-    #[test]
-    fn pre_judgement_happens_on_the_auto_rung_alone() {
-        for rung in [Rung::Manual, Rung::AcceptEdits, Rung::Full] {
-            let (gate, _requests) = gate_with_a_model(rung);
-            // The model is unreachable, so a rung that did ask would spend
-            // the decision timeout here and remember nothing either way.
-            gate.prejudge(&["some-unplaceable-line --now".to_string()]);
-            assert!(
-                gate.vouched.is_empty(),
-                "{} must not pre-judge anything",
-                rung.name()
-            );
-        }
-    }
-
-    /// With decisions off there is nothing to ask, and no thread is started
-    /// to discover that.
-    #[test]
-    fn pre_judgement_asks_nothing_with_decisions_off() {
-        let (gate, _requests) = Gate::channel(Ladder::new(Rung::Auto));
-        gate.prejudge(&["some-unplaceable-line --now".to_string()]);
-        assert!(gate.vouched.is_empty());
-
-        let (gate, _requests) = Gate::channel(Ladder::new(Rung::Auto));
-        let gate = gate.with_decisions(
-            Some("unreachable-model".to_string()),
-            crate::config::DecisionMode::Off,
-            0.85,
-        );
-        gate.prejudge(&["some-unplaceable-line --now".to_string()]);
-        assert!(gate.vouched.is_empty());
-    }
-
-    /// A line already answered is not asked about again, however many times
-    /// it appears — the bound that keeps a loop of one command cheap.
-    #[test]
-    fn a_line_already_answered_is_not_asked_again() {
-        let (gate, _requests) = gate_with_a_model(Rung::Auto);
-        gate.vouched
-            .remember("already --answered".to_string(), true);
-        // Reaching the model would block for the decision timeout against a
-        // name that does not resolve; returning at once is the assertion.
-        let started = Instant::now();
-        gate.prejudge(&["already --answered".to_string()]);
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "an answered line must not be asked again"
         );
     }
 }

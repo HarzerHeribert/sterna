@@ -9,7 +9,7 @@
 //! routes the request actually declares.
 
 use sterna::abi::Interface;
-use sterna::manifest::{CommandPolicy, Manifest};
+use sterna::manifest::Manifest;
 use sterna::prompt::{self, SessionFacts, declarations};
 use sterna::tools::registry;
 
@@ -17,8 +17,6 @@ fn facts(interface: Interface, manifest: Option<String>) -> SessionFacts {
     SessionFacts {
         root: "/tmp/x".to_string(),
         writable: vec!["Write(src/**)".to_string()],
-        command_patterns: 2,
-        all_commands: false,
         network: false,
         interface,
         manifest,
@@ -223,7 +221,6 @@ fn a_manifest_renders_once_as_its_own_block_after_this_session() {
         root: "/tmp/x".into(),
         readable_roots: vec!["/tmp/x".into()],
         writable_roots: vec!["/tmp/x/src".into()],
-        commands: CommandPolicy::Patterns(vec!["Bash(cargo test:*)".into()]),
         ..Manifest::default()
     }
     .render();

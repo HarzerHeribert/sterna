@@ -1,10 +1,9 @@
-//! Host-channel seam tests against the real V8 callback stack. Most of this
-//! file is not interactive-approval acceptance: the shipped TUI does not
-//! install the seam, and no decision here adds a permission or an OS sandbox
-//! grant. The approval-hint tests at the end of the file are the exception --
-//! they drive the shipped `sterna` binary in a real PTY, `--ask-approval` and
-//! all, because the hint (F4, `decision-model.md`) is drawn by the live
-//! terminal thread and nothing shorter exercises that seam.
+//! Host-channel seam tests against the real V8 callback stack: the approval
+//! gate every session installs, judged by the sandbox level. No decision here
+//! adds a permission or an OS sandbox grant. The approval-hint tests near the
+//! end of the file drive the shipped `sterna` binary in a real PTY with
+//! `--sandbox ask`, because the hint (F4, `decision-model.md`) is drawn by the
+//! live terminal thread and nothing shorter exercises that seam.
 use std::io::{BufRead, BufReader, Read as IoRead, Write as IoWrite};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -17,6 +16,7 @@ use std::time::{Duration, Instant};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use sterna::approval::{Decision, Gate};
 use sterna::contract::SessionId;
+use sterna::permissions::{Level, LiveLevel};
 use sterna::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use sterna::runtime::outcome::CellOutcome;
 use sterna::runtime::preview::Value;
@@ -62,9 +62,7 @@ fn returned(outcome: &CellOutcome, expected: &str) {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn once_resumes_the_suspended_call_without_replaying_an_earlier_effect() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let earlier = fixture.0.join("earlier");
     let target = fixture.0.join("target");
     let observed_earlier = earlier.clone();
@@ -111,9 +109,7 @@ fn once_resumes_the_suspended_call_without_replaying_an_earlier_effect() {
 #[test]
 fn session_decisions_match_all_canonical_arguments_and_summaries_hide_values() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let root = fixture.0.clone();
     let responder = std::thread::spawn(move || {
         let first = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -154,12 +150,13 @@ fn session_decisions_match_all_canonical_arguments_and_summaries_hide_values() {
     assert!(responder.join().unwrap().try_recv().is_err());
 }
 
+/// A refusal is decided before the level is asked: a `deny` pattern, a
+/// never-grantable path or launcher, and a write outside every writable root
+/// are refused without a person ever seeing them.
 #[test]
-fn explicit_denies_never_grantable_actions_and_missing_grants_never_reach_the_gate() {
+fn explicit_denies_never_grantable_actions_and_unwritable_paths_never_reach_the_gate() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let mut runtime = fixture
         .runtime(Some(
             r#"{"permissions":{"allow":["Bash"],"deny":["Write(blocked)","Bash(echo *)"]}}"#,
@@ -172,7 +169,7 @@ fn explicit_denies_never_grantable_actions_and_missing_grants_never_reach_the_ga
            try { read({path: "~/.ssh/id_ed25519"}); } catch (e) { refusals.push(e.name); }
            try { bash({command: "echo forbidden"}); } catch (e) { refusals.push(e.name); }
            try { bash({command: "bwrap true"}); } catch (e) { refusals.push(e.name); }
-           try { read({path: "../missing-grant"}); } catch (e) { refusals.push(e.name); }
+           try { write({path: "~/sterna-approval-boundary-never-written", content: "no"}); } catch (e) { refusals.push(e.name); }
            return refusals.join(",");"#,
     );
     returned(&outcome, &["PermissionDenied"; 6].join(","));
@@ -182,91 +179,187 @@ fn explicit_denies_never_grantable_actions_and_missing_grants_never_reach_the_ga
     );
     assert!(!fixture.0.join("blocked").exists());
     assert!(!fixture.0.join(".claude/settings.json").exists());
+    if let Some(home) = std::env::var_os("HOME") {
+        assert!(
+            !PathBuf::from(home)
+                .join("sterna-approval-boundary-never-written")
+                .exists()
+        );
+    }
 }
 
-/// **The Auto rung runs what it promises to run.** With no `Bash(...)`
-/// pattern at all, a command line that only reads runs without asking; a
-/// line that writes is put to the person; neither is refused for being
-/// absent from a list nobody wrote.
+/// **Sandboxed asks nothing for an ordinary command.** With no `Bash(...)`
+/// pattern at all, a line that reads and a line that writes both run, and
+/// neither reaches the person: the sandbox is the boundary, not a list.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn auto_rung_runs_a_read_only_command_with_no_allow_patterns() {
+fn sandboxed_runs_every_ordinary_command_line_without_asking() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Auto,
-    ));
-    let responder = std::thread::spawn(move || {
-        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(asked.action().arguments()["command"], "touch made");
-        assert!(asked.respond(Decision::AllowOnce));
-        requests
-    });
-    let mut runtime = fixture
-        .runtime(None)
-        .with_approval_gate(gate.with_read_only(Vec::new()));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
     let outcome = runtime.run_cell(
         r#"const said = [];
-           try { bash({command: "ls -la && git log --oneline -3"}); said.push("ran"); }
+           try { bash({command: "ls -la"}); said.push("ran"); }
            catch (e) { said.push(e.name); }
            try { bash({command: "touch made"}); said.push("ran"); }
            catch (e) { said.push(e.name); }
            return said.join(",");"#,
     );
-    match &outcome {
-        CellOutcome::Returned { value, .. } => assert!(
-            !format!("{value:?}").contains("PermissionDenied"),
-            "an unlisted command was refused on Auto: {value:?}"
-        ),
-        other => panic!("expected a return, got {other:?}"),
-    }
+    returned(&outcome, "ran,ran");
     assert!(
         fixture.0.join("made").exists(),
-        "the confirmed line did not run"
+        "the writing line did not run"
     );
     assert!(
-        responder.join().unwrap().try_recv().is_err(),
-        "the read-only line asked too"
+        requests.try_recv().is_err(),
+        "Sandboxed asked about a command"
     );
 }
 
-/// Nobody to ask keeps the list: an unlisted line is refused, exactly as it
-/// was before the Auto rung learned to judge one.
+/// Nobody at the terminal changes nothing on Sandboxed: the level asks
+/// nothing, so an unlisted line runs exactly as it does with a person there.
 #[test]
-fn an_unattended_session_still_refuses_an_unlisted_command() {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn an_unattended_sandboxed_session_runs_an_unlisted_command() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(
-        sterna::permissions::Ladder::new(sterna::permissions::Rung::Auto).unattended(),
-    );
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed).unattended());
     let mut runtime = fixture.runtime(None).with_approval_gate(gate);
     let outcome = runtime.run_cell(
         r#"try { bash({command: "touch made"}); }
            catch (e) { return e.name; }
-           return "unexpected";"#,
+           return "ran";"#,
     );
-    returned(&outcome, "PermissionDenied");
+    returned(&outcome, "ran");
     assert!(requests.try_recv().is_err());
-    assert!(!fixture.0.join("made").exists());
+    assert!(fixture.0.join("made").exists());
 }
 
+/// A question nobody can answer is a refusal, never a silent yes: an
+/// unattended gate on Ask refuses the edit it would have confirmed, and
+/// says why.
 #[test]
-fn an_unattached_runtime_stays_fail_closed_for_missing_grants() {
+fn an_unattended_ask_refuses_what_it_would_have_asked() {
     let fixture = Fixture::new();
-    let mut runtime = fixture.runtime(None);
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask).unattended());
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
     let outcome = runtime.run_cell(
-        r#"try { bash({command: "echo no"}); }
-           catch (e) { return e.name; }
+        r#"try { write({path: "target", content: "no"}); }
+           catch (e) { return e.name + "|" + e.rule; }
            return "unexpected";"#,
     );
-    returned(&outcome, "PermissionDenied");
+    match &outcome {
+        CellOutcome::Returned { value, .. } => {
+            let said = format!("{value:?}");
+            assert!(said.contains("PermissionDenied"), "{said}");
+            assert!(
+                said.contains("nobody is at the terminal to answer"),
+                "the refusal must say why: {said}"
+            );
+        }
+        other => panic!("expected a return, got {other:?}"),
+    }
+    assert!(
+        requests.try_recv().is_err(),
+        "an unattended gate sent a question"
+    );
+    assert!(!fixture.0.join("target").exists());
+}
+
+/// Without a gate the profile is the only check: an unlisted command line
+/// runs, and a `deny` pattern still refuses its own.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn an_unattached_runtime_runs_an_unlisted_command_and_still_refuses_a_denied_one() {
+    let fixture = Fixture::new();
+    let mut runtime = fixture.runtime(Some(r#"{"permissions":{"deny":["Bash(rm *)"]}}"#));
+    let outcome = runtime.run_cell(
+        r#"const said = [bash({command: "printf yes"}).stdout];
+           try { bash({command: "rm -f target"}); said.push("ran"); }
+           catch (e) { said.push(e.name); }
+           return said.join(",");"#,
+    );
+    returned(&outcome, "yes,PermissionDenied");
+}
+
+/// A place no fixture's sandbox can write: the build's own scratch folder,
+/// inside the repository and outside the temp folders a fixture lives in.
+fn unwritable_target(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("approval-boundary-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("made");
+    let _ = std::fs::remove_file(&target);
+    target
+}
+
+/// The one question Sandboxed asks: a command that names why it must leave
+/// the sandbox waits for the person, and once allowed runs without Sterna's
+/// confinement. The same line without `outside` stays confined.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn an_allowed_command_leaves_the_sandbox_and_only_that_command() {
+    let fixture = Fixture::new();
+    let target = unwritable_target("leave");
+    let line = serde_json::to_string(&format!("touch '{}'", target.display())).unwrap();
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+    let responder = std::thread::spawn(move || {
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(request.action().tool(), "bash");
+        assert!(
+            request
+                .reason()
+                .is_some_and(|reason| reason.contains("writes the build folder")),
+            "{:?}",
+            request.reason()
+        );
+        assert!(request.respond(Decision::AllowOnce));
+        assert!(
+            requests.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the confined line asked"
+        );
+    });
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(&format!(
+        r#"const confined = bash({{command: {line}}}).exit_code;
+           const outside = bash({{command: {line}, outside: "writes the build folder"}}).exit_code;
+           return confined === 0 ? "confined ran" : "confined refused, outside " + outside;"#
+    ));
+    returned(&outcome, "confined refused, outside 0");
+    responder.join().unwrap();
+    assert!(target.exists(), "the allowed command did not run outside");
+}
+
+/// Where nobody can be asked -- a subagent -- a command asking to leave the
+/// sandbox is refused before it runs.
+#[test]
+fn nobody_to_ask_means_no_command_leaves_the_sandbox() {
+    let fixture = Fixture::new();
+    let target = unwritable_target("subagent");
+    let line = serde_json::to_string(&format!("touch '{}'", target.display())).unwrap();
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate).as_subagent();
+    let outcome = runtime.run_cell(&format!(
+        r#"try {{ bash({{command: {line}, outside: "needs the build folder"}}); }}
+           catch (e) {{ return e.name + "|" + e.rule; }}
+           return "ran";"#
+    ));
+    match &outcome {
+        CellOutcome::Returned { value, .. } => {
+            let said = format!("{value:?}");
+            assert!(said.contains("PermissionDenied"), "{said}");
+            assert!(said.contains("cannot leave the sandbox"), "{said}");
+        }
+        other => panic!("expected a return, got {other:?}"),
+    }
+    assert!(requests.try_recv().is_err());
+    assert!(!target.exists());
 }
 
 #[test]
 fn a_disconnected_host_and_a_dropped_request_deny_without_an_effect() {
     for drop_request in [false, true] {
         let fixture = Fixture::new();
-        let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-            sterna::permissions::Rung::Manual,
-        ));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let responder = std::thread::spawn(move || {
             if drop_request {
                 drop(requests.recv_timeout(Duration::from_secs(5)).unwrap());
@@ -290,9 +383,7 @@ fn a_disconnected_host_and_a_dropped_request_deny_without_an_effect() {
 #[test]
 fn cancellation_cancels_the_pending_call_and_rejects_a_late_session_answer() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let token = CancellationToken::new();
     let cancelled = token.clone();
     let (finished, completion) = mpsc::channel();
@@ -323,9 +414,7 @@ fn cancellation_cancels_the_pending_call_and_rejects_a_late_session_answer() {
 #[test]
 fn human_approval_wait_pauses_the_cell_clock_and_then_resumes_the_write() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let responder = std::thread::spawn(move || {
         let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         std::thread::sleep(Duration::from_millis(350));
@@ -355,9 +444,7 @@ fn human_approval_wait_pauses_the_cell_clock_and_then_resumes_the_write() {
 #[test]
 fn approval_resumes_remaining_compute_budget_instead_of_resetting_it() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let responder = std::thread::spawn(move || {
         let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         std::thread::sleep(Duration::from_millis(500));
@@ -393,9 +480,7 @@ fn approval_resumes_remaining_compute_budget_instead_of_resetting_it() {
 #[test]
 fn an_allow_once_is_consumed_even_when_the_execution_fails() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let responder = std::thread::spawn(move || {
         let first = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         let action = first.action().clone();
@@ -418,18 +503,23 @@ fn an_allow_once_is_consumed_even_when_the_execution_fails() {
 #[test]
 fn subagents_do_not_prompt_even_when_a_host_attaches_a_gate() {
     let fixture = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
-    let mut runtime = fixture.runtime(None).with_approval_gate(gate).as_subagent();
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
+    let mut runtime = fixture
+        .runtime(Some(r#"{"permissions":{"deny":["Bash(rm *)"]}}"#))
+        .with_approval_gate(gate)
+        .as_subagent();
     let outcome = runtime.run_cell(
         r#"write({path: "target", content: "base profile grants this"});
-           try { bash({command: "echo no grant"}); }
+           bash({command: "printf unasked"});
+           try { bash({command: "rm -f target"}); }
            catch (e) { return e.name; }
            return "unexpected";"#,
     );
     returned(&outcome, "PermissionDenied");
-    assert!(requests.try_recv().is_err());
+    assert!(
+        requests.try_recv().is_err(),
+        "a subagent's call reached the person"
+    );
     assert!(fixture.0.join("target").exists());
 }
 
@@ -440,9 +530,7 @@ fn a_symlink_retargeted_during_the_wait_invalidates_the_answer() {
     std::fs::write(fixture.0.join("original"), "original").unwrap();
     std::fs::write(fixture.0.join("other"), "other").unwrap();
     std::os::unix::fs::symlink("original", fixture.0.join("link")).unwrap();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let root = fixture.0.clone();
     let responder = std::thread::spawn(move || {
         let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -482,9 +570,7 @@ fn a_non_utf8_canonical_path_is_refused_before_a_lossy_key_can_be_approved() {
         .join(std::ffi::OsString::from_vec(b"private-\xff".to_vec()));
     std::fs::write(&target, "untouched").unwrap();
     std::os::unix::fs::symlink(&target, fixture.0.join("link")).unwrap();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let mut runtime = fixture.runtime(None).with_approval_gate(gate);
     let outcome = runtime.run_cell(
         r#"try { write({path: "link", content: "no"}); }
@@ -500,9 +586,7 @@ fn a_non_utf8_canonical_path_is_refused_before_a_lossy_key_can_be_approved() {
 fn remembered_actions_do_not_cross_roots_or_override_a_later_profiles_deny() {
     let first = Fixture::new();
     let second = Fixture::new();
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let first_root = first.0.clone();
     let second_root = second.0.clone();
     let responder = std::thread::spawn(move || {
@@ -547,9 +631,7 @@ fn answering_the_gate_does_not_expand_the_os_sandbox() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8(unconfined.stdout).unwrap(), "leaked");
-    let (gate, requests) = Gate::channel(sterna::permissions::Ladder::new(
-        sterna::permissions::Rung::Manual,
-    ));
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
     let responder = std::thread::spawn(move || {
         let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(request.action().tool(), "bash");
@@ -569,7 +651,7 @@ fn answering_the_gate_does_not_expand_the_os_sandbox() {
 // -- the approval hint (F4, decision-model.md) ---------------------------
 //
 // These four tests drive the shipped `sterna` binary in a real PTY with
-// `--ask-approval`: the hint is drawn by the live terminal thread, and
+// `--sandbox ask`: the hint is drawn by the live terminal thread, and
 // nothing shorter than the real TUI exercises `session::ui::run`'s render
 // loop. A fake provider answers `/v1/messages` with one scripted `write`
 // call and `/v1/systemone` with the scripted `fits` answers below, exactly
@@ -741,7 +823,7 @@ fn hint_provider(hints: Vec<HintReply>) -> (String, Arc<Mutex<Vec<String>>>) {
     (base, seen)
 }
 
-/// A live `sterna session --ask-approval` in a real PTY -- trimmed to what the
+/// A live `sterna session --sandbox ask` in a real PTY -- trimmed to what the
 /// four tests below need: no resize, no mouse reports (`tests/tui_live.rs`'s
 /// `App` covers those for the rest of the interactive surface).
 struct LiveApp {
@@ -780,7 +862,7 @@ impl LiveApp {
         command.arg("--gateway");
         command.arg(root.join("no-gateway"));
         command.env("INFERENCE_GATEWAY_BIN", root.join("no-gateway"));
-        command.arg("--ask-approval");
+        command.args(["--sandbox", "ask"]);
         command.env("ANTHROPIC_BASE_URL", base);
         command.env("XDG_CONFIG_HOME", root.join("global-config"));
         command.env_remove("ANTHROPIC_API_KEY");
@@ -878,7 +960,7 @@ fn a_hint_that_answers_in_time_is_shown_beside_the_confirmation() {
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
     // The first frame is up. The model's name is not the sign: an
-    // 80-column header gives it up before the rung and the mode.
+    // 80-column header gives it up before the sandbox level.
     app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
@@ -899,7 +981,7 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
     // The first frame is up. The model's name is not the sign: an
-    // 80-column header gives it up before the rung and the mode.
+    // 80-column header gives it up before the sandbox level.
     app.contains("⠿ STERNA");
     let sent = Instant::now();
     app.send(b"write a.txt for me\r");
@@ -928,7 +1010,7 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"shadow\"\n",
     );
     // The first frame is up. The model's name is not the sign: an
-    // 80-column header gives it up before the rung and the mode.
+    // 80-column header gives it up before the sandbox level.
     app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
@@ -954,7 +1036,7 @@ fn no_model_means_no_approval_hint_request() {
     let (base, decisions) = hint_provider(vec![]);
     let mut app = LiveApp::start(&base, "");
     // The first frame is up. The model's name is not the sign: an
-    // 80-column header gives it up before the rung and the mode.
+    // 80-column header gives it up before the sandbox level.
     app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
@@ -969,40 +1051,94 @@ fn no_model_means_no_approval_hint_request() {
     app.contains("done");
 }
 
-/// The ladder decides which calls reach a person at all, and a `full`
-/// session installs no gate — so these run against the gate itself.
+/// The level decides which calls reach a person at all -- so these run
+/// against the gate itself.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-mod ladder {
+mod level {
     use super::*;
-    use sterna::permissions::{Ladder, Rung};
 
-    /// `auto` runs ordinary work and asks about the rest — in one cell, so
-    /// the two answers are the same session's.
+    /// `ask` runs what only reads and confirms every edit and command -- in
+    /// one cell, so the answers are the same session's.
     #[test]
-    fn auto_runs_what_reads_and_asks_about_what_it_cannot_place() {
+    fn ask_runs_a_read_and_confirms_an_edit_and_a_command() {
         let fixture = Fixture::new();
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Auto));
+        std::fs::write(fixture.0.join("notes"), "read me").unwrap();
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let responder = std::thread::spawn(move || {
-            let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-            let shown = asked.action().confirmation().text;
+            let edit = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(edit.action().tool(), "write");
+            assert!(edit.respond(Decision::AllowOnce));
+            let command = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            let shown = command.action().confirmation().text;
             assert!(shown.contains("deploy"), "the person sees the real call");
-            assert!(asked.respond(Decision::AllowOnce));
+            assert!(command.respond(Decision::AllowOnce));
             requests
         });
-        let mut runtime = fixture
-            .runtime(Some(r#"{"permissions":{"allow":["Bash"]}}"#))
-            .with_approval_gate(gate.clone());
+        let mut runtime = fixture.runtime(None).with_approval_gate(gate);
         let outcome = runtime.run_cell(
-            r#"bash({command: "git status --short"});
+            r#"const text = read({path: "notes"});
+               write({path: "made", content: "1"});
                bash({command: "sh deploy"});
-               return "both";"#,
+               return "all three";"#,
         );
-        returned(&outcome, "both");
+        returned(&outcome, "all three");
+        assert!(fixture.0.join("made").exists());
         let left = responder.join().unwrap();
         assert!(
             left.try_recv().is_err(),
-            "exactly one of the two calls reached the person"
+            "the read reached the person as well"
         );
+    }
+
+    /// A line matching one of the person's own `Bash(...)` patterns in
+    /// `permissions.allow` is pre-approved: it runs on `ask` without a
+    /// question, and a line the pattern does not name is still confirmed.
+    #[test]
+    fn ask_runs_a_pre_approved_command_without_asking() {
+        let fixture = Fixture::new();
+        let settings = r#"{"permissions":{"allow":["Bash(printf *)"]}}"#;
+        let profile = Profile::compile(&fixture.0, Some(settings));
+        assert_eq!(profile.pre_approved(), ["printf *".to_string()]);
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
+        let gate = gate.with_pre_approved(profile.pre_approved().to_vec());
+        let responder = std::thread::spawn(move || {
+            let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(asked.action().arguments()["command"], "touch made");
+            assert!(asked.respond(Decision::AllowOnce));
+            requests
+        });
+        let mut runtime = fixture.runtime(Some(settings)).with_approval_gate(gate);
+        let outcome = runtime.run_cell(
+            r#"const said = bash({command: "printf listed"}).stdout;
+               bash({command: "touch made"});
+               return said;"#,
+        );
+        returned(&outcome, "listed");
+        assert!(fixture.0.join("made").exists());
+        assert!(
+            responder.join().unwrap().try_recv().is_err(),
+            "the pre-approved line was asked about too"
+        );
+    }
+
+    /// A `deny` pattern refuses on every level, before any level is asked.
+    #[test]
+    fn a_deny_pattern_refuses_on_every_level() {
+        for level in Level::ALL {
+            let fixture = Fixture::new();
+            let (gate, requests) = Gate::channel(LiveLevel::new(level));
+            let mut runtime = fixture
+                .runtime(Some(r#"{"permissions":{"deny":["Bash(touch *)"]}}"#))
+                .with_approval_gate(gate);
+            let outcome = runtime.run_cell(
+                r#"try { bash({command: "touch made"}); }
+                   catch (e) { return e.name; }
+                   return "unexpected";"#,
+            );
+            returned(&outcome, "PermissionDenied");
+            assert!(requests.try_recv().is_err(), "{level:?} asked");
+            assert!(!fixture.0.join("made").exists(), "{level:?} ran it");
+        }
     }
 
     /// The rule the user named: a gate that answers differently on a retry
@@ -1011,15 +1147,13 @@ mod ladder {
     #[test]
     fn a_refusal_is_the_sessions_answer_and_is_not_asked_a_second_time() {
         let fixture = Fixture::new();
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let responder = std::thread::spawn(move || {
             let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(asked.respond(Decision::Deny));
             requests
         });
-        let mut runtime = fixture
-            .runtime(Some(r#"{"permissions":{"allow":["Bash"]}}"#))
-            .with_approval_gate(gate.clone());
+        let mut runtime = fixture.runtime(None).with_approval_gate(gate.clone());
         let outcome = runtime.run_cell(
             r#"let denied = 0;
                for (const _ of [1, 2]) {
@@ -1035,45 +1169,40 @@ mod ladder {
         );
     }
 
-    /// Moving the rung while a cell is suspended in the gate binds the very
-    /// next call of that same cell — which is why the rung is an atomic the
+    /// Moving the level while a cell is suspended in the gate binds the very
+    /// next call of that same cell -- which is why the level is an atomic the
     /// gate reads per call, not an input the turn loop reads between turns.
     ///
     /// Deterministic by construction: the move happens on the responder
     /// thread, while the cell is stopped inside the first confirmation.
     #[test]
-    fn a_rung_moved_while_a_cell_waits_binds_that_cells_next_call() {
+    fn a_level_moved_while_a_cell_waits_binds_that_cells_next_call() {
         let fixture = Fixture::new();
-        let ladder = Ladder::new(Rung::AcceptEdits);
-        let (gate, requests) = Gate::channel(ladder.clone());
-        let moved = ladder.clone();
+        let live = LiveLevel::new(Level::Ask);
+        let (gate, requests) = Gate::channel(live.clone());
+        let moved = live.clone();
         let responder = std::thread::spawn(move || {
             let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-            // The person reaches for Shift-Tab while the confirmation is up.
-            moved.set(Rung::Full);
+            // The person changes the level while the confirmation is up.
+            moved.set(Level::Sandboxed);
             assert!(asked.respond(Decision::AllowOnce));
             requests
         });
-        let mut runtime = fixture
-            .runtime(Some(r#"{"permissions":{"allow":["Bash"]}}"#))
-            .with_approval_gate(gate.clone());
+        let mut runtime = fixture.runtime(None).with_approval_gate(gate.clone());
         let outcome = runtime.run_cell(
             r#"bash({command: "sh one"});
                bash({command: "sh two"});
                return "both";"#,
         );
         returned(&outcome, "both");
-        assert_eq!(ladder.rung(), Rung::Full);
+        assert_eq!(live.level(), Level::Sandboxed);
         let left = responder.join().unwrap();
         assert!(
             left.try_recv().is_err(),
-            "the second call ran under the new rung without asking"
+            "the second call ran under the new level without asking"
         );
-        let moves = ladder.drain_moves();
+        let moves = live.drain_moves();
         assert_eq!(moves.len(), 1, "the move is recorded once");
-        assert_eq!(
-            (moves[0].from, moves[0].to),
-            (Rung::AcceptEdits, Rung::Full)
-        );
+        assert_eq!((moves[0].from, moves[0].to), (Level::Ask, Level::Sandboxed));
     }
 }

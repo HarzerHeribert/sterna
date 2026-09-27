@@ -518,8 +518,8 @@ impl Editor {
             KeyCode::Enter if alt || shift => self.insert("\n"),
             KeyCode::Enter => {
                 // A path is completed in place; a command is sent. The
-                // exact name is the popup's first row, so Enter on "/mode"
-                // sends /mode.
+                // exact name is the popup's first row, so Enter on "/plan"
+                // sends /plan.
                 return self.complete(self.selected).unwrap_or(true);
             }
             KeyCode::Char(c) if !control && !alt => self.typed(c),
@@ -703,9 +703,9 @@ mod tests {
     #[test]
     fn enter_keeps_the_exact_command_and_esc_puts_the_popup_away() {
         let mut editor = Editor::default();
-        typed(&mut editor, "/mode");
+        typed(&mut editor, "/plan");
         assert!(editor.key(key(KeyCode::Enter)));
-        assert_eq!(editor.text, "/mode");
+        assert_eq!(editor.text, "/plan");
         let mut editor = Editor::default();
         typed(&mut editor, "/cell");
         assert!(editor.key(key(KeyCode::Enter)));

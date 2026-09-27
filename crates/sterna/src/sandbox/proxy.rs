@@ -122,6 +122,25 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     },
 ];
 
+/// Whether a confined command on this machine can reach the proxy at all:
+/// through the network namespace's relay on Linux, when the kernel lets
+/// Sterna build one, and over loopback on macOS. Elsewhere commands have no
+/// network and the proxy is not started.
+#[cfg(target_os = "linux")]
+pub fn reachable() -> bool {
+    super::linux_ns::available()
+}
+
+#[cfg(target_os = "macos")]
+pub fn reachable() -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn reachable() -> bool {
+    false
+}
+
 /// Whether `host` is a host name this module will store: letters, digits,
 /// dots and hyphens, optionally led by `*.` for "any subdomain of". No
 /// scheme, port, path or spaces — those are what a pasted URL brings, and a

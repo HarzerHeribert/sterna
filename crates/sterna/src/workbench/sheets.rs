@@ -4,7 +4,7 @@
 use super::sheet::{Item, Kind, Sheet};
 use super::view::{label, row, wrap_words};
 use super::{Action, Layer, Source, Tone, Workbench, chrome, document::clip};
-use crate::permissions::Rung;
+use crate::permissions::Level;
 use crate::tui::{Notebook, ScreenState, Theme};
 use ratatui::{Frame, layout::Rect, widgets::Clear};
 
@@ -43,10 +43,8 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
     sheet.total = None;
     sheet.matched = None;
     let items = match source {
-        Source::Work => work(sheet, s),
-        Source::Ask => ask(sheet, s),
-        Source::Access => access(sheet, s),
-        Source::Confirm(rung) => confirm(sheet, rung),
+        Source::Sandbox => sandbox(sheet, s),
+        Source::Confirm(what) => confirm(sheet, what),
         Source::Keys => keys(sheet),
         Source::Activity => activity(sheet, s),
         Source::Themes { .. } => themes(sheet, s),
@@ -68,7 +66,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
 }
 
 /// Disables a row that cannot act until the turn ends: a command other than
-/// a model, mode or effort, and the model picker, which the session builds.
+/// a model or effort, and the model picker, which the session builds.
 fn between_turns(item: Item) -> Item {
     let waits = match &item.action {
         Some(Action::Command(command)) => !super::mid_turn(command),
@@ -82,58 +80,36 @@ fn between_turns(item: Item) -> Item {
     }
 }
 
-/// One word for the work mode, as the chips and the sheet name it.
-fn work(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
-    use crate::tui::Mode;
-    sheet.title = "Work".into();
-    sheet.crumbs = vec!["what this session may do".into()];
-    let mut items: Vec<Item> = [Mode::Execute, Mode::Explore, Mode::Plan]
+/// The sandbox: its level, how it is enforced, and what was answered for
+/// the session, on one sheet the level chip opens.
+fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    sheet.title = "Sandbox".into();
+    sheet.crumbs = vec!["how much runs without asking".into()];
+    let now = s.level.level();
+    let mut items: Vec<Item> = Level::ALL
         .into_iter()
-        .map(|mode| {
-            Item::choice(
-                format!("mode:{}", mode.setting()),
-                mode.label(),
-                s.mode == mode,
-                Action::Command(super::facts::mode_command(Some(mode))),
-            )
-            .detail(mode.sentence())
-        })
-        .collect();
-    // Unpinned is a state of its own: the session stays on its mode until a
-    // confident read-only request proposes Explore.
-    items.push(
-        Item::toggle(
-            "mode:auto",
-            "Auto",
-            !s.mode_pinned,
-            Action::Command(if s.mode_pinned {
-                super::facts::mode_command(None)
+        .map(|level| {
+            let id = format!("level:{}", level.name());
+            let action = Action::Level(level.name().into());
+            let item = if level == Level::Full && now != Level::Full {
+                Item::danger(id, level.label(), action)
             } else {
-                super::facts::mode_command(Some(s.mode))
-            }),
-        )
-        .detail("A confident read-only request may propose Explore."),
-    );
-    items
-}
-
-fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
-    sheet.title = "Ask".into();
-    sheet.crumbs = vec!["how often it stops to ask".into()];
-    let now = s.permissions.rung();
-    let mut items: Vec<Item> = [Rung::Manual, Rung::AcceptEdits, Rung::Auto, Rung::Full]
-        .into_iter()
-        .map(|rung| {
-            let id = format!("rung:{}", rung.name());
-            let action = Action::Rung(rung.name().into());
-            let item = if rung == Rung::Full && now != Rung::Full {
-                Item::danger(id, rung.label(), action)
-            } else {
-                Item::choice(id, rung.label(), rung == now, action)
+                Item::choice(id, level.label(), level == now, action)
             };
-            item.detail(rung.sentence())
+            item.detail(level.sentence())
         })
         .collect();
+    items.push(
+        Item::info("Saved for every project. A project's own settings cannot change this.")
+            .tone(Tone::Muted),
+    );
+    let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
+    items.push(Item::heading("How it is enforced"));
+    items.push(
+        Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
+    );
+    items.push(Item::info(format!("Pre-approved      {}", unknown(&s.sandbox))).tone(Tone::Muted));
+    items.push(Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted));
     // What was answered for the whole session is on this sheet too, where it
     // can be taken back: a refusal that stays must stay visibly.
     let remembered = s
@@ -165,54 +141,16 @@ fn ask(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
             );
         }
     }
+    items.push(Item::open(
+        "sandbox:settings",
+        "Open settings",
+        Action::Settings,
+    ));
     items
 }
 
-/// The boundary as a sentence, for the Access sheet and the chips.
-pub(super) fn access_sentence(s: &ScreenState) -> &'static str {
-    if s.full_access {
-        "Every file on this machine and every command line. Nothing is confined."
-    } else {
-        "Files inside this project, and the commands the profile admits. Your home directory is out of reach."
-    }
-}
-
-fn access(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
-    sheet.title = "Access".into();
-    sheet.crumbs = vec!["the boundaries it is actually running under".into()];
-    let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
-    vec![
-        Item::info(if s.full_access {
-            "▲ FULL ACCESS"
-        } else {
-            "This project"
-        })
-        .tone(if s.full_access {
-            Tone::Warning
-        } else {
-            Tone::Strong
-        }),
-        Item::info(access_sentence(s)),
-        Item::info(format!(
-            "network {} · asks {}",
-            s.network.as_deref().unwrap_or("unknown"),
-            s.permissions.rung().label().to_lowercase()
-        )),
-        Item::heading("How it is enforced"),
-        Item::info(format!("Sandbox profile   {}", unknown(&s.sandbox))).tone(Tone::Muted),
-        Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
-        Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted),
-        Item::info(
-            "Asking less often never widens this boundary, and a saved permission never widens the one already running.",
-        )
-        .tone(Tone::Muted),
-        Item::open("access:ask", "Change how often it asks", Action::Approvals),
-        Item::open("access:settings", "Open settings", Action::Settings),
-    ]
-}
-
-/// The one confirmation sheet, for the Never asks rung (`full`) and for
-/// full access (`access`). It opens on Cancel.
+/// The one confirmation sheet, for Full access and the other changes that
+/// lift a boundary. It opens on Cancel.
 fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
     let (label, warning, yes) = if let Some(link) = what.strip_prefix("open:") {
         (
@@ -226,18 +164,13 @@ fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
             "This turns favourites off: every subagent runs on this one model.",
             Action::Choose(model.to_string()),
         )
-    } else if what == "access" {
-        (
-            "Full access".to_string(),
-            "From the next session Sterna applies no OS confinement to the commands it runs; \
-             this machine is the boundary. Denials and approval prompts still apply.",
-            Action::ConfirmSetting("permissions.full_access".into(), "true".into()),
-        )
     } else {
         (
-            Rung::parse(what).map_or_else(|| what.to_string(), |r| r.label().to_string()),
-            "This removes approval prompts, not sandbox restrictions.",
-            Action::ConfirmRung(what.to_string()),
+            Level::parse(what).map_or_else(|| what.to_string(), |l| l.label().to_string()),
+            "Sterna will run without a sandbox, in every project. Anything it runs can change \
+             any file your user can, and reach the network. Nothing is asked. Refused commands \
+             stay refused. It applies from the next request.",
+            Action::ConfirmLevel(what.to_string()),
         )
     };
     sheet.title = "Confirm".into();
@@ -284,11 +217,6 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
             "Ctrl-C",
             "copy a selection · else stop a turn · else clear the draft · twice quits",
             None,
-        ),
-        (
-            "Shift-Tab",
-            "how often Sterna asks before it acts",
-            Some(Action::Approvals),
         ),
         (
             "F2",

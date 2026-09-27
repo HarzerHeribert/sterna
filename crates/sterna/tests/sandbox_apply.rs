@@ -11,9 +11,9 @@
 //! execution tests each prove the *same fixed argv* reaches the path without
 //! confinement and fails with it. A sandbox that refused everything,
 //! including the loader, would fail the unconfined half and be caught. The
-//! two exec-grant tests carry that further and are the reason they are worth
-//! having: each proves the resolved binary **runs** under the same profile
-//! that refuses its sibling, so a confinement that denied both would fail.
+//! exec-grant tests carry that further: each proves a program under the
+//! executable roots **runs** under the same profile that refuses a binary
+//! outside them, so a confinement that denied both would fail.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,9 +23,9 @@ use sterna::sandbox::{linux, macos, windows};
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The binary the profile-text tests are rendered for. A real absolute path
-/// on every host, because [`macos::exec_scope`] reads absoluteness as "sterna
-/// resolved this" — `tools::invoke::exec_grant` produces the resolved case
-/// with `canonicalize`, which yields nothing else. `Path::is_absolute` needs
+/// on every host, because that is what sterna hands an applier for a program
+/// it resolved — `tools::invoke::exec_grant` produces the resolved case with
+/// `canonicalize`, which yields nothing else. `Path::is_absolute` needs
 /// a drive under Windows path semantics, which `/bin/cat` does not carry, so
 /// the constant is drive-qualified there and unchanged elsewhere.
 #[cfg(windows)]
@@ -249,8 +249,9 @@ const EXPECTED_TERMS: &[&str] = &[
 /// constants, so adding a root there fails this test instead of travelling
 /// with it.
 ///
-/// **The six executable roots are absent, and that is this package.** They
-/// appear only in [`EXPECTED_EXEC_ROOTS`], which is the fallback.
+/// The executable roots and package prefixes are listed apart, in
+/// [`EXPECTED_EXEC_ROOTS`] and [`EXPECTED_PACKAGE_PREFIXES`], because they
+/// are named by the exec term alone.
 const EXPECTED_PATHS: &[&str] = &[
     "/",
     "/bin",
@@ -274,9 +275,9 @@ const EXPECTED_PATHS: &[&str] = &[
     "/dev/dtracehelper",
 ];
 
-/// The exec roots, which a profile names only when the program could not be
-/// resolved. `/bin` and `/sbin` are in [`EXPECTED_PATHS`] too, because the
-/// loader reads them whichever grant is in force.
+/// The exec roots every profile names: any program under them may be started.
+/// `/bin` and `/sbin` are in [`EXPECTED_PATHS`] too, because the loader reads
+/// them as well.
 const EXPECTED_EXEC_ROOTS: &[&str] = &[
     "/usr/bin",
     "/bin",
@@ -285,6 +286,10 @@ const EXPECTED_EXEC_ROOTS: &[&str] = &[
     "/usr/local/bin",
     "/opt/homebrew/bin",
 ];
+
+/// The package prefixes the executable roots are symlinks into (Homebrew's
+/// `bin/git` resolves under `Cellar/`), exec-granted beside them.
+const EXPECTED_PACKAGE_PREFIXES: &[&str] = &["/opt/homebrew", "/usr/local"];
 
 /// Every `(allow process-exec* …)` filter of `text`.
 fn exec_filters(text: &str) -> Vec<Filter> {
@@ -344,8 +349,14 @@ fn the_allow_set_is_exactly_the_declared_terms() {
     );
 
     // Positively, path by path: the set of paths is exactly the declared
-    // system machinery plus the project root and its `.claude`.
-    let mut expected: Vec<String> = EXPECTED_PATHS.iter().map(|p| p.to_string()).collect();
+    // system machinery, the executable roots, plus the project root and its
+    // `.claude`.
+    let mut expected: Vec<String> = EXPECTED_PATHS
+        .iter()
+        .chain(EXPECTED_EXEC_ROOTS)
+        .chain(EXPECTED_PACKAGE_PREFIXES)
+        .map(|p| p.to_string())
+        .collect();
     expected.push(RESOLVED.to_string());
     expected.push(root.to_string_lossy().into_owned());
     expected.push(root.join(".claude").to_string_lossy().into_owned());
@@ -769,46 +780,42 @@ fn a_confined_child_cannot_hard_link_a_never_writable_file_into_the_writable_tre
     }
 }
 
-/// A request mode is an in-process narrowing only: the OS layer a narrowed
-/// profile renders is the session profile's, byte for byte, so everything the
-/// OS refuses stays refused in every mode (ruling *Request modes*).
+/// A plan is an in-process narrowing only: the OS layer a narrowed profile
+/// renders is the session profile's, byte for byte, so everything the OS
+/// refuses stays refused while planning.
 #[test]
-fn a_request_mode_leaves_the_os_sandbox_exactly_as_the_profile_renders_it() {
-    use sterna::sandbox::modes::{ModeOverlay, RequestMode};
+fn a_plan_leaves_the_os_sandbox_exactly_as_the_profile_renders_it() {
+    use sterna::sandbox::modes::RequestMode;
     let fixture = Fixture::new("request-mode-os");
     let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    for mode in [RequestMode::Explore, RequestMode::Plan] {
-        let narrowed = profile.clone().narrowed_to(mode, &ModeOverlay::default());
+    let narrowed = profile.clone().narrowed_to(RequestMode::Plan);
+    assert_eq!(
+        macos::profile_text(&narrowed, Path::new(RESOLVED)),
+        macos::profile_text(&profile, Path::new(RESOLVED)),
+    );
+    assert_eq!(
+        format!(
+            "{:?}",
+            linux::landlock_rules(&narrowed, Path::new(RESOLVED))
+        ),
+        format!("{:?}", linux::landlock_rules(&profile, Path::new(RESOLVED))),
+    );
+    // Windows refuses exec of a program the session could write; that probe
+    // must keep the session's answer while planning.
+    let program = fixture.root.join("tool.exe");
+    assert!(narrowed.check("exec", Access::Write, &program).is_ok());
+    assert!(
+        narrowed
+            .check_request("write", Access::Write, &program)
+            .is_err()
+    );
+    for outside in [
+        fixture.outside.join("secret.txt"),
+        fixture.root.join("secrets/key"),
+    ] {
         assert_eq!(
-            macos::profile_text(&narrowed, Path::new(RESOLVED)),
-            macos::profile_text(&profile, Path::new(RESOLVED)),
-        );
-        assert_eq!(
-            format!(
-                "{:?}",
-                linux::landlock_rules(&narrowed, Path::new(RESOLVED))
-            ),
-            format!("{:?}", linux::landlock_rules(&profile, Path::new(RESOLVED))),
-        );
-        // Windows refuses exec of a program the session could write; that
-        // probe must keep the session's answer in every mode.
-        let program = fixture.root.join("tool.exe");
-        assert!(narrowed.check("exec", Access::Write, &program).is_ok());
-        assert!(
-            narrowed
-                .check_request("write", Access::Write, &program)
-                .is_err()
-        );
-        let outside = fixture.outside.join("secret.txt");
-        assert_eq!(
-            narrowed
-                .check("read", Access::Read, &outside)
-                .unwrap_err()
-                .rule,
-            profile
-                .check("read", Access::Read, &outside)
-                .unwrap_err()
-                .rule,
+            format!("{:?}", narrowed.check("read", Access::Read, &outside)),
+            format!("{:?}", profile.check("read", Access::Read, &outside)),
         );
     }
 }
@@ -889,7 +896,7 @@ fn the_reported_regime_matches_what_was_applied() {
         regime,
         macos::Regime::ProjectRootOnly {
             path_rules: profile.rule_count(),
-            exec: macos::ExecScope::ResolvedBinary,
+            exec: macos::ExecScope::RootsAndProject,
         }
     );
     assert!(profile.rule_count() > 0, "the fixture has path rules");
@@ -902,24 +909,15 @@ fn the_reported_regime_matches_what_was_applied() {
     assert!(regime.describe().contains("metadata"), "{regime}");
     assert!(regime.describe().contains("symlink"), "{regime}");
     assert!(regime.describe().contains("no Mach service"), "{regime}");
-    // The 61D ruling's visibility half: which exec grant is in force is in
-    // the sentence, in both directions.
+    // Which exec grant is in force is in the sentence, and it is the same
+    // whether or not the program name resolved.
     assert!(
-        regime.describe().contains("one resolved binary"),
+        regime.describe().contains(
+            "execution is granted on the declared executable roots and on the project root"
+        ),
         "{regime}"
     );
-    let fallback = macos::regime(&profile, Path::new(UNRESOLVED));
-    assert_eq!(
-        fallback,
-        macos::Regime::ProjectRootOnly {
-            path_rules: profile.rule_count(),
-            exec: macos::ExecScope::DeclaredRoots,
-        }
-    );
-    assert!(
-        fallback.describe().contains("could not be resolved"),
-        "{fallback}"
-    );
+    assert_eq!(macos::regime(&profile, Path::new(UNRESOLVED)), regime);
 
     // Linux. Every regime names what it does and does not enforce; the two
     // without a mount view say the network is still there.
@@ -1098,13 +1096,27 @@ fn no_runtime_input_can_widen_a_grant() {
         macos::profile_text(&stable, Path::new(RESOLVED)),
         macos::profile_text(&stable, Path::new(RESOLVED))
     );
-    // And the one thing a caller may now hand in can only narrow: the
-    // resolved form names one path where the fallback names six roots.
-    assert!(
-        exec_filters(&macos::profile_text(&stable, Path::new(RESOLVED))).len()
-            < exec_filters(&macos::profile_text(&stable, Path::new(UNRESOLVED))).len(),
-        "the resolved grant must be narrower than the fallback"
-    );
+    // And a command pattern, bare or named, changes nothing the OS layer
+    // renders: it pre-approves a command line and grants no path.
+    let root_pattern = fixture.root.to_string_lossy().replace('\\', "/");
+    for pre_approving in [
+        format!(
+            r#"{{"permissions":{{"allow":["Read({root_pattern}/**)","Edit({root_pattern}/src/**/*.rs)","Bash"],"deny":["Read({root_pattern}/secrets/**)"]}}}}"#
+        ),
+        format!(
+            r#"{{"permissions":{{"allow":["Read({root_pattern}/**)","Edit({root_pattern}/src/**/*.rs)"],"deny":["Read({root_pattern}/secrets/**)"]}}}}"#
+        ),
+    ] {
+        let other = fixture.profile(Some(&pre_approving));
+        assert_eq!(
+            macos::profile_text(&other, Path::new(RESOLVED)),
+            macos::profile_text(&stable, Path::new(RESOLVED))
+        );
+        assert_eq!(
+            format!("{:?}", linux::landlock_rules(&other, Path::new(RESOLVED))),
+            format!("{:?}", linux::landlock_rules(&stable, Path::new(RESOLVED)))
+        );
+    }
 
     // (d) §4.1 has no off switch on any platform.
     assert!(macos::profile_text(&stable, Path::new(RESOLVED)).contains("(deny network*)"));
@@ -1637,298 +1649,216 @@ fn landlock_alone_does_not_enforce_the_dot_claude_carve_out_and_the_mount_view_d
     }
 }
 
-// --- the exec grant: one binary, not the directories around it ----------
+// --- the exec grant: any program under the roots, the project and the
+// toolchains, never a binary outside them --------------------------------
 
 /// The loader roots that keep `EXECUTE` on Linux whatever binary is
 /// confined, declared here rather than read from the applier's constant so
 /// that adding one fails this test instead of travelling with it.
 const EXPECTED_LOADER_EXEC_ROOTS: &[&str] = &["/lib", "/lib64", "/usr/lib", "/usr/lib64"];
 
-/// The system roots a Landlock ruleset falls back to when the program name
-/// could not be resolved — the first seven of
-/// [`EXPECTED_LANDLOCK_READ_ONLY`], without the character devices.
+/// The system roots a Landlock ruleset grants `EXECUTE` beneath — the first
+/// seven of [`EXPECTED_LANDLOCK_READ_ONLY`], without the character devices.
 const EXPECTED_LANDLOCK_SYSTEM_ROOTS: &[&str] =
     &["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"];
 
+/// Every command line is admitted, so a confined command may start any
+/// program under the executable roots, the package prefixes, the project and
+/// the toolchains: `bash` exists to exec other programs, and a shell confined
+/// to exec'ing only itself runs builtins and nothing else. The scope is the
+/// same for every settings document and every program name.
 #[test]
-fn the_seatbelt_profile_grants_exec_on_the_resolved_binary_only() {
-    // The 61D exec-roots ruling: `(allow process-exec* …)` names the one
-    // path sterna resolved. `(literal …)` is a single file — not a subtree —
-    // so a sibling in the same directory is outside the term, which is the
-    // property `a_sibling_binary_in_the_same_directory_cannot_exec_but_the_resolved_one_can`
-    // then demonstrates against the kernel.
+fn every_profile_grants_exec_on_the_roots_the_prefixes_the_project_and_the_toolchains() {
     let fixture = Fixture::new("execgrant");
+    let root_pattern = fixture.root.to_string_lossy().replace('\\', "/");
+    let documents = [
+        Some(settings_for(&fixture.root)),
+        None,
+        Some(r#"{"permissions":{}}"#.to_string()),
+        Some(format!(
+            r#"{{"permissions":{{"allow":["Read({root_pattern}/**)","Write({root_pattern}/**)","Bash"]}}}}"#
+        )),
+    ];
+    for document in &documents {
+        let profile = fixture.profile(document.as_deref());
+        for binary in [RESOLVED, UNRESOLVED, OUTSIDE_READ_ROOTS] {
+            assert_eq!(
+                macos::exec_scope(&profile, Path::new(binary)),
+                macos::ExecScope::RootsAndProject,
+                "{document:?} {binary}"
+            );
+            assert_eq!(
+                linux::exec_scope(&profile, Path::new(binary)),
+                linux::ExecScope::RootsAndProject,
+                "{document:?} {binary}"
+            );
+        }
+    }
+
     let profile = fixture.profile(Some(&settings_for(&fixture.root)));
+    let root = fixture.resolved(&profile);
     let text = macos::profile_text(&profile, Path::new(RESOLVED));
 
-    assert_eq!(
-        exec_filters(&text),
-        vec![Filter {
-            term: "process-exec*".to_string(),
-            form: "literal".to_string(),
-            value: RESOLVED.to_string(),
-        }],
-        "{text}"
-    );
-
-    // Not one of the six roots survives as an exec grant. Named one by one
-    // rather than left to the equality above, because that assertion would
-    // also pass if the roots came back and the expectation were edited.
-    for root in EXPECTED_EXEC_ROOTS {
-        assert!(
-            !exec_filters(&text).iter().any(|f| f.value == *root),
-            "{root} is still an exec grant: {text}"
-        );
-    }
-    // And the binary's own directory is not one either: granting `/bin`
-    // would permit every sibling and is exactly what the ruling refuses.
-    let directory = Path::new(RESOLVED).parent().unwrap().to_string_lossy();
-    assert!(
-        !exec_filters(&text)
-            .iter()
-            .any(|f| f.value == directory && f.form == "subpath"),
-        "{text}"
-    );
-
-    assert_eq!(
-        macos::exec_scope(&profile, Path::new(RESOLVED)),
-        macos::ExecScope::ResolvedBinary
-    );
-}
-
-#[test]
-fn an_unresolvable_program_falls_back_to_the_roots_and_says_so() {
-    // The half the ruling asks to be *preserved*: a name `execvp` still has
-    // to search for cannot be written as a path, so the declared roots bound
-    // it — and every applier says so in what it reports, because a log line
-    // the caller never reads is not visibility.
-    let fixture = Fixture::new("fallback");
-    let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    let unresolved = Path::new(UNRESOLVED);
-
-    // macOS: the six roots come back as subtrees, and the regime names why.
-    assert_eq!(
-        macos::exec_scope(&profile, unresolved),
-        macos::ExecScope::DeclaredRoots
-    );
-    let text = macos::profile_text(&profile, unresolved);
-    let mut expected_exec: Vec<String> =
-        EXPECTED_EXEC_ROOTS.iter().map(|r| r.to_string()).collect();
-    expected_exec.extend(toolchain(&profile));
+    // macOS: exactly the roots, the prefixes, the project, the toolchains,
+    // and the resolved binary's own literal -- a superset, never a
+    // replacement, because the shell sterna resolved may live outside the
+    // roots (Homebrew's `bash` canonicalises into `Cellar/`).
+    let filters = exec_filters(&text);
+    let mut expected: Vec<String> = EXPECTED_EXEC_ROOTS
+        .iter()
+        .chain(EXPECTED_PACKAGE_PREFIXES)
+        .map(|p| p.to_string())
+        .collect();
+    expected.push(root.to_string_lossy().into_owned());
+    expected.extend(toolchain(&profile));
     assert_eq!(
         sorted(
-            exec_filters(&text)
+            filters
                 .iter()
+                .filter(|f| f.form == "subpath")
                 .map(|f| f.value.clone())
                 .collect()
         ),
-        sorted(expected_exec),
+        sorted(expected),
         "{text}"
     );
-    assert!(
-        exec_filters(&text).iter().all(|f| f.form == "subpath"),
+    assert_eq!(
+        filters
+            .iter()
+            .filter(|f| f.form == "literal")
+            .map(|f| f.value.as_str())
+            .collect::<Vec<_>>(),
+        [RESOLVED],
         "{text}"
     );
-    // The unresolvable name itself never reaches the profile: there is no
-    // path to grant, and a relative string in a `(literal …)` would be a
-    // term seatbelt reads against the sandbox's own working directory.
-    assert!(!text.contains(UNRESOLVED), "{text}");
-    let regime = macos::regime(&profile, unresolved);
+    // §4.3: `$HOME` is not an exec root, so a binary under `~/.local/bin`
+    // stays unrunnable; only the toolchain homes inside it are.
+    let home = home();
     assert!(
-        regime.describe().contains("could not be resolved")
-            && regime.describe().contains("executable roots"),
-        "the fallback must be visible in what the applier reports: {regime}"
+        !filters.iter().any(|f| Path::new(&f.value) == home),
+        "$HOME became an exec root: {text}"
     );
 
-    // Linux: the same fallback, as the paths the ruleset grants `EXECUTE`.
-    assert_eq!(
-        linux::exec_scope(&profile, unresolved),
-        linux::ExecScope::DeclaredRoots
-    );
-    let rules = linux::landlock_rules(&profile, unresolved);
-    assert_eq!(rules.exec, linux::ExecScope::DeclaredRoots, "{rules:?}");
-    let mut expected: Vec<PathBuf> = EXPECTED_LANDLOCK_SYSTEM_ROOTS
-        .iter()
-        .chain(EXPECTED_LOADER_EXEC_ROOTS.iter())
-        .map(PathBuf::from)
-        .collect();
-    // The fallback is a root list, so the toolchain's own chain joins it —
-    // the resolved arm, tested above, keeps its single path.
-    expected.extend(profile.toolchain_roots().map(Path::to_path_buf));
-    assert_eq!(rules.executable, expected, "{rules:?}");
-
-    // Windows records the name and enforces nothing on it; the field is
-    // there so that absence is reported rather than silent.
-    assert_eq!(
-        windows::acl_grants(&profile, unresolved).executable,
-        PathBuf::from(UNRESOLVED)
-    );
-}
-
-#[test]
-fn the_landlock_ruleset_grants_exec_on_the_resolved_binary_only() {
-    // Landlock's half of the ruling, as a value assertable on any host.
-    // `EXPECTED_LANDLOCK_SYSTEM_ROOTS` is the head of the read-only list, so
-    // the two constants cannot drift apart unnoticed.
+    // Linux: the same scope, as the paths the ruleset grants `EXECUTE`.
     assert!(
         EXPECTED_LANDLOCK_READ_ONLY.starts_with(EXPECTED_LANDLOCK_SYSTEM_ROOTS),
         "the declared system roots are no longer the head of the read-only list"
     );
-
-    let fixture = Fixture::new("landlock-exec-grant");
-    let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    let root = fixture.resolved(&profile);
     let rules = linux::landlock_rules(&profile, Path::new(RESOLVED));
-
-    assert_eq!(rules.exec, linux::ExecScope::ResolvedBinary, "{rules:?}");
-    let mut expected = vec![PathBuf::from(RESOLVED)];
+    assert_eq!(rules.exec, linux::ExecScope::RootsAndProject, "{rules:?}");
+    let mut expected: Vec<PathBuf> = EXPECTED_LANDLOCK_SYSTEM_ROOTS
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    expected.push(PathBuf::from(RESOLVED));
+    expected.push(root.clone());
     expected.extend(EXPECTED_LOADER_EXEC_ROOTS.iter().map(PathBuf::from));
+    expected.extend(profile.toolchain_roots().map(Path::to_path_buf));
     assert_eq!(rules.executable, expected, "{rules:?}");
+    assert!(
+        !rules.executable.contains(&home),
+        "$HOME became an exec root: {rules:?}"
+    );
 
-    // The directory the binary lives in is not executable, and neither is
-    // the project: the loader roots are the whole of the exception, and they
-    // exist because `execve` makes the kernel `open_exec` the ELF
-    // interpreter and Landlock charges that open `EXECUTE`.
-    let directory = Path::new(RESOLVED).parent().unwrap().to_path_buf();
-    assert!(!rules.executable.contains(&directory), "{rules:?}");
-    assert!(!rules.executable.contains(&root), "{rules:?}");
-    for path in &rules.executable {
-        assert!(
-            path == Path::new(RESOLVED)
-                || EXPECTED_LOADER_EXEC_ROOTS.contains(&path.to_string_lossy().as_ref()),
-            "an undeclared path carries EXECUTE: {path:?}"
-        );
-    }
+    // Windows records the name and enforces nothing on it; the field is
+    // there so that absence is reported rather than silent.
+    assert_eq!(
+        windows::acl_grants(&profile, Path::new(UNRESOLVED)).executable,
+        PathBuf::from(UNRESOLVED)
+    );
+}
+
+/// A name `execvp` still has to search for is not a path, so it must never
+/// reach a profile term: a relative string in a `(literal …)` is a term
+/// seatbelt reads against the sandbox's own working directory, not the
+/// program the shell will find. The roots bound the search instead.
+#[test]
+fn an_unresolvable_program_name_never_reaches_the_profile() {
+    let fixture = Fixture::new("fallback");
+    let profile = fixture.profile(Some(&settings_for(&fixture.root)));
+    let text = macos::profile_text(&profile, Path::new(UNRESOLVED));
+    assert!(!text.contains(UNRESOLVED), "{text}");
+    let rules = linux::landlock_rules(&profile, Path::new(UNRESOLVED));
+    assert!(
+        rules.executable.iter().all(|path| path.is_absolute()),
+        "{rules:?}"
+    );
 }
 
 #[test]
-fn a_sibling_binary_in_the_same_directory_cannot_exec_but_the_resolved_one_can() {
+fn a_confined_process_runs_any_program_under_the_executable_roots() {
     #[cfg(not(target_os = "macos"))]
     eprintln!(
         "skipped: seatbelt is macOS-only; the Linux equivalent is \
-         a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exec_it"
+         a_landlocked_process_runs_the_roots_and_the_project_but_not_a_binary_outside_them"
     );
     #[cfg(target_os = "macos")]
     {
         use std::process::{Command, Stdio};
 
-        // Both halves, because a sandbox that refused every exec would prove
-        // nothing: the profile is rendered for `/bin/cat`, and `/bin/cat`
-        // must run under it while `/bin/echo` — its sibling, in the same
-        // directory, on the same volume — must not.
+        // The profile is rendered for `/bin/cat`, and `/bin/echo` -- its
+        // sibling, which the exec roots cover -- runs under it too. The
+        // refusing half, a binary outside every root, is
+        // `a_resolved_binary_outside_the_read_roots_still_starts`.
         let fixture = Fixture::new("sibling");
         let profile = fixture.profile(Some(&settings_for(&fixture.root)));
         let root = fixture.resolved(&profile);
         let inside = fixture.write(&root.join("inside.txt"), "inside-secret\n");
 
-        let run = |program: &str, arg: &Path, confined: bool| {
+        let run = |program: &str, arg: &Path| {
             let mut command = Command::new(program);
             command
                 .arg(arg)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            if confined {
-                macos::confine(&profile, Path::new(RESOLVED), &mut command).unwrap();
-            }
-            command.output()
+            macos::confine(&profile, Path::new(RESOLVED), &mut command).unwrap();
+            command.output().unwrap()
         };
 
-        // The controls: both binaries exist and run on this host unconfined,
-        // so a failure below is the exec grant and not a missing file.
-        let free_cat = run("/bin/cat", &inside, false).unwrap();
-        assert!(free_cat.status.success(), "{free_cat:?}");
-        let free_echo = run("/bin/echo", Path::new("sibling-marker"), false).unwrap();
-        assert!(free_echo.status.success(), "{free_echo:?}");
-        assert!(
-            String::from_utf8_lossy(&free_echo.stdout).contains("sibling-marker"),
-            "{free_echo:?}"
-        );
-
-        // The resolved binary runs under the profile rendered for it.
-        let granted = run("/bin/cat", &inside, true).unwrap();
+        let granted = run("/bin/cat", &inside);
         assert!(granted.status.success(), "{granted:?}");
-        assert_eq!(
-            String::from_utf8_lossy(&granted.stdout),
-            "inside-secret\n",
-            "{granted:?}"
+        assert_eq!(String::from_utf8_lossy(&granted.stdout), "inside-secret\n");
+        let sibling = run("/bin/echo", Path::new("sibling-marker"));
+        assert!(sibling.status.success(), "{sibling:?}");
+        assert!(
+            String::from_utf8_lossy(&sibling.stdout).contains("sibling-marker"),
+            "{sibling:?}"
         );
-
-        // Its sibling does not. The refusal reaches the parent either as a
-        // spawn error — `exec` failing in the child is reported through the
-        // CLOEXEC pipe — or as a child that ran nothing; both are asserted
-        // rather than one, and neither may produce the marker.
-        match run("/bin/echo", Path::new("sibling-marker"), true) {
-            Err(error) => assert_eq!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied,
-                "the sibling was refused for some reason other than the exec grant: {error:?}"
-            ),
-            Ok(output) => {
-                assert!(!output.status.success(), "the sibling ran: {output:?}");
-                assert!(
-                    !String::from_utf8_lossy(&output.stdout).contains("sibling-marker"),
-                    "the sibling ran: {output:?}"
-                );
-            }
-        }
     }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_narrow_shell_grant_runs_homebrew_python_but_not_an_ungranted_binary() {
+fn a_confined_shell_runs_homebrew_python_through_the_package_prefix() {
     use std::process::{Command, Stdio};
 
     let Ok(python) = std::fs::canonicalize("/opt/homebrew/bin/python3") else {
         eprintln!("skipped: /opt/homebrew/bin/python3 is not installed");
         return;
     };
-    let fixture = Fixture::new("narrow-python-descendant");
-    let settings = format!(
-        r#"{{"permissions":{{"allow":["Bash({} -c*)"]}}}}"#,
-        python.display()
-    );
-    let profile = fixture.profile(Some(&settings));
+    let fixture = Fixture::new("python-descendant");
+    let profile = fixture.profile(Some(r#"{"permissions":{}}"#));
     let shell = std::fs::canonicalize("/bin/bash").unwrap();
     let companion = macos::python_framework_companion(&python)
         .expect("Homebrew Python has its one framework launcher companion");
     let descendants = vec![python.clone(), companion];
 
-    let run = |line: &str| {
-        let mut command = Command::new(&shell);
-        command
-            .arg("-c")
-            .arg(line)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(profile.root());
-        macos::confine_with_descendants(&profile, &shell, &descendants, &mut command).unwrap();
-        command.output()
-    };
-
-    let python_line = format!("{} -c 'print(\"narrow-python-ran\")'", python.display());
-    let granted = run(&python_line).expect("the confined shell starts");
+    let mut command = Command::new(&shell);
+    command
+        .arg("-c")
+        .arg(format!("{} -c 'print(\"python-ran\")'", python.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(profile.root());
+    macos::confine_with_descendants(&profile, &shell, &descendants, &mut command).unwrap();
+    let granted = command.output().expect("the confined shell starts");
     assert!(granted.status.success(), "{granted:?}");
     assert_eq!(
         String::from_utf8_lossy(&granted.stdout).trim(),
-        "narrow-python-ran"
+        "python-ran"
     );
-
-    match run("/bin/echo ungranted-binary-ran") {
-        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
-        Ok(output) => {
-            assert!(
-                !output.status.success(),
-                "the ungranted binary ran: {output:?}"
-            );
-            assert!(
-                !String::from_utf8_lossy(&output.stdout).contains("ungranted-binary-ran"),
-                "the ungranted binary ran: {output:?}"
-            );
-        }
-    }
 }
 
 /// §1.4, and the one shape of it a profile can defeat without ever saying
@@ -1953,7 +1883,7 @@ fn a_resolved_binary_outside_the_read_roots_still_starts() {
     eprintln!(
         "skipped: seatbelt is macOS-only; Linux grants the resolved binary its own read \
          through `access::EXEC` and is covered by \
-         a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exec_it"
+         a_landlocked_process_runs_the_roots_and_the_project_but_not_a_binary_outside_them"
     );
     #[cfg(target_os = "macos")]
     {
@@ -2021,8 +1951,9 @@ fn a_resolved_binary_outside_the_read_roots_still_starts() {
             "{granted:?}"
         );
 
-        // And the grant is still one file: its sibling, in the same
-        // directory, is not executable through this profile.
+        // And the grant is still one file there: its sibling, in the same
+        // directory outside every executable root and the project, is not
+        // executable through this profile.
         match run(&sibling, true) {
             Err(error) => assert_eq!(
                 error.kind(),
@@ -2076,52 +2007,50 @@ fn the_read_literal_names_the_binary_and_only_the_binary() {
         }
     }
 
-    // The fallback arm grants no read: an unresolvable name is not a path,
-    // and the roots it falls back to are read roots already.
-    let fallback = macos::profile_text(&profile, Path::new(UNRESOLVED));
-    assert!(!fallback.contains(UNRESOLVED), "{fallback}");
-    let (_, fallback_filters) = parse(&fallback);
-    let read_literals = |filters: &[Filter]| {
+    // The read literals are the profile's own plus the binary, and nothing
+    // else: rendered for another binary, only that one literal differs.
+    let read_literals = |filters: &[Filter], without: &str| {
         sorted(
             filters
                 .iter()
-                .filter(|f| f.term == "file-read*" && f.form == "literal")
+                .filter(|f| f.term == "file-read*" && f.form == "literal" && f.value != without)
                 .map(|f| f.value.clone())
                 .collect(),
         )
     };
-    let mut expected = read_literals(&fallback_filters);
-    expected.push(OUTSIDE_READ_ROOTS.to_string());
+    let (_, other) = parse(&macos::profile_text(&profile, Path::new(RESOLVED)));
     assert_eq!(
-        read_literals(&filters),
-        sorted(expected),
-        "the resolved arm's read literals are the fallback's plus the binary, and nothing else"
+        read_literals(&filters, OUTSIDE_READ_ROOTS),
+        read_literals(&other, RESOLVED),
+        "the read literals differ by more than the binary: {text}"
     );
 }
 
+/// A descendant outside every root is granted as the one literal named,
+/// never as its directory or a sibling beside it.
 #[test]
 fn an_admitted_descendant_is_one_literal_and_never_its_siblings() {
     let fixture = Fixture::new("descendant-literal");
     let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    let python = PathBuf::from("/opt/homebrew/Cellar/python/3.14/bin/python3");
-    let sibling = PathBuf::from("/opt/homebrew/Cellar/python/3.14/bin/pip3");
+    let tool = Path::new(OUTSIDE_READ_ROOTS).with_file_name("python3");
+    let sibling = Path::new(OUTSIDE_READ_ROOTS).with_file_name("pip3");
 
     let text = macos::profile_text_with_descendants(
         &profile,
         Path::new(RESOLVED),
-        std::slice::from_ref(&python),
+        std::slice::from_ref(&tool),
     );
     let filters = exec_filters(&text);
     assert!(
         filters
             .iter()
-            .any(|filter| filter.form == "literal" && filter.value == python.to_string_lossy()),
+            .any(|filter| filter.form == "literal" && filter.value == tool.to_string_lossy()),
         "the admitted descendant is absent: {text}"
     );
     assert!(
         !filters.iter().any(|filter| {
             filter.value == sibling.to_string_lossy()
-                || (filter.form == "subpath" && python.starts_with(&filter.value))
+                || (filter.form == "subpath" && tool.starts_with(&filter.value))
         }),
         "a descendant grant widened to a sibling: {text}"
     );
@@ -2129,15 +2058,16 @@ fn an_admitted_descendant_is_one_literal_and_never_its_siblings() {
     let rules = linux::landlock_rules_with_descendants(
         &profile,
         Path::new(RESOLVED),
-        std::slice::from_ref(&python),
+        std::slice::from_ref(&tool),
     );
-    assert!(rules.executable.contains(&python), "{rules:?}");
+    assert!(rules.executable.contains(&tool), "{rules:?}");
     assert!(!rules.executable.contains(&sibling), "{rules:?}");
     assert!(
         !rules
             .executable
-            .contains(&python.parent().unwrap().to_path_buf()),
-        "the exact descendant widened to its directory: {rules:?}"
+            .iter()
+            .any(|path| path != &tool && tool.starts_with(path)),
+        "the exact descendant widened to a directory above it: {rules:?}"
     );
 }
 
@@ -2168,7 +2098,7 @@ fn a_payload_that_prints_one_file_when_this_binary_is_the_confined_tool() {
 }
 
 #[test]
-fn a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exec_it() {
+fn a_landlocked_process_runs_the_roots_and_the_project_but_not_a_binary_outside_them() {
     #[cfg(not(target_os = "linux"))]
     eprintln!("skipped: Landlock is a Linux kernel interface; this host is not Linux");
     #[cfg(target_os = "linux")]
@@ -2182,10 +2112,10 @@ fn a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exe
             );
             return;
         }
-        // The Linux half, and both directions for the same reason: a ruleset
-        // that refused every exec — the failure mode
-        // `LOADER_EXEC_ROOTS` exists to prevent, since `execve` needs
-        // `EXECUTE` on the ELF interpreter too — would pass a one-sided test.
+        // Both directions, because a ruleset that refused every exec — the
+        // failure mode `LOADER_EXEC_ROOTS` exists to prevent, since `execve`
+        // needs `EXECUTE` on the ELF interpreter too — would pass a one-sided
+        // test.
         let fixture = Fixture::new("landlock-sibling");
         let profile = fixture.profile(Some(&settings_for(&fixture.root)));
         let root = fixture.resolved(&profile);
@@ -2196,8 +2126,17 @@ fn a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exe
             .expect("cat");
         let echo = Path::new(cat).parent().unwrap().join("echo");
         if !echo.exists() {
-            eprintln!("skipped: no sibling binary beside {cat} to be refused");
+            eprintln!("skipped: no sibling binary beside {cat}");
             return;
+        }
+        // A copy of `echo` in the project, which is an exec root, and one in
+        // a directory outside every root, which is not.
+        let in_project = root.join("echo-in-project");
+        let outside = std::fs::canonicalize(&fixture.outside)
+            .unwrap()
+            .join("echo-outside");
+        for copy in [&in_project, &outside] {
+            std::fs::copy(&echo, copy).unwrap();
         }
 
         let run = |program: &Path, arg: &Path, confined: bool| {
@@ -2213,121 +2152,44 @@ fn a_landlocked_process_cannot_exec_a_sibling_of_the_resolved_binary_but_can_exe
             command.output()
         };
 
-        let free_echo = run(&echo, Path::new("sibling-marker"), false).unwrap();
-        assert!(free_echo.status.success(), "{free_echo:?}");
-        assert!(
-            String::from_utf8_lossy(&free_echo.stdout).contains("sibling-marker"),
-            "{free_echo:?}"
-        );
+        // The controls: every binary runs unconfined.
+        for program in [echo.as_path(), &in_project, &outside] {
+            let free = run(program, Path::new("marker"), false).unwrap();
+            assert!(
+                free.status.success() && String::from_utf8_lossy(&free.stdout).contains("marker"),
+                "{program:?} does not run: {free:?}"
+            );
+        }
 
         let granted = run(Path::new(cat), &inside, true).unwrap();
         assert!(granted.status.success(), "{granted:?}");
         assert_eq!(String::from_utf8_lossy(&granted.stdout), "inside-secret\n");
+        for program in [echo.as_path(), &in_project] {
+            let ran = run(program, Path::new("marker"), true).unwrap();
+            assert!(
+                ran.status.success() && String::from_utf8_lossy(&ran.stdout).contains("marker"),
+                "{program:?} is under an exec root and did not run: {ran:?}"
+            );
+        }
 
-        match run(&echo, Path::new("sibling-marker"), true) {
+        match run(&outside, Path::new("outside-marker"), true) {
             Err(error) => assert_eq!(
                 error.kind(),
                 std::io::ErrorKind::PermissionDenied,
-                "the sibling was refused for some reason other than the exec grant: {error:?}"
+                "the outside binary was refused for some reason other than the exec grant: {error:?}"
             ),
             Ok(output) => {
-                assert!(!output.status.success(), "the sibling ran: {output:?}");
                 assert!(
-                    !String::from_utf8_lossy(&output.stdout).contains("sibling-marker"),
-                    "the sibling ran: {output:?}"
+                    !output.status.success(),
+                    "the outside binary ran: {output:?}"
+                );
+                assert!(
+                    !String::from_utf8_lossy(&output.stdout).contains("outside-marker"),
+                    "the outside binary ran: {output:?}"
                 );
             }
         }
     }
-}
-
-// --- a grant that admits every command line grants its binaries ---------
-
-/// Every command line admitted and `bash` the only executable binary is a
-/// grant that says one thing and does another: measured 2026-09-06 under
-/// `--yolo`, `ls /`, `git --version`, `python3 -c ...` and a project script
-/// each exited 126 while the startup line said every command line was
-/// admitted. `bash` exists to exec other programs, so the shell's grant has
-/// to reach them.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_profile_admitting_every_command_grants_exec_on_the_roots_the_prefixes_and_the_project() {
-    let fixture = Fixture::new("yolo-exec");
-    let yolo = format!(
-        r#"{{"permissions":{{"allow":["Read({root}/**)","Write({root}/**)","Bash"]}}}}"#,
-        root = fixture.root.to_string_lossy().replace('\\', "/")
-    );
-    let profile = fixture.profile(Some(&yolo));
-    assert!(
-        profile.admits_every_command(),
-        "the fixture did not compile to a bare Bash grant"
-    );
-    assert_eq!(
-        macos::exec_scope(&profile, Path::new(RESOLVED)),
-        macos::ExecScope::RootsAndProject
-    );
-
-    let text = macos::profile_text(&profile, Path::new(RESOLVED));
-    let subpaths = sorted(
-        exec_filters(&text)
-            .iter()
-            .filter(|f| f.form == "subpath")
-            .map(|f| f.value.clone())
-            .collect(),
-    );
-    for granted in ["/usr/bin", "/bin", "/opt/homebrew", "/usr/local"] {
-        assert!(
-            subpaths.iter().any(|value| value == granted),
-            "`{granted}` is not an exec root: {subpaths:?}"
-        );
-    }
-    // The project's own scripts: `./slow.sh` is the case, and the project
-    // root is the one root every profile already grants.
-    // `profile.root()` and not the fixture's own path: the profile
-    // canonicalises, and on macOS `/var/...` is `/private/var/...`.
-    let root = profile.root().to_string_lossy().to_string();
-    assert!(
-        subpaths.iter().any(|value| value == &root),
-        "the project root is not an exec root: {subpaths:?} vs {root}"
-    );
-    // The shell sterna resolved stays named: Homebrew's `bash` canonicalises
-    // outside every root above, so dropping its literal refuses the very
-    // exec the grant is about.
-    assert!(
-        exec_filters(&text)
-            .iter()
-            .any(|f| f.form == "literal" && f.value == RESOLVED),
-        "the resolved binary lost its literal: {text}"
-    );
-    // §4.3 rule 3 is untouched: `$HOME` is not an exec root either, so a
-    // binary under `~/.local/bin` stays unrunnable.
-    let home = std::env::var("HOME").unwrap_or_default();
-    if !home.is_empty() {
-        assert!(
-            !subpaths.iter().any(|value| value == &home),
-            "$HOME became an exec root: {subpaths:?}"
-        );
-    }
-}
-
-/// The other half, and the one that matters for safety: a profile that names
-/// its commands is **not** widened. `Bash(cargo test*)` still grants exec on
-/// the one resolved binary and on nothing else.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_profile_that_names_its_commands_is_not_widened_by_this() {
-    let fixture = Fixture::new("narrow-exec");
-    let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    assert!(!profile.admits_every_command());
-    assert_eq!(
-        macos::exec_scope(&profile, Path::new(RESOLVED)),
-        macos::ExecScope::ResolvedBinary
-    );
-    let text = macos::profile_text(&profile, Path::new(RESOLVED));
-    assert!(
-        exec_filters(&text).iter().all(|f| f.form == "literal"),
-        "a named-command profile gained an exec subtree: {text}"
-    );
 }
 
 /// The measurement this package exists for, against the kernel: a confined
@@ -2404,9 +2266,8 @@ fn a_confined_child_resolves_its_toolchain_and_runs_git_in_a_worktree() {
             return;
         }
 
-        // The case a developer is actually in: every command line admitted,
-        // which is what `--yolo` synthesises and what both dogfooding
-        // sessions ran under.
+        // The case a developer is actually in: the project readable and
+        // writable, every command line admitted.
         let resolved = std::fs::canonicalize(&root).unwrap();
         let pattern = resolved.to_string_lossy().replace('\\', "/");
         let profile = Profile::compile(
@@ -2415,7 +2276,6 @@ fn a_confined_child_resolves_its_toolchain_and_runs_git_in_a_worktree() {
                 r#"{{"permissions":{{"allow":["Read({pattern}/**)","Write({pattern}/**)","Bash"]}}}}"#
             )),
         );
-        assert!(profile.admits_every_command());
         let sh = |script: &str| {
             let mut command = Command::new("/bin/bash");
             command

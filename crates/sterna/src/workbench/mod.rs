@@ -63,9 +63,9 @@ pub enum Action {
     Latest,
     Settings,
     Models,
-    Work,
-    Approvals,
-    Access,
+    /// The sandbox sheet: the level, how it is enforced, and the answers
+    /// remembered for the session.
+    Sandbox,
     Activity,
     Setting(usize, Option<String>),
     /// Go to a named scope. It used to be a bare toggle shared by both
@@ -94,9 +94,10 @@ pub enum Action {
     Close,
     Composer,
     Command(String),
-    Rung(String),
-    /// The confirmed half of a dangerous rung change.
-    ConfirmRung(String),
+    /// Set the sandbox level by its word; Full access is confirmed first.
+    Level(String),
+    /// The confirmed half of a change to Full access.
+    ConfirmLevel(String),
     /// The confirmed half of a dangerous settings save: the key and value,
     /// saved to the scope Settings shows.
     ConfirmSetting(String, String),
@@ -200,13 +201,9 @@ pub enum Answer {
 
 /// What a layer's rows are built from.
 pub enum Source {
-    /// The work mode.
-    Work,
-    /// How often Sterna asks.
-    Ask,
-    /// The boundary the session runs under.
-    Access,
-    /// The confirmation before a rung that cannot be taken back.
+    /// The sandbox level, how it is enforced, and what was answered.
+    Sandbox,
+    /// The confirmation before a change that lifts a boundary.
     Confirm(String),
     /// Every key, and what it does.
     Keys,

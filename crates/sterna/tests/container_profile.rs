@@ -2,15 +2,15 @@
 //! `smarter-cheaper-roadmap.md`, *Benchmark container profile* and
 //! *Capability/environment manifest*.
 //!
-//! Container mode is the explicit `--dangerously-bypass-os-sandbox`
-//! acknowledgement read at the policy level: reads span the container, a
-//! debugger is admissible, and everything else — writes, the sandbox
-//! launchers, the never-grantable set, every `deny` pattern — holds exactly
-//! as it does outside it. Nothing here spawns a process.
+//! Container mode is the OS bypass `--sandbox full` applies
+//! (`Profile::with_os_sandbox_bypass`), read at the policy level: a debugger
+//! is admissible, and everything else — wide reads, the writable places,
+//! the sandbox launchers, the never-grantable set, every `deny` pattern —
+//! holds exactly as it does outside it. Nothing here spawns a process.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use sterna::manifest::{CommandPolicy, Manifest};
+use sterna::manifest::Manifest;
 use sterna::sandbox::profile::{Access, PermissionDenied, Profile};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -59,37 +59,15 @@ impl Fixture {
     }
 }
 
-/// Where a fixture tree goes: somewhere §4.3's `$HOME` rule does not cover, so
-/// each test's refusal is decided by the rule it names. On Windows
-/// `temp_dir()` is `%USERPROFILE%\AppData\Local\Temp`, under `$HOME`, so the
-/// first candidate there that is outside the profile and creatable wins; on
-/// Unix `temp_dir()` is already outside it.
+/// Where a fixture tree goes: the build's own scratch folder, which is
+/// neither a temporary folder nor a tool cache, so a sibling of the project
+/// is readable (every read nothing refuses is) but not writable -- by the
+/// `$HOME` rule where the checkout lives under `$HOME`, by "no grant" where
+/// it does not.
 fn scratch_base() -> PathBuf {
-    if cfg!(windows) {
-        let home: Vec<PathBuf> = ["HOME", "USERPROFILE"]
-            .iter()
-            .filter_map(std::env::var_os)
-            .filter(|value| !value.is_empty())
-            .filter_map(|value| std::fs::canonicalize(value).ok())
-            .collect();
-        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-        let candidates = [
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
-            PathBuf::from(format!("{system_drive}\\sterna-container-profile-tmp")),
-        ];
-        for candidate in candidates {
-            if std::fs::create_dir_all(&candidate).is_err() {
-                continue;
-            }
-            let Ok(resolved) = std::fs::canonicalize(&candidate) else {
-                continue;
-            };
-            if !home.iter().any(|home| resolved.starts_with(home)) {
-                return resolved;
-            }
-        }
-    }
-    std::env::temp_dir()
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&base).unwrap();
+    base
 }
 
 impl Drop for Fixture {
@@ -116,8 +94,8 @@ fn container_mode_is_the_bypass_fact_and_nothing_else_sets_it() {
     let fixture = Fixture::new("mode");
     assert!(!fixture.profile(BARE_BASH).container_mode());
     assert!(fixture.container(BARE_BASH).container_mode());
-    // The yolo-shaped document alone does not turn it on: it is a host
-    // construction step, not a pattern.
+    // A document granting everything does not turn it on: it is a host
+    // construction step (`--sandbox full`), not a pattern.
     assert!(
         !fixture
             .profile(r#"{"permissions":{"allow":["Bash","Read(/**)","Write(/**)"]}}"#)
@@ -194,29 +172,49 @@ fn the_never_grantable_table_drops_the_debuggers_in_container_mode_only() {
 }
 
 #[test]
-fn a_sibling_of_the_root_is_readable_in_container_mode_and_never_writable() {
+fn an_unlisted_command_is_admitted_in_both_modes_and_a_denied_one_refused() {
+    let fixture = Fixture::new("admission");
+    let settings = r#"{"permissions":{"deny":["Bash(rm -rf*)"]}}"#;
+    for profile in [fixture.profile(settings), fixture.container(settings)] {
+        let grant = profile
+            .admits_command("cargo build --release && ./target/release/app")
+            .expect("no allow pattern is needed to run a command");
+        assert_eq!(grant.executables(), ["cargo", "./target/release/app"]);
+        let denied = refusal(profile.admits_command("ls && rm -rf /"));
+        assert!(
+            denied.rule.contains("permissions.deny"),
+            "{:?}",
+            denied.rule
+        );
+    }
+}
+
+#[test]
+fn a_sibling_of_the_root_is_readable_in_both_modes_and_never_writable() {
     let fixture = Fixture::new("sibling");
     let plain = fixture.profile(BARE_BASH);
     let container = fixture.container(BARE_BASH);
     let source = fixture.sibling("x.c");
 
-    let denied = refusal(plain.check("Read", Access::Read, &source));
-    assert_eq!(
-        denied.rule,
-        "no grant covers this path; the project root is the only readable root"
-    );
-    let granted = container
-        .check("Read", Access::Read, &source)
-        .expect("container mode reads span the container");
-    assert_eq!(granted, source);
+    for profile in [&plain, &container] {
+        let granted = profile
+            .check("Read", Access::Read, &source)
+            .expect("every read nothing refuses is granted");
+        assert_eq!(granted, source);
+    }
 
     let target = fixture.sibling("out.o");
-    refusal(plain.check("Write", Access::Write, &target));
-    let denied = refusal(container.check("Write", Access::Write, &target));
+    let plain_refusal = refusal(plain.check("Write", Access::Write, &target));
+    let container_refusal = refusal(container.check("Write", Access::Write, &target));
+    assert_eq!(
+        plain_refusal.rule, container_refusal.rule,
+        "container mode does not change what is writable"
+    );
     assert!(
-        denied.rule.contains("only writable roots") && denied.rule.contains("container mode"),
-        "the container-mode write refusal names the asymmetry: {:?}",
-        denied.rule
+        container_refusal.rule.contains("never writable")
+            || container_refusal.rule.contains("are the writable places"),
+        "{:?}",
+        container_refusal.rule
     );
     // And the root itself is still granted both ways in both modes.
     for profile in [&plain, &container] {
@@ -231,44 +229,51 @@ fn a_sibling_of_the_root_is_readable_in_container_mode_and_never_writable() {
 
 #[test]
 #[cfg(unix)]
-fn a_credential_store_stays_refused_for_read_in_container_mode() {
+fn a_credential_store_stays_refused_and_home_is_readable_not_writable() {
     let fixture = Fixture::new("home");
-    let container = fixture.container(BARE_BASH);
-    let key = home().join(".ssh/id_ed25519");
-    let denied = refusal(container.check("Read", Access::Read, &key));
-    assert!(
-        denied.rule.contains("`~/.ssh`") && denied.rule.contains("never grantable 3"),
-        "the refusal names the never-grantable rule that decided it: {:?}",
-        denied.rule
-    );
-    // The whole of `$HOME` outside the project, not only the five names.
-    let dotfile = home().join("scratch-that-is-not-the-project.txt");
-    let denied = refusal(container.check("Read", Access::Read, &dotfile));
-    assert!(
-        denied.rule.contains("never grantable 3"),
-        "{:?}",
-        denied.rule
-    );
+    for profile in [fixture.profile(BARE_BASH), fixture.container(BARE_BASH)] {
+        let key = home().join(".ssh/id_ed25519");
+        let denied = refusal(profile.check("Read", Access::Read, &key));
+        assert!(
+            denied.rule.contains("`~/.ssh`") && denied.rule.contains("never grantable 3"),
+            "the refusal names the never-grantable rule that decided it: {:?}",
+            denied.rule
+        );
+        // The rest of `$HOME` is read like any other file, and written
+        // nowhere outside the project, the caches and the added directories.
+        let dotfile = home().join("scratch-that-is-not-the-project.txt");
+        profile
+            .check("Read", Access::Read, &dotfile)
+            .expect("a file in $HOME is readable");
+        let denied = refusal(profile.check("Write", Access::Write, &dotfile));
+        assert!(
+            denied.rule.contains("`$HOME`") && denied.rule.contains("never writable"),
+            "{:?}",
+            denied.rule
+        );
+    }
 }
 
 #[test]
-fn a_configured_deny_pattern_refuses_a_container_read() {
+fn a_configured_deny_pattern_refuses_a_read_in_both_modes() {
     let fixture = Fixture::new("deny");
     let settings = format!(
         r#"{{"permissions":{{"allow":["Bash"],"deny":["Read({}/secrets/**)"]}}}}"#,
         fixture.sibling_pattern()
     );
-    let container = fixture.container(&settings);
-    let denied = refusal(container.check("Read", Access::Read, &fixture.sibling("secrets/token")));
-    assert!(
-        denied.rule.contains("permissions.deny") && denied.rule.contains("secrets/**"),
-        "the deny entry is quoted back: {:?}",
-        denied.rule
-    );
-    // The sibling outside the denied subtree is still readable.
-    container
-        .check("Read", Access::Read, &fixture.sibling("x.c"))
-        .unwrap();
+    for profile in [fixture.profile(&settings), fixture.container(&settings)] {
+        let denied =
+            refusal(profile.check("Read", Access::Read, &fixture.sibling("secrets/token")));
+        assert!(
+            denied.rule.contains("permissions.deny") && denied.rule.contains("secrets/**"),
+            "the deny entry is quoted back: {:?}",
+            denied.rule
+        );
+        // The sibling outside the denied subtree is still readable.
+        profile
+            .check("Read", Access::Read, &fixture.sibling("x.c"))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -321,8 +326,11 @@ fn the_dot_sterna_refusal_under_an_additional_root_names_the_affordance_too() {
 
 const ABSENT: &str = "sterna-container-profile-no-such-executable";
 
+/// What the manifest says the sandbox reads beyond the project's roots.
+const READ_EVERYWHERE: &str = "/ (every file except secrets and denied patterns)";
+
 #[test]
-fn the_manifest_reports_the_mode_the_table_and_an_absent_executable() {
+fn the_manifest_reports_the_roots_the_table_and_an_absent_executable() {
     let fixture = Fixture::new("manifest");
     let settings = format!(
         r#"{{"permissions":{{"allow":["Bash(cargo test*)"],"deny":["Read({}/secrets/**)"]}}}}"#,
@@ -331,9 +339,11 @@ fn the_manifest_reports_the_mode_the_table_and_an_absent_executable() {
     let root = fixture.root().display().to_string();
 
     let plain = Manifest::collect(&fixture.profile(&settings), &[ABSENT]);
-    assert!(!plain.container_mode);
     assert_eq!(plain.root, root);
-    assert_eq!(plain.readable_roots, vec![root.clone()]);
+    assert_eq!(
+        plain.readable_roots,
+        vec![root.clone(), READ_EVERYWHERE.to_string()]
+    );
     assert_eq!(plain.writable_roots, vec![root.clone()]);
     assert_eq!(
         plain.reserved_paths,
@@ -346,10 +356,6 @@ fn the_manifest_reports_the_mode_the_table_and_an_absent_executable() {
         plain.denied_patterns,
         vec![format!("Read({}/secrets/**)", fixture.sibling_pattern())]
     );
-    assert_eq!(
-        plain.commands,
-        CommandPolicy::Patterns(vec!["Bash(cargo test*)".to_string()])
-    );
     assert_eq!(plain.never_grantable_commands.len(), 12);
     assert!(plain.never_grantable_commands.contains(&"gdb".to_string()));
     assert_eq!(plain.executables.len(), 1);
@@ -358,36 +364,29 @@ fn the_manifest_reports_the_mode_the_table_and_an_absent_executable() {
     assert!(!plain.network);
     assert!(plain.unavailable.is_empty());
 
+    // Container mode reads and writes what the plain profile does; only the
+    // debuggers leave the table.
     let container = Manifest::collect(&fixture.container(&settings), &[ABSENT]);
-    assert!(container.container_mode);
-    assert_eq!(
-        container.readable_roots,
-        vec![
-            root.clone(),
-            "/ (container mode: everything except credential stores and denied patterns)"
-                .to_string()
-        ]
-    );
+    assert_eq!(container.readable_roots, plain.readable_roots);
     assert_eq!(container.writable_roots, vec![root]);
     assert_eq!(
         container.never_grantable_commands,
         vec!["sandbox-exec", "bwrap", "bubblewrap"]
     );
-    assert!(container.render().contains("Container mode"));
-    assert!(!plain.render().contains("Container mode"));
 }
 
 #[test]
-fn the_manifest_states_the_command_policy_the_profile_holds() {
+fn the_manifest_says_every_command_line_runs_whatever_the_allow_list() {
     let fixture = Fixture::new("commands");
-    assert_eq!(
-        Manifest::collect(&fixture.profile(BARE_BASH), &[]).commands,
-        CommandPolicy::All
-    );
-    assert_eq!(
-        Manifest::collect(&fixture.profile(r#"{"permissions":{}}"#), &[]).commands,
-        CommandPolicy::None
-    );
+    let line = "Commands: every command line runs inside the sandbox unless a denied pattern or a never-admitted name refuses it";
+    for settings in [
+        BARE_BASH,
+        r#"{"permissions":{}}"#,
+        r#"{"permissions":{"allow":["Bash(cargo test*)"]}}"#,
+    ] {
+        let rendered = Manifest::collect(&fixture.profile(settings), &[]).render();
+        assert!(rendered.contains(line), "{settings}: {rendered}");
+    }
 }
 
 #[test]
@@ -419,12 +418,7 @@ fn the_manifest_names_both_roots_and_their_reserved_paths() {
     let extra = fixture.base.join("build").display().to_string();
     assert_eq!(
         manifest.readable_roots,
-        vec![
-            root.clone(),
-            extra.clone(),
-            "/ (container mode: everything except credential stores and denied patterns)"
-                .to_string()
-        ]
+        vec![root.clone(), extra.clone(), READ_EVERYWHERE.to_string()]
     );
     assert_eq!(manifest.writable_roots, vec![root.clone(), extra.clone()]);
     assert_eq!(

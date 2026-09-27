@@ -36,9 +36,7 @@ use regions::{
 };
 use status::{compact_tokens, context_summary, footer_row};
 pub(crate) mod telemetry;
-pub use controls::{
-    Assignment, Catalogue, Mode, ModelGroup, Panel, PanelRow, StatusLine, TierModels,
-};
+pub use controls::{Assignment, Catalogue, ModelGroup, Panel, PanelRow, StatusLine, TierModels};
 pub(crate) use lane::helper_in_flight;
 use lane::{helper_fold, helper_lane, push_helper_lane};
 pub use telemetry::Pulse;
@@ -61,6 +59,14 @@ const ACCENT: Color = Color::LightGreen;
 const MUTED: Color = Color::Gray;
 const NOT_CONNECTED: &str = "gateway not connected.";
 
+impl ScreenState {
+    /// Whether this session runs without a sandbox right now.
+    #[must_use]
+    pub fn full_access(&self) -> bool {
+        self.level.level() == crate::permissions::Level::Full
+    }
+}
+
 /// Session-owned presentation state. Missing instrumentation stays unknown.
 /// Pass this to `render_screen` on input, resize, runtime events and activity ticks.
 #[derive(Debug, Clone, Default)]
@@ -77,17 +83,6 @@ pub struct ScreenState {
     /// startup line and `sterna doctor` say it in full on every width.
     pub confinement: Option<String>,
     pub network: Option<String>,
-    /// Whether this session was started with the boundary lifted.
-    ///
-    /// **It is a field rather than a word inside [`ScreenState::sandbox`]
-    /// because the screen has to be able to shout it.** The posture string
-    /// used to carry it as the four letters `YOLO` next to two counts, and a
-    /// mode that can rewrite any file on the machine had exactly the same
-    /// weight on screen as the number of path rules in the profile. A
-    /// capability this size is either continuously visible or it is a mode
-    /// error waiting to happen, so it gets its own field, its own colour and
-    /// its own sentence.
-    pub full_access: bool,
     /// Whether the little helpers are configured to run, and how work is
     /// handed to a subagent -- the two facts the status strip offers as
     /// controls.
@@ -178,16 +173,12 @@ pub struct ScreenState {
     pub settings_global: Option<std::path::PathBuf>,
     pub settings_profile: Option<String>,
     pub settings_models: Vec<String>,
-    pub mode: Mode,
     /// The subscription a sign-in is running for, beside the session: the
     /// dock's chip that brings its panel back.
     pub signing_in: Option<String>,
-    /// Whether the mode is pinned. Unpinned, a confident read-only request
-    /// may propose Explore, and the chip says `· auto`.
-    pub mode_pinned: bool,
-    /// The permission rung, shared live with the approval gate: Shift-Tab
-    /// moves it from this thread while a task runs.
-    pub permissions: crate::permissions::Ladder,
+    /// The sandbox level, shared live with the approval gate: the settings
+    /// sheet changes it from this thread while a task runs.
+    pub level: crate::permissions::LiveLevel,
     /// The approval gate's memory: every call answered for the whole
     /// session, which the Ask sheet lists and can forget.
     pub memory: Option<crate::approval::Memory>,
@@ -609,12 +600,12 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "transcript only, composer kept · Ctrl-F",
                 ),
                 (
-                    "/permissions".to_string(),
-                    "how often it asks · Every call, Commands, Auto-review or Never asks",
+                    "/sandbox".to_string(),
+                    "how much runs without asking · Ask, Sandboxed or Full access",
                 ),
                 (
-                    "/mode".to_string(),
-                    "Build, Explore (reads only), Plan or auto",
+                    "/plan".to_string(),
+                    "plan one request · it reads, and writes only the plan",
                 ),
                 // Three commands that worked and were in no list, which is
                 // how a command that works comes to look like one Sterna does
@@ -632,8 +623,8 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
             .filter(|(name, _)| name.trim_start_matches('/').starts_with(prefix)),
         )
         .collect::<Vec<_>>();
-    // The name typed in full comes first, so Enter on "/mode" runs /mode
-    // and not /model, and "/cell" runs /cell and not /cells.
+    // The name typed in full comes first, so Enter on "/plan" runs /plan,
+    // and "/cell" runs /cell and not /cells.
     let mut matches = matches;
     if let Some(at) = matches.iter().position(|(name, _)| name[1..] == *prefix) {
         let exact = matches.remove(at);
@@ -1180,14 +1171,13 @@ pub fn render_screen(
         None => NOT_CONNECTED,
     };
     let width = usize::from(regions.status.width);
-    // The request mode, the rung, and the effort, in that order: what this
-    // request may do, how often you are asked, how hard the model thinks.
-    // The rung is here rather than in the sidebar because a person in `full`
-    // must never be able to forget it, and the sidebar can be hidden.
+    // The sandbox level and the effort: how much runs without asking, and
+    // how hard the model thinks. The level is here rather than in the
+    // sidebar because a person on `full` must never be able to forget it,
+    // and the sidebar can be hidden.
     let mode = format!(
-        "{} · {} · effort {}",
-        state.mode.name(),
-        state.permissions.rung().name(),
+        "{} · effort {}",
+        state.level.level().name(),
         state.effort.sent_for(model).name()
     );
     let identity = format!(" {} · {}", abbreviate(model, 28), abbreviate(project, 24));

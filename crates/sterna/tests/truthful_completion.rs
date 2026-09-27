@@ -51,13 +51,7 @@ fn max_token_prose_and_native_calls_fail_without_execution_or_retry() {
         let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
             .args(["session", "--root"])
             .arg(&root)
-            .args([
-                "--task",
-                "Do the requested work",
-                "--model",
-                "fixture",
-                "--yolo",
-            ])
+            .args(["--task", "Do the requested work", "--model", "fixture"])
             .env("ANTHROPIC_BASE_URL", base_url)
             .env("XDG_CONFIG_HOME", root.join("global-config"))
             .env_remove("ANTHROPIC_API_KEY")

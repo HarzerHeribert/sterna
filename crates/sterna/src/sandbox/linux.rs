@@ -191,15 +191,11 @@ pub enum ExecScope {
 /// An absolute path is one sterna resolved — `tools::invoke::exec_grant`
 /// produces it with `canonicalize`, the only producer of the resolved case.
 /// Anything relative is a bare name no `PATH_BENEATH` rule can name.
-pub fn exec_scope(profile: &Profile, binary: &Path) -> ExecScope {
-    if profile.admits_every_command() {
-        return ExecScope::RootsAndProject;
-    }
-    if binary.is_absolute() {
-        ExecScope::ResolvedBinary
-    } else {
-        ExecScope::DeclaredRoots
-    }
+pub fn exec_scope(_profile: &Profile, _binary: &Path) -> ExecScope {
+    // Every command line is admitted, so a confined command may start any
+    // program under the roots: the sandbox bounds what it touches, not
+    // which programs it runs.
+    ExecScope::RootsAndProject
 }
 
 /// Which enforcement this applier achieved on this host.
@@ -372,7 +368,9 @@ pub fn landlock_rules_with_descendants(
         // are the case the widening exists for.
         ExecScope::RootsAndProject => {
             let mut paths: Vec<PathBuf> = SYSTEM_READ_ROOTS.iter().map(PathBuf::from).collect();
-            paths.push(binary.to_path_buf());
+            if binary.is_absolute() {
+                paths.push(binary.to_path_buf());
+            }
             paths.push(profile.root().to_path_buf());
             paths.extend(profile.additional_roots().iter().cloned());
             paths

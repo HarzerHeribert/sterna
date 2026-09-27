@@ -1227,7 +1227,7 @@ impl Document {
             (
                 clip(&rung_line(s), room),
                 Tone::Muted,
-                Some(Action::Approvals),
+                Some(Action::Sandbox),
             ),
             (
                 clip(startup.first().copied().unwrap_or(""), room),
@@ -1283,7 +1283,7 @@ impl Document {
                 Tone::Muted,
                 None,
             ),
-            (rung_line(s), Tone::Muted, Some(Action::Approvals)),
+            (rung_line(s), Tone::Muted, Some(Action::Sandbox)),
         ];
         facts.extend(
             startup
@@ -2236,11 +2236,11 @@ fn mood(face: voice::Face, s: &ScreenState) -> super::plumage::Mood {
     }
 }
 
-/// The session card's rung line, drawn from the ladder every frame: the
-/// rung in force, never the one the session started on.
+/// The session card's sandbox line, drawn from the live level every frame:
+/// the level in force, never the one the session started on.
 fn rung_line(s: &ScreenState) -> String {
-    let rung = s.permissions.rung();
-    format!("Ask: {} · {}", rung.label(), rung.asks())
+    let level = s.level.level();
+    format!("Sandbox: {} · {}", level.label(), level.asks())
 }
 
 #[cfg(test)]

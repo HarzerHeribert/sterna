@@ -154,16 +154,12 @@ fn string(values: &toml::Value, path: &str) -> Option<String> {
 /// document travels inside a repository, so this one is refused where a
 /// person would type it and dropped where a clone would ship it.
 #[test]
-fn full_access_is_refused_in_the_project_scope_and_names_the_file_that_takes_it() {
+fn the_sandbox_level_is_refused_in_the_project_scope_and_names_the_file_that_takes_it() {
     let temp = Temp::new("global-only-write");
     let store = temp.store();
     let local = store.read(Scope::Local).unwrap();
     let error = store
-        .save(
-            Scope::Local,
-            &local,
-            &[edit("permissions.full_access", "true")],
-        )
+        .save(Scope::Local, &local, &[edit("sandbox.level", "full")])
         .expect_err("a project-scoped write of a global-only key is refused");
     assert!(
         error.contains("global setting only"),
@@ -184,13 +180,9 @@ fn full_access_is_refused_in_the_project_scope_and_names_the_file_that_takes_it(
     // The same key in the scope that owns it is an ordinary save.
     let global = store.read(Scope::Global).unwrap();
     let loaded = store
-        .save(
-            Scope::Global,
-            &global,
-            &[edit("permissions.full_access", "true")],
-        )
+        .save(Scope::Global, &global, &[edit("sandbox.level", "full")])
         .expect("the global scope takes it");
-    assert_eq!(full_access(&loaded.values), Some(true));
+    assert_eq!(level(&loaded.values).as_deref(), Some("full"));
 }
 
 /// The enforcing half: a hand-written or cloned project document never goes
@@ -201,38 +193,33 @@ fn full_access_is_refused_in_the_project_scope_and_names_the_file_that_takes_it(
 fn a_project_document_cannot_turn_off_confinement_and_the_load_says_so() {
     let temp = Temp::new("global-only-load");
     let store = temp.store();
-    write(
-        &store.path(Scope::Local),
-        "[permissions]\nfull_access = true\n",
-    );
+    write(&store.path(Scope::Local), "[sandbox]\nlevel = \"full\"\n");
     let loaded = store.load(None).expect("the project file still loads");
     assert_eq!(
-        full_access(&loaded.values),
+        level(&loaded.values),
         None,
         "a project document's copy never reaches the effective configuration"
     );
     assert!(
-        loaded.notices.iter().any(|notice| {
-            notice.contains("permissions.full_access") && notice.contains("ignored")
-        }),
+        loaded
+            .notices
+            .iter()
+            .any(|notice| { notice.contains("sandbox.level") && notice.contains("ignored") }),
         "and the person is told it was ignored: {:?}",
         loaded.notices
     );
     // The project file is still usable for everything else it says.
     write(
         &store.path(Scope::Local),
-        "[permissions]\nfull_access = true\n\n[ui]\ntheme = \"amber\"\n",
+        "[sandbox]\nlevel = \"full\"\n\n[ui]\ntheme = \"amber\"\n",
     );
     let loaded = store.load(None).expect("loads");
     assert_eq!(string(&loaded.values, "ui.theme").as_deref(), Some("amber"));
-    assert_eq!(full_access(&loaded.values), None);
+    assert_eq!(level(&loaded.values), None);
 }
 
-fn full_access(values: &toml::Value) -> Option<bool> {
-    values
-        .get("permissions")
-        .and_then(|table| table.get("full_access"))
-        .and_then(toml::Value::as_bool)
+fn level(values: &toml::Value) -> Option<String> {
+    string(values, "sandbox.level")
 }
 
 #[test]
@@ -270,10 +257,10 @@ fn global_defaults_are_overridden_by_the_project_with_visible_origins() {
         string(&loaded.values, "ui.sidebar").as_deref(),
         Some("auto")
     );
-    assert_eq!(
-        string(&loaded.values, "session.mode").as_deref(),
-        Some("build")
-    );
+    // The sandbox level has no built-in row: it is present only where a
+    // person saved one, which is how a retired permission word knows it may
+    // still migrate.
+    assert_eq!(level(&loaded.values), None);
     assert_eq!(
         string(&loaded.values, "session.effort").as_deref(),
         Some("default")
@@ -1055,10 +1042,6 @@ fn typed_values_are_parsed_without_toml_quoting() {
     assert!(registry::validate("ui.theme", "chartreuse").is_err());
     // Documented aliases are normalised to the spelling that is written.
     assert_eq!(
-        registry::validate("session.mode", "execute").expect("alias"),
-        toml::Value::String("build".into())
-    );
-    assert_eq!(
         registry::validate("ui.statusline", "hide").expect("alias"),
         toml::Value::String("hidden".into())
     );
@@ -1077,42 +1060,173 @@ fn a_file_with_an_unknown_key_is_refused_by_name() {
     assert!(error.contains("nonsense.value"), "{error}");
 }
 
-/// 2637/2639: the mode proposal's threshold and the explore overlay's two
-/// list keys are registered, validate through the same runtime parser as
-/// every other key, and an unrelated key under `[modes.explore]` is refused
-/// exactly as an unknown key anywhere else is (`unknown_key`).
+/// The permission redesign retired the working modes, the Explore overlay,
+/// the mode proposal and the decision model's command vouching. None is a
+/// setting any more, and a saved copy is read as unset, never refused.
 #[test]
-fn mode_proposal_and_explore_overlay_keys_are_known_and_validated() {
-    assert!(registry::spec("decisions.mode_above").is_some());
-    assert!(registry::spec("modes.explore.writable").is_some());
-    assert!(registry::spec("modes.explore.commands").is_some());
+fn the_retired_mode_and_permission_keys_are_no_longer_settings() {
+    for key in [
+        "session.mode",
+        "modes.explore.writable",
+        "modes.explore.commands",
+        "permissions.mode",
+        "permissions.full_access",
+        "decisions.mode_above",
+        "decisions.command_runs_above",
+    ] {
+        assert!(registry::spec(key).is_none(), "{key} is still a setting");
+        assert!(registry::retired_key(key).is_some(), "{key} is not retired");
+        assert!(registry::validate(key, "x").is_err(), "{key} validates");
+    }
+    assert!(registry::spec("sandbox.level").is_some());
+    assert_eq!(
+        registry::validate("sandbox.level", "ask").expect("a level"),
+        toml::Value::String("ask".into())
+    );
+    assert!(registry::validate("sandbox.level", "manual").is_err());
 
-    assert!(registry::validate("decisions.mode_above", "0.3").is_err());
-    assert_eq!(
-        registry::validate("decisions.mode_above", "0.9").expect("in range"),
-        toml::Value::Float(0.9)
-    );
-    assert_eq!(
-        registry::validate("modes.explore.writable", "docs/**, notes/**").expect("list"),
-        toml::Value::Array(vec![
-            toml::Value::String("docs/**".into()),
-            toml::Value::String("notes/**".into()),
-        ])
-    );
-    assert_eq!(
-        registry::validate("modes.explore.commands", "cargo metadata*").expect("list"),
-        toml::Value::Array(vec![toml::Value::String("cargo metadata*".into())])
-    );
-    assert!(registry::validate("modes.explore.foo", "x").is_err());
-
-    let temp = Temp::new("modes-explore-unknown");
+    let temp = Temp::new("retired-modes");
     let store = temp.store();
     write(
         &store.path(Scope::Local),
-        "[modes.explore]\nfoo = [\"x\"]\n",
+        "[session]\nmode = \"explore\"\n\n[modes.explore]\nwritable = [\"docs/**\"]\n\n\
+         [decisions]\nmode_above = 0.9\ncommand_runs_above = 0.95\n",
     );
-    let error = store.load(None).expect_err("unknown key");
-    assert!(error.contains("modes.explore.foo"), "{error}");
+    let loaded = store.load(None).expect("a retired key never stops a load");
+    let mut keys: Vec<&str> = loaded.retired.iter().map(|r| r.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "decisions.command_runs_above",
+            "decisions.mode_above",
+            "modes.explore.writable",
+            "session.mode",
+        ]
+    );
+}
+
+/// The one mapping of an old permission word onto a level.
+#[test]
+fn a_retired_permission_word_names_the_level_it_meant() {
+    for (key, word, level) in [
+        ("permissions.mode", "manual", Some("ask")),
+        ("permissions.mode", "accept-edits", Some("ask")),
+        ("permissions.mode", "accept_edits", Some("ask")),
+        ("permissions.mode", "acceptEdits", Some("ask")),
+        ("permissions.mode", "auto", Some("sandboxed")),
+        ("permissions.mode", "full", Some("sandboxed")),
+        ("permissions.full_access", "true", Some("full")),
+        ("permissions.full_access", "false", None),
+        ("session.mode", "explore", None),
+    ] {
+        assert_eq!(registry::migrated_level(key, word), level, "{key} = {word}");
+    }
+}
+
+/// A global rung is migrated onto `sandbox.level`, removed from its file,
+/// and reported once in the sentence that names the new command.
+#[test]
+fn a_global_permission_rung_migrates_to_a_sandbox_level() {
+    let temp = Temp::new("migrate-rung");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[permissions]\nmode = \"manual\"\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(
+        notices,
+        ["`permissions.mode = manual` is now `sandbox.level = \"ask\"`; /sandbox changes it."]
+    );
+    let after = store.load(None).expect("loads");
+    assert_eq!(level(&after.values).as_deref(), Some("ask"));
+    assert!(after.retired.is_empty(), "{:?}", after.retired);
+    assert!(!read(&store.path(Scope::Global)).contains("mode"));
+}
+
+/// `full_access = true` alone becomes `full`; beside a rung, the rung
+/// decided the old session's level, so it decides the new one.
+#[test]
+fn full_access_migrates_to_full_unless_a_rung_beside_it_decided() {
+    let temp = Temp::new("migrate-full");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[permissions]\nfull_access = true\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    store.remove_retired(&loaded);
+    assert_eq!(
+        level(&store.load(None).unwrap().values).as_deref(),
+        Some("full")
+    );
+
+    let temp = Temp::new("migrate-rung-wins");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[permissions]\nmode = \"auto\"\nfull_access = true\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(
+        level(&store.load(None).unwrap().values).as_deref(),
+        Some("sandboxed"),
+        "{notices:?}"
+    );
+    assert!(
+        notices.iter().any(|notice| notice.starts_with(
+            "`permissions.full_access = true` is no longer a setting, so it was removed from your settings; "
+        )),
+        "{notices:?}"
+    );
+}
+
+/// A level the person already saved is never overwritten by an old word,
+/// and a project file's copy is only removed: the level is global only.
+#[test]
+fn a_retired_rung_never_overrides_a_saved_level_or_migrates_from_a_project() {
+    let temp = Temp::new("migrate-saved");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[permissions]\nmode = \"manual\"\n\n[sandbox]\nlevel = \"full\"\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(
+        notices,
+        [format!(
+            "`permissions.mode = manual` is no longer a setting, so it was removed from your settings; {}.",
+            registry::retired_key("permissions.mode").unwrap()
+        )]
+    );
+    assert_eq!(
+        level(&store.load(None).unwrap().values).as_deref(),
+        Some("full")
+    );
+
+    let temp = Temp::new("migrate-project");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Local),
+        "[permissions]\nmode = \"manual\"\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices[0].contains("is no longer a setting, so it was removed"),
+        "{notices:?}"
+    );
+    let after = store.load(None).expect("loads");
+    assert_eq!(level(&after.values), None);
+    assert!(after.retired.is_empty());
+    assert!(
+        !store.path(Scope::Global).exists()
+            || !read(&store.path(Scope::Global)).contains("sandbox")
+    );
 }
 
 /// 2644/2645: the Scout's relevance floor and the helper judge's floor are

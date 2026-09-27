@@ -307,8 +307,6 @@ fn every_registered_tool_has_exactly_one_declaration_and_no_other_does() {
         &prompt::SessionFacts {
             root: "/tmp/x".to_string(),
             writable: Vec::new(),
-            command_patterns: 0,
-            all_commands: false,
             network: false,
             interface: Interface::Cells,
             manifest: None,
@@ -352,8 +350,6 @@ fn the_prompt_teaches_the_literal_multiline_content_form() {
         &prompt::SessionFacts {
             root: "/tmp/x".to_string(),
             writable: Vec::new(),
-            command_patterns: 0,
-            all_commands: false,
             network: false,
             interface: Interface::Cells,
             manifest: None,

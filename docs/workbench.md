@@ -67,7 +67,6 @@ surface behaves like every other.
 | Ctrl-T | live telemetry and activity |
 | Ctrl-F | fullscreen: transcript and composer only |
 | Ctrl-G | release or recapture the mouse |
-| Shift-Tab | cycle how often you are asked ([sandbox](sandbox.md#how-often-you-are-asked)) |
 | `?` on an empty composer | every key |
 | Home / End on an empty composer | the conversation's first and last rows |
 

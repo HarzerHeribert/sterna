@@ -199,15 +199,11 @@ pub enum ExecScope {
 /// names it. A path that is absolute but does not exist gets the literal
 /// too, which is a refusal at exec time rather than a widening — the roots
 /// would not have contained it either.
-pub fn exec_scope(profile: &Profile, binary: &Path) -> ExecScope {
-    if profile.admits_every_command() {
-        return ExecScope::RootsAndProject;
-    }
-    if binary.is_absolute() {
-        ExecScope::ResolvedBinary
-    } else {
-        ExecScope::DeclaredRoots
-    }
+pub fn exec_scope(_profile: &Profile, _binary: &Path) -> ExecScope {
+    // Every command line is admitted, so a confined command may start any
+    // program under the roots: the sandbox bounds what it touches, not
+    // which programs it runs.
+    ExecScope::RootsAndProject
 }
 
 /// Which enforcement this applier actually achieved, so a coarser regime is
@@ -362,7 +358,11 @@ pub fn profile_text_with_descendants(
             // `bash` canonicalises into `/opt/homebrew/Cellar/...` — and
             // dropping its literal refuses the exec of the very binary the
             // grant is about.
-            out.push_str(&format!(" (literal {})", quote(&display(binary))));
+            // A bare name nothing resolved is never written: seatbelt
+            // would read it against its own working directory.
+            if binary.is_absolute() {
+                out.push_str(&format!(" (literal {})", quote(&display(binary))));
+            }
             for path in EXECUTABLE_ROOTS.iter().chain(PACKAGE_PREFIXES.iter()) {
                 out.push_str(&format!(" (subpath {})", quote(path)));
             }
@@ -402,7 +402,9 @@ pub fn profile_text_with_descendants(
     // on its directory: §4.3's `$HOME` rule survives only because the
     // binary's own bytes are granted and its neighbours are not. Emitted in
     // the resolved arm alone — the fallback's roots are read roots already.
-    if matches!(exec, ExecScope::ResolvedBinary | ExecScope::RootsAndProject) {
+    if matches!(exec, ExecScope::ResolvedBinary)
+        || (matches!(exec, ExecScope::RootsAndProject) && binary.is_absolute())
+    {
         out.push_str(&format!(
             "(allow file-read* (literal {}))\n",
             quote(&display(binary))

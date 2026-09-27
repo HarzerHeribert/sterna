@@ -18,21 +18,14 @@ use crate::config::AskJev;
 
 /// Why `ask` is refused in this session, or `None` when a cell may use it.
 ///
-/// Read once per request, because all three inputs can change between
-/// requests: a `/config` edit, a mode switch, and whether a terminal is
-/// attached at all.
-pub(super) fn refusal(
-    session: &Session<'_>,
-    mode: crate::sandbox::modes::RequestMode,
-) -> Option<String> {
+/// Read once per request, because both inputs can change between requests:
+/// a `/config` edit, and whether a terminal is attached at all.
+pub(super) fn refusal(session: &Session<'_>) -> Option<String> {
     if session.ask_gate.is_none() {
         return Some(crate::ask::NOT_AVAILABLE.to_string());
     }
     if !session.config().ask.enabled {
         return Some(crate::ask::DISABLED.to_string());
-    }
-    if mode == crate::sandbox::modes::RequestMode::Explore {
-        return Some(crate::ask::NOT_IN_EXPLORE.to_string());
     }
     None
 }

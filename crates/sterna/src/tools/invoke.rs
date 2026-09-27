@@ -709,11 +709,22 @@ fn checked_call(
             tool: tool.name().into(),
         });
     }
-    // A command line no allow pattern names goes to the rung's judgement,
-    // but only where the rung judges calls and someone can be asked; with
-    // no gate, or nobody at the terminal, it stays refused as before.
-    let judged = gate.is_some_and(|gate| !gate.ladder().is_unattended());
-    let checked = check_arguments(ctx.profile, tool, args, trace, judged)?;
+    let checked = check_arguments(ctx.profile, tool, args, trace)?;
+    // A command that asks to run outside the sandbox needs somebody to say
+    // yes. Where nobody can be asked -- a subagent, a background job -- it is
+    // refused here, and on Full access there is no sandbox to leave.
+    let outside = checked
+        .iter()
+        .any(|(name, _)| *name == crate::permissions::OUTSIDE);
+    if outside && gate.is_none() && !ctx.profile.os_sandbox_bypassed() {
+        return Err(PermissionDenied {
+            tool: tool.name().into(),
+            path: String::new(),
+            rule: "nobody can be asked here, so this command cannot leave the sandbox; do the work inside it".into(),
+        }
+        .into());
+    }
+    let mut run_outside = false;
     if let Some(gate) = gate {
         if ctx.profile.root().to_str().is_none()
             || checked
@@ -729,7 +740,10 @@ fn checked_call(
         }
         let action = crate::approval::Action::new(tool.name(), ctx.profile.root(), trace.clone());
         let rule = match gate.admit(action.clone(), stopped) {
-            crate::approval::Admission::Allowed => None,
+            crate::approval::Admission::Allowed => {
+                run_outside = outside && !ctx.profile.os_sandbox_bypassed();
+                None
+            }
             // Cancelled the way a running call is: reported as cancelled,
             // never as a refusal the model should work around.
             crate::approval::Admission::Cancelled => {
@@ -737,6 +751,10 @@ fn checked_call(
                     tool: tool.name().into(),
                 });
             }
+            crate::approval::Admission::NobodyToAsk => Some(
+                "nobody is at the terminal to answer, so this call is refused; do the work inside the sandbox or say plainly what needs a person"
+                    .to_string(),
+            ),
             crate::approval::Admission::DeniedEarlier => Some(
                 "you denied this exact call earlier in this session; it stays denied until you forget it on the Ask sheet"
                     .to_string(),
@@ -770,7 +788,7 @@ fn checked_call(
         // the original arguments again; a retargeted symlink gets no authority
         // from the old answer even when both destinations are in the root.
         let mut current = CheckedArgs::new();
-        check_arguments(ctx.profile, tool, args, &mut current, judged)?;
+        check_arguments(ctx.profile, tool, args, &mut current)?;
         if *trace != current || stopped() {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
@@ -831,7 +849,14 @@ fn checked_call(
                 argv.insert(1, format!("--exclude-dir={name}").into());
             }
         }
-        spawn_confined(ctx.profile, &stop, tool, &argv, waiting)?
+        if run_outside {
+            // The one command the person let out, and nothing after it: a
+            // copy of the profile without Sterna's own confinement.
+            let unconfined = ctx.profile.clone().with_os_sandbox_bypass();
+            spawn_confined(&unconfined, &stop, tool, &argv, waiting)?
+        } else {
+            spawn_confined(ctx.profile, &stop, tool, &argv, waiting)?
+        }
     };
     if requested == "grep" && broad_search {
         result.stdout = filter_grep_artifacts(ctx.profile.root(), &result.stdout);
@@ -1242,7 +1267,6 @@ fn check_arguments(
     tool: &Tool,
     args: &Args,
     trace: &mut CheckedArgs,
-    judged: bool,
 ) -> Result<Vec<(&'static str, Checked)>, PermissionDenied> {
     for given in args.names() {
         if !tool.args().iter().any(|arg| arg.name() == given) {
@@ -1325,12 +1349,16 @@ fn check_arguments(
                     Checked::Texts(items.clone()),
                 );
             }
+            (ArgKind::Reason, Some(Argument::Text(value))) => {
+                admit(
+                    &mut checked,
+                    trace,
+                    arg.name(),
+                    Checked::Pattern(value.to_string()),
+                );
+            }
             (ArgKind::CommandLine, Some(Argument::Text(value))) => {
-                if judged {
-                    profile.weigh_command(value)?;
-                } else {
-                    profile.admits_command(value)?;
-                }
+                profile.admits_command(value)?;
                 admit(
                     &mut checked,
                     trace,
@@ -1666,9 +1694,9 @@ fn spawn_confined(
     let mut descendant_binaries = if tool.argv() == Argv::ShellCommand {
         argv.last()
             .and_then(|value| value.to_str())
-            // The line was admitted or judged before it got here; this only
-            // names the programs the OS layer lets it start.
-            .and_then(|line| profile.weigh_command(line).ok())
+            // The line was admitted before it got here; this only names the
+            // programs the OS layer lets it start.
+            .and_then(|line| profile.admits_command(line).ok())
             .map(|command| {
                 command
                     .executables()
@@ -1740,6 +1768,16 @@ fn spawn_confined(
     let null_config = if cfg!(windows) { "NUL" } else { "/dev/null" };
     command.env("GIT_CONFIG_GLOBAL", null_config);
     command.env("GIT_CONFIG_SYSTEM", null_config);
+
+    // **The network is Sterna's proxy, or nothing.** A confined command's
+    // tools are pointed at the proxy that lets the allowed hosts through;
+    // an outer proxy this process inherited is replaced, never passed on,
+    // because the command could not reach it past the sandbox anyway.
+    if let Some(route) = profile.proxy() {
+        for (name, value) in &route.env {
+            command.env(name, value);
+        }
+    }
 
     // The child leads a process group of its own, so a cancellation can name
     // everything the call started and not only the handle it holds. See
@@ -2609,8 +2647,7 @@ mod tests {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("read").unwrap();
         let args = Args::new().with("path", "x").with("depth", "3");
-        let denied =
-            check_arguments(&profile, tool, &args, &mut CheckedArgs::new(), false).unwrap_err();
+        let denied = check_arguments(&profile, tool, &args, &mut CheckedArgs::new()).unwrap_err();
         assert_eq!(denied.path, "depth");
         assert!(denied.rule.contains("declares no argument named `depth`"));
     }
@@ -2619,8 +2656,8 @@ mod tests {
     fn a_missing_required_argument_is_refused() {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("grep").unwrap();
-        let denied = check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new(), false)
-            .unwrap_err();
+        let denied =
+            check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new()).unwrap_err();
         assert!(denied.rule.contains("requires an argument named `pattern`"));
     }
 
@@ -2630,7 +2667,7 @@ mod tests {
         let tool = registry::lookup("grep").unwrap();
         let args = Args::new().with("pattern", "-rf");
         let mut trace = CheckedArgs::new();
-        let checked = check_arguments(&profile, tool, &args, &mut trace, false).unwrap();
+        let checked = check_arguments(&profile, tool, &args, &mut trace).unwrap();
         // The trajectory records the pattern as admitted, and only that.
         assert_eq!(trace.get("pattern").map(String::as_str), Some("-rf"));
         #[cfg(not(windows))]

@@ -1,18 +1,18 @@
-//! The session facts a person changes most -- how often Sterna asks, the
-//! work mode, the reasoning effort -- each with **one setter** that every
-//! route reaches (a chip, a sheet row, a settings row, Shift-Tab and a typed
-//! command) and **one name** every screen prints.
+//! The session facts a person changes most -- the sandbox level and the
+//! reasoning effort -- each with **one setter** that every route reaches (a
+//! chip, a sheet row, a settings row and a typed command) and **one name**
+//! every screen prints.
 //!
 //! Each setter changes the running session and saves the choice, so the
-//! next session starts where this one was left. It is saved to the global
-//! settings unless Settings is open on Project scope (decision 6: a project
-//! file is written only when Project scope is chosen there). The mode and
-//! the effort belong to the session thread, so every route reaches them as
-//! the command that thread has always answered, and [`saving`] is where
-//! that command is saved on its way out.
-use crate::permissions::Rung;
+//! next session starts where this one was left. The level is saved to the
+//! global settings only: a project file must never be able to lower it. The
+//! effort is saved to the global settings unless Settings is open on Project
+//! scope (decision 6). The effort belongs to the session thread, so every
+//! route reaches it as the command that thread has always answered, and
+//! [`saving`] is where that command is saved on its way out.
+use crate::permissions::Level;
 use crate::settings::{Scope, Store};
-use crate::tui::{Mode, ScreenState};
+use crate::tui::ScreenState;
 use crate::wire::Effort;
 
 /// Saves one fact to `scope`. A session with no project root or no user
@@ -36,45 +36,33 @@ fn persist(s: &ScreenState, scope: Scope, key: &str, value: &str) -> Result<(), 
         .map(|_| ())
 }
 
-/// The rung, set now and saved; returns the notice every route prints.
-/// Never asks is confirmed before it gets here (the Confirm sheet, which
-/// opens on Cancel), whichever route asked for it.
-pub fn set_rung(s: &mut ScreenState, rung: Rung, scope: Scope) -> String {
-    s.permissions.set(rung);
-    match persist(s, scope, "permissions.mode", rung.name()) {
-        Ok(()) => rung.now(),
-        Err(error) => format!("{} · for this session only: {error}", rung.now()),
+/// The level, set now and saved globally; returns the notice every route
+/// prints. Full access is confirmed before it gets here (the Confirm sheet,
+/// which opens on Cancel), whichever route asked for it.
+pub fn set_level(s: &mut ScreenState, level: Level) -> String {
+    s.level.set(level);
+    match persist(s, Scope::Global, "sandbox.level", level.name()) {
+        Ok(()) => level.now(),
+        Err(error) => format!("{} · for this session only: {error}", level.now()),
     }
 }
 
-/// A command on its way to the session: a `/mode` or `/effort` that names
-/// a value is saved here, once, whichever route produced it. `/mode auto`
-/// saves nothing, because the file has no word for an unpinned mode.
+/// A command on its way to the session: an `/effort` that names a value is
+/// saved here, once, whichever route produced it.
 pub fn saving(s: &ScreenState, command: &str, scope: Scope) {
     let words: Vec<_> = command.split_whitespace().collect();
-    let _ = match words.as_slice() {
-        ["/mode", word] => Mode::parse(word).map_or(Ok(()), |mode| {
-            persist(s, scope, "session.mode", mode.setting())
-        }),
-        ["/effort", word] => Effort::parse(word).map_or(Ok(()), |effort| {
-            persist(s, scope, "session.effort", effort.name())
-        }),
-        _ => Ok(()),
-    };
+    if let ["/effort", word] = words.as_slice()
+        && let Some(effort) = Effort::parse(word)
+    {
+        let _ = persist(s, scope, "session.effort", effort.name());
+    }
 }
 
-/// The command that sets the work mode; `None` is Auto.
-pub fn mode_command(mode: Option<Mode>) -> String {
-    format!("/mode {}", mode.map_or("auto", |mode| mode.setting()))
-}
-
-/// The mode as the chip names it: `Build`, or `Build · auto` while it is
-/// not pinned.
-pub fn mode_word(s: &ScreenState) -> String {
-    if s.mode_pinned {
-        s.mode.label().to_string()
-    } else {
-        format!("{} · auto", s.mode.label())
+/// The level as the chip names it.
+pub fn level_word(s: &ScreenState) -> String {
+    match s.level.level() {
+        Level::Full => "▲ Full access".to_string(),
+        level => format!("◼ {}", level.label()),
     }
 }
 
@@ -102,15 +90,12 @@ pub fn next_effort(effort: Effort) -> Effort {
     }
 }
 
-/// A settings value as the screen names it: a rung's label, a mode's, and
+/// A settings value as the screen names it: a level's label, and
 /// `favourites` for the subagent roster.
 pub fn shown(key: &str, value: &str) -> String {
     match key {
-        "permissions.mode" => {
-            Rung::parse(value).map_or_else(|| value.to_string(), |r| r.label().to_string())
-        }
-        "session.mode" => {
-            Mode::parse(value).map_or_else(|| value.to_string(), |m| m.label().to_string())
+        "sandbox.level" => {
+            Level::parse(value).map_or_else(|| value.to_string(), |l| l.label().to_string())
         }
         "agents.mode" if value == "roster" => "favourites".to_string(),
         _ => value.to_string(),

@@ -1598,8 +1598,8 @@ mod tests {
         sheet.set_items(vec![
             Item::danger(
                 "yes",
-                "Yes · Never asks",
-                Action::ConfirmRung("full".into()),
+                "Yes · Full access",
+                Action::ConfirmLevel("full".into()),
             ),
             Item::run("cancel", "Cancel", Action::Close),
         ]);

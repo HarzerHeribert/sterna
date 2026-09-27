@@ -97,6 +97,10 @@ pub enum ArgKind {
     /// A whole command line. Goes through `Profile::admits_command` and
     /// through nothing else — it grants no file access whatsoever (§2).
     CommandLine,
+    /// Words for the person: shown on the confirmation a call raises, and
+    /// never part of the child's argv or environment. `bash`'s `outside`
+    /// (why a command asks to run outside the sandbox) is the one.
+    Reason,
 }
 
 /// One declared argument.
@@ -484,7 +488,10 @@ const JQ: Tool = Tool::declare(
 const BASH: Tool = Tool::declare(
     "bash",
     "bash",
-    &[Arg::required("command", ArgKind::CommandLine)],
+    &[
+        Arg::required("command", ArgKind::CommandLine),
+        Arg::optional(crate::permissions::OUTSIDE, ArgKind::Reason),
+    ],
     Argv::ShellCommand,
     Purity::Effectful,
 );
@@ -504,7 +511,10 @@ const BASH: Tool = Tool::declare(
 const BASH: Tool = Tool::declare(
     "bash",
     "cmd",
-    &[Arg::required("command", ArgKind::CommandLine)],
+    &[
+        Arg::required("command", ArgKind::CommandLine),
+        Arg::optional(crate::permissions::OUTSIDE, ArgKind::Reason),
+    ],
     Argv::ShellCommand,
     Purity::Effectful,
 );

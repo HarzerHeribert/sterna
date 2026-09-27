@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sterna::config::PreflightScope;
-use sterna::manifest::{CommandPolicy, Executable, Manifest};
+use sterna::manifest::{Executable, Manifest};
 use sterna::preflight::{
     self, DO_NOT_PERFORM, Decision, RENDER_LINE_BOUND, SIGNAL_ABSENT_EXECUTABLE, SIGNAL_ALWAYS,
     SIGNAL_LONG_REQUEST, SIGNAL_MISSING_PATH, SIGNAL_UNSEEN_VERIFICATION,
@@ -39,7 +39,6 @@ impl Project {
             root: root.display().to_string(),
             readable_roots: vec![root.display().to_string()],
             writable_roots: vec![root.display().to_string()],
-            commands: CommandPolicy::All,
             executables: vec![
                 Executable {
                     name: "gdb".into(),

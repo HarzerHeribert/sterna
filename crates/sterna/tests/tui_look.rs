@@ -214,18 +214,14 @@ fn the_status_line_names_the_model_the_project_the_sandbox_and_the_connection() 
         }
     }
 }
-/// The rung is on the status line, beside the request mode, at every width
-/// this test draws — a person in `full` must not be able to forget it, and
-/// the sidebar they can hide is not where that belongs.
+/// The sandbox level is on the status line, beside the effort, at every
+/// width this test draws — a person on `full` must not be able to forget it,
+/// and the sidebar they can hide is not where that belongs.
 #[test]
-fn the_status_line_names_the_permission_rung_beside_the_request_mode() {
-    for rung in [
-        sterna::permissions::Rung::Manual,
-        sterna::permissions::Rung::Auto,
-        sterna::permissions::Rung::Full,
-    ] {
+fn the_status_line_names_the_sandbox_level_beside_the_effort() {
+    for level in sterna::permissions::Level::ALL {
         let mut state = state();
-        state.permissions = sterna::permissions::Ladder::new(rung);
+        state.level = sterna::permissions::LiveLevel::new(level);
         for width in [80, 120, 200] {
             let rendered = text(&draw(
                 width,
@@ -235,13 +231,9 @@ fn the_status_line_names_the_permission_rung_beside_the_request_mode() {
                 &Notebook::default(),
             ));
             assert!(
-                rendered.contains(rung.name()),
-                "the rung `{}` at width {width}: {rendered}",
-                rung.name()
-            );
-            assert!(
-                rendered.contains(state.mode.name()),
-                "and the request mode is still there: {rendered}"
+                rendered.contains(&format!("{} · effort ", level.name())),
+                "the level `{}` beside the effort at width {width}: {rendered}",
+                level.name()
             );
         }
     }
@@ -352,11 +344,18 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
                 "browse models by agent, provider or intelligence"
             ),
             ("/motion".into(), "full, calm or off · how much moves"),
-            ("/mode".into(), "Build, Explore (reads only), Plan or auto"),
             ("/mouse".into(), "release or recapture the mouse · Ctrl-G")
         ]
     );
-    for input in ["hello", "/model something", "/unknown"] {
+    assert!(slash_matches("/sa").contains(&(
+        "/sandbox".into(),
+        "how much runs without asking · Ask, Sandboxed or Full access"
+    )));
+    assert!(slash_matches("/pl").contains(&(
+        "/plan".into(),
+        "plan one request · it reads, and writes only the plan"
+    )));
+    for input in ["hello", "/model something", "/unknown", "/permissions"] {
         assert!(slash_matches(input).is_empty());
     }
     let mut state = state();

@@ -1,101 +1,36 @@
-//! Request modes: a per-request narrowing of the session's compiled profile —
-//! map lines 2637 and 2638, ruling *Request modes* in `design-decisions.md`.
+//! The plan request: one request that reads and writes only its plan.
 //!
-//! **A mode only narrows.** [`Narrowing`] is consulted by
+//! **It only narrows.** [`Narrowing`] is consulted by
 //! [`Profile::check_request`](super::profile::Profile::check_request) and
 //! [`Profile::admits_command`](super::profile::Profile::admits_command) only
-//! after the profile's own never-grantable, `deny` and `allow` decisions have
-//! admitted a call, so everything the profile refuses stays refused in every
-//! mode and nothing a mode says can grant. `Profile::check`, which the OS
-//! appliers probe, never sees a mode.
+//! after the profile's own never-grantable and `deny` decisions have admitted
+//! a call, so everything the profile refuses stays refused and nothing here
+//! can grant. `/plan <task>` runs one request this way; the request after it
+//! is ordinary again and is handed the plan.
 
-use super::profile::{
-    command_segments, covers, is_rooted, match_segment, resolve_pattern, skip_leading_redirects,
-};
+use super::profile::{command_segments, match_segment, resolve_pattern, skip_leading_redirects};
 use std::path::Path;
 
-/// The mode one request runs in. `Execute` is the session sandbox unchanged.
+/// What one request may do: everything the session's sandbox allows, or only
+/// what a plan needs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RequestMode {
+    /// The session's sandbox unchanged.
     #[default]
-    Execute,
-    /// Reading tools and read-only shell commands; writes only under
-    /// [`ModeOverlay::writable`].
-    Explore,
-    /// What `Explore` reads, and one write: [`PLAN_FILE`]. No change executes.
+    Work,
+    /// Reading tools and read-only shell commands, and one write:
+    /// [`PLAN_FILE`]. No change executes.
     Plan,
 }
 
 impl RequestMode {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Execute => "execute",
-            Self::Explore => "explore",
+            Self::Work => "work",
             Self::Plan => "plan",
         }
     }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::Execute => Self::Explore,
-            Self::Explore => Self::Plan,
-            Self::Plan => Self::Execute,
-        }
-    }
-
-    /// `build` is the settings registry's spelling of `execute`, and the
-    /// word every screen shows; either is accepted, in any case.
-    pub fn parse(word: &str) -> Option<Self> {
-        match word.trim().to_ascii_lowercase().as_str() {
-            "execute" | "build" => Some(Self::Execute),
-            "explore" => Some(Self::Explore),
-            "plan" => Some(Self::Plan),
-            _ => None,
-        }
-    }
-
-    /// The word a screen shows: the chip's, the sheet's and every notice's.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Execute => "Build",
-            Self::Explore => "Explore",
-            Self::Plan => "Plan",
-        }
-    }
-
-    /// What choosing this mode does, in one sentence.
-    #[must_use]
-    pub fn sentence(self) -> &'static str {
-        match self {
-            Self::Execute => "Edits files and runs commands, inside the session's boundary.",
-            Self::Explore => "Reads only. It can still write to its own scratch directory.",
-            Self::Plan => "Reads, and writes one file: the plan. Nothing else changes.",
-        }
-    }
-
-    /// The notice every route that sets the mode prints.
-    #[must_use]
-    pub fn now(self) -> String {
-        format!(
-            "Mode is now {} · {} Applies from the next request.",
-            self.label(),
-            self.sentence()
-        )
-    }
-
-    /// The word the settings file stores.
-    #[must_use]
-    pub fn setting(self) -> &'static str {
-        match self {
-            Self::Execute => "build",
-            other => other.name(),
-        }
-    }
 }
-
-/// Where `explore` may write before configuration adds to it.
-pub const DEFAULT_WRITABLE: [&str; 1] = [".sterna/scratch/**"];
 
 /// The one file `plan` may write, and the one the next request is handed.
 pub const PLAN_FILE: &str = ".sterna/scratch/plan.md";
@@ -141,149 +76,53 @@ const GIT_READ_ONLY: [&str; 7] = [
     "rev-parse",
 ];
 
-/// The configurable half of a mode: extra writable globs for `explore` and
-/// extra read-only command patterns for both narrowing modes.
-#[derive(Debug, Clone)]
-pub struct ModeOverlay {
-    writable: Vec<String>,
-    commands: Vec<String>,
-}
-
-impl Default for ModeOverlay {
-    fn default() -> Self {
-        Self::new(Vec::new(), Vec::new())
-    }
-}
-
-impl ModeOverlay {
-    /// [`DEFAULT_WRITABLE`] followed by `writable`; `commands` are `Bash`-style
-    /// segment patterns (`cargo metadata*`) added to [`READ_ONLY_COMMANDS`].
-    pub fn new(writable: Vec<String>, commands: Vec<String>) -> Self {
-        let mut all: Vec<String> = DEFAULT_WRITABLE.iter().map(|s| s.to_string()).collect();
-        all.extend(writable);
-        Self {
-            writable: all,
-            commands,
-        }
-    }
-
-    pub fn writable(&self) -> &[String] {
-        &self.writable
-    }
-}
-
-/// A compiled mode, held by a narrowed profile.
+/// A compiled plan request, held by a narrowed profile.
 #[derive(Debug, Clone)]
 pub(crate) struct Narrowing {
-    mode: RequestMode,
-    /// `(as written, resolved glob)`, every one inside the project root.
-    writable: Vec<(String, Vec<String>)>,
-    commands: Vec<String>,
+    /// The plan file, resolved inside the project root.
+    plan: Vec<String>,
 }
 
 impl Narrowing {
-    /// `None` for `Execute`, with a diagnostic per dropped glob. A writable
-    /// glob that is absolute or resolves outside the root is dropped: project
-    /// isolation is the profile's, and a mode cannot name a path beyond it.
-    pub(super) fn compile(
-        mode: RequestMode,
-        overlay: &ModeOverlay,
-        root: &Path,
-        home: Option<&Path>,
-        root_spelling: &[String],
-    ) -> (Option<Self>, Vec<String>) {
-        let mut diagnostics = Vec::new();
-        let writable = match mode {
-            RequestMode::Execute => return (None, diagnostics),
-            // The file, not the subtree: `plan` writes its plan and nothing else.
-            RequestMode::Plan => vec![(
-                PLAN_FILE.to_string(),
-                resolve_pattern(root, home, PLAN_FILE),
-            )],
-            RequestMode::Explore => overlay
-                .writable
-                .iter()
-                .filter_map(|written| {
-                    let glob = resolve_pattern(root, home, written);
-                    if is_rooted(&written.replace('\\', "/"))
-                        || glob.is_empty()
-                        || !glob.starts_with(root_spelling)
-                    {
-                        diagnostics.push(format!(
-                            "mode explore: `{written}` is not a project-relative glob inside the root; it makes nothing writable"
-                        ));
-                        return None;
-                    }
-                    Some((written.clone(), glob))
-                })
-                .collect(),
-        };
-        let narrowing = Self {
-            mode,
-            writable,
-            commands: overlay.commands.clone(),
-        };
-        (Some(narrowing), diagnostics)
+    /// `None` for [`RequestMode::Work`].
+    pub(super) fn compile(mode: RequestMode, root: &Path, home: Option<&Path>) -> Option<Self> {
+        match mode {
+            RequestMode::Work => None,
+            RequestMode::Plan => Some(Self {
+                plan: resolve_pattern(root, home, PLAN_FILE),
+            }),
+        }
     }
 
     pub(super) fn mode(&self) -> RequestMode {
-        self.mode
+        RequestMode::Plan
     }
 
-    /// The refusal for a write the profile already admitted, if this mode
-    /// refuses it.
+    /// The refusal for a write the profile already admitted, if this request
+    /// refuses it. The plan's one entry is a file: equal, never an ancestor
+    /// of the candidate, so `plan.md/x` is not the plan.
     pub(super) fn write_refusal(&self, candidate: &[String]) -> Option<String> {
-        // `plan`'s one entry is a file: equal, never an ancestor of the
-        // candidate, so `plan.md/x` is not the plan.
-        if self.writable.iter().any(|(_, glob)| match self.mode {
-            RequestMode::Plan => glob.as_slice() == candidate,
-            _ => covers(glob, candidate, false),
-        }) {
+        if self.plan.as_slice() == candidate {
             return None;
         }
-        Some(match self.mode {
-            RequestMode::Plan => {
-                "mode plan: no change executes, so every write but the plan to `.sterna/scratch/plan.md` is refused; `/mode execute` lifts it from the next request".to_string()
-            }
-            _ => {
-                let under: Vec<String> = self
-                    .writable
-                    .iter()
-                    .map(|(written, _)| format!("`{written}`"))
-                    .collect();
-                let under = if under.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    under.join(", ")
-                };
-                format!(
-                    "mode explore: writes only under {under}; `/mode execute` lifts it from the next request"
-                )
-            }
-        })
+        Some("plan: no change executes, so every write but the plan to `.sterna/scratch/plan.md` is refused; send the next message without /plan to make changes".to_string())
     }
 
     /// The refusal for a command line the profile already admitted, if this
-    /// mode refuses it. Matched on the words of each segment a shell would
+    /// request refuses it. Matched on the words of each segment a shell would
     /// run, never on the line as one string.
     pub(super) fn command_refusal(&self, command_line: &str) -> Option<String> {
-        let mode = self.mode.name();
-        command_reads_only(command_line, &self.commands)
-            .map(|why| format!("mode {mode}: {why}; the shell is read-only"))
+        command_reads_only(command_line, &[])
+            .map(|why| format!("plan: {why}; the shell is read-only while planning"))
     }
 }
 
 /// Why this command line cannot be vouched for as reading only, or `None`
-/// when every segment a shell would run reads.
+/// when every segment a shell would run reads. A plan request refuses what
+/// this names ([`Narrowing::command_refusal`]).
 ///
-/// **Two callers, one reader.** A narrowing mode refuses what this names
-/// ([`Narrowing::command_refusal`]); the permission ladder asks the person
-/// about it instead ([`crate::permissions::judge_command`]). The two differ
-/// in what they do with the answer and not in the answer, so they share the
-/// reader rather than keeping two lists that could drift.
-///
-/// `extra` is the caller's own list of admitted segment patterns
-/// (`cargo metadata*`), matched before the built-in [`READ_ONLY_COMMANDS`].
+/// `extra` is the caller's own list of admitted segment patterns, matched
+/// before the built-in [`READ_ONLY_COMMANDS`].
 ///
 /// **On Windows the line is `cmd.exe`'s, and it is screened before it is
 /// read** ([`cmd_line_unreadable`]): a construct only `cmd.exe` has is a

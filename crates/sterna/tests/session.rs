@@ -334,7 +334,6 @@ fn a_tasks_requests_echo_the_routing_token_its_first_response_gave() {
         "turn-routing",
         &["first task", "second task"],
         &base,
-        false,
     );
     assert!(
         output.status.success(),
@@ -858,16 +857,15 @@ fn a_slash_command_is_answered_without_a_request() {
     }
 }
 
-/// The default rung, and what a session with nobody at the keyboard does
-/// with an asking one.
+/// The default sandbox level, and what a session with nobody at the keyboard
+/// does with an asking one.
 ///
-/// A scripted run is the case this must not break: `auto` is the default, so
-/// every existing scripted invocation keeps working exactly as it did — the
-/// startup line says which rung, and says plainly that there is no terminal
-/// to ask at, so a log read afterwards cannot be mistaken for a session
-/// where somebody answered.
+/// A scripted run is the case this must not break: `sandboxed` is the
+/// default, so every existing scripted invocation keeps working — the startup
+/// line names the level, and says plainly that nobody is watching, so a log
+/// read afterwards cannot be mistaken for a session where somebody answered.
 #[test]
-fn a_session_with_no_flag_starts_on_auto_and_says_it_cannot_ask() {
+fn a_session_with_no_flag_starts_sandboxed_and_says_nobody_is_watching() {
     let root = scratch_dir("permissions-default");
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
@@ -876,19 +874,23 @@ fn a_session_with_no_flag_starts_on_auto_and_says_it_cannot_ask() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("permissions: auto"),
-        "auto is the default rung: {stdout}"
+        stdout.contains("sandbox: sandboxed — "),
+        "sandboxed is the default level: {stdout}"
     );
     assert!(
-        stdout.contains("no terminal to ask at"),
+        stdout.contains("nobody is watching, so leaving the sandbox is refused"),
         "a scripted session says so rather than pretending someone answered: {stdout}"
+    );
+    assert!(
+        !stdout.contains("permissions: "),
+        "the retired rung line is gone: {stdout}"
     );
 }
 
-/// The rungs that confirm ordinary work refuse to start where nobody can
-/// answer, rather than stalling on their first call for ten minutes.
+/// `ask` confirms ordinary work, so it refuses to start where nobody can
+/// answer, rather than stalling on its first call for ten minutes.
 #[test]
-fn an_asking_rung_refuses_a_scripted_session() {
+fn sandbox_ask_refuses_a_scripted_session() {
     let root = scratch_dir("permissions-scripted");
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
@@ -904,8 +906,8 @@ fn an_asking_rung_refuses_a_scripted_session() {
             "sess-manual",
             "--task",
             "/handles",
-            "--permissions",
-            "manual",
+            "--sandbox",
+            "ask",
         ])
         .env("ANTHROPIC_BASE_URL", &base_url)
         .output()
@@ -917,9 +919,12 @@ fn an_asking_rung_refuses_a_scripted_session() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("requires an interactive terminal session"),
-        "manual cannot function unattended and says so: {combined}"
+        combined.contains(
+            "--sandbox ask requires an interactive terminal session; scripted calls cannot approve themselves"
+        ),
+        "ask cannot function unattended and says so: {combined}"
     );
+    assert!(!output.status.success(), "{combined}");
 }
 
 #[test]
@@ -1285,7 +1290,6 @@ fn rollback_previews_the_exact_checkpoint_and_headless_confirmation_refuses() {
         "rollback-control",
         &["make a file", "/rollback", "/rollback confirm"],
         &base_url,
-        false,
     );
 
     assert!(
@@ -1568,7 +1572,16 @@ fn a_cell_that_throws_is_answered_and_the_session_continues() {
 /// function the binary does: a second hand-built string here would be the
 /// drift those tests exist to catch.
 fn expected_system_block(root: &std::path::Path) -> String {
-    let profile = sterna::sandbox::profile::Profile::compile(root, None);
+    let mut profile = sterna::sandbox::profile::Profile::compile(root, None);
+    // The binary starts the proxy wherever a command can reach it, and the
+    // prompt's network fact follows; the route's own values are not shown.
+    if sterna::sandbox::proxy::reachable() {
+        profile = profile.with_proxy(sterna::sandbox::profile::ProxyRoute {
+            port: 0,
+            unix: None,
+            env: Vec::new(),
+        });
+    }
     let config = sterna::config::SternaConfig::default();
     let manifest = sterna::session::system_manifest(&profile, &config);
     let agents = sterna::prompt::declarations::AgentRoster {
@@ -2717,7 +2730,6 @@ fn a_failed_supervisor_look_is_recorded_as_failed_not_as_no_nudge() {
         "sess-supervisor-failed-look",
         &["keep going", "/supervisor"],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -3909,7 +3921,6 @@ fn run_session_stdin(
     session_id: &str,
     inputs: &[&str],
     base_url: &str,
-    yolo: bool,
 ) -> std::process::Output {
     use std::process::Stdio;
     let mut command = Command::new(env!("CARGO_BIN_EXE_sterna"));
@@ -3929,9 +3940,6 @@ fn run_session_stdin(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     supply_test_model(&mut command, root);
-    if yolo {
-        command.arg("--yolo");
-    }
     let mut child = command.spawn().unwrap();
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -3958,7 +3966,6 @@ fn a_blank_input_is_not_a_turn_and_never_reaches_the_provider() {
         "sess-blank",
         &["", "   ", "\t", "hi"],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -4002,7 +4009,6 @@ fn an_empty_reply_ends_its_task_without_ending_the_session() {
         "sess-empty-reply",
         &["first task", "second task"],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -4034,17 +4040,17 @@ fn an_empty_reply_ends_its_task_without_ending_the_session() {
     }
 }
 
-/// `--yolo` is the person widening their own grant at session start, and the
-/// model is told so in the same breath: a grant it cannot see is a grant it
-/// plans around by failing.
+/// The model is told the grant in the same breath as the session starts: a
+/// grant it cannot see is a grant it plans around by failing. Every command
+/// line runs inside the sandbox by default, and the system block says so.
 #[test]
-fn yolo_grants_every_command_line_and_the_system_block_says_so() {
-    let root = scratch_dir("yolo-root");
+fn the_system_block_says_every_command_line_runs_inside_the_sandbox() {
+    let root = scratch_dir("sandbox-grant-root");
     fs::write(root.join("CLAUDE.md"), "PROJECT").unwrap();
     let rollout = root.join("rollout.jsonl");
     let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
 
-    let output = run_session_stdin(&root, &rollout, "sess-yolo", &["go"], &base_url, true);
+    let output = run_session_stdin(&root, &rollout, "sess-grant", &["go"], &base_url);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -4055,8 +4061,16 @@ fn yolo_grants_every_command_line_and_the_system_block_says_so() {
     let request: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
     let system = request["system"][0]["text"].as_str().unwrap();
     assert!(
-        system.contains("every command line is admitted"),
-        "system block must state the yolo grant; got:\n{system}"
+        system.contains("every command line\nruns unless a deny rule refuses it"),
+        "system block must state the command grant; got:\n{system}"
+    );
+    assert!(
+        system.contains("every file is readable except secrets"),
+        "system block must state the read grant; got:\n{system}"
+    );
+    assert!(
+        !system.contains("no command may be run at all"),
+        "the retired no-grant sentence is gone; got:\n{system}"
     );
     assert!(
         system.contains("To change existing source, call `context` with"),
@@ -4064,32 +4078,46 @@ fn yolo_grants_every_command_line_and_the_system_block_says_so() {
     );
 }
 
+/// The sandbox level is the one permission flag. The flags it replaced are
+/// refused by the parser rather than quietly accepted and ignored.
 #[test]
-fn os_sandbox_bypass_requires_an_explicit_yolo_grant() {
-    let root = scratch_dir("sandbox-bypass-needs-yolo");
-    let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
-        .arg("session")
-        .arg("--root")
-        .arg(&root)
-        .arg("--task")
-        .arg("go")
-        .arg("--dangerously-bypass-os-sandbox")
-        .env("XDG_CONFIG_HOME", root.join("global-config"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("requires --yolo"), "stderr: {stderr}");
+fn the_retired_permission_flags_are_refused() {
+    let root = scratch_dir("retired-permission-flags");
+    for flag in [
+        &["--yolo"][..],
+        &["--full-access"],
+        &["--dangerously-bypass-os-sandbox"],
+        &["--ask-approval"],
+        &["--permissions", "manual"],
+        &["--mode", "explore"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
+            .arg("session")
+            .arg("--root")
+            .arg(&root)
+            .arg("--task")
+            .arg("go")
+            .args(flag)
+            .env("XDG_CONFIG_HOME", root.join("global-config"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{flag:?} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("unexpected argument '{}'", flag[0])),
+            "{flag:?}: {stderr}"
+        );
+    }
 }
 
-/// The platform gate on the bypass: every platform Sterna has an unconfined
-/// applier for accepts it with `--yolo` and goes on to its ordinary startup.
-/// macOS is one of them since 2026-09-18 — a development machine is the
-/// boundary its owner has already chosen, and refusing them the mode only
-/// moved the work somewhere with no admission checks at all.
+/// The platform gate on `full`: every platform Sterna has an unconfined
+/// applier for accepts it and goes on to its ordinary startup. macOS is one
+/// of them since 2026-09-18 — a development machine is the boundary its
+/// owner has already chosen, and refusing them the level only moved the work
+/// somewhere with no admission checks at all.
 #[test]
-fn os_sandbox_bypass_is_accepted_on_every_platform_with_an_unconfined_applier() {
-    let root = scratch_dir("sandbox-bypass-platform");
+fn sandbox_full_is_accepted_on_every_platform_with_an_unconfined_applier() {
+    let root = scratch_dir("sandbox-full-platform");
     let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
         .arg("session")
         .arg("--root")
@@ -4100,8 +4128,7 @@ fn os_sandbox_bypass_is_accepted_on_every_platform_with_an_unconfined_applier() 
         .arg("fixture-model")
         .arg("--gateway")
         .arg(root.join("no-gateway"))
-        .arg("--yolo")
-        .arg("--dangerously-bypass-os-sandbox")
+        .args(["--sandbox", "full"])
         .env("XDG_CONFIG_HOME", root.join("global-config"))
         .env("INFERENCE_GATEWAY_BIN", root.join("no-gateway"))
         // A closed loopback port: the task fails at its first request, after
@@ -4110,10 +4137,7 @@ fn os_sandbox_bypass_is_accepted_on_every_platform_with_an_unconfined_applier() 
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("requires --yolo"),
-        "--yolo was given: {stderr}"
-    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     if cfg!(any(
         target_os = "linux",
         target_os = "windows",
@@ -4121,156 +4145,156 @@ fn os_sandbox_bypass_is_accepted_on_every_platform_with_an_unconfined_applier() 
     )) {
         assert!(
             !stderr.contains("is supported on"),
-            "the bypass is accepted on this platform: {stderr}"
+            "full is accepted on this platform: {stderr}"
+        );
+        assert!(
+            stdout.contains("sandbox: full — "),
+            "startup went on to name the level: {stdout}{stderr}"
         );
     } else {
         assert!(!output.status.success());
         assert!(
-            stderr.contains("is supported on macOS, Linux and Windows"),
-            "the bypass is refused by platform here: {stderr}"
+            stderr.contains("--sandbox full is supported on macOS, Linux and Windows"),
+            "full is refused by platform here: {stderr}"
         );
     }
 }
 
-/// `--full-access` is the one name for all three halves — the widest
-/// admission profile, the rung that asks nothing, and no OS confinement of
-/// Sterna's own — and it says so in one line a person can act on, naming what
-/// still refuses rather than only shouting.
-#[test]
-fn full_access_is_one_flag_for_all_three_halves_and_says_what_still_holds() {
-    let root = scratch_dir("full-access-one-flag");
-    let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
+/// The startup lines a `full` session prints, whichever route chose it.
+fn full_access_lines(said: &str) {
+    assert!(
+        said.contains("sandbox: full — No sandbox, nothing asks."),
+        "the level line names full: {said}"
+    );
+    assert!(
+        !said.contains("nobody is watching"),
+        "full asks nothing, so an unattended full session has nothing refused for want of a person: {said}"
+    );
+    // The half that does not move, in the same line, by name.
+    assert!(
+        said.contains(
+            "sandbox: full access — Sterna applies no OS confinement to the children it spawns; this machine is the boundary. The deny patterns and the never-grantable set are unchanged."
+        ),
+        "the unconfined half is announced with what still refuses: {said}"
+    );
+}
+
+fn run_full_access_session(root: &Path, global: &Path, flag: bool) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sterna"));
+    command
         .arg("session")
         .arg("--root")
-        .arg(&root)
+        .arg(root)
         .arg("--task")
         .arg("go")
         .arg("--model")
         .arg("fixture-model")
         .arg("--gateway")
         .arg(root.join("no-gateway"))
-        .arg("--full-access")
-        .env("XDG_CONFIG_HOME", root.join("global-config"))
+        .env("XDG_CONFIG_HOME", global)
         .env("INFERENCE_GATEWAY_BIN", root.join("no-gateway"))
-        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let said = format!("{stdout}{stderr}");
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1");
+    if flag {
+        command.args(["--sandbox", "full"]);
+    }
+    let output = command.output().unwrap();
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// `--sandbox full` is one flag for both halves — nothing asks, and Sterna
+/// confines nothing it spawns — and it says so in one line a person can act
+/// on, naming what still refuses rather than only shouting.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+fn sandbox_full_says_what_still_holds() {
+    let root = scratch_dir("sandbox-full-flag");
+    let said = run_full_access_session(&root, &root.join("global-config"), true);
+    full_access_lines(&said);
+}
+
+/// **The same level, set once instead of retyped.** A saved global
+/// `sandbox.level = "full"` reaches a session exactly as the flag does, and
+/// is asserted against the flag's own observable rather than a parallel
+/// assertion that could drift from it.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+fn the_saved_sandbox_level_reaches_a_session_exactly_as_the_flag_does() {
+    let root = scratch_dir("sandbox-level-setting");
+    let global = root.join("global-config");
+    fs::create_dir_all(global.join("sterna")).unwrap();
+    fs::write(
+        global.join("sterna/config.toml"),
+        "[sandbox]\nlevel = \"full\"\n",
+    )
+    .unwrap();
+    let said = run_full_access_session(&root, &global, false);
+    full_access_lines(&said);
+}
+
+/// `sandbox.level` is global only: a project file travels inside a
+/// repository, so its copy is ignored with a notice and the session stays on
+/// the default level.
+#[test]
+fn a_project_files_sandbox_level_is_ignored_with_a_notice() {
+    let root = scratch_dir("sandbox-level-project");
+    fs::create_dir_all(root.join(".sterna")).unwrap();
+    fs::write(
+        root.join(".sterna/config.toml"),
+        "[sandbox]\nlevel = \"full\"\n",
+    )
+    .unwrap();
+    let said = run_full_access_session(&root, &root.join("global-config"), false);
     assert!(
-        !said.contains("requires --yolo"),
-        "--full-access carries its own yolo half: {said}"
+        said.contains("sandbox: sandboxed — "),
+        "the project's level did not apply: {said}"
     );
     assert!(
-        said.contains("permissions: full"),
-        "--full-access starts on the full rung: {said}"
+        !said.contains("sandbox: full access"),
+        "a clone cannot switch confinement off: {said}"
     );
     assert!(
-        said.contains("sandbox: full access"),
-        "the unconfined half must be announced: {said}"
-    );
-    // The half that does not move, in the same line, by name.
-    assert!(
-        said.contains("never-grantable") && said.contains(".ssh"),
-        "the line must say what still refuses: {said}"
+        said.contains("`sandbox.level` is a global setting only and was ignored"),
+        "the person is told why: {said}"
     );
 }
 
-/// **The same three halves, set once instead of retyped.** `--full-access`
-/// existed and shipped, and was reachable only from argv; a person who wanted
-/// it every day had to remember a flag, and a person who set the rung and the
-/// grant in a file got two halves of three with nothing saying so. The
-/// setting is asserted against the flag's own observable -- the startup lines
-/// `full_access_is_one_flag_for_all_three_halves_and_says_what_still_holds`
-/// pins -- rather than against a parallel assertion that could drift from it.
+/// A saved settings file is never broken: the retired
+/// `permissions.full_access = true` is migrated to `sandbox.level = "full"`
+/// in the global file on first load, with one notice that says what to do.
 #[test]
-fn the_full_access_setting_reaches_a_session_exactly_as_the_flag_does() {
-    let root = scratch_dir("full-access-setting");
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+fn a_saved_full_access_grant_is_migrated_to_the_sandbox_level() {
+    let root = scratch_dir("full-access-migrated");
     let global = root.join("global-config");
-    std::fs::create_dir_all(global.join("sterna")).unwrap();
-    std::fs::write(
+    fs::create_dir_all(global.join("sterna")).unwrap();
+    fs::write(
         global.join("sterna/config.toml"),
         "[permissions]\nfull_access = true\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
-        .arg("session")
-        .arg("--root")
-        .arg(&root)
-        .arg("--task")
-        .arg("go")
-        .arg("--model")
-        .arg("fixture-model")
-        .arg("--gateway")
-        .arg(root.join("no-gateway"))
-        .env("XDG_CONFIG_HOME", &global)
-        .env("INFERENCE_GATEWAY_BIN", root.join("no-gateway"))
-        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
-        .output()
-        .unwrap();
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // No flag was passed. All three halves must hold anyway.
-    assert!(said.contains("permissions: full"), "the rung half: {said}");
+    let said = run_full_access_session(&root, &global, false);
     assert!(
-        said.contains("sandbox: --yolo"),
-        "the admission half: {said}"
+        said.contains(
+            "`permissions.full_access = true` is now `sandbox.level = \"full\"`; /sandbox changes it."
+        ),
+        "the migration is announced: {said}"
     );
+    // The session that migrated runs on what it announced.
+    full_access_lines(&said);
+    let saved = fs::read_to_string(global.join("sterna/config.toml")).unwrap();
     assert!(
-        said.contains("sandbox: full access"),
-        "the unconfined half: {said}"
+        !saved.contains("full_access"),
+        "the old word is gone: {saved}"
     );
+    let again = run_full_access_session(&root, &global, false);
+    full_access_lines(&again);
     assert!(
-        said.contains("never-grantable") && said.contains(".ssh"),
-        "and the same line still says what refuses: {said}"
-    );
-}
-
-/// `--full-access` names the `full` rung, so naming a different one beside
-/// it is refused rather than silently resolved — the same rule
-/// `--ask-approval` already has.
-#[test]
-fn full_access_refuses_a_different_permissions_rung_beside_it() {
-    let root = scratch_dir("full-access-ambiguous");
-    let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
-        .arg("session")
-        .arg("--root")
-        .arg(&root)
-        .arg("--task")
-        .arg("go")
-        .arg("--full-access")
-        .arg("--permissions")
-        .arg("manual")
-        .env("XDG_CONFIG_HOME", root.join("global-config"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("ambiguous"), "stderr: {stderr}");
-}
-
-/// Without `--yolo` and without a settings document the sandbox grants
-/// nothing, and the system block must say that rather than leave the model to
-/// discover it one `PermissionDenied` at a time.
-#[test]
-fn without_a_grant_the_system_block_says_no_command_may_run() {
-    let root = scratch_dir("nogrant-root");
-    let rollout = root.join("rollout.jsonl");
-    let (base_url, bodies) = start_fake_provider(vec![ending_reply()]);
-
-    let output = run_session_stdin(&root, &rollout, "sess-nogrant", &["go"], &base_url, false);
-    assert!(output.status.success());
-
-    let bodies = bodies.lock().unwrap();
-    let request: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
-    let system = request["system"][0]["text"].as_str().unwrap();
-    assert!(
-        system.contains("no command may be run at all"),
-        "got:\n{system}"
+        !again.contains("is now `sandbox.level"),
+        "the notice is one-time: {again}"
     );
 }
 
@@ -4292,7 +4316,6 @@ fn slash_model_changes_the_slug_the_next_request_carries() {
         "sess-model-switch",
         &["/model deepseek-v4-flash", "do the thing"],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -4371,7 +4394,6 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         "sess-model-remember",
         &["/model claude-opus-4-8"],
         &base_url,
-        false,
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -4404,7 +4426,6 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         "sess-model-remember-2",
         &["do the thing"],
         &second_url,
-        false,
     );
     let bodies = bodies.lock().unwrap();
     let request: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
@@ -4433,7 +4454,6 @@ fn a_model_slug_with_a_space_is_refused_and_the_active_slug_stands() {
         "sess-model-refuse",
         &["/model claude sonnet 5", "do the thing"],
         &base_url,
-        false,
     );
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("/model expects one model name"),
@@ -4572,7 +4592,6 @@ fn task_after_overflow_keeps_small_provider_context_without_stale_handles() {
         "overflow-new-task",
         &["old oversized task", "fresh task"],
         &base,
-        false,
     );
     assert!(output.status.success());
     let bodies = bodies.lock().unwrap();
@@ -4690,7 +4709,6 @@ fn new_user_requests_get_truthful_model_and_runtime_boundaries() {
             "what are you?",
         ],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -4762,7 +4780,10 @@ fn prompt_write_grants_do_not_include_denied_path_components() {
     );
     let text = sterna::prompt::render_session_facts(&facts);
     assert!(text.contains("deny rules still apply"));
-    assert!(!text.contains("secrets"));
+    assert!(
+        !text.contains("secrets/"),
+        "a denied path component is never listed as writable: {text}"
+    );
 }
 
 /// One system block, two renderings of the same grant, and until 2026-09-18
@@ -4825,7 +4846,6 @@ fn an_identity_answer_after_a_completed_task_does_not_trigger_more_execution() {
             "what are you?",
         ],
         &base_url,
-        false,
     );
     assert!(
         output.status.success(),
@@ -5122,13 +5142,13 @@ fn task_orientation_and_instructions_refresh_without_widening_live_permissions()
             fs::create_dir_all(changed_root.join(".claude")).unwrap();
             fs::write(
                 changed_root.join(".claude/settings.json"),
-                r#"{"permissions":{"allow":["Bash"]}}"#,
+                r#"{"permissions":{"allow":["Write(widened/**)"]}}"#,
             )
             .unwrap();
             fs::create_dir_all(changed_root.join(".sterna")).unwrap();
             fs::write(
                 changed_root.join(".sterna/config.toml"),
-                "[permissions]\nallow = [\"Bash\"]\n",
+                "[permissions]\nallow = [\"Write(widened/**)\"]\n",
             )
             .unwrap();
         }
@@ -5141,7 +5161,6 @@ fn task_orientation_and_instructions_refresh_without_widening_live_permissions()
         "orientation",
         &["first task", "second task"],
         &base,
-        false,
     );
     assert!(
         output.status.success(),
@@ -5163,10 +5182,24 @@ fn task_orientation_and_instructions_refresh_without_widening_live_permissions()
         assert!(system.contains(std::env::consts::OS));
         assert!(system.contains("Cargo.toml"));
         assert!(
-            system.contains("no command may be run at all"),
+            !system.contains("widened"),
             "guidance reload widened frozen permissions: {system}"
         );
     }
+    // The grant the model is told is the one frozen at session start.
+    let sandbox_line = |system: &str| {
+        let start = system.find("Sandbox: ").expect("a Sandbox: line");
+        let end = start
+            + system[start..]
+                .find("network:")
+                .expect("its network clause");
+        system[start..end].to_string()
+    };
+    assert_eq!(
+        sandbox_line(first),
+        sandbox_line(second),
+        "guidance reload changed the stated grant"
+    );
     let resumed = sterna::rollout::resume(&log).unwrap();
     assert!(resumed.system.contains("GUIDANCE_VERSION_TWO"));
     assert!(!resumed.system.contains("GUIDANCE_VERSION_ONE"));
@@ -5191,7 +5224,6 @@ fn a_second_task_resends_the_first_as_an_unchanged_prefix() {
         "stable-prefix",
         &["first task", "second task"],
         &base,
-        false,
     );
     assert!(
         output.status.success(),

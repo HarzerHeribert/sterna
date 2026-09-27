@@ -8,9 +8,6 @@ use std::collections::BTreeMap;
 use crate::spend::Tier;
 use crate::workbench::{Action, ItemKind};
 
-/// The request mode the sandbox enforces; one type, so the mode shown is the
-/// mode enforced.
-pub use crate::sandbox::modes::RequestMode as Mode;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum StatusLine {
     #[default]

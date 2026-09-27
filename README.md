@@ -50,9 +50,11 @@ gateway holds your API keys and subscription logins — they never enter the
 conversation, the transcript or a log — pools several accounts of one kind,
 and translates between the Anthropic, OpenAI and Gemini wire formats.
 
-It also has what you would expect: plan and explore modes, an OS sandbox
-(Seatbelt on macOS, Landlock and seccomp on Linux, an AppContainer on
-Windows), four levels of how often you are asked, background jobs, a to-do
+It also has what you would expect: a wide OS sandbox (Seatbelt on macOS,
+Landlock and seccomp on Linux, an AppContainer on Windows) with package
+registries reachable through an allowed-hosts proxy, one setting for how
+much runs without asking (Ask, Sandboxed or Full access), `/plan` for a
+read-only planning request, background jobs, a to-do
 list, web search and fetch when you enable them, MCP servers, image input,
 rollback of the agent's changes, and resume.
 
