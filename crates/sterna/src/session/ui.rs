@@ -1497,11 +1497,18 @@ fn run(
                             state.compact = !state.compact;
                             continue;
                         }
+                        // The same route as `/sidebar`: saved, noted, and
+                        // one undo away.
                         KeyCode::Char('b') => {
-                            state.sidebar = match state.sidebar {
-                                SidebarVisibility::Hidden => SidebarVisibility::Shown,
-                                _ => SidebarVisibility::Hidden,
+                            let word = match state.sidebar {
+                                SidebarVisibility::Hidden => "show",
+                                _ => "hide",
                             };
+                            workbench.local_command(
+                                &format!("/sidebar {word}"),
+                                &mut state,
+                                &notebook,
+                            );
                             continue;
                         }
                         KeyCode::Char('f') => {
@@ -1702,24 +1709,6 @@ fn run(
                         ended_by("/exit");
                         let _ = answers.inputs.send(Input::Exit);
                         return Ok(());
-                    }
-                    if text.split_whitespace().next() == Some("/statusline") {
-                        let word = text.split_whitespace().nth(1).unwrap_or("");
-                        let said = match crate::settings_session::save_status(&mut state,word) {
-                            Ok(())=>"Status line saved for this project. Selected profile overrides still apply.".into(),
-                            Err(error)=>error,
-                        };
-                        state.note(said);
-                        continue;
-                    }
-                    if text.split_whitespace().next() == Some("/sidebar") {
-                        state.sidebar = match text.split_whitespace().nth(1) {
-                            Some("hide") => SidebarVisibility::Hidden,
-                            Some("show") => SidebarVisibility::Shown,
-                            _ => SidebarVisibility::Auto,
-                        };
-                        state.note("Sidebar: /sidebar auto|show|hide · Ctrl-B toggles");
-                        continue;
                     }
                     busy = true;
                     task_started = Some(Instant::now());

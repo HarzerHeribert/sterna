@@ -293,6 +293,16 @@ impl App {
     /// predicate holds, so a screen that was never brought up to date can
     /// satisfy an absence for entirely the wrong reason. Every absence in
     /// this file goes through here so that trap is paid for once.
+    /// The file a choice is saved to unless Project is chosen in Settings
+    /// (decision 6), in the store's own spelling.
+    fn global_settings(&self) -> std::path::PathBuf {
+        sterna::settings::Store::with_global(
+            &self.root,
+            Some(self.root.join("global-config").join("sterna")),
+        )
+        .unwrap()
+        .path(sterna::settings::Scope::Global)
+    }
     /// The session's first frame is up. The header's model chip is not the
     /// sign: at eighty columns how often it asks and which mode it is in
     /// outrank the model's name, and the name gives way first.
@@ -1708,8 +1718,9 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     app.contains("SETTINGS");
     app.contains("Global");
     app.contains("Project");
-    // The platform's own separator: `.sterna\config.toml` on Windows.
-    app.contains("This project only · .sterna");
+    // It opens on Global (decision 6): a project file is written only when
+    // Project is chosen here.
+    app.contains("Your settings, for every project");
     app.contains("config.toml");
     // Both values are chips, and the one in force carries its mark.
     app.contains("⟨ Off");
@@ -1723,14 +1734,15 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
         "the full path is not on the sheet"
     );
 
-    // Tab switches scope without saving. The destination shown must switch
+    // F6 switches scope without saving. The destination shown must switch
     // with the selected tab, so a Global label cannot conceal a Project
-    // write (or vice versa).
+    // write (or vice versa). The platform's own separator:
+    // `.sterna\config.toml` on Windows.
     app.send(b"\x1b[17~");
-    app.contains("Your settings, for every project");
+    app.contains("This project only · .sterna");
     app.send(b"\x1b");
     app.wait("settings editor closes", |screen| {
-        !screen.contents().contains("for every project")
+        !screen.contents().contains("This project only")
     });
     assert!(!project.exists(), "viewing/cancelling created {project:?}");
     assert!(!global.exists(), "viewing/cancelling created {global:?}");
@@ -1740,12 +1752,12 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
 }
 
 #[test]
-fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
+fn bare_statusline_opens_its_row_and_the_shortcut_saves_globally() {
     let mut app = App::start("http://127.0.0.1:1");
     app.ready();
     let project = app.root.join(".sterna/config.toml");
     std::fs::create_dir_all(project.parent().unwrap()).unwrap();
-    let original = "# retained on cancel\n[ui]\nstatusline = \"full\"\n";
+    let original = "# retained on cancel\n[ui]\ntheme = \"amber\"\n";
     std::fs::write(&project, original).unwrap();
 
     // Opening the editor and closing it again writes nothing: viewing is
@@ -1768,9 +1780,15 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
     // A completed choice saves itself. `/statusline compact` is the same
     // save by its shortest route.
     app.send(b"/statusline compact\r");
-    app.contains("Status line saved for this project");
-    let saved = std::fs::read_to_string(&project).expect("the shortcut writes project settings");
+    app.contains("Status line saved: compact");
+    let saved = std::fs::read_to_string(app.global_settings())
+        .expect("the shortcut writes the global settings");
     assert!(saved.contains("statusline = \"compact\""), "{saved}");
+    assert_eq!(
+        std::fs::read_to_string(&project).unwrap(),
+        original,
+        "the project file is written only when Project is chosen"
+    );
 
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
@@ -1780,11 +1798,11 @@ fn bare_statusline_selector_previews_cancels_and_ctrl_s_saves_project_scope() {
 fn statusline_compact_shortcut_persists_without_contacting_inference() {
     let mut app = App::start("http://127.0.0.1:1");
     app.ready();
-    let project = app.root.join(".sterna/config.toml");
 
     app.send(b"/statusline compact\r");
-    app.contains("Status line saved for this project");
-    let saved = std::fs::read_to_string(&project).expect("shortcut writes project settings");
+    app.contains("Status line saved: compact");
+    let saved = std::fs::read_to_string(app.global_settings())
+        .expect("shortcut writes the global settings");
     assert!(saved.contains("statusline = \"compact\""), "{saved}");
 
     app.send(b"/exit\r");
@@ -2105,7 +2123,7 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.contains("Display");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
-    let saved = std::fs::read_to_string(app.root.join(".sterna/config.toml")).unwrap();
+    let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("amber"), "{saved}");
     app.send(b"\x1b");
     app.contains("keep this draft");
@@ -2143,7 +2161,7 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     // the file, this would still say `default`.
     app.contains("effort low");
     // And it reached the file too, so the next session starts there.
-    let saved = std::fs::read_to_string(app.root.join(".sterna/config.toml")).unwrap();
+    let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("low"), "{saved}");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);

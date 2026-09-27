@@ -1015,7 +1015,8 @@ fn dock_top(
         let w = chrome::width(&text).min(a.width - used);
         row(f, Rect::new(a.x + used, a.y, w, 1), &text, Tone::Accent, t);
         used += w;
-        if let Some((label, _)) = &ui.undo
+        if let Some(change) = ui.changes.last()
+            && ui.offer_undo
             && ui.notice_visible()
         {
             let w = chrome::chip(
@@ -1024,8 +1025,8 @@ fn dock_top(
                 a.x + used,
                 a.y,
                 a.right().saturating_sub(2),
-                &format!("undo {label}"),
-                Action::UndoLive,
+                &format!("undo · {}", change.was),
+                Action::Undo,
                 false,
                 Tone::Normal,
                 ui.press,

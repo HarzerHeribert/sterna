@@ -24,43 +24,16 @@ pub(crate) fn presentation(state: &mut tui::ScreenState, values: &toml::Value) {
         Some("hide") => tui::SidebarVisibility::Hidden,
         _ => tui::SidebarVisibility::Auto,
     };
-    // Off when either key says so: `ui.reduced_motion` predates the level.
-    let reduced = value(values, "ui.reduced_motion")
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false);
-    state.set_motion(if reduced {
-        tui::Motion::Off
-    } else {
+    state.set_motion(
         word("ui.motion")
             .and_then(tui::Motion::parse)
-            .unwrap_or_default()
-    });
+            .unwrap_or_default(),
+    );
     state.stream = word("ui.stream")
         .and_then(tui::Stream::parse)
         .unwrap_or_default();
     state.truecolor = crate::workbench::plumage::truecolor();
 }
-pub(crate) fn save_status(state: &mut tui::ScreenState, word: &str) -> Result<(), String> {
-    let store = Store::new(
-        state
-            .settings_root
-            .as_deref()
-            .ok_or("settings root unavailable")?,
-    )?;
-    let snapshot = store.read(Scope::Local)?;
-    store.save(
-        Scope::Local,
-        &snapshot,
-        &[(
-            "ui.statusline".into(),
-            Some(if word == "hidden" { "hide" } else { word }.into()),
-        )],
-    )?;
-    let loaded = store.load(state.settings_profile.as_deref())?;
-    presentation(state, &loaded.values);
-    Ok(())
-}
-
 pub(crate) fn permissions(root: &Path, argument: Option<&str>) -> Result<String, String> {
     let store = Store::new(root)?;
     if let Some(argument) = argument.filter(|a| !a.trim().is_empty()) {

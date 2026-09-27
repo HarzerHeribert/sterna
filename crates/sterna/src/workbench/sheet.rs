@@ -51,6 +51,11 @@ pub struct Field {
     pub cursor: usize,
     /// Drawn as bullets, never as the text.
     pub secret: bool,
+    /// The value the field opened with, all selected: the first key or
+    /// paste replaces it, and an arrow key keeps it.
+    pub fresh: bool,
+    /// A list: pasted lines become entries rather than being run together.
+    pub list: bool,
 }
 
 /// One row of a sheet.
@@ -272,7 +277,24 @@ impl Sheet {
     /// first actionable row -- never on text and never on a danger.
     pub fn set_items(&mut self, items: Vec<Item>) {
         let focused = self.items.get(self.focus).map(|item| item.id.clone());
+        let editing = self
+            .items
+            .get(self.focus)
+            .and_then(|item| match &item.kind {
+                Kind::Field(field) => Some((item.id.clone(), field.clone())),
+                _ => None,
+            });
         self.items = items;
+        // A field keeps its caret and its selection across a rebuild that
+        // did not change its text.
+        if let Some((id, old)) = editing
+            && let Some(item) = self.items.iter_mut().find(|item| item.id == id)
+            && let Kind::Field(field) = &mut item.kind
+            && field.text == old.text
+        {
+            field.cursor = old.cursor;
+            field.fresh = old.fresh;
+        }
         if !self.placed {
             self.placed = true;
             self.focus = self.opening_focus();
@@ -573,6 +595,14 @@ impl Sheet {
         let Kind::Field(field) = &mut item.kind else {
             return None;
         };
+        let fresh = std::mem::take(&mut field.fresh);
+        if fresh && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) && !ctrl {
+            field.text.clear();
+            field.cursor = 0;
+            if key.code == KeyCode::Backspace {
+                return Some(Outcome::Act(Action::FieldEdited(self.focus)));
+            }
+        }
         let changed = match key.code {
             KeyCode::Char('u') if ctrl => {
                 field.text.clear();
@@ -619,7 +649,7 @@ impl Sheet {
             }
             _ => false,
         };
-        changed.then_some(Outcome::Act(Action::FieldEdited(self.focus)))
+        (changed || fresh).then_some(Outcome::Act(Action::FieldEdited(self.focus)))
     }
 
     fn after_search(&mut self) {
@@ -634,6 +664,20 @@ impl Sheet {
         if let Some(item) = self.items.get_mut(self.focus)
             && let Kind::Field(field) = &mut item.kind
         {
+            let clean = if field.list {
+                text.lines()
+                    .map(|line| line.trim().chars().filter(|c| !c.is_control()))
+                    .map(String::from_iter)
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                clean
+            };
+            if std::mem::take(&mut field.fresh) {
+                field.text.clear();
+                field.cursor = 0;
+            }
             field.text.insert_str(field.cursor, &clean);
             field.cursor += clean.len();
             return Outcome::Act(Action::FieldEdited(self.focus));
@@ -1358,16 +1402,34 @@ fn draw_line(
                     } else {
                         field.text.clone()
                     };
-                    let caret = if focused { "▏" } else { "" };
                     let x = r.x + label_w + 1;
                     let room = r.right().saturating_sub(x + 2) as usize;
-                    chrome::text(
-                        f,
-                        Rect::new(x, r.y, r.right().saturating_sub(x), 1),
-                        &format!("┃{}{caret}", clip(&shown, room)),
-                        if focused { Tone::Strong } else { Tone::Normal },
-                        t,
-                    );
+                    let tone = if focused { Tone::Strong } else { Tone::Normal };
+                    chrome::text(f, Rect::new(x, r.y, 1, 1), "┃", tone, t);
+                    let shown = clip(&shown, room);
+                    if focused && field.fresh && !shown.is_empty() {
+                        // Selected: the next key or paste replaces all of it.
+                        f.render_widget(
+                            ratatui::widgets::Paragraph::new(shown.clone())
+                                .style(super::theme::chip_on(t)),
+                            Rect::new(x + 1, r.y, chrome::width(&shown), 1).intersection(f.area()),
+                        );
+                    } else {
+                        // The caret stands where the next letter goes.
+                        let at = field.text[..field.cursor.min(field.text.len())]
+                            .chars()
+                            .count();
+                        let before: String = shown.chars().take(at).collect();
+                        let after: String = shown.chars().skip(at).collect();
+                        let caret = if focused { "▏" } else { "" };
+                        chrome::text(
+                            f,
+                            Rect::new(x + 1, r.y, r.right().saturating_sub(x + 1), 1),
+                            &format!("{before}{caret}{after}"),
+                            tone,
+                            t,
+                        );
+                    }
                     g.hits.push((r, Action::Sheet(Hit::Item(*i))));
                 }
                 _ => {

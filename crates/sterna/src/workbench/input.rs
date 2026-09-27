@@ -25,10 +25,11 @@ pub enum Effect {
     HandlerOff(String),
 }
 impl Workbench {
-    /// Writes one presentation key to the project's own settings, and says
-    /// whether the file actually took it. A session with no project root is
-    /// not an error here -- the choice still applies to the running screen,
-    /// and the notice says which of the two happened.
+    /// Writes one presentation key to the settings (globally, decision 6),
+    /// puts it on the undo list, and says whether the file took it. A
+    /// session with no project root is not an error here -- the choice
+    /// still applies to the running screen, and the notice says which of
+    /// the two happened.
     fn persist(&mut self, key: &str, value: &str, s: &mut ScreenState) -> bool {
         let Ok(mut p) = super::Preferences::open(s) else {
             return false;
@@ -37,7 +38,47 @@ impl Workbench {
         if saved {
             self.notice = p.notice.clone();
         }
+        if let Some(change) = p.take_change() {
+            self.remember(change);
+        }
         saved
+    }
+    /// Puts a change on the session's undo list, unless it is an undo being
+    /// carried out.
+    pub(crate) fn remember(&mut self, change: super::Change) {
+        if !self.undoing {
+            self.changes.push(change);
+            self.offer_undo = true;
+        }
+    }
+    /// After a save on the open Settings: its change goes on the undo list
+    /// and the command it owes the running session is handed back.
+    fn drain_save(&mut self) -> Option<String> {
+        let (change, live) = match self.preferences_mut() {
+            Some(p) => (p.take_change(), p.take_live()),
+            None => (None, None),
+        };
+        if let Some(change) = change {
+            self.remember(change);
+        }
+        live
+    }
+    /// Takes back the newest change: the same route that made it, run
+    /// backwards, and a notice that names what came back.
+    fn undo_last(&mut self, s: &mut ScreenState, n: &Notebook, busy: bool) -> Effect {
+        let Some(change) = self.changes.pop() else {
+            self.say("Nothing to undo.");
+            return Effect::Consumed;
+        };
+        self.undoing = true;
+        let effect = self.activate(change.back, s, n, busy, true);
+        self.undoing = false;
+        if let Effect::Command(command) = &effect {
+            self.undoing_command = Some(command.clone());
+        }
+        self.offer_undo = false;
+        self.say(format!("Restored: {}.", change.was));
+        effect
     }
     /// Where a rung, mode or effort chosen now is saved: the scope Settings
     /// is open on, else the global settings (decision 6).
@@ -55,6 +96,30 @@ impl Workbench {
     /// is saved here, whichever chip, row or keyboard sent it.
     pub fn sent(&mut self, command: &str, s: &ScreenState) {
         super::facts::saving(s, command, self.scope());
+        // What it replaces goes on the undo list, unless it is an undo.
+        if self.undoing_command.as_deref() == Some(command) {
+            self.undoing_command = None;
+        } else {
+            let words: Vec<_> = command.split_whitespace().collect();
+            let change = match words.as_slice() {
+                ["/effort", word] if crate::wire::Effort::parse(word) != Some(s.effort) => {
+                    Some(super::Change {
+                        was: format!("effort {}", s.effort.name()),
+                        back: Action::Command(format!("/effort {}", s.effort.name())),
+                    })
+                }
+                ["/mode", _] => Some(super::Change {
+                    was: format!("mode {}", super::facts::mode_word(s)),
+                    back: Action::Command(super::facts::mode_command(
+                        s.mode_pinned.then_some(s.mode),
+                    )),
+                }),
+                _ => None,
+            };
+            if let Some(change) = change {
+                self.remember(change);
+            }
+        }
         if let Some(p) = self.preferences_mut() {
             p.refresh();
         }
@@ -73,8 +138,11 @@ impl Workbench {
             p.refresh();
         }
         self.say(notice);
-        if let Some(layer) = self.sheets.last_mut() {
-            layer.sheet.undo = (before != rung).then(|| Action::Rung(before.name().into()));
+        if before != rung {
+            self.remember(super::Change {
+                was: format!("Ask {}", before.label()),
+                back: Action::Rung(before.name().into()),
+            });
         }
     }
     pub fn local_command(&mut self, text: &str, s: &mut ScreenState, n: &Notebook) -> bool {
@@ -92,15 +160,33 @@ impl Workbench {
                 self.open_settings(s);
                 true
             }
+            ["/config"] => {
+                self.open_settings_at(s, 5, None);
+                true
+            }
+            // A word after /settings or /config is a setting to open on.
+            ["/settings" | "/config", words @ ..] => {
+                self.open_on_setting(s, &words.join(" "));
+                true
+            }
+            // Bare, each of these opens on its own row.
+            ["/motion"] => {
+                self.open_settings_at(s, 1, Some("ui.motion"));
+                true
+            }
+            ["/sidebar"] => {
+                self.open_settings_at(s, 1, Some("ui.sidebar"));
+                true
+            }
+            ["/stream"] => {
+                self.open_settings_at(s, 1, Some("ui.stream"));
+                true
+            }
             // A command that names one setting opens where that setting is.
             // Bare `/statusline` used to land on the everyday category with
             // the status line nowhere in sight.
             ["/statusline"] => {
                 self.open_settings_at(s, 1, Some("ui.statusline"));
-                true
-            }
-            ["/config"] => {
-                self.open_settings_at(s, 5, None);
                 true
             }
             ["/diff"] => {
@@ -171,8 +257,8 @@ impl Workbench {
             ["/theme", name] => {
                 match crate::tui::Theme::parse(name) {
                     Some(theme) => {
-                        s.theme = theme;
                         self.persist("ui.theme", theme.name(), s);
+                        s.theme = theme;
                         s.note(format!(
                             "Theme: {} · /theme opens the palette",
                             theme.name()
@@ -184,12 +270,8 @@ impl Workbench {
             }
             ["/motion", word] if crate::tui::Motion::parse(word).is_some() => {
                 let motion = crate::tui::Motion::parse(word).unwrap_or_default();
-                s.set_motion(motion);
-                // The older switch is kept in step, or a saved `true` would
-                // hold every later level at off.
-                let off = (motion == crate::tui::Motion::Off).to_string();
-                self.persist("ui.reduced_motion", &off, s);
                 self.persist("ui.motion", motion.name(), s);
+                s.set_motion(motion);
                 s.note(match motion {
                     crate::tui::Motion::Off => {
                         "Motion reduced: off, nothing moves. /motion full or calm restores it."
@@ -206,22 +288,22 @@ impl Workbench {
                 true
             }
             ["/stream", word @ ("actions" | "code" | "raw")] => {
-                s.stream = crate::tui::Stream::parse(word).unwrap_or_default();
                 self.persist("ui.stream", word, s);
+                s.stream = crate::tui::Stream::parse(word).unwrap_or_default();
                 s.note(format!("Streaming cell: {word} · /stream actions|code|raw"));
                 true
             }
-            ["/stream"] => {
-                s.note("Usage: /stream code | quiet | raw");
+            ["/stream", ..] => {
+                s.note("Usage: /stream actions | code | raw");
                 true
             }
             ["/sidebar", word @ ("auto" | "show" | "hide")] => {
+                self.persist("ui.sidebar", word, s);
                 s.sidebar = match *word {
                     "show" => crate::tui::SidebarVisibility::Shown,
                     "hide" => crate::tui::SidebarVisibility::Hidden,
                     _ => crate::tui::SidebarVisibility::Auto,
                 };
-                self.persist("ui.sidebar", word, s);
                 // The line names the three words and the key, exactly as it
                 // always has: someone who just used one of them is the
                 // likeliest person to want another.
@@ -244,16 +326,25 @@ impl Workbench {
                 word @ ("full" | "compact" | "hidden" | "hide"),
             ] => {
                 let word = if *word == "hide" { "hidden" } else { word };
+                let saved = self.persist("ui.statusline", word, s);
                 s.status_line = match word {
                     "compact" => crate::tui::StatusLine::Compact,
                     "hidden" => crate::tui::StatusLine::Hidden,
                     _ => crate::tui::StatusLine::Full,
                 };
-                if self.persist("ui.statusline", word, s) {
-                    s.note(format!("Status line saved for this project: {word}"));
+                if saved {
+                    s.note(format!("Status line saved: {word}"));
                 } else {
                     s.note(format!("Status line: {word} · this session only"));
                 }
+                true
+            }
+            ["/sidebar", ..] => {
+                s.note("Usage: /sidebar auto | show | hide");
+                true
+            }
+            ["/statusline", ..] => {
+                s.note("Usage: /statusline full | compact | hidden");
                 true
             }
             _ => false,
@@ -271,6 +362,27 @@ impl Workbench {
         }
     }
     /// Opens settings on one category, and on one row of it when named.
+    /// `/settings <word>`: Settings, open on the row the word names -- its
+    /// key, the key's last part or its label, in any case. A word that
+    /// names none still opens Settings, and says so.
+    fn open_on_setting(&mut self, s: &ScreenState, word: &str) {
+        let wanted = word.trim().to_lowercase();
+        let found = crate::settings::specs().iter().find(|spec| {
+            !crate::settings::hidden(spec.key)
+                && (spec.key == wanted
+                    || spec.key.rsplit('.').next() == Some(wanted.as_str())
+                    || spec.label.to_lowercase() == wanted)
+        });
+        match found {
+            Some(spec) => {
+                self.open_settings_at(s, super::settings::category_of(spec), Some(spec.key));
+            }
+            None => {
+                self.open_settings(s);
+                self.say(format!("No setting named {word} · opened Settings"));
+            }
+        }
+    }
     pub fn open_settings_at(&mut self, s: &ScreenState, category: usize, key: Option<&str>) {
         self.open_settings(s);
         if let Some(Layer {
@@ -691,27 +803,19 @@ impl Workbench {
             // strip is the next word before the finger has left the mouse,
             // because `/effort` was always a live control and this is it.
             Action::Effort => {
-                // What it was is offered back beside the notice the step
+                // What it was goes on the undo list on its way out
+                // (`sent`), and is offered beside the notice the step
                 // produces: reversibility over confirmation.
-                self.undo = Some((
-                    format!("effort {}", s.effort.name()),
-                    format!("/effort {}", s.effort.name()),
-                ));
                 let next = super::facts::next_effort(s.effort);
                 return Effect::Command(format!("/effort {}", next.name()));
-            }
-            Action::UndoLive => {
-                if let Some((_, command)) = self.undo.take() {
-                    self.notice.clear();
-                    return Effect::Command(command);
-                }
             }
             Action::Help => self.show(Source::Keys, from_sheet),
             // The dock's fourth chip steps in place, like the effort one.
             Action::Stream => {
-                s.stream = s.stream.next();
-                let word = s.stream.name();
+                let next = s.stream.next();
+                let word = next.name();
                 self.persist("ui.stream", word, s);
+                s.stream = next;
                 self.notice = format!(
                     "streaming cell: {word} — {}",
                     match s.stream {
@@ -758,18 +862,30 @@ impl Workbench {
                     p.notice = e;
                 }
             }
-            Action::Undo => {
+            Action::Undo => return self.undo_last(s, n, busy),
+            Action::Restore(global, keys) => {
+                let restored = super::settings::restore(s, global, &keys);
                 if let Some(p) = self.preferences_mut() {
-                    if let Err(e) = p.undo(s) {
-                        p.notice = e;
-                    }
-                    if let Some(live) = p.take_live() {
-                        return Effect::Command(live);
-                    }
-                } else if let Some(Layer { sheet, .. }) = self.sheets.last_mut()
-                    && let Some(undo) = sheet.undo.take()
-                {
-                    return self.activate(undo, s, n, busy, true);
+                    p.refresh();
+                }
+                match restored {
+                    Ok(Some(command)) => return Effect::Command(command),
+                    Ok(None) => {}
+                    Err(error) => self.say(error),
+                }
+            }
+            Action::UseDefault(i) => {
+                let Some(p) = self.preferences_mut() else {
+                    return Effect::Consumed;
+                };
+                let Some(spec) = p.rows().get(i).copied() else {
+                    return Effect::Consumed;
+                };
+                if let Err(error) = p.save(spec.key, None, s) {
+                    p.notice = error;
+                }
+                if let Some(live) = self.drain_save() {
+                    return Effect::Command(live);
                 }
             }
             Action::Setting(i, value) => return self.setting(i, value, s, busy),
@@ -804,13 +920,13 @@ impl Workbench {
                 let key = self.models().and_then(|m| m.target_key.clone());
                 if let Some(key) = key {
                     self.sheets.pop();
-                    if let Some(p) = self.preferences_mut() {
-                        if let Err(e) = p.save(&key, None, s) {
-                            p.notice = e;
-                        }
-                        if let Some(live) = p.take_live() {
-                            return Effect::Command(live);
-                        }
+                    if let Some(p) = self.preferences_mut()
+                        && let Err(e) = p.save(&key, None, s)
+                    {
+                        p.notice = e;
+                    }
+                    if let Some(live) = self.drain_save() {
+                        return Effect::Command(live);
                     }
                 }
             }
@@ -833,6 +949,7 @@ impl Workbench {
                             {
                                 p.notice = error;
                             }
+                            self.drain_save();
                         } else {
                             self.close_all();
                             return Effect::Command(cmd);
@@ -878,22 +995,39 @@ impl Workbench {
                     ) {
                         self.sheets.pop();
                     }
+                    let before = s.permissions.rung();
                     let notice = super::facts::set_rung(s, rung, self.scope());
                     if let Some(p) = self.preferences_mut() {
                         p.refresh();
                     }
                     self.say(notice);
+                    self.remember(super::Change {
+                        was: format!("Ask {}", before.label()),
+                        back: Action::Rung(before.name().into()),
+                    });
+                }
+            }
+            Action::ConfirmSetting(key, value) => {
+                if matches!(
+                    self.sheets.last().map(|l| &l.source),
+                    Some(Source::Confirm(_))
+                ) {
+                    self.sheets.pop();
+                }
+                if let Some(p) = self.preferences_mut()
+                    && let Err(error) = p.save(&key, Some(value), s)
+                {
+                    p.notice = error;
+                }
+                if let Some(live) = self.drain_save() {
+                    return Effect::Command(live);
                 }
             }
             Action::Theme(theme) => {
-                let before = s.theme;
-                s.theme = theme;
                 self.persist("ui.theme", theme.name(), s);
+                s.theme = theme;
                 self.notice.clear();
                 self.say(format!("Theme is now {}", theme.title()));
-                if let Some(layer) = self.sheets.last_mut() {
-                    layer.sheet.undo = (before != theme).then_some(Action::Theme(before));
-                }
             }
             Action::OpenLink(link) => return Effect::OpenLink(link),
             Action::Copy(text) => return Effect::Copy(text),
@@ -974,15 +1108,17 @@ impl Workbench {
                 }
                 _ => {}
             }
-            if spec.key.starts_with("permissions.") || spec.key == "agents.mode" {
-                p.editing = Some((spec.key.into(), value));
-            } else {
-                if let Err(e) = p.save(spec.key, Some(value), s) {
-                    p.notice = e;
-                }
-                if let Some(live) = p.take_live() {
-                    return Effect::Command(live);
-                }
+            // Full access lifts the sandbox from the next session: it is
+            // confirmed first, on the sheet the Never asks rung uses.
+            if spec.key == "permissions.full_access" && value == "true" {
+                self.push(Source::Confirm("access".into()));
+                return Effect::Consumed;
+            }
+            if let Err(e) = p.save(spec.key, Some(value), s) {
+                p.notice = e;
+            }
+            if let Some(live) = self.drain_save() {
+                return Effect::Command(live);
             }
         } else if spec.kind == crate::settings::Kind::Model {
             if busy {
@@ -998,7 +1134,7 @@ impl Workbench {
             match p.save(&key, Some(buffer), s) {
                 Ok(()) => {
                     p.editing = None;
-                    if let Some(live) = p.take_live() {
+                    if let Some(live) = self.drain_save() {
                         return Effect::Command(live);
                     }
                 }

@@ -26,8 +26,11 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         _ => None,
     };
     let turning_off = ui.turning_off.clone();
+    // The undo chip rides beside the notice the newest change produced.
+    let undo = (ui.offer_undo && !ui.changes.is_empty()).then_some(Action::Undo);
     let Layer { sheet, source, .. } = &mut ui.sheets[depth - 1];
     sheet.root = depth == 1;
+    sheet.undo = undo;
     sheet.aside = 0;
     sheet.tools.clear();
     sheet.total = None;
@@ -178,20 +181,30 @@ fn access(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     ]
 }
 
-fn confirm(sheet: &mut Sheet, rung: &str) -> Vec<Item> {
-    let label = Rung::parse(rung).map_or_else(|| rung.to_string(), |r| r.label().to_string());
+/// The one confirmation sheet, for the Never asks rung (`full`) and for
+/// full access (`access`). It opens on Cancel.
+fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
+    let (label, warning, yes) = if what == "access" {
+        (
+            "Full access".to_string(),
+            "From the next session Sterna applies no OS confinement to the commands it runs; \
+             this machine is the boundary. Denials and approval prompts still apply.",
+            Action::ConfirmSetting("permissions.full_access".into(), "true".into()),
+        )
+    } else {
+        (
+            Rung::parse(what).map_or_else(|| what.to_string(), |r| r.label().to_string()),
+            "This removes approval prompts, not sandbox restrictions.",
+            Action::ConfirmRung(what.to_string()),
+        )
+    };
     sheet.title = "Confirm".into();
     sheet.crumbs = vec![label.clone()];
     vec![
-        Item::info("This removes approval prompts, not sandbox restrictions.").tone(Tone::Warning),
+        Item::info(warning).tone(Tone::Warning),
         Item::info("Nothing is confirmed until you choose it below; Esc goes back unchanged."),
         Item::run("confirm:cancel", "Cancel", Action::Close).inline(),
-        Item::danger(
-            "confirm:yes",
-            format!("Yes · {label}"),
-            Action::ConfirmRung(rung.to_string()),
-        )
-        .inline(),
+        Item::danger("confirm:yes", format!("Yes · {label}"), yes).inline(),
     ]
 }
 
@@ -213,7 +226,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         (
             "F2",
-            "settings, applied as you choose",
+            "settings · choices save themselves; most apply now",
             Some(Action::Settings),
         ),
         ("F3", "which model answers", Some(Action::Models)),

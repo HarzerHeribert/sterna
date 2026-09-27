@@ -108,6 +108,15 @@ fn key(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, k: KeyCode) -> Effe
         false,
     )
 }
+/// Ctrl and a letter, the way a sheet reads it.
+fn ctrl(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, c: char) -> Effect {
+    u.event(
+        &Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+        s,
+        n,
+        false,
+    )
+}
 fn mouse(
     u: &mut Workbench,
     s: &mut ScreenState,
@@ -758,11 +767,25 @@ fn settings_browsing_creates_no_file() {
 #[test]
 fn direct_save_and_undo_use_the_native_store() {
     let (_t, mut s, mut p) = prefs();
+    let before = s.theme;
     p.save("ui.theme", Some("amber".into()), &mut s).unwrap();
     assert_eq!(s.theme, Theme::Amber);
     assert!(std::fs::read_to_string(&p.path).unwrap().contains("amber"));
-    p.undo(&mut s).unwrap();
-    assert!(p.saved("ui.theme").is_none());
+    let mut u = Workbench::default();
+    u.changes.extend(p.take_change());
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    ctrl(&mut u, &mut s, &n, 'z');
+    assert!(u.preferences().unwrap().saved("ui.theme").is_none());
+    assert_eq!(s.theme, before, "the screen takes it back too");
+    assert!(
+        u.top().unwrap().sheet.notice.starts_with("Restored: Theme"),
+        "{}",
+        u.top().unwrap().sheet.notice
+    );
+    ctrl(&mut u, &mut s, &n, 'z');
+    assert_eq!(u.top().unwrap().sheet.notice, "Nothing to undo.");
 }
 #[test]
 fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
@@ -894,7 +917,12 @@ fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
         p.category = category;
         assert!(p.rows().len() <= 8, "category {category}");
     }
-    for spec in sterna::settings::specs() {
+    // Every key a person can choose; not Sterna's own bookkeeping, and not
+    // the retired key the parser still reads.
+    for spec in sterna::settings::specs()
+        .iter()
+        .filter(|spec| !sterna::settings::hidden(spec.key) && spec.key != "limits.task_tokens")
+    {
         p.query = spec.key.into();
         assert!(p.rows().iter().any(|s| s.key == spec.key), "{}", spec.key);
     }
@@ -977,8 +1005,12 @@ fn favorites_picker_assigns_one_slot_and_preserves_other_roles() {
 
 #[test]
 fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
-    let (_temp, mut s, mut p) = prefs();
-    p.switch_scope().unwrap();
+    let (_temp, mut s, p) = prefs();
+    assert_eq!(
+        p.scope,
+        sterna::settings::Scope::Global,
+        "Settings opens on Global"
+    );
     let path = p.path.clone();
     s.model = Some("live-main".into());
     let mut m = navigator();
@@ -1022,7 +1054,13 @@ fn settings_favorite_removal_and_undo_are_atomic() {
     p.save("agents.slots.quick.model", None, &mut s).unwrap();
     assert!(p.loaded.config.agents.slots.is_empty());
     assert_eq!(p.loaded.config.agents.mode, sterna::config::AgentsMode::Off);
-    p.undo(&mut s).unwrap();
+    let mut u = Workbench::default();
+    u.changes.extend(p.take_change());
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    ctrl(&mut u, &mut s, &n, 'z');
+    let p = u.preferences().unwrap();
     assert_eq!(
         p.loaded.config.agents.mode,
         sterna::config::AgentsMode::Roster
@@ -1176,14 +1214,14 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
 #[test]
 fn a_settings_keystroke_stays_inside_the_instant_budget() {
     let (_t, mut s, mut p) = prefs();
-    p.category = 0;
-    p.selected = 1; // Reasoning effort
     // One warm pass first: the first save pays for creating the file.
-    p.cycle(true, &mut s).unwrap();
+    p.save("ui.stream", Some("code".into()), &mut s).unwrap();
     let mut best = std::time::Duration::MAX;
-    for _ in 0..9 {
+    for word in [
+        "actions", "code", "raw", "actions", "code", "raw", "actions", "code", "raw",
+    ] {
         let started = std::time::Instant::now();
-        p.cycle(true, &mut s).unwrap();
+        p.save("ui.stream", Some(word.into()), &mut s).unwrap();
         best = best.min(started.elapsed());
     }
     println!("one settings keystroke, fastest of nine: {best:?}");
@@ -1383,24 +1421,32 @@ fn a_notice_fades_from_the_dock_and_takes_its_undo_with_it() {
     s.effort = sterna::wire::Effort::Medium;
     let mut u = Workbench::default();
     draw(&c, &n, &s, &mut u, 100, 40);
-    click(&mut u, &mut s, &n, Action::Effort);
-    assert!(
-        u.undo.is_some(),
+    let Effect::Command(step) = click(&mut u, &mut s, &n, Action::Effort) else {
+        panic!("the effort chip steps the effort");
+    };
+    // The loop hands the command on; on its way out it joins the undo list.
+    u.sent(&step, &s);
+    assert_eq!(
+        u.changes.last().map(|c| c.was.as_str()),
+        Some("effort medium"),
         "stepping the effort offers the old one back"
     );
-    u.notice = "effort is now low".into();
+    u.notice = "effort is now high".into();
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(screen.contains("effort is now low"), "{screen}");
+    assert!(screen.contains("effort is now high"), "{screen}");
+    assert!(screen.contains("undo · effort medium"), "{screen}");
     assert!(
-        u.geometry.hits.iter().any(|(_, a)| *a == Action::UndoLive),
+        u.geometry.hits.iter().any(|(_, a)| *a == Action::Undo),
         "the undo chip is beside the notice"
     );
     u.notice_at = Some(std::time::Instant::now() - sterna::workbench::NOTICE_LINGER * 2);
     assert!(u.notice_expired());
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(!screen.contains("effort is now low"), "{screen}");
-    assert!(u.notice.is_empty() && u.undo.is_none());
-    assert!(!u.geometry.hits.iter().any(|(_, a)| *a == Action::UndoLive));
+    assert!(!screen.contains("effort is now high"), "{screen}");
+    assert!(u.notice.is_empty() && !u.offer_undo);
+    assert!(!u.geometry.hits.iter().any(|(_, a)| *a == Action::Undo));
+    // The list outlives the notice: Ctrl-Z on a sheet still reaches it.
+    assert_eq!(u.changes.len(), 1);
 }
 
 /// An empty conversation offers what the project itself suggests, as chips
@@ -2479,5 +2525,289 @@ fn the_sidebar_splits_effort_from_helpers() {
     assert!(
         !side(&Action::Helper(1, 0)).is_empty(),
         "the helper line opens its lane"
+    );
+}
+
+/// Backspace edits a search and nothing else: with the search empty it does
+/// nothing at all, and never unsets the row under the focus.
+#[test]
+fn backspace_on_an_empty_search_never_resets_a_setting() {
+    let (_t, mut s, mut p) = prefs();
+    p.save("ui.theme", Some("rose".into()), &mut s).unwrap();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    for k in [
+        KeyCode::Char('m'),
+        KeyCode::Char('o'),
+        KeyCode::Backspace,
+        KeyCode::Backspace,
+        KeyCode::Backspace,
+    ] {
+        key(&mut u, &mut s, &n, k);
+        draw(&c, &n, &s, &mut u, 110, 40);
+    }
+    assert_eq!(
+        u.preferences().unwrap().saved("ui.theme").as_deref(),
+        Some("rose")
+    );
+}
+
+/// Settings shows what the running session uses now: an effort a chip set,
+/// never saved, is the lit value, and the row says it is not saved.
+#[test]
+fn settings_show_what_the_session_is_using_now() {
+    let (_t, mut s, p) = prefs();
+    assert_eq!(p.scope, sterna::settings::Scope::Global, "decision 6");
+    s.effort = sterna::wire::Effort::Medium;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let sheet = &u.top().unwrap().sheet;
+    let row = sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:session.effort")
+        .unwrap();
+    let workbench::ItemKind::Value { values, current } = &row.kind else {
+        panic!("{row:?}");
+    };
+    assert_eq!(current.map(|i| values[i].0.as_str()), Some("medium"));
+    u.top_mut()
+        .unwrap()
+        .sheet
+        .focus_id("setting:session.effort");
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:session.effort")
+        .unwrap()
+        .clone();
+    assert!(row.detail.contains("not saved"), "{}", row.detail);
+}
+
+/// Full access is global only: in Project scope its row says why it cannot
+/// be set, and in Global scope turning it on is confirmed first.
+#[test]
+fn full_access_is_global_only_and_confirmed() {
+    let (_t, mut s, mut p) = prefs();
+    p.switch_scope().unwrap();
+    assert_eq!(p.scope, sterna::settings::Scope::Local);
+    p.category = 5;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 60);
+    let at = |u: &Workbench| {
+        u.top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .position(|item| item.id == "setting:permissions.full_access")
+            .unwrap()
+    };
+    let item = at(&u);
+    assert_eq!(
+        u.top().unwrap().sheet.items[item].disabled.as_deref(),
+        Some("Global only · F6 switches to Global")
+    );
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0)));
+    draw(&c, &n, &s, &mut u, 110, 60);
+    let item = at(&u);
+    assert!(u.top().unwrap().sheet.items[item].disabled.is_none());
+    // Off, On: the next value.
+    u.top_mut()
+        .unwrap()
+        .sheet
+        .focus_id("setting:permissions.full_access");
+    draw(&c, &n, &s, &mut u, 110, 60);
+    key(&mut u, &mut s, &n, KeyCode::Right);
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert!(
+        u.preferences()
+            .unwrap()
+            .saved("permissions.full_access")
+            .is_none(),
+        "nothing is saved before the confirmation"
+    );
+}
+
+/// `/settings <word>` opens on the row the word names; a word that names
+/// nothing still opens Settings, and says so.
+#[test]
+fn a_setting_named_after_the_command_is_where_settings_opens() {
+    let (_t, mut s, _p) = prefs();
+    let n = Notebook::default();
+    let mut u = Workbench::default();
+    assert!(u.local_command("/settings theme", &mut s, &n));
+    let p = u.preferences().unwrap();
+    assert_eq!(p.category, 1, "Display");
+    assert_eq!(
+        u.top().unwrap().sheet.prefer.as_deref(),
+        Some("setting:ui.theme")
+    );
+    assert!(u.local_command("/config nothing-here", &mut s, &n));
+    assert!(u.preferences().is_some());
+    assert_eq!(
+        u.top().unwrap().sheet.notice,
+        "No setting named nothing-here · opened Settings"
+    );
+    assert!(u.local_command("/motion", &mut s, &n));
+    assert_eq!(
+        u.top().unwrap().sheet.prefer.as_deref(),
+        Some("setting:ui.motion")
+    );
+}
+
+/// A field opens with its value selected, so a paste replaces it, and a
+/// pasted list becomes one entry a line.
+#[test]
+fn a_pasted_list_replaces_the_field_one_entry_a_line() {
+    let (_t, mut s, mut p) = prefs();
+    p.save("web.allow_domains", Some("old.example".into()), &mut s)
+        .unwrap();
+    p.category = 5;
+    let row = p
+        .rows()
+        .iter()
+        .position(|spec| spec.key == "web.allow_domains")
+        .unwrap();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 60);
+    assert!(row > 0);
+    u.top_mut()
+        .unwrap()
+        .sheet
+        .focus_id("setting:web.allow_domains");
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    draw(&c, &n, &s, &mut u, 110, 60);
+    u.event(
+        &Event::Paste("a.example\n\n  b.example \n".into()),
+        &mut s,
+        &n,
+        false,
+    );
+    draw(&c, &n, &s, &mut u, 110, 60);
+    let item = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:web.allow_domains")
+        .unwrap()
+        .clone();
+    let workbench::ItemKind::Field(field) = &item.kind else {
+        panic!("{item:?}");
+    };
+    assert_eq!(field.text, "a.example, b.example");
+}
+
+/// Advanced holds only what no other category does, and nothing Sterna
+/// writes for itself; the thresholds are their own section.
+#[test]
+fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
+    let (_t, _, mut p) = prefs();
+    let mut elsewhere = std::collections::BTreeSet::new();
+    for category in [0, 1, 2, 3, 4, 6] {
+        p.category = category;
+        elsewhere.extend(p.rows().iter().map(|spec| spec.key));
+    }
+    p.category = 5;
+    let advanced: Vec<_> = p.rows().iter().map(|spec| spec.key).collect();
+    for key in &advanced {
+        assert!(!elsewhere.contains(key), "{key} is repeated");
+    }
+    for key in ["wizard.seen", "legacy.imported", "limits.task_tokens"] {
+        assert!(
+            !advanced.contains(&key) && !elsewhere.contains(key),
+            "{key}"
+        );
+    }
+    p.category = 6;
+    assert!(
+        p.rows()
+            .iter()
+            .all(|spec| spec.kind == sterna::settings::Kind::Float)
+    );
+    assert!(
+        p.rows()
+            .iter()
+            .any(|spec| spec.key == "decisions.hold_above")
+    );
+}
+
+/// One undo list for the session: a rung chosen on the Ask sheet comes back
+/// with Ctrl-Z, and the notice names what came back.
+#[test]
+fn one_undo_list_takes_back_a_rung_and_names_it() {
+    use sterna::permissions::Rung;
+    let (_t, mut s, _p) = prefs();
+    let (c, n, _) = fixture();
+    let before = s.permissions.rung();
+    let mut u = Workbench::default();
+    u.open(Source::Ask);
+    draw(&c, &n, &s, &mut u, 100, 40);
+    click_item(&mut u, &mut s, &n, "rung:manual");
+    assert_eq!(s.permissions.rung(), Rung::Manual);
+    draw(&c, &n, &s, &mut u, 100, 40);
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(_, a)| *a == Action::Sheet(Hit::Undo)),
+        "the undo chip rides beside the notice"
+    );
+    ctrl(&mut u, &mut s, &n, 'z');
+    assert_eq!(s.permissions.rung(), before);
+    assert_eq!(
+        u.top().unwrap().sheet.notice,
+        format!("Restored: Ask {}.", before.label())
+    );
+    assert!(u.changes.is_empty(), "an undo is not itself a change");
+}
+
+/// Saved globally under a project that sets the same key, a choice does not
+/// win here: the row says so before the save and the notice says so after.
+#[test]
+fn a_global_save_the_project_overrides_says_so() {
+    let (t, mut s, mut p) = prefs();
+    let project = t.0.join(".sterna");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("config.toml"), "[ui]\ntheme = \"rose\"\n").unwrap();
+    p.refresh();
+    assert_eq!(p.scope, sterna::settings::Scope::Global);
+    p.save("ui.theme", Some("ice".into()), &mut s).unwrap();
+    assert_eq!(
+        p.notice,
+        "Theme is saved globally; this project sets rose, which wins here."
+    );
+    p.category = 1;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let (c, n, _) = fixture();
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:ui.theme")
+        .unwrap()
+        .clone();
+    assert!(
+        row.detail.starts_with("This project sets rose"),
+        "{}",
+        row.detail
     );
 }

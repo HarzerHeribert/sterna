@@ -310,7 +310,7 @@ impl Prompts {
                         field: sheet::Field {
                             cursor: text.len(),
                             text,
-                            secret: false,
+                            ..sheet::Field::default()
                         },
                     });
                     return Done::Redraw;

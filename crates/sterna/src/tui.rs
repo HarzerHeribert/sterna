@@ -528,6 +528,10 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 ("/motion".to_string(), "full, calm or off · how much moves"),
                 (
+                    "/stream".to_string(),
+                    "actions, code or raw · what a cell shows while it is written",
+                ),
+                (
                     "/cells".to_string(),
                     "inspect code and real results by cell",
                 ),

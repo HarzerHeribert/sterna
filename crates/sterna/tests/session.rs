@@ -7379,6 +7379,56 @@ fn a_saved_voice_is_removed_and_sterna_starts() {
     assert!(!stdout.contains("ui.voice"), "told only once: {stdout}");
 }
 
+/// `ui.reduced_motion` is gone -- motion off is the one switch. A file that
+/// still says `reduced_motion = true` starts, is told once what does the
+/// same now, and loses the line.
+#[test]
+fn a_saved_reduced_motion_is_removed_and_says_what_replaces_it() {
+    let root = scratch_dir("retired-reduced-motion");
+    fs::create_dir_all(root.join(".sterna")).unwrap();
+    let config = root.join(".sterna/config.toml");
+    fs::write(&config, "[ui]\nreduced_motion = true\ntheme = \"amber\"\n").unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_sterna"))
+            .arg("session")
+            .arg("--root")
+            .arg(&root)
+            .arg("--rollout")
+            .arg(root.join("rollout.jsonl"))
+            .arg("--model")
+            .arg(sterna::wire::MODEL)
+            .env("ANTHROPIC_BASE_URL", refused_base_url())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a saved reduced_motion stopped sterna:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("`ui.reduced_motion = true` is no longer a setting")
+            && stdout.contains("/motion off"),
+        "{stdout}"
+    );
+    let saved = fs::read_to_string(&config).unwrap();
+    assert!(!saved.contains("reduced_motion"), "{saved}");
+    assert!(
+        saved.contains("amber"),
+        "the rest of the file is kept: {saved}"
+    );
+    let again = run();
+    let stdout = String::from_utf8_lossy(&again.stdout);
+    assert!(again.status.success(), "{stdout}");
+    assert!(
+        !stdout.contains("reduced_motion"),
+        "told only once: {stdout}"
+    );
+}
+
 /// `/login custom` is one form: the URL, what it speaks, and a key. The
 /// gateway is told to add the endpoint and is handed the key on stdin --
 /// never in argv, where any process could read it.

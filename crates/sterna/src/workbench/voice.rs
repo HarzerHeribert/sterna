@@ -103,11 +103,11 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
 pub fn hint(n: usize) -> &'static str {
     const HINTS: [&str; 8] = [
         "Shift-Tab changes how often Sterna asks before it acts",
-        "F2 opens settings · every choice there applies to this session now",
+        "F2 opens settings · choices save themselves; most apply now",
         "Ctrl-T opens the instruments · Esc closes them",
         "Click any control in the top bar to change it",
         "Esc once stops after the current cell · twice cancels the call",
-        "Ctrl-B shows or hides the session card · Ctrl-F hides the chrome",
+        "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
         "/diff opens the last cell's changes · F4 does the same",
         "? lists every key · / for commands · @ for a path in this project",
     ];

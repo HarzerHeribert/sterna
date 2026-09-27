@@ -411,15 +411,6 @@ static SPECS: &[SettingSpec] = &[
         basic: true,
         restart: false,
     },
-    SettingSpec {
-        key: "ui.reduced_motion",
-        label: "Reduced motion",
-        description: "Freezes every animation, the same as motion off. Nothing is hidden by it; the same words stay on screen.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: true,
-        restart: false,
-    },
     // -- advanced runtime keys --------------------------------------------
     SettingSpec {
         key: "helpers.effort.find",
@@ -990,7 +981,20 @@ pub fn spec(key: &str) -> Option<&'static SettingSpec> {
 const RETIRED_KEYS: &[(&str, &str)] = &[
     ("ui.look", "the bird lives in the parrot themes now: /theme"),
     ("ui.voice", "Sterna speaks one plain voice with every theme"),
+    (
+        "ui.reduced_motion",
+        "motion off freezes every animation the same way: /motion off",
+    ),
 ];
+
+/// Keys Sterna writes for itself. They load like any other and are never
+/// offered as a choice.
+const HIDDEN: &[&str] = &["wizard.seen", "legacy.imported"];
+
+/// Whether `key` is Sterna's own bookkeeping rather than a choice.
+pub fn hidden(key: &str) -> bool {
+    HIDDEN.contains(&key)
+}
 
 /// Where a removed setting's job went, if `key` is one.
 pub fn retired_key(key: &str) -> Option<&'static str> {

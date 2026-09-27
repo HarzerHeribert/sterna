@@ -61,7 +61,14 @@ pub enum Action {
     /// the one gesture that should have done nothing was the one that
     /// changed which file a save would land in.
     Scope(bool),
+    /// Take back the last change on the session's undo list.
     Undo,
+    /// Put these keys back as they were in one scope (`true` is Global):
+    /// what taking back a settings save does.
+    Restore(bool, Vec<(String, Option<String>)>),
+    /// Remove the settings row's value from the scope Settings shows, so
+    /// the inherited or built-in one applies.
+    UseDefault(usize),
     Slot(Option<String>),
     Model(usize),
     ChooseModel,
@@ -73,6 +80,9 @@ pub enum Action {
     Rung(String),
     /// The confirmed half of a dangerous rung change.
     ConfirmRung(String),
+    /// The confirmed half of a dangerous settings save: the key and value,
+    /// saved to the scope Settings shows.
+    ConfirmSetting(String, String),
     Sources,
     Scores,
     /// Step the reasoning effort one place along its own ladder, in place.
@@ -85,9 +95,6 @@ pub enum Action {
     SettingsAt(usize),
     /// The one-screen sheet of every key.
     Help,
-    /// Take back the last live change the dock made, while its notice is
-    /// still up.
-    UndoLive,
     /// Step what the screen shows of a cell while it is being written.
     Stream,
     /// A theme, applied at once; the sheet stays open.
@@ -181,10 +188,20 @@ pub enum Source {
     Settings(Box<Preferences>),
     Models(Box<Navigator>),
     /// A panel the session sent.
-    Panel(Panel),
+    Panel(Box<Panel>),
     /// The whole list of values of the Value row with this id on the layer
     /// under it, for when they did not fit in its row.
     Fold(String),
+}
+
+/// One change on the undo list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    /// What comes back, in the words the screen uses: `Theme ice`,
+    /// `effort medium`.
+    pub was: String,
+    /// What brings it back.
+    pub back: Action,
 }
 
 /// One open surface: its sheet and what builds its rows.
@@ -214,9 +231,19 @@ pub struct Workbench {
     pub anchor: Option<((usize, usize), String)>,
     pub last_scrollback: usize,
     pub jump_cell: Option<usize>,
-    /// The last live change a dock chip made -- what to call it, and the
-    /// command that takes it back -- offered beside its notice.
-    pub undo: Option<(String, String)>,
+    /// **One undo list for the whole session**, newest last: every change a
+    /// sheet, a chip, a settings row or a command made, and how to take it
+    /// back. Ctrl-Z on a sheet and the undo chip beside a notice both take
+    /// the newest.
+    pub changes: Vec<Change>,
+    /// Whether the newest change is the one the notice on screen is about,
+    /// so its undo chip rides beside that notice and no other.
+    pub offer_undo: bool,
+    /// An undo is being carried out: what it does is not itself a change.
+    pub(crate) undoing: bool,
+    /// The command an undo sent to the session, which is not a change either
+    /// when it comes back through [`Workbench::sent`].
+    pub(crate) undoing_command: Option<String>,
     /// When [`Workbench::notice`] was last set, so it can fade.
     pub notice_at: Option<std::time::Instant>,
     pub shown_notice: String,
@@ -320,7 +347,7 @@ impl Workbench {
             .iter_mut()
             .rev()
             .find_map(|layer| match &mut layer.source {
-                Source::Panel(panel) if panel.title == title => Some(panel),
+                Source::Panel(panel) if panel.title == title => Some(panel.as_mut()),
                 _ => None,
             })
     }
@@ -338,7 +365,7 @@ impl Workbench {
             self.notice.clear();
             self.shown_notice.clear();
             self.notice_at = None;
-            self.undo = None;
+            self.offer_undo = false;
         }
     }
     pub fn notice_visible(&self) -> bool {
@@ -400,7 +427,7 @@ impl Workbench {
             model.select_current();
             Source::Models(Box::new(model))
         } else {
-            Source::Panel(panel)
+            Source::Panel(Box::new(panel))
         };
         // The same panel again -- a sign-in that redraws while it waits --
         // replaces itself, keeping the row a person is on.

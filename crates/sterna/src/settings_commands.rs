@@ -220,7 +220,7 @@ fn help() -> String {
 fn type_hint(key: &str) -> &'static str {
     if key == "permissions.allow" || key == "permissions.deny" {
         "array of strings"
-    } else if key.ends_with(".enabled") || key == "ui.reduced_motion" {
+    } else if key.ends_with(".enabled") {
         "boolean"
     } else if key.starts_with("limits.") || key.ends_with(".every") || key.ends_with(".parallelism")
     {

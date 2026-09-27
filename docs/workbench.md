@@ -93,9 +93,10 @@ from photographs; the credits are in the [README](../README.md#art).
   helper evidence are never muted; foreground roles are normal, accent,
   failure, warning, success and muted technical detail.
 - **Plain copy.** Say what happened in plain words, in one voice. No puns.
-- **Motion is decoration, not state.** `ui.motion` (full, calm, off) and
-  `ui.reduced_motion` freeze decoration only; real state and elapsed times
-  stay visible.
+- **Motion is decoration, not state.** `ui.motion` (full, calm, off)
+  freezes decoration only; real state and elapsed times stay visible. The
+  retired `ui.reduced_motion` is removed from a settings file with a
+  one-time notice that names `/motion off`.
 - **Unknown stays unknown.** A missing measurement, an unfinished helper or
   a context window nobody reported is shown as unknown, never as zero.
 - **The diff is this cell's.** Before/after this cell, not against `HEAD`
