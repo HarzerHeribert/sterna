@@ -350,7 +350,7 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
                 "browse models by agent, provider or intelligence"
             ),
             ("/motion".into(), "full, calm or off · how much moves"),
-            ("/mode".into(), "execute, explore (reads only) or plan"),
+            ("/mode".into(), "Build, Explore (reads only), Plan or auto"),
             ("/mouse".into(), "release or recapture the mouse · Ctrl-G")
         ]
     );
