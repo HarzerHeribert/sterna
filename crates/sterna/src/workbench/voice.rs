@@ -94,6 +94,12 @@ pub const BETWEEN_TURNS: &str = "Available when this turn ends · Esc stops it";
 pub const NEXT_REQUEST: &str = "Saved · applies from this turn's next request";
 /// A message held until the session is free.
 pub const QUEUED: &str = "Queued for when this turn ends · Esc takes the last one back";
+/// Ctrl-C over a draft, between turns.
+pub const DRAFT_CLEARED: &str = "Draft cleared · Ctrl-Z brings it back";
+/// Ctrl-C on an empty composer, between turns.
+pub const QUIT_ARMED: &str = "Ctrl-C again within 2 s to quit";
+/// Ctrl-D while the session is busy.
+pub const CTRL_D_BUSY: &str = "Ctrl-D quits between turns · /exit stops this turn and quits";
 /// Ctrl-C while a turn runs.
 pub const CTRL_C_STOPPING: &str = "Stopping · Ctrl-C again within 2 s quits";
 /// The three lines beside the bird inside a running cell: what is happening,

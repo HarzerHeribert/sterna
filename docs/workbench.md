@@ -38,7 +38,10 @@ takes precedence over every other action.
 Mouse first, one interaction model: everything is clickable, and every
 surface behaves like every other.
 
-- A click acts on **release**; a drag selects and copies text instead.
+- A click acts on **release**; a drag selects and copies text instead. A
+  selection stays inside the region it began in (the conversation, the
+  sidebar or the composer), stays on its text while the conversation
+  scrolls, copies a card's text without its frame, and goes on a resize.
 - The wheel scrolls the open surface or the conversation, never both.
   Scrolling up stops following new output; *Latest* returns to the live
   edge.
@@ -70,7 +73,8 @@ including a chip that replaced the draft. `/` offers commands and `@`
 offers this project's paths in one popup: ↑↓, Ctrl-P/N or the wheel move
 through it, Tab or Enter takes a row, a click takes it too, and Esc puts
 it away. A draft taller than five lines says how much is above or below.
-| Ctrl-C | copy a selection; otherwise stop the running task (twice within 2 s quits) |
+| Ctrl-C | in this order: copy a selection (and put it away); stop a running turn; clear the draft (Ctrl-Z brings it back); on an empty composer, say that a second Ctrl-C within 2 s quits |
+| Ctrl-D | on an empty composer between turns, quit; during a turn it says so |
 | Esc | while a turn runs: take back the last queued message, else stop after this cell; again cancels the call in flight |
 
 A message sent while a turn runs is held in Sterna's queue and sent when

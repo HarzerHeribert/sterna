@@ -1310,7 +1310,7 @@ pub fn render_screen(
     // cells, so what is copied is exactly what is on the screen.
     if let Some(span) = state.selection.filter(|span| !span.is_empty()) {
         let area = frame.area();
-        selection::draw(frame.buffer_mut(), area, span);
+        selection::draw(frame.buffer_mut(), area, span, 0);
     }
 }
 

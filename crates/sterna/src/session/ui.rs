@@ -753,6 +753,9 @@ fn run(
     let mut last_drawn = Instant::now();
     let mut last_tick = Instant::now();
     let mut clock = Clock::default();
+    // When an idle Ctrl-C armed the quit: a second one within the window
+    // ends the session, and the notice that says so goes when it lapses.
+    let mut quit_armed: Option<Instant> = None;
     let mut helper_clocks: HashMap<(usize, usize), Instant> = HashMap::new();
     let mut previous_rows = 0usize;
     let mut viewport_height = 10usize;
@@ -1013,6 +1016,13 @@ fn run(
         }
         // A notice that has had its time on the dock's edge is cleared by
         // the next frame, and nothing else would draw one.
+        if quit_armed.is_some_and(|at| at.elapsed() >= super::DOUBLE_INTERRUPT_WINDOW) {
+            quit_armed = None;
+            if state.notice.as_deref() == Some(crate::workbench::voice::QUIT_ARMED) {
+                state.notice = None;
+            }
+            dirty = true;
+        }
         if workbench.notice_expired() {
             dirty = true;
         }
@@ -1473,21 +1483,26 @@ fn run(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
+                        // **One Ctrl-C, one meaning**, in this order. A
+                        // selection was copied before this, and a pending
+                        // approval took the key before that. A turn is
+                        // interrupted; a draft is cleared, and Ctrl-Z brings
+                        // it back; an empty composer arms the quit.
                         KeyCode::Char('c') => {
-                            if !busy && !editor.text.is_empty() {
+                            if busy && state.activity.working() {
+                                super::INTERRUPT.store(true, Ordering::SeqCst);
+                                state.stopping = true;
+                                steer.request_stop(tui::Stopper::Interrupt);
+                                state.note(crate::workbench::voice::CTRL_C_STOPPING);
+                            } else if !editor.text.is_empty() {
                                 editor.clear();
+                                state.note(crate::workbench::voice::DRAFT_CLEARED);
                             } else {
                                 super::INTERRUPT.store(true, Ordering::SeqCst);
-                                // Mid-turn it says what it did, as Escape
-                                // does: the call in flight is cancelled and
-                                // the turn stops at its boundary.
-                                if busy && state.activity.working() {
-                                    state.stopping = true;
-                                    steer.request_stop(tui::Stopper::Interrupt);
-                                    state.note(crate::workbench::voice::CTRL_C_STOPPING);
-                                    dirty = true;
-                                }
+                                state.notice = Some(crate::workbench::voice::QUIT_ARMED.into());
+                                quit_armed = Some(Instant::now());
                             }
+                            dirty = true;
                             continue;
                         }
                         KeyCode::Char('t') => {
@@ -1538,6 +1553,10 @@ fn run(
                             ended_by("Ctrl-D on an empty prompt");
                             let _ = answers.inputs.send(Input::Exit);
                             return Ok(());
+                        }
+                        KeyCode::Char('d') if editor.text.is_empty() => {
+                            state.note(crate::workbench::voice::CTRL_D_BUSY);
+                            continue;
                         }
                         _ => {}
                     }

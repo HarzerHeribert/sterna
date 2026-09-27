@@ -2302,6 +2302,50 @@ fn the_keyboard_protocol_is_asked_for_and_given_back() {
     assert!(emitted(&app.bytes, b"\x1b[<1u"), "the flags were popped");
 }
 
+/// Ctrl-C clears a draft and says Ctrl-Z brings it back; on an empty
+/// composer it says a second one quits, and the notice lapses with the
+/// window.
+#[test]
+fn ctrl_c_says_what_it_did_to_a_draft_and_what_a_second_one_does() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a careful draft");
+    app.contains("a careful draft");
+    app.send(b"\x03");
+    app.contains("Draft cleared · Ctrl-Z brings it back");
+    app.send(b"\x1a");
+    app.contains("a careful draft");
+    app.send(b"\x15");
+    app.send(b"\x03");
+    app.contains("Ctrl-C again within 2 s to quit");
+    thread::sleep(Duration::from_millis(2300));
+    app.refute(
+        "the quit notice lapses with its window",
+        "within 2 s to quit",
+    );
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Ctrl-D while a turn runs says what it would do and when.
+#[test]
+fn ctrl_d_mid_turn_says_it_waits_for_the_turn() {
+    let (base, requests, _release) = serving_provider(UNFINISHED);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"a long task\r");
+    let _ = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    app.send(b"\x04");
+    app.contains("Ctrl-D quits between turns");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 /// Esc puts the command popup away and a second Esc clears the slash word;
 /// Enter on a command typed in full runs that command, not a longer one.
 #[test]

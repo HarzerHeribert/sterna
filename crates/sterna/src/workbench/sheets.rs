@@ -274,7 +274,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         (
             "Ctrl-C",
-            "copy a selection · else stop · twice on an empty prompt quits",
+            "copy a selection · else stop a turn · else clear the draft · twice quits",
             None,
         ),
         (

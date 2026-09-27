@@ -143,6 +143,8 @@ pub struct Geometry {
     pub composer: Rect,
     /// Where the composer's popup is drawn, when it is.
     pub popup: Option<Rect>,
+    /// Where the sidebar is drawn, when it is.
+    pub sidebar: Option<Rect>,
     pub local: Option<Rect>,
     pub hits: Vec<(Rect, Action)>,
     pub rows: usize,

@@ -6,6 +6,7 @@
 use super::{Action, CellTab, Layer, Outcome, Preferences, Source, Workbench};
 use crate::tui::{Notebook, ScreenState, Selection};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -378,13 +379,35 @@ impl Workbench {
             _ => false,
         }
     }
+    /// A selection starting at `anchor`: held to the region the anchor fell
+    /// in, and, in the transcript, to the transcript's rows as they scroll.
+    fn selection_from(&self, anchor: (u16, u16), head: &crossterm::event::MouseEvent) -> Selection {
+        let g = &self.geometry;
+        let inside = |r: Rect| super::contains(r, anchor.0, anchor.1);
+        let region = [Some(g.transcript), g.sidebar, Some(g.composer)]
+            .into_iter()
+            .flatten()
+            .find(|r| inside(*r));
+        Selection {
+            anchor,
+            head: (head.column, head.row),
+            region,
+            top: (region == Some(g.transcript)).then_some(g.start),
+        }
+    }
+    /// The text under the selection, and the selection put away.
+    fn take_selected_text(&self, s: &mut ScreenState) -> String {
+        let copied = self.selected_text(s);
+        s.selection.take();
+        copied
+    }
     /// The text under the selection, read off the last drawn screen.
     fn selected_text(&self, s: &ScreenState) -> String {
         match (self.geometry.screen.as_ref(), s.selection) {
             (Some(screen), Some(selection)) if !selection.is_empty() => {
                 let mut screen = screen.clone();
                 let area = screen.area;
-                crate::tui::draw_selection(&mut screen, area, selection)
+                crate::tui::draw_selection(&mut screen, area, selection, self.geometry.start)
             }
             _ => String::new(),
         }
@@ -462,10 +485,11 @@ impl Workbench {
                             && self.sheets.is_empty()
                         {
                             self.dragged = true;
-                            s.selection = Some(Selection {
-                                anchor,
-                                head: (m.column, m.row),
-                            });
+                            let top = self.geometry.start;
+                            match s.selection.as_mut() {
+                                Some(selection) => selection.extend(m.column, m.row, top),
+                                None => s.selection = Some(self.selection_from(anchor, m)),
+                            }
                         }
                         Effect::Consumed
                     }
@@ -557,9 +581,10 @@ impl Workbench {
                 }
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 // Ctrl-C over a selection is a copy, as in any terminal with
-                // one: it never interrupts, and the selection stays.
+                // one, and the selection goes with it: the next Ctrl-C does
+                // what it does without one.
                 if ctrl && k.code == KeyCode::Char('c') {
-                    let copied = self.selected_text(s);
+                    let copied = self.take_selected_text(s);
                     if !copied.is_empty() {
                         return Effect::Copy(copied);
                     }
@@ -670,6 +695,11 @@ impl Workbench {
                     ),
                     _ => Effect::Pass,
                 }
+            }
+            // The cells a selection covered no longer hold its text.
+            Event::Resize(..) => {
+                s.selection = None;
+                Effect::Pass
             }
             _ => Effect::Pass,
         }

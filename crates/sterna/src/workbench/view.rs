@@ -373,6 +373,7 @@ pub fn render(
             s.theme,
         );
     }
+    g.sidebar = sidebar;
     if let Some(side) = sidebar {
         session_card(f, &mut g, side, n, s, ui);
     }
@@ -563,7 +564,7 @@ pub fn render(
     }
     g.screen = Some(f.buffer_mut().clone());
     if let Some(sel) = s.selection {
-        g.copied = crate::tui::draw_selection(f.buffer_mut(), a, sel);
+        g.copied = crate::tui::draw_selection(f.buffer_mut(), a, sel, g.start);
     }
     ui.geometry = g;
 }

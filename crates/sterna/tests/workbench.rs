@@ -3629,3 +3629,158 @@ fn the_popup_marks_its_row_and_a_click_takes_it() {
         Effect::Completion(2)
     );
 }
+
+/// Ctrl-C over a selection copies it and puts the selection away, so the
+/// next Ctrl-C does what it does without one.
+#[test]
+fn a_second_ctrl_c_after_a_copy_passes_through() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 120, 40);
+    let screen = text(&b);
+    let y = screen
+        .lines()
+        .position(|line| line.contains("Respect reduced motion"))
+        .unwrap() as u16;
+    let x = screen
+        .lines()
+        .nth(y as usize)
+        .unwrap()
+        .find("Respect")
+        .unwrap() as u16;
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        x,
+        y,
+    );
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Drag(MouseButton::Left),
+        x + 6,
+        y,
+    );
+    draw(&c, &n, &s, &mut u, 120, 40);
+    assert!(matches!(ctrl(&mut u, &mut s, &n, 'c'), Effect::Copy(_)));
+    assert_eq!(ctrl(&mut u, &mut s, &n, 'c'), Effect::Pass);
+    assert!(s.selection.is_none());
+}
+
+/// A selection across an open card copies its text, not its frame, and
+/// stays inside the transcript: the sidebar beside it is not copied.
+#[test]
+fn a_selection_across_a_card_copies_no_frame() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    let screen = text(&b);
+    let rows: Vec<&str> = screen.lines().collect();
+    let top = rows
+        .iter()
+        .position(|l| l.contains("const result"))
+        .unwrap() as u16;
+    let t = u.geometry.transcript;
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        t.x + 3,
+        top,
+    );
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Drag(MouseButton::Left),
+        139,
+        top + 2,
+    );
+    draw(&c, &n, &s, &mut u, 140, 40);
+    let Effect::Copy(copied) = ctrl(&mut u, &mut s, &n, 'c') else {
+        panic!("nothing was copied");
+    };
+    assert!(!copied.contains('│'), "{copied}");
+    assert_eq!(copied.lines().nth(1), Some("print(result);"), "{copied}");
+    assert!(
+        !copied.contains("SO FAR") && !copied.contains("helpers"),
+        "the sidebar is not copied: {copied}"
+    );
+}
+
+/// A resize puts a selection away: its cells no longer hold its text.
+#[test]
+fn a_resize_puts_the_selection_away() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    draw(&c, &n, &s, &mut u, 120, 40);
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        5,
+    );
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Drag(MouseButton::Left),
+        20,
+        6,
+    );
+    assert!(s.selection.is_some());
+    u.event(&Event::Resize(100, 30), &mut s, &n, false);
+    assert!(s.selection.is_none());
+}
+
+/// A selection in the transcript stays on its text while new rows arrive
+/// and the transcript follows them.
+#[test]
+fn a_selection_stays_on_its_text_as_the_transcript_moves() {
+    let (mut c, n, mut s) = fixture();
+    for i in 0..30 {
+        c.messages
+            .push(Message::text(Role::User, format!("question {i}")));
+        c.messages
+            .push(Message::text(Role::Assistant, format!("answer {i}")));
+    }
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    let y = screen
+        .lines()
+        .position(|l| l.contains("answer 28"))
+        .unwrap() as u16;
+    let x = u.geometry.transcript.x;
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Down(MouseButton::Left),
+        x,
+        y,
+    );
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Drag(MouseButton::Left),
+        x + 60,
+        y,
+    );
+    c.messages
+        .push(Message::text(Role::User, "one more question"));
+    c.messages
+        .push(Message::text(Role::Assistant, "one more answer"));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    let Effect::Copy(copied) = ctrl(&mut u, &mut s, &n, 'c') else {
+        panic!("nothing was copied");
+    };
+    assert!(copied.contains("answer 28"), "{copied}");
+}
