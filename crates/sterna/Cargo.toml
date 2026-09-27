@@ -1,0 +1,89 @@
+[package]
+name = "sterna"
+description = "Sterna, a coding agent for your terminal."
+version.workspace = true
+edition.workspace = true
+# NOT `rust-version.workspace = true`, and this is the one place the two
+# crates' floors differ. `oxc` 0.148 declares `rust-version = "1.96"` -- and
+# so does every version of it back past 0.109 declare something above 1.88 --
+# so a manifest claiming the workspace's 1.88 here would be a claim cargo
+# itself refuses to honour (`cargo +1.88.0 check -p sterna` fails naming eight
+# oxc crates). `crates/glasshouse` still declares 1.88 and is unaffected:
+# nothing in this crate is in its tree. The declared CI compiler is 1.98.
+rust-version = "1.96"
+license-file.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sterna"
+path = "src/main.rs"
+
+[lib]
+name = "sterna"
+path = "src/lib.rs"
+
+[dependencies]
+toml_edit = "0.22"
+base64 = "0.22.1"
+clap = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
+directories.workspace = true
+ureq = { workspace = true }
+
+# The embedded JavaScript engine, pinned exactly. `v8` (rusty_v8) rather than
+# `deno_core`: sterna has no async runtime and the workspace has none on purpose,
+# and a module loader plus an event loop are surplus to a REPL-scoped script
+# runner. It ships a prebuilt static library, so this is a download rather than
+# a V8 source build -- and it is why `crates/sterna` is its own workspace member:
+# `cargo build -p glasshouse` compiles none of it.
+v8 = "=152.2.0"
+
+# The TypeScript front end, pinned exactly. `oxc` rather than `swc`: measured
+# below, and it is the parser for BOTH jobs this crate has -- erasing the types
+# and naming the cell's top-level bindings -- so there is one grammar in the
+# process and not two.
+oxc = { version = "=0.148.0", default-features = false, features = ["ast_visit", "codegen"] }
+
+[lints]
+workspace = true
+
+# Native waitid types keep process-group cleanup ABI-correct on both Unix hosts.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# Landlock is three syscalls and `prctl`; there is no wrapper crate here on
+# purpose, because the ruleset derivation is a value this crate tests on every
+# host and the twenty lines that install it are reviewable as they stand.
+libc.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# `Win32_Security_Isolation` (the AppContainer), `Win32_Security_Authorization`
+# (the project directory's ACL) and `Win32_System_Console`
+# (`SetConsoleCtrlHandler`, the Ctrl-C half of `session`'s interrupt) are the
+# feature sets the workspace pin does not already carry; cargo unions features,
+# so naming them here adds API surface and changes nothing for `glasshouse`.
+# Features are not part of `Cargo.lock`, so this adds no lock change either.
+#
+# `Win32_System_Pipes` and `Win32_Storage_FileSystem` are the confined child's
+# own standard handles: the AppContainer spawn creates them by hand, because
+# the whole `CreateProcessW` is this crate's. `Win32_System_Services` is
+# `sandbox::windows::network_isolation` -- an AppContainer's missing
+# `internetClient` is enforced by the Windows Firewall service and not by the
+# access check, so the claim is measured against that service instead of
+# asserted.
+windows-sys = { workspace = true, features = [
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+portable-pty.workspace = true
+vt100 = "0.16.2"

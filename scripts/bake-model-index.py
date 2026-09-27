@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Bake the model-measurement snapshot the gateway ships.
 
-Usage: scripts/bake-model-index.py [CATALOGUE.json|-] [--limits PATH|URL] [--no-limits]
-       (default: runs `glasshouse analysis` and fetches the limits catalogue)
+Usage: scripts/bake-model-index.py CATALOGUE.json|- [--limits PATH|URL] [--no-limits]
+       (the limits catalogue is fetched unless --limits or --no-limits says otherwise)
 
-Reads an Artificial Analysis catalogue in the shape `glasshouse analysis`
-prints -- {"fetched_at", "index_version", "models": {slug: facts}} -- and
+Reads an Artificial Analysis catalogue -- {"fetched_at", "index_version",
+"models": {slug: facts}}, the shape `inference-gateway models --import`
+takes -- from a path or standard input, and
 rewrites crates/inference-gateway/data/model-index.json with the fields the
 subagent roster and future cost routing need. Run it when a release is cut so
 the published figures ship with the binary; a user's own key overlays this
@@ -17,12 +18,11 @@ neither of the two *real* limits a harness must never guess: the context
 window and the model's own output maximum. Those come from a second catalogue
 ([`LIMITS`]), and only ever fill a field the primary did not carry. Both are
 read here, at bake time, so that an install or an update carries current
-figures and nothing in the gateway or in Pane ever makes a network call to
+figures and nothing in the gateway or in Sterna ever makes a network call to
 learn them.
 """
 
 import json
-import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -105,9 +105,10 @@ def normalise(name):
 
 def source_bytes(argv):
     if not argv:
-        return subprocess.run(
-            ["glasshouse", "analysis"], check=True, capture_output=True
-        ).stdout
+        sys.exit(
+            "bake-model-index: give the Artificial Analysis catalogue as a path, "
+            "or - to read it from standard input"
+        )
     if argv[0] == "-":
         return sys.stdin.buffer.read()
     return Path(argv[0]).read_bytes()

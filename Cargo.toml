@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/inference-gateway", "crates/pane"]
+members = ["crates/inference-gateway", "crates/sterna"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,7 +14,7 @@ rust-version = "1.88"
 # crate on crates.io -- which requires an open licence -- by accident.
 license-file = "LICENSE"
 publish = false
-repository = "https://github.com/HarzerHeribert/glasshouse"
+repository = "https://github.com/HarzerHeribert/sterna"
 
 # The compiler both gates build with. Declared once; ci.yml and
 # scripts/ci-local.sh read it with the same grep as `rust-version`, so the
@@ -96,10 +96,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.9"
-# Format-preserving TOML, for `glasshouse migrate-gateway-state` alone: the
-# rewrite it performs must keep the user's comments and layout, which
-# `toml`'s value model cannot. MSRV 1.85, inside this workspace's 1.88.
-toml_edit = "0.25"
 # Blocking HTTP with rustls, and a response body that is a `Read` — the two
 # properties that let the gateway stream a response through without an async
 # runtime. `default-features = false` drops `gzip`: transparent decompression

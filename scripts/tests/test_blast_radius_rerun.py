@@ -122,7 +122,7 @@ class Rerun(unittest.TestCase):
         return int(f.read_text()) if f.exists() else 0
 
     def add_test_target(self, name: str) -> None:
-        p = self.tmp / "crates" / "pane" / "tests" / f"{name}.rs"
+        p = self.tmp / "crates" / "sterna" / "tests" / f"{name}.rs"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("#[test]\nfn x() {}\n")
 

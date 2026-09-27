@@ -132,7 +132,7 @@ impl Unavailable {
     pub fn reason(&self) -> String {
         match self {
             Self::UnsupportedPlatform => {
-                "this platform has no secure store Glasshouse can use yet".to_owned()
+                "this platform has no secure store the gateway can use yet".to_owned()
             }
             Self::StoreUnreachable(refusal) => {
                 format!("the native secure store could not be opened: {refusal}")
@@ -159,7 +159,7 @@ pub enum Deletion {
 /// here and you may not have it" kept apart**.
 ///
 /// [`SecretStore::is_present`] answers one bit, which is the right answer
-/// for resolution: a credential Glasshouse cannot read is a credential
+/// for resolution: a credential the gateway cannot read is a credential
 /// Glasshouse cannot use, and every consumer treats both as absent. It is
 /// the wrong answer for a *diagnostic*. On macOS an item's access control
 /// list names the program that created it, and Glasshouse asks for no
@@ -382,9 +382,9 @@ pub const FILE_THEN_ENVIRONMENT_LABEL: &str = "the gateway's credential file, th
 /// asserts that it starts with it.
 pub const NATIVE_FIRST_LABEL: &str = backend::NATIVE_FIRST_LABEL;
 
-/// [`SecretStore::describe`] on a platform with no store Glasshouse can use.
+/// [`SecretStore::describe`] on a platform with no store the gateway can use.
 pub const UNSUPPORTED_PLATFORM_LABEL: &str =
-    "the process environment (this platform has no secure store Glasshouse can use yet)";
+    "the process environment (this platform has no secure store the gateway can use yet)";
 
 /// [`SecretStore::describe`] when a store exists but would not open.
 ///
@@ -850,20 +850,20 @@ mod backend {
     /// Fixed text chosen by the error's variant alone, exactly as `classify`
     /// is on the other two platforms.
     const NO_SESSION_BUS: &str = "no D-Bus session bus is reachable, so no keyring can be; \
-         start Glasshouse from a desktop session, or run it under `dbus-run-session`";
+         start the gateway from a desktop session, or run it under `dbus-run-session`";
     const NO_PROVIDER: &str = "nothing owns `org.freedesktop.secrets` on the session bus; \
          install gnome-keyring, KWallet or KeePassXC and enable its Secret Service integration";
     pub(super) const COLLECTION_LOCKED: &str = "the keyring's default collection is locked, and \
-         Glasshouse will not wait for an unlock prompt; unlock the keyring in your desktop \
-         session and start Glasshouse again";
+         the gateway will not wait for an unlock prompt; unlock the keyring in your desktop \
+         session and start the gateway again";
     const NO_DEFAULT_COLLECTION: &str = "the keyring has no default collection; create one in \
          your keyring application, or run `secret-tool store --label=glasshouse service \
          glasshouse username SOME_VARIABLE` once";
-    const PROMPT_REFUSED: &str = "the keyring wanted an unlock prompt, which Glasshouse \
+    const PROMPT_REFUSED: &str = "the keyring wanted an unlock prompt, which the gateway \
          refuses on the launch path; unlock the keyring in your desktop session and start \
-         Glasshouse again";
+         the gateway again";
     const BAD_ENCODING: &str = "the stored credential is not text; re-store it through \
-         Glasshouse, or remove the item with `secret-tool clear`";
+         the gateway, or remove the item with `secret-tool clear`";
     const REFUSED: &str = "the Secret Service keyring reported an error; check your keyring \
          application's own log for what it refused";
 
@@ -1116,11 +1116,11 @@ mod backend {
     }
 
     pub fn set(_service: &str, _account: &str, _value: &str) -> Result<(), &'static str> {
-        Err("this platform has no secure store Glasshouse can use yet")
+        Err("this platform has no secure store the gateway can use yet")
     }
 
     pub fn delete(_service: &str, _account: &str) -> Result<Deletion, &'static str> {
-        Err("this platform has no secure store Glasshouse can use yet")
+        Err("this platform has no secure store the gateway can use yet")
     }
 }
 
@@ -2218,7 +2218,7 @@ mod tests {
         );
         assert!(
             !SecretStore::is_present(&store, &reference),
-            "a credential Glasshouse cannot read is still one it cannot use"
+            "a credential the gateway cannot read is still one it cannot use"
         );
         assert!(
             store.resolve(&reference).is_none(),

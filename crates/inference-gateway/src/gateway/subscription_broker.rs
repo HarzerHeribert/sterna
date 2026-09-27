@@ -22,7 +22,7 @@ use crate::routing::CredentialId;
 use crate::secret::{REDACTED, SecretRef};
 
 /// Explicit override for the pinned CLIProxyAPI executable.
-pub const ENV_CLIPROXYAPI_BIN: &str = "GLASSHOUSE_CLIPROXYAPI_BIN";
+pub const ENV_CLIPROXYAPI_BIN: &str = "INFERENCE_GATEWAY_CLIPROXYAPI_BIN";
 
 /// Where one entitlement's broker keeps its state, and where its executable
 /// lives.
@@ -453,7 +453,7 @@ fn discover_executable(paths: &BrokerPaths, override_path: Option<OsString>) -> 
         return Ok(managed);
     }
     bail!(
-        "CLIProxyAPI executable {:?} is absent from Glasshouse's managed tools directory; set {ENV_CLIPROXYAPI_BIN} to an explicit executable",
+        "CLIProxyAPI executable {:?} is absent from the gateway's managed tools directory; set {ENV_CLIPROXYAPI_BIN} to an explicit executable",
         diagnostic_name(&managed)
     )
 }

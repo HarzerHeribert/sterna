@@ -834,7 +834,7 @@ fn a_relayed_body_is_never_read_and_never_leaks_into_the_ledger_or_logs() {
         std::thread::sleep(Duration::from_millis(10));
     };
     assert!(
-        captured.contains("glasshouse gateway exchange") && captured.contains(PROVIDER),
+        captured.contains("gateway exchange") && captured.contains(PROVIDER),
         "the exchange must have been logged, or the scan below proves nothing: {captured}"
     );
     assert!(

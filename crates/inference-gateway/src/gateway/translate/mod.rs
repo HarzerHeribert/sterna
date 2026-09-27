@@ -1,5 +1,5 @@
 //! Wire-protocol translation at the gateway — Phase 56, lines 1948–1950 and
-//! 1956, under the ruling recorded in `docs/product/design-decisions.md` as
+//! 1956, under the ruling recorded in `archive/glasshouse:docs/product/design-decisions.md` as
 //! *"the user's answer on pairs: all of them"*.
 //!
 //! History: design-decisions.md, "Trims: gateway module docs", translate/mod.rs module doc.
@@ -363,7 +363,7 @@ pub enum CacheDisposition {
 
 /// What a codec's own wire does with a harness's carried thinking/reasoning
 /// request (capability map line 2039's prerequisite,
-/// `docs/product/design-decisions.md`'s *"Carrying effort across a
+/// `archive/glasshouse:docs/product/design-decisions.md`'s *"Carrying effort across a
 /// translated pairing"*) — [`CacheDisposition`]'s shape, one field later:
 /// a `Carried` wire names its own field and how the level is derived; a
 /// `Stripped` one has no such field at all and never encodes one.
@@ -426,7 +426,7 @@ impl std::fmt::Display for TranslationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the Glasshouse gateway cannot translate this request for the pair {}: `{}` — {}",
+            "the gateway cannot translate this request for the pair {}: `{}` — {}",
             self.pair, self.field, self.reason
         )
     }
@@ -649,7 +649,7 @@ pub(super) fn pair_refusal_message(from: &str, refused: &[&Pair]) -> String {
     if refused.is_empty() {
         return format!(
             "this request speaks {from}, which the configured provider does not serve, and no \
-             protocol it does serve is one the Glasshouse gateway translates {from} to"
+             protocol it does serve is one the gateway translates {from} to"
         );
     }
     let pairs = refused
@@ -659,7 +659,7 @@ pub(super) fn pair_refusal_message(from: &str, refused: &[&Pair]) -> String {
         .join("; ");
     format!(
         "this request speaks {from}, which the configured provider does not serve, and the \
-         Glasshouse gateway refuses the translation by name: {pairs}"
+         gateway refuses the translation by name: {pairs}"
     )
 }
 
@@ -745,7 +745,7 @@ pub(super) fn serve(
         refuse(
             out,
             StatusCode::PAYLOAD_TOO_LARGE,
-            "the request body exceeds the size the Glasshouse gateway will translate",
+            "the request body exceeds the size the gateway will translate",
         );
         settle(&mut reader, out, Some(length));
         return (
@@ -900,7 +900,7 @@ pub(super) fn serve(
             refuse(
                 out,
                 StatusCode::BAD_GATEWAY,
-                "the Glasshouse gateway could not reach the configured provider",
+                "the gateway could not reach the configured provider",
             );
             return (
                 decoded(Outcome::Unreachable { detail }, 502),
@@ -1032,7 +1032,7 @@ pub(super) fn serve(
                             pair,
                             Unsupported::new(
                                 "body",
-                                "the provider's stream exceeded the size the Glasshouse \
+                                "the provider's stream exceeded the size the \
                                  gateway will hold to answer a request that did not ask for \
                                  a stream",
                             ),

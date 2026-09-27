@@ -5,7 +5,7 @@
 //!
 //! This module never parses a response body, with one exception: **a
 //! seventh thing may now be recorded**, under the user's 2026-09-03 ruling
-//! narrowing that rule (`docs/product/design-decisions.md`, *Steering
+//! narrowing that rule (`archive/glasshouse:docs/product/design-decisions.md`, *Steering
 //! decisions of record* §1). [`super::usage`] scans a **supported** relayed
 //! body over a sliding window of at most 512 retained bytes, for a fixed
 //! table of JSON key spellings, to extract [`Tokens`], `first_token_at` and
@@ -151,7 +151,7 @@ pub(super) struct Exchange {
     /// too long, in tokens -- [`super::context_limit`]. A count, never a
     /// piece of the provider's sentence: what is kept is the number the route
     /// enforces, which is the one figure a published catalogue cannot know
-    /// (`docs/product/design-decisions.md`, *A context window is a property
+    /// (`archive/glasshouse:docs/product/design-decisions.md`, *A context window is a property
     /// of the route, not of the model*). `None` on every exchange that was
     /// not refused for length, and on every refusal whose wording this
     /// gateway does not recognise.
@@ -434,7 +434,7 @@ impl Exchange {
             // and `turn_shape`.
             effort = ?self.effort.map(EffortLevel::as_str),
             turn_shape = ?self.turn_shape.map(TurnShape::as_str),
-            "glasshouse gateway exchange"
+            "gateway exchange"
         );
     }
 }
@@ -674,7 +674,7 @@ fn forward(
                 out,
                 StatusCode::BAD_GATEWAY,
                 "api_error",
-                "the Glasshouse gateway could not reach the configured provider",
+                "the gateway could not reach the configured provider",
                 Some(&head.method),
             );
             // The body was handed to `agent.run` and dropped there unread
@@ -954,7 +954,7 @@ fn forward(
 /// The `404` a target belonging to no served protocol has always been
 /// answered with.
 const UNROUTED_MESSAGE: &str = "this request target does not belong to any protocol the \
-                                Glasshouse gateway is serving; a gateway ingress carries only \
+                                gateway is serving; a gateway ingress carries only \
                                 the protocols the configured provider declares a base URL for, \
                                 and forwards nothing it cannot place";
 
@@ -1165,18 +1165,18 @@ fn decline(error: &HeadError) -> (StatusCode, &'static str, &'static str) {
         HeadError::TooLarge => (
             StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             "invalid_request_error",
-            "the request head exceeded the size the Glasshouse gateway will read",
+            "the request head exceeded the size the gateway will read",
         ),
         HeadError::ChunkedRequest => (
             StatusCode::LENGTH_REQUIRED,
             "invalid_request_error",
-            "the Glasshouse gateway forwards request bodies framed with content-length; a \
+            "the gateway forwards request bodies framed with content-length; a \
              chunked request body would have to be parsed to be re-framed",
         ),
         _ => (
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
-            "the Glasshouse gateway could not read this request",
+            "the gateway could not read this request",
         ),
     }
 }

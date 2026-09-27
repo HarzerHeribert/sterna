@@ -974,7 +974,7 @@ fn health_readings_for_reports_a_real_cooldown_as_an_absolute_unix_deadline_and_
 /// must carry the *cause* `ResourceHealth::fail` already recorded on the
 /// same value it reads `cooling_down_until` from, not merely the
 /// deadline. This is the exact gap the line's hold ruling
-/// (`docs/product/evidence/phase-35b.md`) named: the mechanism existed
+/// (`archive/glasshouse:docs/product/evidence/phase-35b.md`) named: the mechanism existed
 /// and this call site silently dropped it.
 #[test]
 fn health_readings_for_carries_the_cooldown_cause_the_pool_already_recorded() {

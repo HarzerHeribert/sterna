@@ -1,11 +1,10 @@
 name: Release
 
-# Builds pane and inference-gateway in release profile for the five OS/arch targets
+# Builds sterna and inference-gateway in release profile for the five OS/arch targets
 # ci-extended.yml already exercises, and publishes them as a GitHub
 # pre-release with a SHA256SUMS file. This workflow never publishes to any
-# package registry -- see docs/product/design-decisions.md, "Steering
-# decisions of record -- 2026-09-06", decision 10 -- a tagged pre-release
-# (built binaries only) is cut from main once the pane Windows cell is green.
+# package registry: a tagged pre-release (built binaries only) is cut from
+# main once the sterna Windows cell is green.
 #
 # A `v*` tag is the real trigger; workflow_dispatch exists to dry-run the
 # build (default) without publishing anything, so the pipeline can be proven
@@ -113,13 +112,11 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p pane -p inference-gateway
+        run: cargo build --release --locked --target ${{ matrix.target }} -p sterna -p inference-gateway
 
-      # Proves the binary that will ship actually runs before it is packaged.
-      # pane's top-level command has no --version/--help output of its own
-      # (it falls through to its stdin-echo default when the first argument
-      # is neither `ruler` nor `session`) -- closed stdin makes that return
-      # immediately rather than hang, which is what this checks for.
+      # Proves the binary that will ship actually runs before it is packaged:
+      # `--help` prints the usage and exits 0. Closed stdin makes sure a
+      # binary that reads input instead returns at once rather than hangs.
       - name: Verify binaries (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -127,7 +124,7 @@ jobs:
           set -euo pipefail
           BIN="target/${{ matrix.target }}/release"
           "$BIN/inference-gateway" --version
-          "$BIN/pane" --help < /dev/null
+          "$BIN/sterna" --help < /dev/null
       - name: Verify binaries (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -135,7 +132,7 @@ jobs:
           $bin = "target/${{ matrix.target }}/release"
           & "$bin/inference-gateway.exe" --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "" | & "$bin/pane.exe" --help
+          "" | & "$bin/sterna.exe" --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package (Unix)
@@ -143,11 +140,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NAME="glasshouse-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          NAME="sterna-${{ steps.version.outputs.version }}-${{ matrix.target }}"
           STAGE="$RUNNER_TEMP/$NAME"
           BIN="target/${{ matrix.target }}/release"
           mkdir -p "$STAGE"
-          cp "$BIN/pane" "$BIN/inference-gateway" "$STAGE/"
+          cp "$BIN/sterna" "$BIN/inference-gateway" "$STAGE/"
           cp README.md release/cliproxyapi.toml "$STAGE/"
           cp LICENSE* "$STAGE/" 2>/dev/null || true
           tar czf "$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
@@ -156,28 +153,30 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "glasshouse-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          $name = "sterna-${{ steps.version.outputs.version }}-${{ matrix.target }}"
           $stage = Join-Path $env:RUNNER_TEMP $name
           $bin = "target/${{ matrix.target }}/release"
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item "$bin/pane.exe" $stage
+          Copy-Item "$bin/sterna.exe" $stage
           Copy-Item "$bin/inference-gateway.exe" $stage
           Copy-Item README.md $stage
           Copy-Item release/cliproxyapi.toml $stage
           Get-ChildItem -Path . -Filter "LICENSE*" -File | ForEach-Object { Copy-Item $_.FullName $stage }
-          Compress-Archive -Path "$stage/*" -DestinationPath "$name.zip"
+          # The folder itself, so the zip opens to one top folder named like the
+          # archive -- the shape the tarball has and the updater looks for.
+          Compress-Archive -Path $stage -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Set-Content -NoNewline:$false "$name.zip.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: glasshouse-${{ matrix.target }}
+          name: sterna-${{ matrix.target }}
           path: |
-            glasshouse-*.tar.gz
-            glasshouse-*.tar.gz.sha256
-            glasshouse-*.zip
-            glasshouse-*.zip.sha256
+            sterna-*.tar.gz
+            sterna-*.tar.gz.sha256
+            sterna-*.zip
+            sterna-*.zip.sha256
           if-no-files-found: error
 
   publish:

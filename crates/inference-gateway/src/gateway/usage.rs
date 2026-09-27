@@ -4,7 +4,7 @@
 //! # What changed, and what did not
 //!
 //! `ingress.rs` moves a response across without looking at it. That rule was
-//! **narrowed** on 2026-09-03 (`docs/product/design-decisions.md`, *Steering
+//! **narrowed** on 2026-09-03 (`archive/glasshouse:docs/product/design-decisions.md`, *Steering
 //! decisions of record* §1): the gateway may inspect a supported relayed body
 //! far enough to extract structured usage and timing, because accurate usage
 //! is worth more than byte-for-byte opacity. Everything else in the ruling is
@@ -109,7 +109,7 @@ const OPENAI_RESPONSES: Format = Format {
 };
 
 /// TypeSafe System One: `usage` states exactly two counts and no cached-input
-/// figure (`docs/product/evidence/phase-66.md`, *Provider facts*). It has no
+/// figure (`archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*). It has no
 /// text delta or tool-call marker either — a decision response is not a
 /// stream of generated text, so [`Format::text_arm`], [`Format::text_value`]
 /// and [`Format::tool_call`] name keys this protocol's usage scan will never

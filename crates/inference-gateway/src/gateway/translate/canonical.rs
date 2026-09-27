@@ -3,7 +3,7 @@
 //!
 //! # Why one form and not a translator per pair
 //!
-//! `docs/product/design-decisions.md`, Phase 56, *"the user's answer on
+//! `archive/glasshouse:docs/product/design-decisions.md`, Phase 56, *"the user's answer on
 //! pairs: all of them"*: translation is one canonical form plus one codec per
 //! wire protocol, so three protocols cost three codecs rather than six
 //! translators, and a pair is a decoder and an encoder meeting here. Fidelity
@@ -55,7 +55,7 @@ pub struct Request {
     /// (see the module doc's *"refused by name, never dropped"*).
     pub cache_requested: bool,
     /// The harness's own thinking/reasoning request, carried rather than
-    /// refused (`docs/product/design-decisions.md`, *"Carrying effort across
+    /// refused (`archive/glasshouse:docs/product/design-decisions.md`, *"Carrying effort across
     /// a translated pairing"*) — `cache_requested`'s sibling: one canonical
     /// field standing in for a shape Anthropic's `thinking` expresses as a
     /// token budget and OpenAI's `reasoning_effort` expresses as a word.

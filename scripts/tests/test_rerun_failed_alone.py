@@ -113,7 +113,7 @@ class RerunFailedAlone(unittest.TestCase):
             root = pathlib.Path(tmp)
             log = (
                 "error[E0425]: cannot find value `x` in this scope\n"
-                "error: could not compile `pane` (test \"session\") due to 1 previous error\n"
+                "error: could not compile `sterna` (test \"session\") due to 1 previous error\n"
             )
             result = run(root, log)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

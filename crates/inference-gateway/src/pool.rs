@@ -52,7 +52,7 @@ use crate::secret::{SecretRef, SecretStore};
 /// in it, so it is the order a diagnostic lists protocols in.
 ///
 /// the host's `profile::gateway_upstream` builds its embedded gateway's
-/// ingress from this same list, so a Pane launched by Glasshouse serves
+/// ingress from this same list, so a Sterna launched by Glasshouse serves
 /// exactly the protocols the standalone binary does.
 pub const GATEWAY_INGRESS_PROTOCOLS: &[WireProtocol] = &[
     WireProtocol::AnthropicMessages,

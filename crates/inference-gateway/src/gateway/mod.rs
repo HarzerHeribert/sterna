@@ -632,15 +632,15 @@ impl Gateway {
         prevention_sink: Option<session::FailoverPreventionSink>,
     ) -> Result<Self> {
         let listener = TcpListener::bind((GATEWAY_INTERFACE, EPHEMERAL_PORT))
-            .context("could not bind the local Glasshouse gateway to loopback")?;
+            .context("could not bind the local gateway to loopback")?;
         // Port 0 was a request, not an address. This is the answer, and it is
         // the only place the real port ever comes from.
         let address = listener
             .local_addr()
-            .context("could not read the local Glasshouse gateway's bound address")?;
+            .context("could not read the local gateway's bound address")?;
         listener
             .set_nonblocking(true)
-            .context("could not put the local Glasshouse gateway's listener in polling mode")?;
+            .context("could not put the local gateway's listener in polling mode")?;
 
         let token = Arc::new(GatewayToken::generate()?);
         let stop = Arc::new(AtomicBool::new(false));
@@ -674,7 +674,7 @@ impl Gateway {
                     )
                 }
             })
-            .context("could not start the local Glasshouse gateway's accept thread")?;
+            .context("could not start the local gateway's accept thread")?;
 
         Ok(Self {
             address,
@@ -998,7 +998,7 @@ fn accept_loop(
                             // it enforces, and that figure belongs to this
                             // account on this route rather than to the model
                             // as some catalogue describes it
-                            // (`docs/product/design-decisions.md`, *A context
+                            // (`archive/glasshouse:docs/product/design-decisions.md`, *A context
                             // window is a property of the route, not of the
                             // model*). Written beside the quota reading
                             // because it is the same kind of fact, observed
@@ -1035,7 +1035,7 @@ fn accept_loop(
                 if spawned.is_err() {
                     // No thread to serve it: the connection closes as the
                     // stream drops. Better than blocking the accept loop.
-                    tracing::debug!("the Glasshouse gateway could not start a connection thread");
+                    tracing::debug!("the gateway could not start a connection thread");
                 }
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => std::thread::sleep(ACCEPT_POLL),

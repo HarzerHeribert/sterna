@@ -3,7 +3,7 @@ name: Broker bump
 # Daily: when CLIProxyAPI (the subscription broker the gateway runs) has a
 # new release, pin it in release/cliproxyapi.toml with upstream's own
 # checksums, commit that to main, tag the next pre-release and build it --
-# so `pane update` and the installer pick up the new broker, and with it the
+# so `sterna update` and the installer pick up the new broker, and with it the
 # models it knows. The pin commit is the review trail: every shipped broker
 # is named, with its SHA-256, in this repository's history.
 
@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           last="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
           tag="$(python3 scripts/release/next-tag.py "$last")"
-          git config user.name "glasshouse-release-bot"
+          git config user.name "sterna-release-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "release: CLIProxyAPI ${{ steps.pin.outputs.version }}" -- release/cliproxyapi.toml
           git tag "$tag"

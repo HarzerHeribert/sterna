@@ -1,5 +1,5 @@
 # Phase 59 size ratchet — production lines of every file over the ceiling.
 # Regenerate with scripts/check-file-sizes.py --update after a decomposition.
 # ceiling 2500
-  3183 crates/pane/src/runtime/bindings.rs
-  2935 crates/pane/src/session.rs
+  3183 crates/sterna/src/runtime/bindings.rs
+  2935 crates/sterna/src/session.rs

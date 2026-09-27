@@ -39,7 +39,7 @@ const CONFIG_FILE: &str = "gateway.toml";
 
 /// The protocol a `[providers.<name>]` entry serves when it names none.
 ///
-/// Anthropic Messages, because that is the ingress Pane points at: it sets
+/// Anthropic Messages, because that is the ingress Sterna points at: it sets
 /// `ANTHROPIC_BASE_URL` to this gateway and its client sends
 /// `POST /v1/messages`. A default of anything else would make the common
 /// configuration the one that has to say the most.
@@ -215,7 +215,7 @@ pub fn declare_table(path: &Path, table: &str, body: &str) -> Result<bool> {
 /// `<platform config dir>/gateway.toml`, or `None` when no such directory
 /// can be determined.
 /// `INFERENCE_GATEWAY_CONFIG` names the file outright — the override a
-/// caller that spawns this binary without passing `--config` (pane) and a
+/// caller that spawns this binary without passing `--config` (sterna) and a
 /// test that must not touch the user's own catalogue both need.
 pub fn default_config_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("INFERENCE_GATEWAY_CONFIG") {
@@ -269,7 +269,7 @@ pub fn broker_auth_dir(data_dir: &Path, entitlement: &str) -> PathBuf {
     broker_paths(data_dir, entitlement).auth_dir
 }
 
-/// The managed CLIProxyAPI executable, unless `GLASSHOUSE_CLIPROXYAPI_BIN`
+/// The managed CLIProxyAPI executable, unless `INFERENCE_GATEWAY_CLIPROXYAPI_BIN`
 /// names one — which the broker itself checks, so this is only the fallback.
 ///
 /// Laid out exactly as a host lays it out, for the same reason the broker

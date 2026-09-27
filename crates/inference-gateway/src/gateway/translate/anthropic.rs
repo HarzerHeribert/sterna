@@ -322,7 +322,7 @@ pub(super) fn decode_request(body: &[u8]) -> Result<Request, Unsupported> {
     })
 }
 
-/// `thinking` decoded as designed (`docs/product/design-decisions.md`,
+/// `thinking` decoded as designed (`archive/glasshouse:docs/product/design-decisions.md`,
 /// *"Carrying effort across a translated pairing"*): `enabled` with a budget
 /// is carried as [`EffortRequest`] rather than refused; `disabled` carries
 /// nothing, exactly as a request that never set `thinking` at all; any other
@@ -358,7 +358,7 @@ fn decode_thinking(top: &mut Fields) -> Result<Option<EffortRequest>, Unsupporte
     }
 }
 
-/// `output_config.effort` -- the word Pane and Claude Code state directly.
+/// `output_config.effort` -- the word Sterna and Claude Code state directly.
 ///
 /// It was previously refused by [`Fields::finish`] as an unknown top-level
 /// field, so a harness that set any effort at all had its request rejected on

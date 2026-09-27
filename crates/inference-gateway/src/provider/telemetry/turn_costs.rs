@@ -6,11 +6,11 @@
 //! accept loop hands that to the observation sink. A *hosted* gateway's
 //! host listens and writes the row on its own side. A standalone one was
 //! handed `null_sink()`, so every figure was computed and dropped — and
-//! `routing-cost --json`, the one command Pane asks, had nothing to print.
+//! `routing-cost --json`, the one command Sterna asks, had nothing to print.
 //!
 //! Measured on 2026-09-17: two dogfooding sessions of 11.8M and 20.2M tokens
 //! reported `cache_read_input_tokens: 0` throughout, which said nothing about
-//! caching at all. Pane's `ServedBy` was simply always unknown, so its
+//! caching at all. Sterna's `ServedBy` was simply always unknown, so its
 //! fallback — parsing the response body, where only the Anthropic spelling is
 //! understood — answered for routes that spell it `cached_tokens`.
 //!
@@ -80,7 +80,7 @@ pub struct TurnCost {
     /// Input tokens the provider served from its prompt cache. **The figure
     /// this store exists for**: it is the difference between a turn costing
     /// its whole context and costing a fraction of it, and it is the one
-    /// number no other path back to Pane carries on an OpenAI-family route.
+    /// number no other path back to Sterna carries on an OpenAI-family route.
     #[serde(default)]
     pub cached_input_tokens: Option<u64>,
 }
@@ -148,7 +148,7 @@ impl TurnCostLedger {
     /// provider that served it.
     ///
     /// Ascending because that is the order `routing-cost --json` promises and
-    /// Pane's reader depends on: it takes the **last** row in the window as
+    /// Sterna's reader depends on: it takes the **last** row in the window as
     /// the one closest to the request it is answering for.
     #[must_use]
     pub fn since(&self, since: i64) -> Vec<(String, TurnCost)> {

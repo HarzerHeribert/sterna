@@ -4,7 +4,7 @@
 //!
 //! **The gateway is where this belongs.** A model's measured capability is a
 //! property of the model, not of a project, so it sits beside the catalogues
-//! the gateway already caches rather than in a harness on top of it: a Pane
+//! the gateway already caches rather than in a harness on top of it: a Sterna
 //! session with no Glasshouse installed anywhere still gets the figures, and
 //! anything else that speaks to the gateway gets the same ones.
 //!
@@ -15,12 +15,10 @@
 //! Artificial Analysis key overlays that copy with what their key fetched
 //! ([`import`] writes [`overlay_path`], `inference-gateway models --import`
 //! is the command), and each figure the overlay carries wins over the baked
-//! one. Until this binary fetches for itself, the accepted way to produce
-//! that catalogue is any process holding the key --
-//! `ARTIFICIAL_ANALYSIS_API_KEY=… glasshouse analysis --refresh && glasshouse
-//! analysis | inference-gateway models --import -` is the one that exists
-//! today, and it is a pipe rather than a dependency: nothing here knows what
-//! wrote the file. Neither path ever fails a caller: an absent, unreadable or partial
+//! one. This binary does not fetch the catalogue itself: any process holding
+//! the key produces it and pipes it in (`inference-gateway models --import
+//! -`), so nothing here knows what wrote the file. Neither path ever fails a
+//! caller: an absent, unreadable or partial
 //! file leaves the other copy standing.
 //!
 //! Nothing here reads a key, opens a socket or writes a log. The fetch that
@@ -150,7 +148,7 @@ impl Measurements {
 /// The name a model is looked up under: lower case, `.` and `_` as `-`.
 ///
 /// Deliberately the same one line as `glasshouse::routing::analysis::normalise`
-/// and `pane`'s copy: the three processes share no library, and a published
+/// and `sterna`'s copy: the three processes share no library, and a published
 /// slug (`gpt-5-6-sol`) has to find a served id (`gpt-5.6-sol`).
 #[must_use]
 pub fn normalise(model: &str) -> String {

@@ -9,7 +9,7 @@
 //! served the refusal — can hand it to whoever is drawing a context meter.
 //!
 //! **Keyed by route, which here means provider and model.** That is the
-//! granularity the ruling asks for (`docs/product/design-decisions.md`, *A
+//! granularity the ruling asks for (`archive/glasshouse:docs/product/design-decisions.md`, *A
 //! context window is a property of the route, not of the model*) and the
 //! granularity this gateway can actually observe: `routing::Route` carries a
 //! provider and an assigned model, and an account resolves to one of those

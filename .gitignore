@@ -1,5 +1,6 @@
 /target
 /.agent-runtime/
+/.sterna/
 /.pane/
 /.playwright-mcp/
 
@@ -7,10 +8,10 @@
 __pycache__/
 *.pyc
 
-# Worker worktrees live inside the repo but are never part of it.
-# scripts/ci-local.sh excludes this from the tree it ships to the container.
+# Git worktrees kept inside the repository are never part of it;
+# scripts/ci-local.sh excludes them from the tree it ships to the container.
 .worktrees/
 
-# Finder metadata (2026-09-05: four of these made integrate.sh call the tree dirty)
+# Finder metadata.
 .DS_Store
 /.glasshouse/

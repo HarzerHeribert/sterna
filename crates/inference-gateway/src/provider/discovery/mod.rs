@@ -534,7 +534,7 @@ fn send(
                 builder.header("x-goog-api-key", credential.expose())
             }
             // No model-list endpoint is declared for System One
-            // (`docs/product/evidence/phase-66.md`, *Provider facts*), so this
+            // (`archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*), so this
             // arm is never reached by a real probe; it exists only to keep
             // the match exhaustive. Its wire uses a bearer token, so it
             // matches the OpenAI arm's shape if it is ever reached.

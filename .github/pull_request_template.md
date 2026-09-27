@@ -11,4 +11,4 @@
 - [ ] `cargo fmt --all` and `cargo clippy --workspace --all-targets` are clean
 - [ ] Tests for the crate I changed pass
 - [ ] No key, token or personal data is in the diff, the tests or the fixtures
-- [ ] I agree to the [terms of a contribution](https://github.com/HarzerHeribert/glasshouse/blob/main/CONTRIBUTING.md#the-terms-of-a-contribution): I wrote this or may submit it, and I grant HarzerHeribert a perpetual licence to use, modify, distribute and relicense it as part of this project
+- [ ] I agree to the [terms of a contribution](https://github.com/HarzerHeribert/sterna/blob/main/CONTRIBUTING.md#the-terms-of-a-contribution): I wrote this or may submit it, and I grant HarzerHeribert a perpetual licence to use, modify, distribute and relicense it as part of this project

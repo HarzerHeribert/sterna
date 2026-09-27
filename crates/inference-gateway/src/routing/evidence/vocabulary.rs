@@ -176,15 +176,15 @@ pub const CORRELATION_PURPOSE: &str = "route-correlation";
 pub const HARNESS_TURN_PURPOSE: &str = "harness-turn";
 
 /// A client-relayed look a supervisor made on its own behalf, not the task
-/// it is watching — pane's `supervisor.md` §3.
+/// it is watching — sterna's `supervisor.md` §3.
 pub const SUPERVISOR_PURPOSE: &str = "supervisor";
 
-/// A bounded side request made by Pane's configured helper tier.
+/// A bounded side request made by Sterna's configured helper tier.
 pub const HELPER_PURPOSE: &str = "helper";
 
-/// A typed question Pane asked a decision model about the task, not the task
+/// A typed question Sterna asked a decision model about the task, not the task
 /// itself — the purpose a `POST /v1/systemone` request names
-/// (`docs/product/evidence/phase-66.md`, *Provider facts*).
+/// (`archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*).
 pub const DECISION_PURPOSE: &str = "decision";
 
 /// A client may name a purpose only from this list; everything else is
@@ -438,7 +438,7 @@ pub struct ObservedCost {
 ///
 /// No rule deciding a value reads a byte of the body — see
 /// `crate::gateway::session`'s `failure_class`, beside `classify`, and
-/// `docs/product/design-decisions.md`'s *"Phase 33: framing is not content"*.
+/// `archive/glasshouse:docs/product/design-decisions.md`'s *"Phase 33: framing is not content"*.
 // History: design-decisions.md, "Trims: routing/evidence/mod.rs", `FailureClass` doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureClass {
@@ -799,7 +799,7 @@ impl NewObservation {
     /// every canonical event in order to re-encode it for the harness; a
     /// relayed exchange never enters a codec and passes [`None`], exactly
     /// like [`Self::with_first_byte_at`]'s own relayed case. See
-    /// `docs/product/design-decisions.md`'s *"first real token and first
+    /// `archive/glasshouse:docs/product/design-decisions.md`'s *"first real token and first
     /// tool call on the translated path — the 1331/1332 ruling"*.
     pub fn with_first_token_at(mut self, first_token_at_unix: Option<i64>) -> Self {
         self.first_token_at_unix = first_token_at_unix;
@@ -825,7 +825,7 @@ impl NewObservation {
     /// monotonic `std::time::Instant` rather than from two wall-clock
     /// readings subtracted, so a clock step cannot make it negative. The
     /// column's own `CHECK` refuses a negative value if one ever arrives
-    /// anyway. See `docs/product/design-decisions.md`'s *"Millisecond
+    /// anyway. See `archive/glasshouse:docs/product/design-decisions.md`'s *"Millisecond
     /// offsets on the routing row — Cluster G's second column set"*.
     ///
     /// A separate builder rather than a parameter on [`Self::with_timing`],
@@ -928,7 +928,7 @@ impl NewObservation {
     ///
     /// The value is `crate::session::SessionId`'s own string and nothing
     /// else: never the harness's `metadata.user_id`, never a native session
-    /// id, never a credential. `docs/product/design-decisions.md`'s *A
+    /// id, never a credential. `archive/glasshouse:docs/product/design-decisions.md`'s *A
     /// session identity on the routing evidence rows* argues each of those
     /// three exclusions.
     ///
@@ -1000,7 +1000,7 @@ impl NewObservation {
     /// decoded a response to count from," as for every other nullable
     /// column; `Some(0)` is "it counted and found none," which is not the
     /// same fact and must not be confused with it. See
-    /// `docs/product/design-decisions.md`'s *"Tool rounds and repairs on the
+    /// `archive/glasshouse:docs/product/design-decisions.md`'s *"Tool rounds and repairs on the
     /// translated path"*.
     pub fn with_tool_rounds(mut self, tool_rounds: Option<u32>) -> Self {
         self.tool_rounds = tool_rounds.map(i64::from);

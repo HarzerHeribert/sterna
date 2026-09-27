@@ -560,7 +560,7 @@ pub fn templates() -> Vec<Provider> {
         },
         // TypeSafe AI's System One decision protocol. Read 2026-09-16 from
         // docs.typesafe.ai, unverified against a live endpoint
-        // (`docs/product/evidence/phase-66.md`, *Provider facts*) — no probe
+        // (`archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*) — no probe
         // with a real key was made here, so every `Declared` fact stays
         // `Unverified`, including `model_list_endpoint` and
         // `usage_telemetry`: `Verified` cites a probe that was actually made,

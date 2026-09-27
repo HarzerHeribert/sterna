@@ -5,7 +5,7 @@
 //!
 //! **Read live.** A serving gateway asks [`PoolState::excluded`] per
 //! request; the file is re-read only when its modification time changes, so
-//! a toggle in Pane takes effect on the next request without a restart.
+//! a toggle in Sterna takes effect on the next request without a restart.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

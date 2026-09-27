@@ -228,8 +228,8 @@ if [ "$DO_MAC" -eq 1 ]; then
     step "test (macos) / gateway build" "${ENV_SCRUB[@]}" cargo build --locked -p inference-gateway --all-targets
     step "test (macos) / gateway test"  env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo test --locked -p inference-gateway -- --nocapture < /dev/null'
   fi
-  # `pane` gets its own step, unconditionally: --scoped need not skip it.
-  step "test (macos) / pane build+test" env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo build --locked -p pane --all-targets && cargo test --locked -p pane -- --nocapture < /dev/null'
+  # `sterna` gets its own step, unconditionally: --scoped need not skip it.
+  step "test (macos) / sterna build+test" env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY sh -c 'cargo build --locked -p sterna --all-targets && cargo test --locked -p sterna -- --nocapture < /dev/null'
   # Call the project's own script rather than `cargo +$MSRV`: its header
   # documents three traps, and `cargo +<v>` needs the rustup shim, which is
   # exactly how the first version of this file got a false red.

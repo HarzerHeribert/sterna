@@ -1,9 +1,8 @@
 """GH-PRE-RELEASE: the release workflow builds five targets, publishes only
 on a real tag with dry_run false, and never touches crates.io.
 
-User decision 10 of 2026-09-06 (docs/product/design-decisions.md, "Steering
-decisions of record -- 2026-09-06"): a tagged pre-release (a GitHub release
-with built binaries, no crates.io publish) is cut from main once the pane
+User decision of 2026-09-06: a tagged pre-release (a GitHub release with
+built binaries, no crates.io publish) is cut from main once the sterna
 Windows cell is green. This file is the mechanical half of that guarantee --
 it reads the workflow's own text and structure so a future edit that drops
 the prerelease flag, unpins an action, or widens the publish gate fails here

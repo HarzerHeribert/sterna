@@ -12,7 +12,7 @@ repository.workspace = true
 name = "inference_gateway"
 path = "src/lib.rs"
 
-# The standalone gateway process. Pane spawns this binary, reads one ready
+# The standalone gateway process. Sterna spawns this binary, reads one ready
 # line from its stdout, and points its existing HTTP inference path at the
 # address that line carries -- see `src/main.rs` for the whole contract.
 [[bin]]

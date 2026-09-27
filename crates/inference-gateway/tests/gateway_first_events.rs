@@ -29,7 +29,7 @@
 //!   and refuses a `thinking`/`signature_delta` block at decode — in both
 //!   cases no `StreamEvent` is ever produced for `FirstEvents::note` to see,
 //!   so the rule cannot get either wrong without a decoder defect, which is
-//!   `docs/product/design-decisions.md`'s own reading and not re-derived
+//!   `archive/glasshouse:docs/product/design-decisions.md`'s own reading and not re-derived
 //!   here.
 
 mod host;

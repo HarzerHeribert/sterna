@@ -177,7 +177,7 @@ fn session_start_candidates() -> Vec<Backend> {
 /// what the caller said. How a caller reaches its judgement left with the
 /// harness on 2026-09-10.
 ///
-/// This is the same structural bar `docs/product/evidence/phase-9j.md`
+/// This is the same structural bar `archive/glasshouse:docs/product/evidence/phase-9j.md`
 /// recorded for same-model failover survivors, and it turns out to be
 /// general rather than particular to failover.
 #[test]

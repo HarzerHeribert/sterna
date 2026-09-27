@@ -27,7 +27,7 @@ TARGETS = {
 }
 HEADER = """# The CLIProxyAPI build this release ships with: the subscription broker the
 # gateway runs. Written by `scripts/release/bump-broker.py` (and the daily
-# broker-bump workflow); the installer and `pane update` download the named
+# broker-bump workflow); the installer and `sterna update` download the named
 # upstream asset and refuse it unless its SHA-256 matches the one pinned here.
 """
 

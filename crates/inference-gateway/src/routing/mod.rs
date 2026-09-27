@@ -160,7 +160,7 @@ impl Backend {
 
     /// Carry the `Declared` evidence behind [`Backend::tools`]'s verdict —
     /// the tool-semantics half of the 1517/1513 recorded limit
-    /// (`docs/product/evidence/phase-35a.md`). Inert unless `tools() ==
+    /// (`archive/glasshouse:docs/product/evidence/phase-35a.md`). Inert unless `tools() ==
     /// ToolSemantics::KnownAbsent`; the caller supplies `None` for every
     /// other verdict.
     #[must_use]
@@ -337,7 +337,7 @@ impl std::fmt::Display for CacheLocality {
             Self::LikelyLost(reason) => write!(
                 f,
                 "provider-side prompt caching is likely to be invalidated: {} — provider caches \
-                 are commonly scoped to the account a key belongs to, and Glasshouse has not \
+                 are commonly scoped to the account a key belongs to, and the gateway has not \
                  established otherwise for this provider",
                 reason.as_str()
             ),

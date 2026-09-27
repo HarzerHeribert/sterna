@@ -113,7 +113,7 @@ struct State {
     /// The task class the launch that started this gateway was routed as —
     /// capability map line 1301 and `crate::database` migration 23's
     /// `routing_observations.task_class`, this producer's missing join
-    /// (`GH-TASK-CLASS-COST-JOIN`, `docs/product/evidence/phase-32g.md`'s
+    /// (`GH-TASK-CLASS-COST-JOIN`, `archive/glasshouse:docs/product/evidence/phase-32g.md`'s
     /// Censused 2026-09-02 entry). `None` until a launch tells it (see
     /// [`SessionRouting::serve_task_class`]), the same honest absence
     /// [`Self::session_id`] carries for a gateway nothing has told.
@@ -760,7 +760,7 @@ impl SessionRouting {
                         from = %current.label(),
                         to = %to.label(),
                         explanation = %explanation.render(),
-                        "the native-pairing prior and local evidence behind a Glasshouse gateway \
+                        "the native-pairing prior and local evidence behind a gateway \
                          failover"
                     );
                     state.record.note(AssignmentChange {
@@ -790,7 +790,7 @@ impl SessionRouting {
                     offered = %to.label(),
                     cache = %cache,
                     explanation = %explanation.render(),
-                    "a Glasshouse gateway backend failed and the only compatible replacement \
+                    "a gateway backend failed and the only compatible replacement \
                      serves a different model, which is a migration rather than a failover"
                 );
                 ExchangeEffect::Unchanged
@@ -817,7 +817,7 @@ impl SessionRouting {
                     backend = %current.label(),
                     failure = %failure.describe(),
                     detail,
-                    "a Glasshouse gateway backend failed and the session stayed where it was"
+                    "a gateway backend failed and the session stayed where it was"
                 );
                 ExchangeEffect::Unchanged
             }

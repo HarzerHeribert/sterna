@@ -29,7 +29,7 @@ class ExpensiveGateGuard(unittest.TestCase):
 
     def test_targeted_read_only_and_explicit_full_forms_are_allowed(self):
         commands = [
-            "scripts/blast-radius.sh --targeted crates/pane/src/tui.rs",
+            "scripts/blast-radius.sh --targeted crates/sterna/src/tui.rs",
             "scripts/blast-radius.sh --status",
             "scripts/blast-radius.sh --dry-run",
             "scripts/blast-radius.sh --list",

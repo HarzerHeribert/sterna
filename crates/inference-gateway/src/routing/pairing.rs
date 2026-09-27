@@ -424,7 +424,7 @@ impl ObservedEvidence {
 /// A trait rather than a concrete store, on purpose: Phase 33A (the routing
 /// evidence ledger this would eventually read) does not exist, verified by
 /// `grep -rn 'fn score\|Score' crates/glasshouse/src` finding no match and by
-/// `docs/product/evidence/phase-9j.md`'s own account of the two routing
+/// `archive/glasshouse:docs/product/evidence/phase-9j.md`'s own account of the two routing
 /// callers, neither of which ranks anything. Scoring against a trait means
 /// the policy below compiles and is provable with a test double today, and
 /// gets a real implementation the day Phase 33A lands — without this file

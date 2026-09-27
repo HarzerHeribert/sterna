@@ -6,16 +6,15 @@ body:
     attributes:
       value: |
         Thanks for reporting! **Never paste an API key, token or login file**, not even a revoked one.
-        Security problems go to a [private advisory](https://github.com/HarzerHeribert/glasshouse/security/advisories/new) instead.
+        Security problems go to a [private advisory](https://github.com/HarzerHeribert/sterna/security/advisories/new) instead.
   - type: dropdown
     id: area
     attributes:
       label: Which part?
       options:
-        - Pane (the terminal app)
+        - Sterna (the terminal app)
         - Sign-in, keys or models
         - Inference gateway
-        - Glasshouse
         - Install or update
         - Website or docs
         - Not sure
@@ -33,14 +32,14 @@ body:
     attributes:
       label: How can it be reproduced?
       placeholder: |
-        1. pane
+        1. sterna
         2. /login …
         3. …
   - type: input
     id: version
     attributes:
       label: Version
-      description: The output of `pane --version`, and how you installed (install script, pane update, from source).
+      description: The output of `sterna --version`, and how you installed (install script, sterna update, from source).
     validations:
       required: true
   - type: input

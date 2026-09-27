@@ -358,7 +358,7 @@ while read -r hit; do
   # fall through to the src arm below.
   #
   # Every entry below is "pkg:label" -- the workspace gained a second package
-  # (crates/pane) and run_target() needs to know which one each target
+  # (crates/sterna) and run_target() needs to know which one each target
   # belongs to, not just glasshouse. Display sites strip the "pkg:" prefix
   # back off (see *_DISPLAY below) so glasshouse-only output is unchanged.
   if [[ "$hit" =~ ^crates/[^/]+/tests/[^/]+\.rs$ ]]; then
@@ -486,8 +486,8 @@ SKIPPED_FULL_TARGET_COUNT=$(( FULL_TRACE_TARGET_COUNT - TARGETED_MATCHED_COUNT )
 # so the next reader sees WHY each is serial without reconstructing it from a
 # grep:
 KNOWN_SERIAL_TESTS=(
-  tui_live                # drives the real pane binary under a PTY
-  lifecycle_cutoff        # spawns pane and times its deadlines
+  tui_live                # drives the real sterna binary under a PTY
+  lifecycle_cutoff        # spawns sterna and times its deadlines
 )
 
 # --lib SPLITS between the lanes. Only the known flaky/process-bound families

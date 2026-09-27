@@ -583,13 +583,13 @@ pub type Exclusion = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UpstreamError {
     #[error(
-        "the provider `{provider}` serves none of the protocols the Glasshouse gateway's \
+        "the provider `{provider}` serves none of the protocols the gateway's \
          ingress offers, so the gateway would have nowhere to forward to"
     )]
     NoProtocolServed { provider: String },
     #[error(
         "the provider `{provider}` declares a base URL for {protocol} that is not an absolute \
-         http(s) URL, so the Glasshouse gateway has nowhere to forward to"
+         http(s) URL, so the gateway has nowhere to forward to"
     )]
     BaseUrlNotAbsolute { provider: String, protocol: String },
     #[error(
@@ -597,7 +597,7 @@ pub enum UpstreamError {
          contains a character that is not allowed in an HTTP header value"
     )]
     CredentialNotHeaderSafe { provider: String },
-    #[error("the Glasshouse gateway was given no provider to forward to")]
+    #[error("the gateway was given no provider to forward to")]
     NoBackend,
 }
 
@@ -723,7 +723,7 @@ impl Upstream {
     /// backend claims it — reachable whenever a session is bound to a chat
     /// account and a request names a route only a relay-only provider
     /// declares, such as `typesafe-systemone`'s `/systemone`
-    /// (`docs/product/evidence/phase-66.md`, *Provider facts*). This holds
+    /// (`archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*). This holds
     /// as long as such a target has exactly one claimant: **when the
     /// model-chosen backend does not claim `target`, and exactly one backend
     /// does, that backend serves the request.** Two or more claimants keep

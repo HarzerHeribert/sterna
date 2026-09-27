@@ -206,7 +206,7 @@ impl ResourceKind {
             ResourceKind::DirectProvider { provider, locality } => {
                 format!("{provider} ({})", locality.as_str())
             }
-            ResourceKind::GlasshouseGateway => "glasshouse gateway".to_owned(),
+            ResourceKind::GlasshouseGateway => "inference gateway".to_owned(),
             ResourceKind::Entitlement { name } => format!("entitlement `{name}`"),
         }
     }

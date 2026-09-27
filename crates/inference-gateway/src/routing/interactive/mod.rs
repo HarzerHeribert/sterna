@@ -855,7 +855,7 @@ fn failure_domain_contribution(current: &Backend, candidate: &Backend) -> Contri
             0.0,
             format!(
                 "`{}` is on a different provider than the backend that failed, but independence \
-                 is not established — Glasshouse has no correlation evidence for this pair, and \
+                 is not established — the gateway has no correlation evidence for this pair, and \
                  absent evidence is not treated as independence",
                 candidate.provider()
             ),
@@ -1157,7 +1157,7 @@ fn compatible(current: &Backend, candidate: &Backend) -> Result<(), Incompatibil
 /// queue onto the same upstream"): a quota-domain change is certain — two
 /// [`super::CredentialId`]s are either the same allowance or they are not,
 /// by construction — but this build has no producer for a *capacity* signal
-/// (Phase 32G/33, both 0/N per `docs/product/evidence/phase-35b.md`'s own
+/// (Phase 32G/33, both 0/N per `archive/glasshouse:docs/product/evidence/phase-35b.md`'s own
 /// missing-evidence list) and line 1378 forbids ever calling a cross-provider
 /// move "independent failure handling" outright, proven or not. Reporting a
 /// category this build cannot honestly support would be exactly the
@@ -1306,7 +1306,7 @@ impl RoutingRecord {
             changed_provider_or_model = change.changed_provider_or_model(),
             cache = %change.cache,
             benefit = %change.benefit(),
-            "the backend serving a Glasshouse gateway session changed"
+            "the backend serving a gateway session changed"
         );
         self.entries.push(change);
     }

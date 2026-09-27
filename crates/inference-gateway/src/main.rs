@@ -1,6 +1,6 @@
 //! `inference-gateway` — the gateway as its own process.
 //!
-//! # The contract Pane holds this binary to
+//! # The contract Sterna holds this binary to
 //!
 //! ```text
 //! inference-gateway serve [--listen 127.0.0.1:0] [--config <path>]
@@ -1364,7 +1364,7 @@ fn connect(
 /// own input, output and cached token counts, from figures `gateway::usage`
 /// read out of bytes the relay was forwarding anyway. Until now the standalone
 /// binary passed `null_sink()` and every one of those figures was computed and
-/// dropped, which is why `routing-cost` had nothing to print and why Pane's
+/// dropped, which is why `routing-cost` had nothing to print and why Sterna's
 /// `ServedBy` was always unknown.
 ///
 /// **The library still keeps nothing.** This closure is the binary's, on the
@@ -1476,7 +1476,7 @@ fn routing_cost(
 
 /// One row as a client reads it — **the wire shape, and it is a contract**.
 ///
-/// Pane's `gateway::served_by` parses these keys by name and ignores the rest,
+/// Sterna's `gateway::served_by` parses these keys by name and ignores the rest,
 /// so a key renamed here is a figure silently lost there rather than an error
 /// anywhere. `cached_input_tokens` is the one that matters most: it is absent
 /// from every other path back to a client on an OpenAI-family route, whose
@@ -2044,9 +2044,9 @@ mod tests {
         );
     }
 
-    /// The JSON Lines shape Pane parses, asserted key by key.
+    /// The JSON Lines shape Sterna parses, asserted key by key.
     ///
-    /// `pane::gateway::served_by` reads these names off each line and ignores
+    /// `sterna::gateway::served_by` reads these names off each line and ignores
     /// everything else, so this test is the only thing standing between a
     /// rename here and a figure that quietly stops arriving there.
     #[test]

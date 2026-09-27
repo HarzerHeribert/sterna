@@ -28,8 +28,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Pane and the inference gateway on every OS and architecture GitHub hosts,
-  # on the declared compiler; the gateway alone on its MSRV floor (Pane's
+  # Sterna and the inference gateway on every OS and architecture GitHub hosts,
+  # on the declared compiler; the gateway alone on its MSRV floor (Sterna's
   # floor is its own, 1.96, set by `oxc`, and the declared compiler is above
   # it). Beta and nightly ride along on one OS as early warning, allowed to
   # fail.
@@ -61,7 +61,7 @@ jobs:
           - { os: ubuntu-latest, toolchain: nightly }
     steps:
       # The ruler cuts a worktree at a task's PARENT commit
-      # (crates/pane/src/ruler/attempt.rs), and its tests do the same at
+      # (crates/sterna/src/ruler/attempt.rs), and its tests do the same at
       # HEAD^; a depth-1 checkout has no parent.
       - name: Checkout
         uses: actions/checkout@v4
@@ -140,7 +140,7 @@ jobs:
         if: matrix.toolchain == 'declared'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      # The gateway only: pane's docs were never held to -D warnings and
+      # The gateway only: sterna's docs were never held to -D warnings and
       # link private items in several places.
       - name: Rustdoc
         if: matrix.toolchain == 'declared'
@@ -227,6 +227,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # RUSTSEC-2024-0436: `paste` is unmaintained; it reaches this tree
-          # only through pane's V8 crate (rusty_v8), whose maintainers own
+          # only through sterna's V8 crate (rusty_v8), whose maintainers own
           # the replacement. Re-read when rusty_v8 moves.
           ignore: RUSTSEC-2024-0436

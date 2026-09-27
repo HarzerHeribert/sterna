@@ -1,8 +1,8 @@
 //! The inference gateway: one wire format in, many providers out.
 //!
-//! This crate is the **bottom** layer of the three-component split. Pane and
+//! This crate is the **bottom** layer of the three-component split. Sterna and
 //! Glasshouse both sit on it; neither is required by it, and neither is
-//! required by the other. A normal Pane session runs with no Glasshouse
+//! required by the other. A normal Sterna session runs with no Glasshouse
 //! process anywhere.
 //!
 //! # What lives here, and the one rule that keeps it here
@@ -29,7 +29,7 @@
 //! # The standalone process, and the two modules that compose it
 //!
 //! `src/main.rs` is the `inference-gateway` binary: it serves until stdin
-//! reaches EOF, and Pane spawns it. [`mod@config`] is the file it reads --
+//! reaches EOF, and Sterna spawns it. [`mod@config`] is the file it reads --
 //! an account catalogue and the providers those accounts name -- and
 //! [`mod@pool`] turns that catalogue into the [`gateway::Upstream`] a
 //! started gateway forwards through. Both are composition: they decide

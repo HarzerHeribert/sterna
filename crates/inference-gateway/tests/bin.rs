@@ -1,4 +1,4 @@
-//! The `inference-gateway` binary, driven the way Pane drives it.
+//! The `inference-gateway` binary, driven the way Sterna drives it.
 //!
 //! Every test here spawns the **built binary** and talks to it over the two
 //! channels the contract names — one line of stdout, and stdin as the
@@ -835,7 +835,7 @@ fn connect_drives_the_broker_login_and_forwards_a_pasted_address() {
             "--no-browser",
         ])
         .env(
-            "GLASSHOUSE_CLIPROXYAPI_BIN",
+            "INFERENCE_GATEWAY_CLIPROXYAPI_BIN",
             fake_broker_login(scratch.path()),
         )
         .stdin(Stdio::piped())
@@ -926,7 +926,7 @@ fn connect_fails_when_the_saved_credential_is_refused() {
             "--no-browser",
         ])
         .env(
-            "GLASSHOUSE_CLIPROXYAPI_BIN",
+            "INFERENCE_GATEWAY_CLIPROXYAPI_BIN",
             fake_broker_login(scratch.path()),
         )
         .stdin(Stdio::piped())
@@ -986,7 +986,7 @@ fn connect_over_ssh_uses_a_device_code_for_openai() {
             "--json",
         ])
         .env(
-            "GLASSHOUSE_CLIPROXYAPI_BIN",
+            "INFERENCE_GATEWAY_CLIPROXYAPI_BIN",
             fake_broker_login(scratch.path()),
         )
         .env("SSH_CONNECTION", "203.0.113.9 50000 203.0.113.7 22")

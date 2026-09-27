@@ -5,7 +5,7 @@
 //! on a route*, and the two disagree often enough to matter — of 223 exact
 //! name matches between two published catalogues on 2026-09-17, 126 disagreed,
 //! because a re-host caps what it resells. The refusal is the route answering
-//! for itself, so it outranks every table (`docs/product/design-decisions.md`,
+//! for itself, so it outranks every table (`archive/glasshouse:docs/product/design-decisions.md`,
 //! *A context window is a property of the route, not of the model*).
 //!
 //! **A shape this table does not know yields nothing.** Every reading here is

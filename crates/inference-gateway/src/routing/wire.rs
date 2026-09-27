@@ -83,7 +83,7 @@ pub enum WireProtocol {
     /// (nothing in `translate/` names it, and the pair table refuses every
     /// pair with it by name). This holds as long as System One stays a
     /// decision wire rather than a chat wire — see
-    /// `docs/product/evidence/phase-66.md`, *Provider facts*.
+    /// `archive/glasshouse:docs/product/evidence/phase-66.md`, *Provider facts*.
     TypesafeSystemOne,
 }
 

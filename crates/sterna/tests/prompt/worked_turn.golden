@@ -1,0 +1,30 @@
+Every file that names `IntegrationId` — how many are tests, and which
+production files would a new variant force me to touch?
+===MSG===
+```sterna
+const hits = await grep({ pattern: "IntegrationId", glob: "crates/glasshouse/**/*.rs" });
+const adapter = await read({ path: "crates/glasshouse/src/harness/mod.rs" });
+```
+===MSG===
+[cell 1 yielded in 412 ms]
+
+## Handles
+hits     Grep.Match[]   n=5   inline cost ~1,074 tok · preview 61 tok
+  [0] "crates/glasshouse/tests/gateway_translate_effort.rs:29"
+  [1] "crates/glasshouse/tests/gateway_translate_effort.rs:512"
+  [2] "crates/glasshouse/tests/gateway_translate_responses.rs:35"
+  [4] "crates/sterna/src/tools/registry.rs:12"
+
+adapter  File   crates/glasshouse/src/harness/mod.rs   63,979 B · 1,508 lines · 2026-09-05T14:18:26Z
+L1   "//! The contract every supported harness is reached through."
+L2   "//!"   preview 41 tok
+
+## Usage
+turn output cap 8,000 · task spent 3,412 · cells 1/40
+===MSG===
+```sterna
+const isTest = (m) => m.path.startsWith("crates/glasshouse/tests/");
+const inTests = hits.filter(isTest);
+const prodFiles = new Set(hits.filter(m => !isTest(m)).map(m => m.path));
+return { total: hits.length, in_tests: inTests.length, prod_files: prodFiles.size };
+```

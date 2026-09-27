@@ -1593,7 +1593,7 @@ fn an_unknown_purpose_header_is_stripped_and_the_row_stays_harness_turn() {
 
 /// A `decision` purpose header stamps the reported observation and never
 /// reaches the upstream — the same shape `supervisor` and `helper` already
-/// have, for a Pane request naming what it asked a decision model about the
+/// have, for a Sterna request naming what it asked a decision model about the
 /// task rather than the task itself.
 #[test]
 fn a_decision_purpose_header_stamps_the_row_and_never_reaches_the_upstream() {

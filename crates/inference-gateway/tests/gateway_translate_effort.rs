@@ -1,6 +1,6 @@
 //! `GH-EFFORT-CARRY`: carrying a Claude Code `thinking` request across a
 //! translated pairing instead of refusing it — the prerequisite capability
-//! map line 2039's evaluation needs, per `docs/product/design-decisions.md`
+//! map line 2039's evaluation needs, per `archive/glasshouse:docs/product/design-decisions.md`
 //! (*"Carrying effort across a translated pairing"*).
 //!
 //! # Where these tests enter

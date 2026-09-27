@@ -26,12 +26,12 @@ set -euo pipefail
 # list that used to be spelled out below, while `$BINDIR/inference-gateway`
 # was a symlink into `current/bin/` all the same. So every install flipped
 # `current` to a version directory that did not contain it and left that link
-# dangling -- and `pane`, which reaches the gateway as a sibling executable,
+# dangling -- and `sterna`, which reaches the gateway as a sibling executable,
 # lost its whole model catalogue. Measured 2026-09-11, on this machine.
-BINARIES=(inference-gateway pane)
+BINARIES=(inference-gateway sterna)
 
-PREFIX="${GLASSHOUSE_PREFIX:-$HOME/.local}"
-ROOT="$PREFIX/lib/glasshouse"
+PREFIX="${STERNA_PREFIX:-$HOME/.local}"
+ROOT="$PREFIX/lib/sterna"
 VERSIONS="$ROOT/versions"
 CURRENT="$ROOT/current"
 BINDIR="$PREFIX/bin"
@@ -49,7 +49,7 @@ while [ $# -gt 0 ]; do
     --allow-dirty) ALLOW_DIRTY=1 ;;
     --debug)      PROFILE=debug ;;
     --prefix)     shift; PREFIX="${1:?--prefix needs a path}"
-                  ROOT="$PREFIX/lib/glasshouse"; VERSIONS="$ROOT/versions"
+                  ROOT="$PREFIX/lib/sterna"; VERSIONS="$ROOT/versions"
                   CURRENT="$ROOT/current"; BINDIR="$PREFIX/bin" ;;
     -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
     *)            die "unknown argument: $1" ;;
@@ -61,7 +61,7 @@ done
 # install is not about "the checkout you are standing in": it produces the
 # artifact you will run everywhere else.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -f "$REPO/crates/pane/Cargo.toml" ] || die "not a Pane checkout: $REPO"
+[ -f "$REPO/crates/sterna/Cargo.toml" ] || die "not a Sterna checkout: $REPO"
 
 live_version() { [ -L "$CURRENT" ] && basename "$(readlink "$CURRENT")" || true; }
 
@@ -119,11 +119,24 @@ if [ "$ALLOW_DIRTY" -eq 0 ] && [ -n "$(git -C "$REPO" status --porcelain)" ]; th
   die "working tree is dirty; an installed binary must map to a commit (--allow-dirty to override)"
 fi
 
-VERSION="$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo unknown)"
+# Release tags only: `archive/glasshouse` is a tag too, and its slash would
+# nest the version directory one level down.
+VERSION="$(git -C "$REPO" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo unknown)"
+VERSION="${VERSION//\//-}"
 COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+# Always a directory no install has used: a binary that may be running is
+# never written over (the kernel kills a process whose signed executable
+# changes under it), so a rebuild of the same commit gets `<version>.2`,
+# `.3`, ... and `current` moves to it.
 DEST="$VERSIONS/$VERSION"
+n=1
+while [ -e "$DEST" ]; do
+  n=$((n + 1))
+  DEST="$VERSIONS/$VERSION.$n"
+done
+VERSION="$(basename "$DEST")"
 
-# `pane` is not in default-members (it carries an embedded V8), so both crates
+# `sterna` is not in default-members (it carries an embedded V8), so both crates
 # are named explicitly. RUSTFLAGS is never set here -- see Cargo.toml's
 # [workspace.lints] note; a second value would fork every fingerprint in target/.
 # shellcheck source=scripts/lib/accel.sh
@@ -131,7 +144,7 @@ DEST="$VERSIONS/$VERSION"
 echo "building $VERSION ($PROFILE) ..."
 BUILD_FLAGS=(--profile "$PROFILE")
 [ "$PROFILE" = debug ] && BUILD_FLAGS=()
-( cd "$REPO" && cargo build "${BUILD_FLAGS[@]}" -p inference-gateway -p pane )
+( cd "$REPO" && cargo build "${BUILD_FLAGS[@]}" -p inference-gateway -p sterna )
 
 BUILT="$REPO/target/$PROFILE"
 for b in "${BINARIES[@]}"; do
@@ -144,7 +157,6 @@ for b in "${BINARIES[@]}"; do
   "$BUILT/$b" --version >/dev/null 2>&1 || die "$b does not run; refusing to install"
 done
 
-rm -rf "$DEST"
 mkdir -p "$DEST/bin"
 for b in "${BINARIES[@]}"; do
   cp "$BUILT/$b" "$DEST/bin/$b"
@@ -177,7 +189,7 @@ done
 echo
 echo "installed $VERSION -> $DEST"
 [ -n "$previous" ] && [ "$previous" != "$VERSION" ] && echo "current:  $previous -> $VERSION"
-echo "pane:       $BINDIR/pane"
+echo "sterna:     $BINDIR/sterna"
 case ":$PATH:" in
   *":$BINDIR:"*) ;;
   *) echo; echo "NOTE: $BINDIR is not on PATH. Add it to your shell profile." ;;

@@ -280,7 +280,7 @@ impl ReadingSource {
                 format!("the harness interface `{interface}`")
             }
             ReadingSource::UserConfiguration => "the user's own configuration".to_owned(),
-            ReadingSource::LocalObservation(what) => format!("Glasshouse's own count of {what}"),
+            ReadingSource::LocalObservation(what) => format!("the gateway's own count of {what}"),
             ReadingSource::InferredEstimate(how) => format!("an estimate derived from {how}"),
         }
     }
