@@ -306,3 +306,61 @@ whether a saved Plan should survive into the next session.
 6. Split the OS-bypass bit from "container mode" (F9).
 7. Rewrite `docs/sandbox.md` against the TOML store and record the 09-19
    ruling in `docs/audit/decisions.md` (F12).
+
+## 8. Unattended runs
+
+Every level in section 7 relies on someone answering "ask". A long run with
+nobody at the terminal breaks that:
+
+- **Ask** stalls on its first question.
+- **Auto** must either refuse whenever the classifier is unsure (so the run
+  stalls or gives up), or run anyway (so the classifier alone is trusted for
+  hours).
+- **Full access** works, but on the person's real machine, with their
+  credentials and network.
+
+Today a headless run refuses every command no `Bash(...)` pattern names (F3),
+so a long run either stalls or is started with `--full-access`.
+
+**Codex and Claude Code solve this with a box, not a better judge.** For hands-off
+runs both put the agent in a disposable environment: Codex points at a
+container, and Claude Code recommends `--dangerously-skip-permissions` only
+inside a container and ships a reference devcontainer. Inside the box nothing
+is asked; only what leaves it is controlled:
+
+| Leaving the box | Control |
+|---|---|
+| Network | the web broker's domain list (registries, the git remote) |
+| Git | push to the run's own branch only; never the default branch, never force |
+| Secrets | only those the task names, handed in on purpose |
+| The result | a branch and a report, reviewed afterwards |
+
+The classifier then guards only the exits and refuses when unsure, because a
+stall at an exit is cheap.
+
+**Local boxes, strongest first.**
+
+| Box | Available on | Cost |
+|---|---|---|
+| VM (Lima, WSL2, Hyper-V) | all three | heaviest; strongest separation |
+| Container (Docker, Podman, devcontainer) | Linux natively; macOS and Windows through a VM | needs a runtime; the toolchain must be in the image |
+| Separate worktree + today's OS sandbox | everywhere, already built | lightest; brings back the per-program exec fight (F4) |
+
+**What exists already:**
+- the OS-bypass flag already doubles as "container mode" (`profile.rs:620`),
+  which assumes the box is the boundary;
+- the ruler already runs Sterna headless in worktrees;
+- the supervisor watches for loops;
+- change snapshots and `/rollback`;
+- the web broker controls network by domain.
+
+**What is missing:**
+- Sterna starting the box itself. For example, `sterna run --boxed "task"`
+  would create a worktree, start a container with only that worktree mounted,
+  run Sterna inside it with full access, send network through the broker, and
+  hand back a branch and a report. Without a container runtime it falls back
+  to the worktree and the OS sandbox, and says so.
+- Rules for pushing and for secrets in that mode.
+- The end-of-run review surface.
+
+Nothing here is decided or built.
