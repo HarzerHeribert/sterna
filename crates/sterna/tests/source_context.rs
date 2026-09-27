@@ -603,14 +603,22 @@ fn an_outline_is_capped_and_says_how_many_it_dropped() {
 
 #[cfg(unix)]
 #[test]
-fn symlink_escape_is_refused_by_profile() {
+fn symlink_to_a_denied_file_is_refused_by_profile() {
     use std::os::unix::fs::symlink;
     let f = Fixture::new("escape");
-    let outside = std::env::temp_dir().join(format!("sterna-outside-{}", std::process::id()));
+    // Reads outside the project are granted now; what a link inside the
+    // project must never do is reach a file a `deny` rule names.
+    let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("sterna-outside-{}", std::process::id()));
     fs::write(&outside, "secret").unwrap();
     let link = f.root.join("link.py");
     symlink(&outside, &link).unwrap();
-    assert!(pack(&f.profile(), &link, None).is_err());
+    let settings = serde_json::json!({
+        "permissions": {"deny": [format!("Read({})", outside.to_string_lossy())]}
+    })
+    .to_string();
+    let profile = Profile::compile(&f.root, Some(&settings));
+    assert!(pack(&profile, &link, None).is_err());
     let _ = fs::remove_file(outside);
 }
 

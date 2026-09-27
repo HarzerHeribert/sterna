@@ -192,7 +192,12 @@ fn symlink_escape_is_not_followed_or_reported_as_project_content() {
     std::fs::write(outside.join("Cargo.toml"), "secret marker\n").unwrap();
     std::os::unix::fs::symlink(&outside, fixture.root.join("escaped")).unwrap();
     let text = orientation::collect(&fixture.profile(r#"{"permissions":{}}"#));
-    assert!(!text.contains("escaped"), "{text}");
+    // Reads outside the project are granted, so the link itself is a
+    // project entry and may be named; what orientation guarantees is that
+    // it is never walked: not shown as a directory, and nothing behind it
+    // is detected as a project file.
+    assert!(!text.contains("escaped/"), "{text}");
+    assert!(!text.contains("Cargo.toml"), "{text}");
     assert!(!text.contains("secret marker"), "{text}");
     let _ = std::fs::remove_dir_all(outside);
 }
