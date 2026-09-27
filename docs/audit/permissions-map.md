@@ -1,7 +1,7 @@
 # Permissions, modes and the sandbox: who decides what
 
 A read-only map of how a call is allowed to run in `crates/sterna`, written
-to plan a cleanup. It describes the code at `3e581d7` (the head of PR #3,
+to plan a cleanup. It describes the code at `7200eb5` (the head of PR #3,
 `claude/tui-packages-lb60ai`); nothing here changes behaviour.
 
 Paths are relative to `crates/sterna/src`. Claims marked **✔** were re-read
@@ -139,7 +139,7 @@ saves `permissions.mode`, the `full_access` fallback almost never decides.
 | Ask sheet, chip, typed `/permissions R` in the workbench, Settings row | `facts::set_rung` (`workbench/facts.rs:42`) | yes | yes |
 | `ConfirmRung` | a copy of `Input::rung`'s body (`input.rs:1182`) | yes | – |
 | Shift-Tab | `rung_change` (`session/ui.rs:643`), skips Full by hand | yes | skipped |
-| `/permissions R` on the session thread (not caught by the workbench, or a Settings live command) | `ladder.set` (`session/controls.rs:1506`) | **no** | **no** |
+| `/permissions R` on the session thread (not caught by the workbench, or a Settings live command) | `ladder.set` (`session/controls.rs:1507`) | **no** | **no** |
 | Undo / restore | `s.permissions.set` (`workbench/settings.rs:382`) | – | no |
 | `Ladder::cycle` | no production caller | | would wrap into Full |
 
@@ -296,7 +296,7 @@ whether a saved Plan should survive into the next session.
    lowers asking) and make a project `permissions.allow` intersect, not
    replace (F1).
 2. One rung setter that saves and confirms, used by every route including
-   `controls.rs:1506` and undo; delete `Ladder::cycle` or make Shift-Tab use
+   `controls.rs:1507` and undo; delete `Ladder::cycle` or make Shift-Tab use
    it (F5).
 3. Build the prompt's mode line from `proposal.narrow_mode` (F6).
 4. Delete the dead code in F10 and the unreachable unattended branch, or make
