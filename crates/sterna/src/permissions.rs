@@ -98,7 +98,7 @@ impl Rung {
             Self::Manual => "asks before every call",
             Self::AcceptEdits => "asks before every command",
             Self::Auto => "asks before commands other than reads and builds",
-            Self::Full => "never asks",
+            Self::Full => "nothing is confirmed",
         }
     }
 

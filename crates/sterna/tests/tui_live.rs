@@ -287,12 +287,6 @@ impl App {
             })
         });
     }
-    /// Asserts text is **not** on a settled screen.
-    ///
-    /// It settles first, on purpose: `wait` stops pumping the instant its
-    /// predicate holds, so a screen that was never brought up to date can
-    /// satisfy an absence for entirely the wrong reason. Every absence in
-    /// this file goes through here so that trap is paid for once.
     /// The file a choice is saved to unless Project is chosen in Settings
     /// (decision 6), in the store's own spelling.
     fn global_settings(&self) -> std::path::PathBuf {
@@ -309,6 +303,12 @@ impl App {
     fn ready(&mut self) {
         self.contains("⠿ STERNA");
     }
+    /// Asserts text is **not** on a settled screen.
+    ///
+    /// It settles first, on purpose: `wait` stops pumping the instant its
+    /// predicate holds, so a screen that was never brought up to date can
+    /// satisfy an absence for entirely the wrong reason. Every absence in
+    /// this file goes through here so that trap is paid for once.
     fn refute(&mut self, description: &str, needle: &str) {
         self.settle(120);
         assert!(
@@ -1136,7 +1136,8 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     app.send(b"\r");
     app.contains("Ask is now Never asks");
     // And the session bar says so, in the word it shows everywhere else.
-    app.send(b"\x1b");
+    // The confirmation closed itself: no Escape is sent to the composer,
+    // where one followed by `/exit` can read as Alt-/.
     app.wait("the confirmation closes", |screen| {
         !screen.contents().contains("Esc · Close") && !screen.contents().contains("Esc · Back")
     });
@@ -2176,7 +2177,11 @@ fn workbench_final_answer_survives_the_actual_provider_and_terminal_loop() {
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"/diff\r");
-    app.contains("before");
+    // The expanded cell's tabs, which only the command draws. "before"
+    // was also the completion hint's word ("before/after diff"), so the
+    // wait could end while `/diff` was still being typed, and the `/exit`
+    // behind it turned its Enter into a new line of the same draft.
+    app.contains("Cell program");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
