@@ -1134,8 +1134,13 @@ fn run(
             match done {
                 decision::Done::Nothing => {}
                 decision::Done::Redraw => dirty = true,
+                // The same Ctrl-C as over a running turn: it stops the
+                // turn, and says so.
                 decision::Done::Interrupt => {
                     super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
+                    state.stopping = true;
+                    steer.request_stop(tui::Stopper::Interrupt);
+                    state.note(crate::workbench::voice::CTRL_C_STOPPING);
                     dirty = true;
                 }
             }
@@ -1454,7 +1459,17 @@ fn run(
                     // *while* a task runs, because that is when someone
                     // notices they are on the wrong rung. The request mode
                     // keeps `/mode` and its own sidebar field.
-                    state.notice = Some(rung_change(&mut state, workbench.scope()));
+                    // Offered back like every other route that moves it.
+                    let before = state.permissions.rung();
+                    let notice = rung_change(&mut state, workbench.scope());
+                    workbench.offer_back(
+                        notice,
+                        crate::workbench::Change {
+                            was: format!("Ask {}", before.label()),
+                            back: crate::workbench::Action::Rung(before.name().into()),
+                        },
+                    );
+                    dirty = true;
                     continue;
                 }
                 // **Escape, and only while a task runs.** Every panel,
@@ -1469,12 +1484,12 @@ fn run(
                 // what tells them apart, and the task's end lowers it.
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                     // An open popup is put away first; with it away, a
-                    // second Escape clears the slash word it was for.
+                    // second Escape takes back the word it was for.
                     if editor.dismiss() {
                         continue;
                     }
                     if !busy && editor.dismissed() {
-                        editor.clear();
+                        editor.drop_popup_word();
                         continue;
                     }
                     // A message still in the queue is taken back first, into

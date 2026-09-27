@@ -1086,24 +1086,30 @@ fn dock_top(
     if let Some(notice) = &notice
         && used + 8 < a.width
     {
-        let text = format!(
-            "── {} ",
-            clip(notice, a.width.saturating_sub(used + 6) as usize)
-        );
+        // The undo is the point of offering a change back, so the notice
+        // is cut to leave it room, never the other way round.
+        let undo = ui
+            .changes
+            .last()
+            .filter(|_| ui.offer_undo && ui.notice_visible())
+            .map(|change| format!("undo · {}", change.was));
+        let room = a.width.saturating_sub(used + 6);
+        let kept = undo
+            .as_deref()
+            .map_or(0, |undo| chrome::width(undo) + 5)
+            .min(room.saturating_sub(12));
+        let text = format!("── {} ", clip(notice, (room - kept) as usize));
         let w = chrome::width(&text).min(a.width - used);
         row(f, Rect::new(a.x + used, a.y, w, 1), &text, Tone::Accent, t);
         used += w;
-        if let Some(change) = ui.changes.last()
-            && ui.offer_undo
-            && ui.notice_visible()
-        {
+        if let Some(undo) = undo {
             let w = chrome::chip(
                 f,
                 g,
                 a.x + used,
                 a.y,
                 a.right().saturating_sub(2),
-                &format!("undo · {}", change.was),
+                &undo,
                 Action::Undo,
                 false,
                 Tone::Normal,

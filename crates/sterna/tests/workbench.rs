@@ -1128,15 +1128,17 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
     u.push(Source::Models(Box::new(m)));
     let (c, n, _) = fixture();
     draw(&c, &n, &s, &mut u, 110, 40);
-    assert!(matches!(
+    // Saved, and applied to the running session like every other setting
+    // that applies now: the helper changes, the main model does not.
+    assert_eq!(
         click_item(
             &mut u,
             &mut s,
             &n,
             &format!("model:{}:{}", chosen.route, chosen.model)
         ),
-        Effect::Consumed
-    ));
+        Effect::Command(format!("/model helper {}", chosen.model))
+    );
     let chosen = chosen.model;
     assert_eq!(s.model.as_deref(), Some("live-main"));
     let p = u.preferences().unwrap();

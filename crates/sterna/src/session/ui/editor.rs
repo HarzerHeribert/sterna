@@ -362,6 +362,15 @@ impl Editor {
     pub(super) fn dismissed(&self) -> bool {
         self.dismissed.as_deref() == Some(self.text.as_str())
     }
+    /// A second Escape after the popup was put away takes back the word it
+    /// was for -- the `@` word under the caret, or the slash command that is
+    /// the whole draft -- and keeps the rest of the draft.
+    pub(super) fn drop_popup_word(&mut self) {
+        match self.at_word() {
+            Some((start, _)) => self.kill(start, self.cursor),
+            None => self.clear(),
+        }
+    }
     /// The popup's selection, one row on or back.
     pub(super) fn move_selection(&mut self, down: bool) {
         let count = self.completions().len();
@@ -707,6 +716,24 @@ mod tests {
         assert_eq!(editor.completions(), Completions::None);
         typed(&mut editor, "d");
         assert!(!matches!(editor.completions(), Completions::None));
+    }
+
+    #[test]
+    fn a_second_escape_takes_back_only_the_word_the_popup_was_for() {
+        let mut editor = Editor {
+            paths: Some(vec!["docs/workbench.md".into()]),
+            ..Editor::default()
+        };
+        typed(&mut editor, "look at @work");
+        assert!(editor.dismiss());
+        editor.drop_popup_word();
+        assert_eq!(editor.text, "look at ");
+        assert_eq!(editor.cursor, editor.text.len());
+        let mut editor = Editor::default();
+        typed(&mut editor, "/mo");
+        assert!(editor.dismiss());
+        editor.drop_popup_word();
+        assert_eq!(editor.text, "");
     }
 
     #[test]

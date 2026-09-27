@@ -76,6 +76,12 @@ impl Workbench {
             self.offer_undo = true;
         }
     }
+    /// A change made outside the workbench -- Shift-Tab's rung -- said where
+    /// every notice is said and offered back beside it.
+    pub(crate) fn offer_back(&mut self, notice: String, change: super::Change) {
+        self.say(notice);
+        self.remember(change);
+    }
     /// After a save on the open Settings: its change goes on the undo list
     /// and the command it owes the running session is handed back.
     fn drain_save(&mut self) -> Option<String> {
@@ -1107,7 +1113,11 @@ impl Workbench {
                             {
                                 p.notice = error;
                             }
-                            self.drain_save();
+                            // Saved, and applied now like every setting whose
+                            // row says it applies now.
+                            if let Some(live) = self.drain_save() {
+                                return Effect::Command(live);
+                            }
                         } else {
                             return Effect::Command(cmd);
                         }

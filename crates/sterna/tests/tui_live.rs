@@ -671,6 +671,9 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     app.wait("cancelled approval closes", |screen| {
         !screen.contents().contains("APPROVE")
     });
+    // Ctrl-C at an approval stops the turn as Ctrl-C does anywhere, and
+    // says so.
+    app.contains("stopped by Ctrl-C");
     assert!(!app.root.join("cancelled.txt").exists());
     app.settle(300);
     app.send(b"/exit\r");
@@ -2500,6 +2503,29 @@ fn esc_puts_the_popup_away_and_enter_runs_the_exact_command() {
     assert_eq!(app.exited(), 130);
 }
 
+/// After an `@` popup is put away, a second Esc takes back the `@` word it
+/// was for and nothing else the person typed.
+#[test]
+fn a_second_escape_after_a_path_popup_keeps_the_rest_of_the_draft() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    std::fs::write(app.root.join("notes-for-escape.md"), "notes").unwrap();
+    app.send(b"look at @notes-for");
+    app.contains("notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the popup is put away", "notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the @ word is taken back", "@notes-for");
+    app.contains("look at");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 #[test]
 fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let (base, _requests) = provider();
@@ -2602,6 +2628,36 @@ fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
     app.settle(300);
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// Shift-Tab moves the rung like every other route that moves it: saved,
+/// and offered back beside its notice, where a click takes it back.
+#[test]
+fn shift_tab_offers_the_rung_it_left_back() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.contains("⟨ Auto-review ⟩");
+    app.send(b"\x1b[Z");
+    app.contains("undo · Ask Auto-review");
+    app.refute("the rung moved", "⟨ Auto-review ⟩");
+    let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
+    let (y, row) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.contains("undo · Ask Auto-review"))
+        .unwrap();
+    let x = row
+        .char_indices()
+        .position(|(byte, _)| row[byte..].starts_with("undo"))
+        .unwrap()
+        + 1;
+    let y = y + 1;
+    app.send(format!("\x1b[<0;{x};{y}M").as_bytes());
+    app.send(format!("\x1b[<0;{x};{y}m").as_bytes());
+    app.contains("⟨ Auto-review ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
