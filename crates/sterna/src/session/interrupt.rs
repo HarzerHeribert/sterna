@@ -1,8 +1,10 @@
 //! Ctrl-C and SIGTERM as the process receives them: the handlers, the count
 //! they keep, and the watcher that turns it into the session's decision.
-//! What an interrupt does to the call in flight is [`Interrupter`]'s.
+//! What an interrupt does to the call in flight is [`Interrupter`]'s; how a
+//! signal ends the session is here.
 
-use super::{Interrupter, ui};
+use super::{Interrupter, resume, ui};
+use crate::bg;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -118,5 +120,106 @@ pub(super) fn watch(state: &Interrupter, steer: Option<Arc<ui::Steer>>) -> ! {
         first = Some(now);
         state.by_signal.store(true, Ordering::SeqCst);
         state.raise();
+    }
+}
+
+/// The status a shell reports for a process ended by SIGINT.
+const INTERRUPTED_EXIT: i32 = 130;
+
+/// How long the second Ctrl-C gives the cancelled call to kill and reap its
+/// own child before exiting anyway: twelve of `invoke`'s 20 ms polls, spent
+/// holding the rollout's write lock so the task loop cannot start another
+/// call inside it. See [`Interrupter::end_the_session`].
+const REAP_GRACE: Duration = Duration::from_millis(250);
+
+impl Interrupter {
+    /// The second Ctrl-C, and the only place in `sterna` that exits from a
+    /// thread other than the main one.
+    ///
+    /// **It cancels before it exits, and that is not decoration.**
+    /// `std::process::exit` does not touch this process's children, so an
+    /// exit taken with a call in flight reparents the confined child to
+    /// `init` and leaves it there. Measured, before this function did
+    /// anything but exit: one `bash` spinning at 87% of a core, for ever.
+    /// Cancelling hands that child to `invoke::kill_and_reap`, which kills
+    /// *and* reaps it.
+    ///
+    /// **Then it takes [`writing`](Self::writing) and holds it across the
+    /// grace, and that ordering is the rest of the fix.** Taking the lock
+    /// waits for the rollout line in flight to finish, which is the
+    /// whole-line guarantee. *Holding* it stops the task loop at its next
+    /// write -- `act_on`'s cell line is the very next thing after the
+    /// cancelled call returns -- so the loop cannot answer the cell, ask for
+    /// another turn and start another cell inside the grace. It did exactly
+    /// that when the grace was an unguarded sleep, spawning a *fresh*
+    /// spinning child for the same exit to orphan.
+    ///
+    /// **Then it takes the background board with it, which is the same
+    /// defect a second time**: `raise` cancels the foreground call's token
+    /// and nothing else, and a job runs on a thread of its own under a token
+    /// of its own. Measured before this call existed: a job's `bash` on
+    /// `ppid 1` at 99% of a core, twenty seconds after `sterna` exited 130.
+    /// It goes *after* the lock, because holding it is what stops the loop
+    /// starting a fresh `bg.run` for the exit to orphan, and *before* the
+    /// sleep, because the grace is what the cancelled children are reaped
+    /// in. The grace it passes is [`REAP_GRACE`] rather than `bg`'s own ten
+    /// seconds, and `shutdown_within` detaches what has not stopped by then:
+    /// a Ctrl-C that waits for an unkillable job would be a worse defect
+    /// than the orphan this closes.
+    ///
+    /// [`REAP_GRACE`] is bounded because a Ctrl-C that hangs is not a Ctrl-C:
+    /// after it, the exit proceeds whatever the child is doing.
+    fn end_the_session(&self) -> ! {
+        self.end_after_signal(INTERRUPTED_EXIT, "interrupted twice; ending the session")
+    }
+
+    fn end_after_signal(&self, exit: i32, message: &str) -> ! {
+        self.ending.store(true, Ordering::SeqCst);
+        self.raise();
+        let _line = self.writing();
+        bg::shutdown_within(&self.session, REAP_GRACE);
+        std::thread::sleep(REAP_GRACE);
+        ui::restore_terminal();
+        eprintln!("sterna: {message}");
+        // Every way out says how to come back, Ctrl-C included.
+        resume::goodbye()
+            .into_iter()
+            .for_each(|line| eprintln!("{line}"));
+        std::process::exit(exit);
+    }
+}
+
+/// The session's own thread, once its loop is over: a signal that is ending
+/// the session owns the exit -- its status, its last lines -- so this thread
+/// waits for it rather than racing it to an exit of its own.
+///
+/// **Found on Windows.** Ending by a signal restores the terminal, which
+/// ends the screen's thread; the session's thread then read its input
+/// closed and exited 1 while the watcher was still saying goodbye, before
+/// its exit with 130.
+pub(super) fn leave_the_exit_to_the_signal(ending: &AtomicBool) {
+    while ending.load(Ordering::SeqCst) {
+        std::thread::park();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signal_ending_the_session_keeps_the_exit_to_itself() {
+        static ENDING: AtomicBool = AtomicBool::new(false);
+        // Nothing ending: the session's thread goes on at once.
+        leave_the_exit_to_the_signal(&ENDING);
+        ENDING.store(true, Ordering::SeqCst);
+        let waiting = std::thread::spawn(|| leave_the_exit_to_the_signal(&ENDING));
+        std::thread::sleep(Duration::from_millis(200));
+        waiting.thread().unpark();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !waiting.is_finished(),
+            "the session's thread raced the signal"
+        );
     }
 }

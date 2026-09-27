@@ -2,4 +2,4 @@
 # Regenerate with scripts/check-file-sizes.py --update after a decomposition.
 # ceiling 2500
   2981 crates/sterna/src/runtime/bindings.rs
-  2825 crates/sterna/src/session.rs
+  2762 crates/sterna/src/session.rs

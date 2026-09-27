@@ -432,6 +432,17 @@ impl App {
                     self.terminal_flags,
                     "raw terminal mode was not restored"
                 );
+                // A session that ended some other way than the two it is
+                // asked to end by says why: what it printed last.
+                if ![0, 130].contains(&status.exit_code()) {
+                    let tail = &self.bytes[self.bytes.len().saturating_sub(2000)..];
+                    eprintln!(
+                        "sterna exited {}; its screen:\n{}\nits last output: {:?}",
+                        status.exit_code(),
+                        self.screen.screen().contents(),
+                        String::from_utf8_lossy(tail)
+                    );
+                }
                 return status.exit_code();
             }
             assert!(
