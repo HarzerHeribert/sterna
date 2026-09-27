@@ -761,17 +761,6 @@ fn tick_helper_clocks(notebook: &mut Notebook, since: &mut HashMap<(usize, usize
     }
 }
 
-/// Opens a cell's inspection: **the one path `/cell <n>` and a click on that
-/// cell's header both take**, so the two routes cannot drift into doing
-/// different things (`tui::hit`: every click has a keyboard twin).
-fn open_cell(state: &mut ScreenState, notebook: &Notebook, cell: usize) {
-    state.inspection = tui::Inspection::open(cell, notebook);
-    state.telemetry_open = false;
-    if state.inspection.is_none() {
-        state.note("No recorded cell at that number yet. Use /cells after an action.");
-    }
-}
-
 /// Shift-Tab: one rung along the permission ladder, and the line that says
 /// where it landed.
 ///
@@ -918,11 +907,9 @@ fn run(
             match update {
                 Update::Approval(request) => {
                     prompts.push_approval(request);
-                    state.inspection = None;
                 }
                 Update::Ask(request) => {
                     prompts.ask(request);
-                    state.inspection = None;
                 }
                 Update::Memory(memory) => state.memory = Some(memory),
                 Update::Snapshot(snapshot) => {
@@ -1089,7 +1076,6 @@ fn run(
                 // still there when the form is done or put back.
                 Update::Form(form) => {
                     state.form = Some(*form);
-                    state.inspection = None;
                 }
                 Update::Stop => return Ok(()),
             }
@@ -1196,14 +1182,6 @@ fn run(
             let rows = document.rows.len();
             workbench.anchor_document(&document, &mut state, viewport_height);
             previous_rows = rows;
-            if let Some(inspection) = state.inspection.as_mut() {
-                inspection.clamp(
-                    &conversation,
-                    &notebook,
-                    regions.transcript.width,
-                    regions.transcript.height,
-                );
-            }
             terminal.draw(|frame| {
                 crate::workbench::render(
                     frame,
@@ -1445,13 +1423,7 @@ fn run(
                 if up || mouse.kind == MouseEventKind::ScrollDown {
                     state.scrolling = true;
                     last_scroll = Some(Instant::now());
-                    if let Some(inspection) = state.inspection.as_mut() {
-                        inspection.scroll = if up {
-                            inspection.scroll.saturating_sub(3)
-                        } else {
-                            inspection.scroll.saturating_add(3)
-                        };
-                    } else if !workbench.is_local() && !state.telemetry_open {
+                    if !workbench.is_local() && !state.telemetry_open {
                         state.scrollback = if up {
                             state
                                 .scrollback
@@ -1515,54 +1487,6 @@ fn run(
                     }
                     continue;
                 }
-                if let Some(inspection) = state.inspection.as_mut() {
-                    let handled = match key.code {
-                        KeyCode::Esc => {
-                            state.inspection = None;
-                            true
-                        }
-                        KeyCode::Left => {
-                            inspection.adjacent(false, &notebook);
-                            true
-                        }
-                        KeyCode::Right => {
-                            inspection.adjacent(true, &notebook);
-                            true
-                        }
-                        KeyCode::Up => {
-                            inspection.scroll = inspection.scroll.saturating_sub(1);
-                            true
-                        }
-                        KeyCode::Down => {
-                            inspection.scroll = inspection.scroll.saturating_add(1);
-                            true
-                        }
-                        KeyCode::PageUp => {
-                            inspection.scroll = inspection
-                                .scroll
-                                .saturating_sub(viewport_height.saturating_sub(3));
-                            true
-                        }
-                        KeyCode::PageDown => {
-                            inspection.scroll = inspection
-                                .scroll
-                                .saturating_add(viewport_height.saturating_sub(3));
-                            true
-                        }
-                        KeyCode::Home => {
-                            inspection.scroll = 0;
-                            true
-                        }
-                        KeyCode::End => {
-                            inspection.scroll = usize::MAX;
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        continue;
-                    }
-                }
                 if state.telemetry_open && !workbench.is_local() {
                     match key.code {
                         KeyCode::Esc => {
@@ -1598,7 +1522,7 @@ fn run(
                     continue;
                 }
                 // **Escape, and only while a task runs.** Every panel,
-                // modal and inspection above this point takes its own
+                // modal and sheet above this point takes its own
                 // Escape and `continue`s, so reaching here means the
                 // composer is what the keyboard is pointed at -- and an
                 // Escape into an idle composer has never meant anything, so
@@ -1667,7 +1591,6 @@ fn run(
                         }
                         KeyCode::Char('t') => {
                             state.telemetry_open = !state.telemetry_open;
-                            state.inspection = None;
                             workbench.close_all();
                             continue;
                         }
@@ -1770,30 +1693,6 @@ fn run(
                     if workbench.local_command(editor.text.trim(), &mut state, &notebook) {
                         editor.take();
                         dirty = true;
-                        continue;
-                    }
-                    if matches!(
-                        editor.text.split_whitespace().next(),
-                        Some("/cell" | "/cells" | "/chat")
-                    ) {
-                        let text = editor.take();
-                        let mut words = text.split_whitespace();
-                        let command = words.next().unwrap_or_default();
-                        if command == "/chat" {
-                            state.inspection = None;
-                            state.telemetry_open = false;
-                        } else {
-                            let cell = match words.next() {
-                                Some(value) => value.parse::<usize>().unwrap_or(0),
-                                None => tui::Inspection::latest(&notebook).unwrap_or(0),
-                            };
-                            open_cell(&mut state, &notebook, cell);
-                            if state.inspection.is_some()
-                                && let Some(line) = &notebook.decision
-                            {
-                                state.note(line.clone());
-                            }
-                        }
                         continue;
                     }
                     if editor.text.trim() == "/telemetry" {

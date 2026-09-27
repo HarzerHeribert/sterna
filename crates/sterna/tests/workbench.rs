@@ -3278,3 +3278,225 @@ fn a_turn_that_waits_on_you_says_so() {
     assert!(screen.contains("waiting for you"), "{screen}");
     assert!(!screen.contains("RUNNING"), "{screen}");
 }
+
+fn cell_turn(id: &str, code: &str) -> Message {
+    let mut m = Message::text(Role::Assistant, "Working on it.");
+    m.content.push(Block::ToolUse {
+        id: id.into(),
+        name: "execute_cell".into(),
+        input: serde_json::json!({ "code": code }),
+    });
+    m
+}
+
+fn ran(source: &str) -> CellView {
+    CellView {
+        executed_source: Some(source.into()),
+        execution: Some("No tool calls ran in this cell.".into()),
+        ..CellView::default()
+    }
+}
+
+/// The person's message after a turn that ran a cell is shown, even when
+/// the runtime's feedback to that cell was kept only as history.
+#[test]
+fn a_prompt_after_a_cell_turn_is_shown() {
+    let (_, _, s) = fixture();
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, "message 1"),
+            Message::text(Role::Assistant, "Plain one."),
+            Message::text(Role::User, "message 2"),
+            cell_turn("call-1", "await write(\"a\", \"x\");"),
+            Message::runtime("[cell 2 feedback]", "[cell 2 feedback, as history]"),
+            Message::text(Role::Assistant, "Wrote a."),
+            Message::text(Role::User, "message 3"),
+            Message::text(Role::Assistant, "Plain three."),
+        ],
+    };
+    let n = Notebook {
+        cells: vec![
+            CellView::default(),
+            CellView {
+                answered: true,
+                returned: Some("Wrote a.".into()),
+                ..ran("await write(\"a\", \"x\");")
+            },
+            CellView::default(),
+        ],
+        ..Notebook::default()
+    };
+    let u = Workbench::default();
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(shown.contains("message 3"), "{shown}");
+    assert!(shown.contains("Plain three."), "{shown}");
+}
+
+/// The answer a cell returned is the latest one when the only message after
+/// it is the session's echo of that same answer: its next steps are offered.
+#[test]
+fn an_answer_is_latest_even_with_its_echo_after_it() {
+    let (_, _, mut s) = fixture();
+    s.activity = Activity::Complete;
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, "fix the guard"),
+            cell_turn("call-1", "answer(\"The guard is fixed.\");"),
+            Message::text(Role::Assistant, "The guard is fixed."),
+        ],
+    };
+    let n = Notebook {
+        cells: vec![CellView {
+            returned: Some("The guard is fixed.".into()),
+            changes: Some("--- a/g.rs\n+++ b/g.rs\n@@ -1 +1 @@\n-a\n+b".into()),
+            ..ran("answer(\"The guard is fixed.\");")
+        }],
+        ..Notebook::default()
+    };
+    let mut u = Workbench::default();
+    draw(&c, &n, &s, &mut u, 120, 40);
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(_, a)| *a == Action::Insert("commit this".into())),
+        "the latest answer offers what to do next"
+    );
+}
+
+/// F4, F5, Ctrl-O and the sidebar read the cells that ran a program; the
+/// entry a prose answer leaves in the notebook is not one of them.
+#[test]
+fn the_cell_keys_and_the_sidebar_skip_a_prose_entry() {
+    let (c, mut n, s) = fixture();
+    n.cells.push(CellView::default());
+    let mut u = Workbench::default();
+    let mut s = s;
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(screen.contains("1 cell ·"), "{screen}");
+    assert!(screen.contains("reduce · returned"), "{screen}");
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(_, a)| *a == Action::Helper(1, 0))
+    );
+    key(&mut u, &mut s, &n, KeyCode::F(4));
+    assert_eq!(u.tabs.get(&1), Some(&CellTab::Diff));
+    key(&mut u, &mut s, &n, KeyCode::F(5));
+    assert_eq!(u.tabs.get(&1), Some(&CellTab::Helpers));
+    assert!(!u.tabs.contains_key(&2), "no key acted on the prose entry");
+}
+
+/// Alt-↑ and Alt-↓ move the selection between cards, and a selected card
+/// shows it even when it failed.
+#[test]
+fn alt_arrows_select_cards_and_a_failed_card_shows_it() {
+    let (_, _, mut s) = fixture();
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, "go"),
+            cell_turn("call-1", "1;"),
+            Message::text(Role::User, "again"),
+            cell_turn("call-2", "throw new Error(\"no\");"),
+        ],
+    };
+    let n = Notebook {
+        cells: vec![
+            ran("1;"),
+            CellView {
+                error: Some(CellError {
+                    class: "Error".into(),
+                    message: "no".into(),
+                    line: None,
+                    column: None,
+                }),
+                ..ran("throw new Error(\"no\");")
+            },
+        ],
+        ..Notebook::default()
+    };
+    let mut u = Workbench::default();
+    let alt = |u: &mut Workbench, s: &mut ScreenState, k: KeyCode| {
+        u.event(
+            &Event::Key(KeyEvent::new(k, KeyModifiers::ALT)),
+            s,
+            &n,
+            false,
+        )
+    };
+    alt(&mut u, &mut s, KeyCode::Up);
+    assert_eq!(
+        u.selected_cell,
+        Some(2),
+        "the first Alt-↑ selects the latest"
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(
+        screen.contains("› 002"),
+        "a selected failed card shows it:\n{screen}"
+    );
+    alt(&mut u, &mut s, KeyCode::Up);
+    assert_eq!(u.selected_cell, Some(1));
+    alt(&mut u, &mut s, KeyCode::Up);
+    assert_eq!(u.selected_cell, Some(1), "the first card is the top");
+    alt(&mut u, &mut s, KeyCode::Down);
+    assert_eq!(u.selected_cell, Some(2));
+}
+
+/// Bare /cell expands the latest cell that ran; a word is not a number.
+#[test]
+fn bare_cell_expands_the_latest_cell_that_ran() {
+    let (_, mut n, mut s) = fixture();
+    n.cells.push(CellView::default());
+    let mut u = Workbench::default();
+    assert!(u.local_command("/cell", &mut s, &n));
+    assert!(u.expanded.contains(&1));
+    assert_eq!(u.selected_cell, Some(1));
+    assert!(u.local_command("/cell abc", &mut s, &n));
+    assert_eq!(u.notice, "Use /cell <number>, as in /cell 1.");
+    let empty = Notebook::default();
+    assert!(u.local_command("/cell", &mut s, &empty));
+    assert_eq!(u.notice, "No cell has run yet.");
+}
+
+/// A cell that asked a question shows what was asked and what was chosen.
+#[test]
+fn a_card_shows_what_was_asked_and_what_was_chosen() {
+    let (c, mut n, s) = fixture();
+    n.cells[0].asked = Some("? Which way? → you chose: left".into());
+    let u = Workbench::default();
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(shown.contains("? Which way? → you chose: left"), "{shown}");
+}
+
+/// The dock names the running cell by its card's number, even when a
+/// helper's snapshot already holds that cell in the notebook.
+#[test]
+fn the_running_cell_is_named_by_its_card() {
+    let (_, _, mut s) = fixture();
+    s.activity = Activity::Executing;
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, "go"),
+            cell_turn("call-1", "await scout(\"where\");"),
+        ],
+    };
+    let n = Notebook {
+        cells: vec![CellView {
+            helpers: vec![HelperRecord {
+                helper: "scout".into(),
+                ..HelperRecord::default()
+            }],
+            ..CellView::default()
+        }],
+        ..Notebook::default()
+    };
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("executing cell 001"), "{screen}");
+}

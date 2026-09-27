@@ -73,7 +73,7 @@ trust; the machine is then the boundary.
 | `/permissions` | how often you are asked (Shift-Tab cycles it) |
 | `/settings`, `/config` | the settings sheet; exact keys |
 | `/theme` | choose a palette |
-| `/cells`, `/cell N` | the code and real results of each cell |
+| `/cells`, `/cell`, `/cell N` | open every card, the newest cell that ran, or cell N |
 | `/diff` | the last cell's before/after diff |
 | `/handles` | what the runtime holds |
 | `/rollback` | preview and undo what the session changed, keeping your own edits |

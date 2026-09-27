@@ -70,6 +70,9 @@ fn ask_callback(
         ended: Ended::Ok,
     });
     trace(scope).record_ask(question);
+    // Marked as a yield before it terminates, as `yield_now` and `answer`
+    // are: the cell ends to put the question, and has not failed.
+    trace(scope).request_yield(None);
     scope.terminate_execution();
     // The same stack check `yield_now_callback` documents: V8 services a
     // requested termination at a function entry or a loop back-edge, never on

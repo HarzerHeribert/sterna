@@ -208,8 +208,7 @@ impl Workbench {
                 true
             }
             ["/diff"] => {
-                if !n.cells.is_empty() {
-                    let cell = n.cells.len();
+                if let Some(cell) = n.last_program_cell() {
                     self.expanded.insert(cell);
                     self.collapsed.remove(&cell);
                     self.tabs.insert(cell, CellTab::Diff);
@@ -220,18 +219,26 @@ impl Workbench {
                 }
                 true
             }
-            ["/cell", number] => {
-                if let Ok(cell) = number.parse::<usize>() {
-                    if cell > 0 && cell <= n.cells.len() {
-                        self.expanded.insert(cell);
-                        self.collapsed.remove(&cell);
-                        self.selected_cell = Some(cell);
-                        self.jump_cell = Some(cell);
-                        self.notice = format!("Cell {cell} expanded · F4 opens its diff");
-                    } else {
-                        self.notice = "No recorded cell at that number.".into();
-                    }
+            // Bare /cell is the newest cell that ran.
+            ["/cell"] => {
+                match n.last_program_cell() {
+                    Some(cell) => self.expand_cell(cell, n),
+                    None => self.notice = "No cell has run yet.".into(),
                 }
+                true
+            }
+            ["/cell", number] => {
+                match number.parse::<usize>() {
+                    Ok(cell) if n.program_cells().any(|(ran, _)| ran == cell) => {
+                        self.expand_cell(cell, n);
+                    }
+                    Ok(_) => self.notice = "No cell ran at that number.".into(),
+                    Err(_) => self.notice = "Use /cell <number>, as in /cell 1.".into(),
+                }
+                true
+            }
+            ["/cell", ..] => {
+                self.notice = "Use /cell <number>, as in /cell 1.".into();
                 true
             }
             ["/cells"] => {
@@ -242,7 +249,6 @@ impl Workbench {
             }
             ["/chat"] => {
                 self.close_all();
-                s.inspection = None;
                 s.telemetry_open = false;
                 true
             }
@@ -582,13 +588,23 @@ impl Workbench {
                         Effect::Consumed
                     }
                     KeyCode::F(3) => self.activate(Action::Models, s, n, busy, false),
+                    // With no card selected, the keys act on the newest cell
+                    // that ran -- or, for helpers, that called one -- never
+                    // on the entry a prose answer leaves in the notebook.
                     KeyCode::F(4) => {
-                        let cell = self.selected_cell.unwrap_or(n.cells.len());
+                        let cell = self.selected_cell.or(n.last_program_cell()).unwrap_or(0);
                         self.activate(Action::Tab(cell, CellTab::Diff), s, n, busy, false)
                     }
                     KeyCode::F(5) => {
-                        let cell = self.selected_cell.unwrap_or(n.cells.len());
+                        let cell = self.selected_cell.or(n.last_with_helpers()).unwrap_or(0);
                         self.activate(Action::Tab(cell, CellTab::Helpers), s, n, busy, false)
+                    }
+                    // Alt-↑ and Alt-↓ move the selection between cards.
+                    KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::ALT) => {
+                        self.selected_cell =
+                            n.next_program_cell(self.selected_cell, k.code == KeyCode::Down);
+                        self.jump_cell = self.selected_cell;
+                        Effect::Consumed
                     }
                     // **Shift-Tab moves the rung; it does not open a place
                     // where a rung can be moved.** Opening the surface cost
@@ -609,7 +625,7 @@ impl Workbench {
                         Effect::Consumed
                     }
                     KeyCode::Char('o') if ctrl => self.activate(
-                        Action::Cell(self.selected_cell.unwrap_or(n.cells.len())),
+                        Action::Cell(self.selected_cell.or(n.last_program_cell()).unwrap_or(0)),
                         s,
                         n,
                         busy,
@@ -754,6 +770,18 @@ impl Workbench {
             first.sheet.root = true;
         }
         Effect::Consumed
+    }
+    /// Opens one card, selects it and brings it into view. The task's
+    /// decision line, when there is one, is what the notice says.
+    fn expand_cell(&mut self, cell: usize, n: &Notebook) {
+        self.expanded.insert(cell);
+        self.collapsed.remove(&cell);
+        self.selected_cell = Some(cell);
+        self.jump_cell = Some(cell);
+        self.notice = n
+            .decision
+            .clone()
+            .unwrap_or_else(|| format!("Cell {cell} expanded · F4 opens its diff"));
     }
     /// The top sheet's notice, where a sheet is open; the dock's otherwise.
     fn say(&mut self, text: impl Into<String>) {

@@ -389,15 +389,22 @@ pub fn render(
         y += 1;
     }
     let boxed = !s.fullscreen && a.width > 8;
+    // The number the running card carries: a program being executed is in
+    // the conversation already, and one being written is the next.
+    let running_cell = match s.activity {
+        Activity::Executing => Some(crate::tui::cell_ordinal(c, n)),
+        Activity::Streaming => Some(crate::tui::cell_ordinal(c, n) + 1),
+        _ => None,
+    };
     if y < a.bottom() {
         dock_top(
             f,
             &mut g,
             Rect::new(a.x, y, a.width, 1),
-            n,
             s,
             ui,
             gutter,
+            running_cell,
             boxed,
         );
         y += 1;
@@ -768,7 +775,7 @@ fn session_card(
                 .map_or(0, |d| d.lines().filter(|l| l.starts_with("+++ ")).count())
         })
         .sum();
-    let (ok, failed) = n.cells.iter().fold((0, 0), |(ok, bad), c| {
+    let (ok, failed) = n.program_cells().fold((0, 0), |(ok, bad), (_, c)| {
         if c.error.is_some() {
             (ok, bad + 1)
         } else if c.execution.is_some() {
@@ -841,11 +848,12 @@ fn session_card(
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("SO FAR".into(), Tone::Accent, None));
+    let ran = n.program_cells().count();
     lines.push((
         format!(
             "{} {} · {} {}{}",
-            n.cells.len(),
-            if n.cells.len() == 1 { "cell" } else { "cells" },
+            ran,
+            if ran == 1 { "cell" } else { "cells" },
             files,
             if files == 1 { "file" } else { "files" },
             n.tokens
@@ -856,7 +864,7 @@ fn session_card(
         Tone::Normal,
         None,
     ));
-    if !n.cells.is_empty() {
+    if ran > 0 {
         lines.push((
             format!("✓ {ok}  ● {running}  ✕ {failed}"),
             Tone::Muted,
@@ -865,7 +873,12 @@ fn session_card(
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
-    let helpers = n.cells.last().map(|c| c.helpers.as_slice()).unwrap_or(&[]);
+    // The newest cell that called a helper: the turn ending does not make
+    // the sidebar forget them.
+    let with_helpers = n.last_with_helpers();
+    let helpers = with_helpers
+        .and_then(|cell| n.cells.get(cell - 1))
+        .map_or(&[][..], |c| c.helpers.as_slice());
     if helpers.is_empty() {
         lines.push((
             if s.helpers_on { "none yet" } else { "off" }.into(),
@@ -892,7 +905,7 @@ fn session_card(
                 Tone::Failure
             },
             // The same lane the card shows, opened there.
-            Some(Action::Helper(n.cells.len(), i)),
+            Some(Action::Helper(with_helpers.unwrap_or(0), i)),
         ));
     }
     for (i, (text, tone, action)) in lines.iter().enumerate() {
@@ -949,19 +962,14 @@ fn dock_top(
     f: &mut Frame<'_>,
     g: &mut Geometry,
     a: Rect,
-    n: &Notebook,
     s: &ScreenState,
     ui: &Workbench,
     gutter: Option<u16>,
+    cell: Option<usize>,
     boxed: bool,
 ) {
     let t = s.theme;
     let running = s.activity.working();
-    // A long wait is exactly when a person looks here to ask whether the
-    // session is alive, so the mark keeps moving; only motion off and a
-    // selection in progress hold it.
-    let cell = matches!(s.activity, Activity::Executing | Activity::Streaming)
-        .then_some(n.cells.len() + 1);
     // The turn is complete once its check has had its say, not before.
     let said = if s.activity == Activity::Complete && s.behind.iter().any(|lane| lane == "check") {
         voice::CHECKING.to_string()

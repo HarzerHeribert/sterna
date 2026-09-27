@@ -279,62 +279,36 @@ impl Document {
         // A card's body sits inside two edges, a three-column indent and the
         // column kept clear before the gutter: nine columns in all.
         let inner = width.saturating_sub(9).max(1);
-        let mut cell: usize = 0;
-        let mut after_return = false;
-        let mut feedback = false;
-        let mut returned_text: Option<String> = None;
-        let last_assistant = c
-            .messages
+        let reads = reading(c, n);
+        // The newest answer is the last turn a person reads as new: the
+        // session's echo of a returned answer is not one.
+        let last_assistant = reads
             .iter()
-            .rposition(|m| m.role == Role::Assistant && m.historical.is_none());
+            .rposition(|r| matches!(r, Reads::Turn(_) | Reads::After));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
             d.notes(s, &mut note, idx, width);
-            if m.historical.is_some() {
-                continue;
-            }
-            if m.role == Role::User {
-                if m.content
-                    .iter()
-                    .any(|b| matches!(b, Block::ToolResult { .. }))
-                {
-                    feedback = false;
+            let cell = match reads[idx] {
+                Reads::Hidden | Reads::Echo => continue,
+                Reads::You => {
+                    d.turn_you(&prose(m), width, id);
                     continue;
                 }
-                if feedback {
-                    feedback = false;
-                    continue;
-                }
-                after_return = false;
-                d.turn_you(&prose(m), width, id);
-                continue;
-            }
-            if after_return {
-                after_return = false;
-                let text = prose(m);
-                if returned_text.as_deref() != Some(text.trim()) {
-                    d.wrapped(text, Tone::Normal, None, width, id, 2);
+                Reads::After => {
+                    d.wrapped(prose(m), Tone::Normal, None, width, id, 2);
                     d.blank(id);
+                    continue;
                 }
-                continue;
-            }
-            if idx > 0 {
-                cell += 1;
-            }
+                Reads::Turn(cell) => cell,
+            };
             let v = cell.checked_sub(1).and_then(|i| n.cells.get(i));
             let src = source(m);
-            let has_cell = src.is_some()
-                || v.is_some_and(|v| {
-                    v.execution.is_some() || v.error.is_some() || v.executed_source.is_some()
-                });
             d.turn_sterna(id);
-            if !has_cell {
+            if !has_cell(src.as_deref(), v) {
                 d.wrapped(prose(m), Tone::Normal, None, width, id, 2);
                 d.blank(id);
                 continue;
             }
-            feedback = v.is_some_and(|v| v.answered);
-            after_return = v.is_some_and(|v| v.returned.is_some());
             let explanation = explanation(m);
             // The card's title is the cell's description, which is most
             // often this same sentence; said above the card too, it is read
@@ -408,9 +382,15 @@ impl Document {
                 .and_then(|v| v.description.as_deref())
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or(&size);
+            // The selected card says so in a glyph, which a failed card's
+            // own colour cannot hide.
+            let selected = ui.selected_cell == Some(cell);
             d.kinded(
                 vec![
-                    (format!("{cell:03}"), Tone::Strong),
+                    (
+                        format!("{}{cell:03}", if selected { "› " } else { "" }),
+                        Tone::Strong,
+                    ),
                     (" · ".to_string(), tone),
                     (
                         clip(description, width.saturating_sub(30)),
@@ -507,6 +487,9 @@ impl Document {
                 if running {
                     d.work(s, v, inner, id);
                 }
+                if let Some(asked) = v.and_then(|v| v.asked.as_deref()) {
+                    d.push(asked, Tone::Accent, None, inner, id);
+                }
                 d.container = RowKind::Plain;
                 d.kinded(
                     v.map(Self::summary).unwrap_or_default(),
@@ -522,7 +505,6 @@ impl Document {
                         crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
                     d.blank(id);
                     d.answer(&answer, v, cell, s, last_assistant == Some(idx), width, id);
-                    returned_text = Some(answer.trim().to_string());
                 }
             }
             d.blank(id);
@@ -1964,6 +1946,82 @@ pub(super) fn count_changes(diff: &str) -> (usize, usize) {
         }
     })
 }
+/// How one message reads in the transcript, decided for every message
+/// before any is drawn, so the newest answer is known while it is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reads {
+    /// Not shown: history, a tool result, the runtime's feedback to a cell.
+    Hidden,
+    /// A person's message.
+    You,
+    /// The session's echo of the answer the cell before it returned.
+    Echo,
+    /// Words after a returned answer that say something else.
+    After,
+    /// A turn of Sterna's, with the number the transcript gives its cell.
+    Turn(usize),
+}
+
+fn has_cell(source: Option<&str>, v: Option<&CellView>) -> bool {
+    source.is_some()
+        || v.is_some_and(|v| {
+            v.execution.is_some() || v.error.is_some() || v.executed_source.is_some()
+        })
+}
+
+fn reading(c: &Conversation, n: &Notebook) -> Vec<Reads> {
+    let mut cell = 0usize;
+    // The feedback the last cell is owed, and the answer it returned.
+    let mut feedback = false;
+    let mut returned: Option<String> = None;
+    let mut reads = Vec::with_capacity(c.messages.len());
+    for (idx, m) in c.messages.iter().enumerate() {
+        let read = if m.historical.is_some() {
+            // The runtime's feedback is often kept only as history: it is
+            // still the message the flag was waiting for.
+            if m.role == Role::User {
+                feedback = false;
+            }
+            Reads::Hidden
+        } else if m.role == Role::User {
+            if feedback
+                || m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            {
+                feedback = false;
+                Reads::Hidden
+            } else {
+                returned = None;
+                Reads::You
+            }
+        } else if let Some(answer) = returned.take() {
+            if prose(m).trim() == answer {
+                Reads::Echo
+            } else {
+                Reads::After
+            }
+        } else {
+            if idx > 0 {
+                cell += 1;
+            }
+            let v = cell.checked_sub(1).and_then(|i| n.cells.get(i));
+            if has_cell(source(m).as_deref(), v) {
+                feedback = v.is_some_and(|v| v.answered);
+                returned = v.and_then(|v| v.returned.as_ref()).map(|answer| {
+                    crate::prompt::completion_text(answer)
+                        .unwrap_or_else(|| answer.clone())
+                        .trim()
+                        .to_string()
+                });
+            }
+            Reads::Turn(cell)
+        };
+        reads.push(read);
+    }
+    reads
+}
+
 fn prose(m: &Message) -> String {
     let s = m
         .content

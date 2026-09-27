@@ -1,9 +1,7 @@
 use ratatui::{Terminal, backend::TestBackend};
 use sterna::contract::{Conversation, Message, Role, ServedBy};
 use sterna::runtime::handles::HandleTable;
-use sterna::tui::{
-    self, CellError, CellView, Inspection, Notebook, ScreenState, SidebarVisibility,
-};
+use sterna::tui::{self, CellView, Notebook, ScreenState, SidebarVisibility};
 
 fn screen(conversation: &Conversation, notebook: &Notebook, state: &ScreenState) -> String {
     let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
@@ -36,69 +34,6 @@ fn state() -> ScreenState {
         sidebar: SidebarVisibility::Hidden,
         ..ScreenState::default()
     }
-}
-
-#[test]
-fn inspector_exposes_the_full_recorded_output_and_each_cells_own_outcome() {
-    let conversation = Conversation {
-        system: String::new(),
-        messages: vec![
-            Message::text(Role::User, "Work"),
-            Message::text(Role::Assistant, "```sterna\nconsole.log('one');\n```"),
-            Message::text(Role::User, "feedback"),
-            Message::text(
-                Role::Assistant,
-                "I think this succeeded.\n```sterna\nthrow new Error('broken');\n```",
-            ),
-        ],
-    };
-    let notebook = Notebook {
-        cells: vec![
-            CellView {
-                executed_source: Some("console.log('one');".into()),
-                stdout: Some((0..150).map(|i| format!("actual-output-{i}\n")).collect()),
-                execution: Some("No tool calls ran in this cell.".into()),
-                table: Some("answer = 42".into()),
-                answered: true,
-                ..CellView::default()
-            },
-            CellView {
-                executed_source: Some("throw new Error('broken');".into()),
-                error: Some(CellError {
-                    class: "Error".into(),
-                    message: "broken".into(),
-                    line: Some(1),
-                    column: Some(0),
-                }),
-                execution: Some("No tool calls ran in this cell.".into()),
-                ..CellView::default()
-            },
-        ],
-        ..Notebook::default()
-    };
-    let mut state = state();
-    state.compact = true;
-    state.inspection = Inspection::open(1, &notebook);
-    let first = screen(&conversation, &notebook, &state);
-    assert!(first.contains("CELL 1 / 2  · executed"));
-    assert!(first.contains("console.log('one');"));
-    assert!(first.contains("actual-output-0"));
-    assert!(!first.contains("actual-output-149"));
-    state.inspection.as_mut().unwrap().scroll = usize::MAX;
-    let end = screen(&conversation, &notebook, &state);
-    assert!(end.contains("actual-output-149"));
-    assert!(end.contains("answer = 42"));
-    assert!(!end.contains("more lines"));
-    state.inspection.as_mut().unwrap().adjacent(true, &notebook);
-    let next = screen(&conversation, &notebook, &state);
-    assert!(next.contains("CELL 2 / 2  · failed"));
-    assert!(next.contains("Error: broken"));
-    assert!(!next.contains("actual-output-0"));
-    state.inspection = None;
-    let chat = screen(&conversation, &notebook, &state);
-    assert!(!chat.contains("CELL 2 / 2"));
-    // The state is the header field's own word now.
-    assert!(chat.contains("FAILED"), "{chat}");
 }
 
 #[test]
@@ -197,10 +132,6 @@ fn native_calls_render_as_notebook_cells_and_results_never_become_user_chat() {
     assert!(shown.contains("ACTUAL_FILE_CONTENT"));
     assert_eq!(shown.matches("the actual answer").count(), 1);
     assert!(!shown.contains("RUNTIME_FEEDBACK_ONLY"));
-    state.inspection = Inspection::open(1, &notebook);
-    let inspected = screen(&conversation, &notebook, &state);
-    assert!(inspected.contains("const file = await read"));
-    assert!(inspected.contains("read real.txt · returned"));
 }
 
 #[test]
@@ -229,15 +160,18 @@ fn cell_navigation_skips_prose_turns_and_opens_the_last_actual_cell() {
         ],
         ..Notebook::default()
     };
-    assert_eq!(Inspection::latest(&notebook), Some(3));
-    assert!(Inspection::open(2, &notebook).is_none());
-    let mut inspection = Inspection::open(1, &notebook).unwrap();
-    inspection.adjacent(true, &notebook);
-    assert_eq!(inspection.cell, 3);
-    inspection.adjacent(true, &notebook);
-    assert_eq!(inspection.cell, 3);
-    inspection.adjacent(false, &notebook);
-    assert_eq!(inspection.cell, 1);
+    assert_eq!(notebook.last_program_cell(), Some(3));
+    assert_eq!(
+        notebook
+            .program_cells()
+            .map(|(cell, _)| cell)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(notebook.next_program_cell(None, false), Some(3));
+    assert_eq!(notebook.next_program_cell(Some(1), true), Some(3));
+    assert_eq!(notebook.next_program_cell(Some(3), true), Some(3));
+    assert_eq!(notebook.next_program_cell(Some(3), false), Some(1));
 }
 
 #[test]

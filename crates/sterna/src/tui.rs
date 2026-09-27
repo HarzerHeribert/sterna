@@ -16,8 +16,6 @@ use composer::{composer_cursor, wrapped_input};
 pub use selection::Selection;
 pub(crate) use selection::draw as draw_selection;
 
-mod inspection;
-pub use inspection::Inspection;
 pub mod form;
 mod lane;
 mod look;
@@ -145,8 +143,6 @@ pub struct ScreenState {
     pub completion_tick: Option<usize>,
     /// Rows back from the transcript's end; zero follows the current turn.
     pub scrollback: usize,
-    /// A selected notebook cell, inspected locally without model traffic.
-    pub inspection: Option<Inspection>,
     /// User preference, retained across resizes. The caller toggles this field.
     pub sidebar: SidebarVisibility,
     /// Chrome off, composer kept: the transcript takes the whole terminal.
@@ -678,6 +674,8 @@ pub struct CellView {
     /// is already on screen as this cell's output, error and return regions,
     /// so drawing it again would put the handle table on the screen twice.
     pub answered: bool,
+    /// The question this cell asked and who chose what, as its card's row.
+    pub asked: Option<String>,
     /// The task capsule as it stood when this cell ended — goal, state,
     /// verified facts, risks and next action (`runtime::capsule`). Display
     /// and rollout state; the model receives it through the result block,
@@ -895,6 +893,55 @@ impl Notebook {
     fn cell(&self, ordinal: usize) -> Option<&CellView> {
         self.cells.get(ordinal.checked_sub(1)?)
     }
+
+    /// The cells that ran a program, by the number the transcript gives
+    /// them. The entry a prose answer leaves in the notebook is not one.
+    pub fn program_cells(&self) -> impl DoubleEndedIterator<Item = (usize, &CellView)> {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter(|(_, view)| view.ran())
+            .map(|(index, view)| (index + 1, view))
+    }
+
+    /// The newest cell that ran a program: what F4 and Ctrl-O act on when
+    /// no card is selected.
+    pub fn last_program_cell(&self) -> Option<usize> {
+        self.program_cells().next_back().map(|(cell, _)| cell)
+    }
+
+    /// The newest cell that called a helper: what F5 and the sidebar's
+    /// helper rows show when no card is selected.
+    pub fn last_with_helpers(&self) -> Option<usize> {
+        self.program_cells()
+            .rev()
+            .find(|(_, view)| !view.helpers.is_empty())
+            .map(|(cell, _)| cell)
+    }
+
+    /// The program cell before or after `from`; the newest one from none.
+    pub fn next_program_cell(&self, from: Option<usize>, forward: bool) -> Option<usize> {
+        let Some(from) = from else {
+            return self.last_program_cell();
+        };
+        let found = if forward {
+            self.program_cells().find(|(cell, _)| *cell > from)
+        } else {
+            self.program_cells().rev().find(|(cell, _)| *cell < from)
+        };
+        found.map(|(cell, _)| cell).or(Some(from))
+    }
+}
+
+impl CellView {
+    /// A program ran here: something was executed, recorded or returned.
+    pub fn ran(&self) -> bool {
+        self.executed_source.is_some()
+            || self.execution.is_some()
+            || self.error.is_some()
+            || self.output.is_some()
+            || self.returned.is_some()
+    }
 }
 
 /// Compatibility entry point: the old caller supplies no live editor or
@@ -1008,15 +1055,6 @@ pub fn render_screen(
         );
         frame.render_widget(Clear, area);
         telemetry::expanded(frame, area, conversation, served_by, notebook, state);
-    }
-    if let Some(inspection) = &state.inspection {
-        inspection::render(
-            frame,
-            regions.transcript,
-            conversation,
-            notebook,
-            inspection,
-        );
     }
     ribbon::activity(frame, regions.activity, state);
     poster::notice(frame, regions.notice, state);

@@ -247,7 +247,11 @@ fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
 pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
     vec![
         ("Enter", "send · Alt-Enter for a new line", None),
-        ("Esc", "stop after this cell · again cancels the call", None),
+        (
+            "Esc",
+            "take back a queued message · else stop after this cell",
+            None,
+        ),
         (
             "Ctrl-C",
             "copy a selection · else stop · twice on an empty prompt quits",
@@ -267,6 +271,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ("F4", "the selected cell's diff", None),
         ("F5", "the selected cell's helpers", None),
         ("Ctrl-O", "expand or collapse the selected cell", None),
+        ("Alt-↑ ↓", "select the previous or next cell", None),
         ("Ctrl-T", "the live instruments", Some(Action::Telemetry)),
         ("Ctrl-B", "show or hide the sidebar", None),
         ("Ctrl-F", "hide or restore the chrome", None),

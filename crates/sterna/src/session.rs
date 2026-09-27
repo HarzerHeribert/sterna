@@ -2285,10 +2285,11 @@ fn act_on(
     // that asked is already over, so nothing is suspended while a person
     // reads; what waits is this one function, and it waits at most
     // `ask::MAX_ASK_WAIT` before answering itself that nobody chose.
-    let ask_answer = turn
-        .ask
-        .clone()
-        .map(|question| ask::resolve(question, &after, session, task_state).rendered());
+    let ask_answer = turn.ask.clone().map(|question| {
+        let answer = ask::resolve(question.clone(), &after, session, task_state);
+        view.asked = Some(answer.row(&question.question));
+        answer.rendered()
+    });
     let mut result = CellResult {
         cell: turn.record.cell,
         elapsed_ms: turn.elapsed_ms,

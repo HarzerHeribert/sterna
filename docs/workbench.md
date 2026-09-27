@@ -50,7 +50,8 @@ surface behaves like every other.
 | F3 | models |
 | F4 | the selected cell's before/after diff |
 | F5 | the selected cell's helpers |
-| Ctrl-O | expand a cell |
+| Ctrl-O | expand the selected cell, else the newest that ran |
+| Alt-↑ / Alt-↓ | select the previous or next cell |
 | Ctrl-T | live telemetry and activity |
 | Ctrl-F | fullscreen: transcript and composer only |
 | Ctrl-G | release or recapture the mouse |
