@@ -17,11 +17,10 @@ use crate::workbench::{Action, Answer, Geometry, Item, Outcome, Sheet, Tone, she
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Frame, layout::Rect, widgets::Clear};
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// How long a prompt must have been on screen, with no key pressed, before a
-/// key can answer it.
-pub(super) const ARMING: Duration = Duration::from_millis(500);
+#[cfg(test)]
+use crate::workbench::sheet::ARMING;
 
 /// What the loop does after a prompt took an event.
 #[derive(Debug, PartialEq, Eq)]
@@ -50,11 +49,8 @@ pub(super) struct Prompts {
     next: u64,
     sheet: Sheet,
     /// Which prompt the sheet shows: a new one gets a fresh sheet and a fresh
-    /// arming window.
+    /// arming window ([`Sheet::armed`]).
     front: Option<String>,
-    shown: Option<Instant>,
-    /// The last key that arrived before the prompt was armed.
-    quiet: Option<Instant>,
     /// The exact arguments instead of the readable body.
     raw: bool,
     /// Where the prompt was last drawn, for the mouse.
@@ -88,12 +84,6 @@ impl Prompts {
         self.approvals.clear();
     }
 
-    /// Whether a key may answer the prompt now.
-    fn armed(&self, now: Instant) -> bool {
-        let since = |at: Option<Instant>| at.is_none_or(|at| now.duration_since(at) >= ARMING);
-        self.shown.is_some() && since(self.shown) && since(self.quiet)
-    }
-
     /// The prompt in front: its identity, and the sheet's rows.
     fn build(&mut self) -> Option<String> {
         if let Some(redirect) = &self.redirect {
@@ -122,10 +112,19 @@ impl Prompts {
     pub(super) fn draw(&mut self, f: &mut Frame<'_>, theme: crate::tui::Theme) {
         let identity = self.front_identity();
         if identity != self.front {
+            // "Another way" is the same decision, reworded: it keeps the
+            // approval's arming, so words typed straight after `a` are kept.
+            let redirecting = identity
+                .as_deref()
+                .is_some_and(|id| id.starts_with("redirect:"))
+                && self
+                    .front
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("approval:"));
+            let shown = self.sheet.shown.filter(|_| redirecting);
             self.front = identity;
             self.sheet = Sheet::default();
-            self.shown = self.front.as_ref().map(|_| Instant::now());
-            self.quiet = None;
+            self.sheet.shown = shown;
             self.raw = false;
         }
         if self.build().is_none() {
@@ -170,14 +169,16 @@ impl Prompts {
     }
 
     /// Holds back an event that came before the prompt was armed, and says
-    /// so. `true` when it was held back.
+    /// so. `true` when it was held back. The prompt in front must be the one
+    /// on screen: when an answer has just taken the one before it, a second
+    /// key in the same burst is held until the next one has been drawn and
+    /// armed -- never an answer to a call nobody saw.
     fn hold_back(&mut self, now: Instant) -> bool {
-        if self.armed(now) {
-            return false;
+        if self.front_identity() != self.front {
+            self.sheet.notice = "Typing was held back: choose below when you are ready.".into();
+            return true;
         }
-        self.quiet = Some(now);
-        self.sheet.notice = "Typing was held back: choose below when you are ready.".into();
-        true
+        self.sheet.hold_back(now)
     }
 
     pub(super) fn key(&mut self, key: KeyEvent) -> Done {
@@ -515,6 +516,7 @@ mod tests {
     use super::*;
     use crate::approval::{Admission, Gate};
     use crate::permissions::{Ladder, Rung};
+    use std::time::Duration;
 
     /// A write the Every call rung puts to the person, and the thread
     /// waiting on the answer.
@@ -544,7 +546,7 @@ mod tests {
         terminal
             .draw(|f| prompts.draw(f, crate::tui::Theme::default()))
             .unwrap();
-        prompts.shown = Instant::now().checked_sub(ARMING * 2);
+        prompts.sheet.shown = Instant::now().checked_sub(ARMING * 2);
         prompts
     }
 
@@ -721,17 +723,82 @@ mod tests {
     /// half second answers.
     #[test]
     fn a_prompt_arms_only_after_a_quiet_half_second() {
-        let mut prompts = Prompts::default();
+        let mut sheet = Sheet::default();
+        sheet.decision = true;
         let now = Instant::now();
-        assert!(!prompts.armed(now), "not drawn yet");
-        prompts.shown = Some(now);
-        assert!(!prompts.armed(now + ARMING / 2));
-        assert!(prompts.armed(now + ARMING));
-        prompts.quiet = Some(now + ARMING);
+        assert!(!sheet.armed(now), "not drawn yet");
+        sheet.shown = Some(now);
+        assert!(!sheet.armed(now + ARMING / 2));
+        assert!(sheet.armed(now + ARMING));
         assert!(
-            !prompts.armed(now + ARMING + ARMING / 2),
+            sheet.hold_back(now + ARMING / 2),
+            "a key before it is armed"
+        );
+        assert!(
+            !sheet.armed(now + ARMING),
             "a key typed while unarmed restarts the wait"
         );
-        assert!(prompts.armed(now + ARMING * 2));
+        assert!(sheet.armed(now + ARMING / 2 + ARMING));
+    }
+
+    /// Two approvals queued, two presses in one burst with no frame between
+    /// them: the first answers the approval on screen, and the second is
+    /// held -- it never answers the one behind it, which nobody has seen.
+    #[test]
+    fn a_second_press_never_answers_the_approval_behind_it() {
+        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (first, first_admitted) = asked(&gate, &requests);
+        let mut prompts = armed_with(first);
+        let (second, second_admitted) = asked(&gate, &requests);
+        prompts.push_approval(second);
+        press(&mut prompts, KeyCode::Char('o'));
+        assert_eq!(first_admitted.join().unwrap(), Admission::Allowed);
+        assert_eq!(press(&mut prompts, KeyCode::Char('o')), Done::Redraw);
+        assert!(prompts.active(), "the second approval is still waiting");
+        prompts.cancel();
+        assert_eq!(second_admitted.join().unwrap(), Admission::Cancelled);
+    }
+
+    /// "Another way" is the same decision reworded: words typed straight
+    /// after `a` land in its field rather than being held back again.
+    #[test]
+    fn words_typed_straight_after_another_way_are_kept() {
+        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (request, admitted) = asked(&gate, &requests);
+        let mut prompts = armed_with(request);
+        press(&mut prompts, KeyCode::Char('a'));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| prompts.draw(f, crate::tui::Theme::default()))
+            .unwrap();
+        for c in "use git".chars() {
+            press(&mut prompts, KeyCode::Char(c));
+        }
+        let redirect = prompts.redirect.as_ref().expect("the words sheet is up");
+        assert_eq!(redirect.field.text, "use git");
+        prompts.cancel();
+        assert_eq!(admitted.join().unwrap(), Admission::Cancelled);
+    }
+
+    /// The arrows walk a prompt's answers and answer nothing; a digit
+    /// answers nothing either.
+    #[test]
+    fn arrows_and_digits_never_answer_a_prompt() {
+        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (request, admitted) = asked(&gate, &requests);
+        let mut prompts = armed_with(request);
+        let start = prompts.sheet.focused().unwrap().id.clone();
+        press(&mut prompts, KeyCode::Right);
+        assert_ne!(prompts.sheet.focused().unwrap().id, start, "→ moves on");
+        press(&mut prompts, KeyCode::Left);
+        assert_eq!(prompts.sheet.focused().unwrap().id, start, "← moves back");
+        press(&mut prompts, KeyCode::Left);
+        for digit in '1'..='9' {
+            press(&mut prompts, KeyCode::Char(digit));
+        }
+        assert!(prompts.active(), "an arrow or a digit answered the prompt");
+        prompts.cancel();
+        assert_eq!(admitted.join().unwrap(), Admission::Cancelled);
     }
 }

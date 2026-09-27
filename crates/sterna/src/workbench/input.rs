@@ -512,6 +512,9 @@ impl Workbench {
                         match self.geometry.hit(m.column, m.row) {
                             Some(Action::Composer) => self.composer_click(s, m.column, m.row),
                             Some(Action::Sheet(hit)) => {
+                                if self.held_back() {
+                                    return Effect::Consumed;
+                                }
                                 let outcome = match self.sheets.last_mut() {
                                     Some(layer) => layer.sheet.click(&hit),
                                     None => Outcome::Nothing,
@@ -569,6 +572,7 @@ impl Workbench {
                     _ => Effect::Ignored,
                 }
             }
+            Event::Paste(_) if self.held_back() => Effect::Consumed,
             Event::Paste(text) => match self.sheets.last_mut() {
                 Some(layer) => {
                     let outcome = layer.sheet.paste(text);
@@ -596,6 +600,9 @@ impl Workbench {
                 self.notice.clear();
                 if !self.sheets.is_empty() {
                     super::sheets::build(self, s, n);
+                    if self.held_back() {
+                        return Effect::Consumed;
+                    }
                     if let Some(action) = self.accelerator(k) {
                         return self.activate(action, s, n, busy, true);
                     }
@@ -719,6 +726,13 @@ impl Workbench {
             (Source::Models(_), KeyCode::Char('o')) if ctrl => Some(Action::Scores),
             _ => None,
         }
+    }
+    /// Whether the top sheet is a decision that is not armed yet: the event
+    /// is held back, and the sheet says so.
+    fn held_back(&mut self) -> bool {
+        self.sheets
+            .last_mut()
+            .is_some_and(|layer| layer.sheet.hold_back(std::time::Instant::now()))
     }
     /// Whether a point is outside the open sheet, on its backdrop, and the
     /// sheet is one a backdrop click may dismiss.

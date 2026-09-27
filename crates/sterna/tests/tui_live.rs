@@ -1154,7 +1154,8 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     // Cancel.
     app.send(b"/permissions full\r");
     app.contains("CONFIRM");
-    app.settle(120);
+    // A key sooner than half a second is held back: the confirm arms first.
+    app.settle(600);
     app.send(b"\r");
     app.wait("Cancel goes back unchanged", |screen| {
         !screen.contents().contains("CONFIRM")
@@ -1162,7 +1163,7 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     app.refute("a reflexive Enter changes nothing", "Ask is now");
     app.send(b"/permissions never asks\r");
     app.contains("CONFIRM");
-    app.settle(120);
+    app.settle(600);
     app.send(b"\x1b[B");
     app.settle(60);
     app.send(b"\r");

@@ -13,6 +13,11 @@ use super::{Action, Geometry, Tone, chrome, document::clip, theme};
 use crate::tui::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Frame, layout::Rect};
+use std::time::{Duration, Instant};
+
+/// How long a decision must have been on screen, with no key pressed, before
+/// a key can answer it: a sentence typed as it appears answers nothing.
+pub const ARMING: Duration = Duration::from_millis(500);
 
 /// What one row is. Every row is exactly one kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,9 +241,16 @@ pub struct Sheet {
     /// Whether this is the bottom of the stack: Esc then closes, and the
     /// header chip says so.
     pub root: bool,
-    /// A decision prompt: the backdrop does not dismiss it, and its answers
-    /// carry the letters printed on them.
+    /// A decision prompt: the backdrop does not dismiss it, its answers
+    /// carry the letters printed on them, it takes no key until it is armed
+    /// ([`Sheet::armed`]), ←→ only move between its answers, and no digit
+    /// answers it.
     pub decision: bool,
+    /// When a decision was first drawn; set by [`draw`].
+    pub shown: Option<Instant>,
+    /// The last key that came before the decision was armed: every one
+    /// restarts the wait.
+    quiet: Option<Instant>,
     /// What Esc does here, when it is not Back or Close: a decision prompt
     /// says what Esc answers.
     pub esc: Option<String>,
@@ -270,6 +282,29 @@ impl Sheet {
             title: title.into(),
             ..Self::default()
         }
+    }
+
+    /// Whether a key may answer this sheet now: any sheet that is not a
+    /// decision, and a decision that has been on screen for [`ARMING`] with
+    /// no key pressed in that time.
+    #[must_use]
+    pub fn armed(&self, now: Instant) -> bool {
+        if !self.decision {
+            return true;
+        }
+        let since = |at: Option<Instant>| at.is_none_or(|at| now.duration_since(at) >= ARMING);
+        self.shown.is_some() && since(self.shown) && since(self.quiet)
+    }
+
+    /// Holds back an event that came before the decision was armed, and
+    /// says so. `true` when it was held back.
+    pub fn hold_back(&mut self, now: Instant) -> bool {
+        if self.armed(now) {
+            return false;
+        }
+        self.quiet = Some(now);
+        self.notice = "Typing was held back: choose below when you are ready.".into();
+        true
     }
 
     /// Replaces the rows, keeping focus on the row with the same id. A sheet
@@ -513,6 +548,11 @@ impl Sheet {
             },
             KeyCode::Enter => self.activate(self.focus),
             KeyCode::Char(' ') if !ctrl && !alt && !self.searching() => self.activate(self.focus),
+            // A decision's answers sit in a row: the arrows walk it, and
+            // answer nothing.
+            KeyCode::Left | KeyCode::Right if self.decision => {
+                self.move_focus(key.code == KeyCode::Right, 1)
+            }
             KeyCode::Left | KeyCode::Right => {
                 let forward = key.code == KeyCode::Right;
                 if let Some(outcome) = self.step_value(forward) {
@@ -577,9 +617,16 @@ impl Sheet {
             self.after_search();
             return Outcome::Redraw;
         }
-        if let Some(n) = c.to_digit(10).filter(|n| (1..=9).contains(n)) {
+        // A digit picks the Nth choice of a list; it never answers a
+        // decision and never reaches a row that cannot be taken back.
+        if let Some(n) = c
+            .to_digit(10)
+            .filter(|n| (1..=9).contains(n) && !self.decision)
+        {
             let choices: Vec<usize> = (0..self.items.len())
-                .filter(|i| self.items[*i].focusable())
+                .filter(|i| {
+                    self.items[*i].focusable() && !matches!(self.items[*i].kind, Kind::Danger)
+                })
                 .collect();
             if let Some(at) = choices.get(n as usize - 1) {
                 return self.activate(*at);
@@ -850,6 +897,10 @@ pub fn draw(
     hover: Option<(u16, u16)>,
 ) -> Drawn {
     let hit = |g: &mut Geometry, r: Rect, h: Hit| g.hits.push((r, Action::Sheet(h)));
+    // The first frame a decision is drawn on starts its arming window.
+    if sheet.decision && sheet.shown.is_none() {
+        sheet.shown = Some(Instant::now());
+    }
     let mut y = area.y;
     let bottom = area.bottom();
     if area.width < 4 || area.height < 3 {
@@ -1551,5 +1602,23 @@ mod tests {
             Item::run("cancel", "Cancel", Action::Close),
         ]);
         assert_eq!(sheet.focused().unwrap().id, "cancel");
+    }
+
+    /// A digit picks the Nth choice of a list, but never a row that cannot
+    /// be taken back.
+    #[test]
+    fn a_digit_never_reaches_a_danger_row() {
+        let mut sheet = Sheet::new("Rollback");
+        sheet.set_items(vec![
+            Item::run("cancel", "Cancel", Action::Close),
+            Item::danger(
+                "yes",
+                "Roll back",
+                Action::Command("/rollback confirm".into()),
+            ),
+        ]);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(sheet.key(key('2')), Outcome::Nothing);
+        assert_eq!(sheet.key(key('1')), Outcome::Act(Action::Close));
     }
 }

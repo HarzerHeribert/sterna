@@ -156,6 +156,14 @@ fn click_item(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, id: &str) ->
         .unwrap_or_else(|| panic!("no row {id}"));
     click(u, s, n, Action::Sheet(Hit::Item(index)))
 }
+/// The top sheet has been on screen, quietly, long enough to take a key:
+/// what a person waiting half a second before answering a decision gets.
+fn armed(u: &mut Workbench) {
+    if let Some(layer) = u.top_mut() {
+        layer.sheet.shown =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+    }
+}
 fn doc(c: &Conversation, n: &Notebook, s: &ScreenState, u: &Workbench) -> Document {
     Document::build(c, n, s, u, 100)
 }
@@ -944,15 +952,21 @@ fn never_ask_requires_confirmation_without_changing_work_or_access() {
     click_item(&mut u, &mut s, &n, "rung:full");
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
-    // The confirmation starts on Cancel: a reflexive Enter changes nothing
-    // and goes back to the rungs.
+    // A key typed as the confirmation appears answers nothing.
     draw(&c, &n, &s, &mut u, 100, 40);
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert!(u.top().unwrap().sheet.notice.contains("held back"));
+    // Half a second without a key arms it; it starts on Cancel, so a
+    // reflexive Enter changes nothing and goes back to the rungs.
+    std::thread::sleep(sterna::workbench::sheet::ARMING + std::time::Duration::from_millis(50));
     key(&mut u, &mut s, &n, KeyCode::Enter);
     assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
     assert!(u.showing(|source| matches!(source, Source::Ask)));
     draw(&c, &n, &s, &mut u, 100, 40);
     click_item(&mut u, &mut s, &n, "rung:full");
     draw(&c, &n, &s, &mut u, 100, 40);
+    armed(&mut u);
     click_item(&mut u, &mut s, &n, "confirm:yes");
     assert_eq!(s.permissions.rung(), sterna::permissions::Rung::Full);
     assert_eq!(s.mode, mode);
@@ -2977,6 +2991,7 @@ fn pinning_over_favourites_asks_first() {
     assert_eq!(click_item(&mut u, &mut s, &n, &id), Effect::Consumed);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     draw(&c, &n, &s, &mut u, 120, 60);
+    armed(&mut u);
     assert_eq!(
         click_item(&mut u, &mut s, &n, "confirm:yes"),
         Effect::Command("/model subagent fixture-main".into())
@@ -3117,11 +3132,13 @@ fn opening_a_browser_asks_first() {
     assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     draw(&c, &n, &s, &mut u, 100, 30);
+    armed(&mut u);
     // Enter on the opening focus is Cancel: nothing opens.
     assert_eq!(key(&mut u, &mut s, &n, KeyCode::Enter), Effect::Consumed);
     draw(&c, &n, &s, &mut u, 100, 30);
     assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
     draw(&c, &n, &s, &mut u, 100, 30);
+    armed(&mut u);
     assert_eq!(
         click_item(&mut u, &mut s, &n, "confirm:yes"),
         Effect::OpenLink(link.into())
@@ -4330,4 +4347,29 @@ fn choosing_a_light_background_applies_now() {
     p.save("ui.background", Some("dark".into()), &mut s)
         .unwrap();
     assert!(!s.light);
+}
+
+/// A panel whose leaving is itself an answer -- the rollback preview -- is
+/// a decision: a key typed as it appears answers nothing.
+#[test]
+fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
+    let (c, n, mut s) = fixture();
+    let mut panel = Panel::rows(
+        "Rollback",
+        vec![
+            sterna::tui::PanelRow::run("Cancel", Action::Command("/rollback cancel".into())),
+            sterna::tui::PanelRow::danger("Roll back", Action::Command("/rollback confirm".into())),
+        ],
+    );
+    panel.back = Some(Action::Command("/rollback cancel".into()));
+    let mut u = Workbench::default();
+    u.open(Source::Panel(Box::new(panel)));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    assert_eq!(key(&mut u, &mut s, &n, KeyCode::Enter), Effect::Consumed);
+    assert!(u.top().unwrap().sheet.notice.contains("held back"));
+    std::thread::sleep(sterna::workbench::sheet::ARMING + std::time::Duration::from_millis(50));
+    assert_eq!(
+        key(&mut u, &mut s, &n, KeyCode::Enter),
+        Effect::Command("/rollback cancel".into())
+    );
 }
