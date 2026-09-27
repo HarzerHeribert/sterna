@@ -45,7 +45,16 @@ surface behaves like every other.
 - The wheel scrolls the open surface or the conversation, never both.
   Scrolling up stops following new output; *Latest* returns to the live
   edge.
-- File paths in the conversation are underlined and open on click.
+- File paths in the conversation are underlined and open on click,
+  wherever they stand -- in an answer, a card, the diff's file header. A
+  path is looked up again after every turn, so a new file becomes
+  clickable and a deleted one stops being so. Over SSH a click copies the
+  path instead, and a file that is gone says so.
+- Answers read as Markdown: strong and code text keep their tone without
+  their markers, a code span is never broken at a wrap, fences and tables
+  are shown as written, and a link opens after asking first.
+- A cell's helper calls are listed inside its card; the Helpers tab shows
+  each one's whole account. A cell `/rollback` undid says ↶ ROLLED BACK.
 
 | key | does |
 |---|---|

@@ -8,7 +8,7 @@ mod message;
 use message::*;
 mod composer;
 mod paths;
-pub(crate) use paths::{found as found_paths, resolve as resolve_path};
+pub(crate) use paths::{forget as forget_paths, found as found_paths, resolve as resolve_path};
 mod poster;
 mod regions;
 mod selection;
@@ -688,6 +688,8 @@ pub struct CellView {
     pub answered: bool,
     /// The question this cell asked and who chose what, as its card's row.
     pub asked: Option<String>,
+    /// `/rollback` undid what this cell changed.
+    pub rolled_back: bool,
     /// The task capsule as it stood when this cell ended — goal, state,
     /// verified facts, risks and next action (`runtime::capsule`). Display
     /// and rollout state; the model receives it through the result block,

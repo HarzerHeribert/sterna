@@ -3784,3 +3784,126 @@ fn a_selection_stays_on_its_text_as_the_transcript_moves() {
     };
     assert!(copied.contains("answer 28"), "{copied}");
 }
+
+/// Answer prose reads as Markdown: no raw markers, and a link is a link.
+#[test]
+fn answer_markdown_is_rendered() {
+    let (_, n, s) = fixture();
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, "what did you do"),
+            Message::text(
+                Role::Assistant,
+                "Wrote **a.txt**, see `x` and [docs](https://example.com)",
+            ),
+        ],
+    };
+    let n = Notebook {
+        cells: Vec::new(),
+        ..n
+    };
+    let mut u = Workbench::default();
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(shown.contains("Wrote a.txt, see x and docs"), "{shown}");
+    for marker in ["**", "`", "]("] {
+        assert!(!shown.contains(marker), "{marker} is raw: {shown}");
+    }
+    draw(&c, &n, &s, &mut u, 120, 40);
+    assert!(
+        u.geometry
+            .hits
+            .iter()
+            .any(|(_, a)| *a == Action::AskOpenLink("https://example.com".into())),
+        "the link opens, asking first"
+    );
+}
+
+/// A cell's helper calls are drawn inside its card, before its bottom edge.
+#[test]
+fn helper_rows_are_drawn_inside_their_card() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    let d = doc(&c, &n, &s, &u);
+    let helper = d
+        .rows
+        .iter()
+        .position(|r| r.text.contains("◇ reduce"))
+        .expect("the helper's row");
+    let bottom = d
+        .rows
+        .iter()
+        .position(|r| r.kind == sterna::workbench::RowKind::CardBottom)
+        .expect("the card's bottom edge");
+    assert!(helper < bottom, "the lane is inside the card");
+    assert_eq!(d.rows[helper].kind, sterna::workbench::RowKind::CardBody);
+}
+
+/// A path in a styled row is clickable, and the diff's file header opens
+/// the file it names.
+#[test]
+fn paths_in_styled_rows_and_the_diff_header_open_their_file() {
+    let t = Temp::new();
+    std::fs::create_dir_all(t.0.join("src")).unwrap();
+    std::fs::write(t.0.join("src/guard.rs"), "fn guard() {}").unwrap();
+    let (c, mut n, mut s) = fixture();
+    s.settings_root = Some(t.0.clone());
+    n.cells[0].changes =
+        Some("--- a/src/guard.rs\n+++ b/src/guard.rs\n@@ -1 +1 @@\n-old();\n+new();".into());
+    n.cells[0].returned = Some("Fixed the guard in src/guard.rs as asked.".into());
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    u.tabs.insert(1, CellTab::Diff);
+    draw(&c, &n, &s, &mut u, 140, 50);
+    let wanted = Action::Path(t.0.join("src/guard.rs").display().to_string());
+    let opens = u.geometry.hits.iter().filter(|(_, a)| *a == wanted).count();
+    assert!(
+        opens >= 2,
+        "the header and the answer's path both open it ({opens})"
+    );
+}
+
+/// A card's copy reads right: one line is one line, empty sections are not
+/// shown, the full output includes the answer, and a short answer() call is
+/// shown whole.
+#[test]
+fn a_cards_copy_reads_right() {
+    let (mut c, mut n, s) = fixture();
+    c.messages[1] = {
+        let mut m = Message::text(Role::Assistant, "Done.");
+        m.content.push(Block::ToolUse {
+            id: "call-1".into(),
+            name: "execute_cell".into(),
+            input: serde_json::json!({"code": "answer(\"done\");"}),
+        });
+        m
+    };
+    n.cells[0].executed_source = Some("answer(\"done\");".into());
+    n.cells[0].description = None;
+    n.cells[0].table = Some(String::new());
+    n.cells[0].returned = Some("done".into());
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(shown.contains("1 line"), "{shown}");
+    assert!(!shown.contains("1 lines"), "{shown}");
+    assert!(shown.contains("answer(\"done\")"), "{shown}");
+    assert!(!shown.contains("done\");…"), "{shown}");
+    u.tabs.insert(1, CellTab::Output);
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(!shown.contains("Handles"), "{shown}");
+    assert!(shown.contains("Answer"), "{shown}");
+}
+
+/// A cell whose change was rolled back says so and claims no change.
+#[test]
+fn a_rolled_back_cell_says_so() {
+    let (c, mut n, s) = fixture();
+    n.cells[0].rolled_back = true;
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    let shown = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(shown.contains("↶ ROLLED BACK"), "{shown}");
+    assert!(!shown.contains("1 file changed"), "{shown}");
+}

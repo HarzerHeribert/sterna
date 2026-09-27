@@ -1049,7 +1049,7 @@ pub(super) fn command(
     name: &str,
     argument: Option<&str>,
     session: &Session<'_>,
-    transcript: &Transcript,
+    transcript: &mut Transcript,
 ) -> bool {
     match name {
         // Bare, it is the picker's Subagents section: the one place the
@@ -1329,7 +1329,7 @@ pub(super) fn command(
                 ),
             );
         }
-        "rollback" => rollback(session, argument),
+        "rollback" => rollback(session, argument, &mut transcript.notebook),
         "permissions" => match permissions(session, argument) {
             Ok(text) => show(session, Panel::text("Permissions", text)),
             Err(error) => session_println!("ERROR: {error}"),
@@ -1419,7 +1419,7 @@ fn rollback_panel(preview: &str) -> Panel {
     panel
 }
 
-fn rollback(session: &Session<'_>, argument: Option<&str>) {
+fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::Notebook) {
     let count = session.rollbacks.borrow().len();
     let Some(last) = session
         .rollbacks
@@ -1456,9 +1456,20 @@ fn rollback(session: &Session<'_>, argument: Option<&str>) {
             }
             match plan.apply(session.profile) {
                 Ok(()) => {
-                    session.rollbacks.borrow_mut().pop();
+                    // The cell says its change was undone, and the notice is
+                    // one line; the preview of what came back follows it.
+                    let cell = session.rollbacks.borrow_mut().pop().map(|c| c.cell);
+                    if let Some(view) =
+                        cell.and_then(|cell| notebook.cells.get_mut(cell.checked_sub(1)?))
+                    {
+                        view.rolled_back = true;
+                    }
                     session.rollback_pending.set(None);
-                    session_println!("Rollback complete:\n{}", plan.preview());
+                    session_println!(
+                        "Rolled back cell {} · its changes are undone\n{}",
+                        cell.map_or_else(|| "?".to_string(), |cell| format!("{cell:03}")),
+                        plan.preview()
+                    );
                 }
                 Err(error) => {
                     session.rollback_pending.set(None);

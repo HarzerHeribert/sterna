@@ -587,12 +587,27 @@ fn draw_row(
     let spans_at = |f: &mut Frame<'_>, g: &mut Geometry, x: u16, limit: u16| {
         let mut x = x;
         if !r.spans.is_empty() {
-            for (text, tone) in &r.spans {
+            for (i, (text, tone)) in r.spans.iter().enumerate() {
                 let w = (chrome::width(text)).min(limit.saturating_sub(x));
                 if w == 0 {
                     break;
                 }
-                row(f, Rect::new(x, area.y, w, 1), text, *tone, t);
+                let at = Rect::new(x, area.y, w, 1);
+                row(f, at, text, *tone, t);
+                // A link opens on a click, asking first; a path in any
+                // other run opens its file.
+                match r.links.iter().find(|(span, _)| *span == i) {
+                    Some((_, address)) => {
+                        f.buffer_mut().set_style(
+                            at,
+                            theme::style(*tone, t)
+                                .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                        );
+                        g.hits.push((at, Action::AskOpenLink(address.clone())));
+                    }
+                    None if *tone != Tone::Line => paths(f, g, at, text, *tone, s),
+                    None => {}
+                }
                 x += w;
             }
         } else {

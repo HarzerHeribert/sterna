@@ -983,6 +983,8 @@ impl Session<'_> {
 struct RollbackCheckpoint {
     before: crate::changes::Snapshot,
     after: crate::changes::Snapshot,
+    /// The cell whose change this is, marked when it is rolled back.
+    cell: usize,
 }
 
 /// Handles scripted, live-composer, and piped input through the same task
@@ -1649,10 +1651,11 @@ fn run_task_inner(
             }
         }
         if let Some((before, after)) = step.rollback.take() {
-            session
-                .rollbacks
-                .borrow_mut()
-                .push(RollbackCheckpoint { before, after });
+            session.rollbacks.borrow_mut().push(RollbackCheckpoint {
+                before,
+                after,
+                cell: ordinal,
+            });
             session.rollback_pending.set(None);
         }
         let instruction_boundary = runtime.pending_instructions();
@@ -2603,7 +2606,7 @@ fn answer_command(
     name: &str,
     argument: Option<&str>,
     session: &Session<'_>,
-    transcript: &Transcript,
+    transcript: &mut Transcript,
 ) {
     if controls::command(name, argument, session, transcript) {
         return;

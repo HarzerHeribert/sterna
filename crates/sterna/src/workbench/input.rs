@@ -1126,12 +1126,19 @@ impl Workbench {
                 }
             }
             Action::Command(cmd) => {
-                // A confirmation's Yes: the sheet that asked goes first.
+                // A confirmation's Yes, or a row that answers a panel whose
+                // leaving is itself an answer (the rollback preview): the
+                // sheet that asked goes first, and nothing else is sent for
+                // it.
                 if matches!(
                     self.sheets.last().map(|l| &l.source),
                     Some(Source::Confirm(_))
+                ) || matches!(
+                    self.sheets.last().map(|l| &l.source),
+                    Some(Source::Panel(panel)) if panel.back.is_some()
                 ) {
                     self.sheets.pop();
+                    self.child_of = None;
                 }
                 if busy && mid_turn(&cmd) {
                     return Effect::Command(cmd);

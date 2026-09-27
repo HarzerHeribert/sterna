@@ -2346,6 +2346,35 @@ fn ctrl_d_mid_turn_says_it_waits_for_the_turn() {
     assert_eq!(app.exited(), 130);
 }
 
+/// A confirmed rollback marks the cell it undid, and says so in one line.
+#[test]
+fn a_rollback_marks_its_cell_and_says_so_in_one_line() {
+    let base =
+        approval_provider(r#"await write({path: "made.txt", content: "x"}); return "done";"#);
+    let mut app = App::start(&base);
+    app.ready();
+    app.send(b"make a file\r");
+    app.contains("EXECUTED");
+    assert!(
+        app.root.join("made.txt").exists(),
+        "the cell wrote its file"
+    );
+    app.send(b"/rollback\r");
+    app.contains("Confirm rollback");
+    app.settle(600);
+    app.send(b"\x1b[A");
+    // A decision sheet takes a key only after half a second without one.
+    app.settle(700);
+    app.send(b"\r");
+    app.contains("Rolled back cell 001");
+    app.contains("ROLLED BACK");
+    assert!(!app.root.join("made.txt").exists(), "the file is gone");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 /// Esc puts the command popup away and a second Esc clears the slash word;
 /// Enter on a command typed in full runs that command, not a longer one.
 #[test]

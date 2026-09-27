@@ -799,6 +799,10 @@ fn run(
                         .iter()
                         .filter(|cell| cell.execution.is_some())
                         .count();
+                    // A cell that ran may have made or removed files.
+                    if completed > previous {
+                        crate::tui::forget_paths();
+                    }
                     if completed > previous
                         && !state.reduced_motion
                         && n.cells.last().is_some_and(|cell| {
@@ -843,6 +847,8 @@ fn run(
                     state.streaming_tool_input = None;
                     state.streaming_reasoning = None;
                     if !activity.working() {
+                        // The turn may have made or removed files.
+                        crate::tui::forget_paths();
                         // Cancellation may finish the waiting callback before
                         // the user answers. Remove stale confirmations then.
                         prompts.clear_approvals();
@@ -1168,12 +1174,23 @@ fn run(
                     continue;
                 }
                 crate::workbench::Effect::OpenPath(path) => {
-                    workbench.notice = if links::show(std::path::Path::new(&path)) {
-                        "Opened file."
-                    } else {
-                        "No application could open this file."
-                    }
-                    .into();
+                    let file = std::path::Path::new(&path);
+                    let named = state
+                        .settings_root
+                        .as_deref()
+                        .and_then(|root| file.strip_prefix(root).ok())
+                        .unwrap_or(file)
+                        .display()
+                        .to_string();
+                    workbench.notice = match links::show(file) {
+                        links::Shown::Opened => "Opened file.".into(),
+                        links::Shown::OverSsh => {
+                            links::copy(&path);
+                            "Can't open files over SSH · path copied".into()
+                        }
+                        links::Shown::Missing => format!("{named} no longer exists"),
+                        links::Shown::NoOpener => format!("Nothing here opens {named}"),
+                    };
                     dirty = true;
                     continue;
                 }
