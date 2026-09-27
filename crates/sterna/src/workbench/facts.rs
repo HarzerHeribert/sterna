@@ -36,6 +36,49 @@ fn persist(s: &ScreenState, scope: Scope, key: &str, value: &str) -> Result<(), 
         .map(|_| ())
 }
 
+/// A global list setting as the file holds it, `None` when it is unset or
+/// cannot be read.
+pub fn global_list(s: &ScreenState, key: &str) -> Option<Vec<String>> {
+    let root = s.settings_root.as_deref()?;
+    s.settings_global.as_ref()?;
+    let store = Store::with_global(root, s.settings_global.clone()).ok()?;
+    let snapshot = store.read(Scope::Global).ok()?;
+    crate::settings_session::value(&snapshot.values, key)
+        .and_then(toml::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+}
+
+/// Saves a whole list to the global settings: an empty one is saved as
+/// empty, which for `sandbox.ecosystems` means none rather than all.
+pub fn save_list(s: &ScreenState, key: &str, values: &[String]) -> Result<(), String> {
+    let array = toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect());
+    persist(s, Scope::Global, key, &array.to_string())
+}
+
+/// "Always allow": the hosts join the global `sandbox.hosts`, once each.
+/// The live proxy already has them (the gate added them); this is the part
+/// that outlives the session. Returns the notice.
+pub fn keep_hosts(s: &ScreenState, hosts: &[String]) -> String {
+    let mut kept = global_list(s, "sandbox.hosts").unwrap_or_default();
+    for host in hosts {
+        if !kept.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            kept.push(host.clone());
+        }
+    }
+    let names = hosts.join(", ");
+    let is = if hosts.len() == 1 { "is" } else { "are" };
+    match save_list(s, "sandbox.hosts", &kept) {
+        Ok(()) => format!("{names} {is} allowed in every session from now on."),
+        Err(error) => format!("{names} {is} allowed for this session only: {error}"),
+    }
+}
+
 /// The level, set now and saved globally; returns the notice every route
 /// prints. Full access is confirmed before it gets here (the Confirm sheet,
 /// which opens on Cancel), whichever route asked for it.

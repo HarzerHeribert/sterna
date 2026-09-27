@@ -261,6 +261,18 @@ impl Allowed {
             .insert(host)
     }
 
+    /// Stop allowing `host`, written as it was added (`*.name` for a
+    /// wildcard). Returns whether it was allowed. A connection already open
+    /// finishes; the next one is refused.
+    pub fn remove(&self, host: &str) -> bool {
+        let host = normalize(host);
+        let mut set = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        match host.strip_prefix("*.") {
+            Some(suffix) => set.suffixes.remove(suffix),
+            None => set.exact.remove(&host),
+        }
+    }
+
     /// Every allowed entry, sorted, wildcards written `*.name`.
     pub fn hosts(&self) -> Vec<String> {
         let set = self.inner.read().unwrap_or_else(|e| e.into_inner());
@@ -482,6 +494,12 @@ impl Proxy {
         env.push(("NO_PROXY".into(), no_proxy.clone()));
         env.push(("no_proxy".into(), no_proxy));
         env
+    }
+
+    /// The live list this proxy checks: a host added to it is let through
+    /// on the next connection.
+    pub fn allowed(&self) -> Allowed {
+        self.shared.allowed.clone()
     }
 
     /// Distinct hosts refused since start, most recent last.
@@ -743,7 +761,7 @@ fn parse_target(method: &str, target: &str) -> Option<Target> {
 
 fn refusal_body(host: &str) -> String {
     format!(
-        "Sterna's sandbox does not allow {host}. Allow it in Settings › Sandbox › Allowed hosts, or ask to run the command outside the sandbox.\n"
+        "Sterna's sandbox does not allow {host}. To reach it, run the command again with `outside` naming {host} and why: the person can allow the host. It can also be added in Settings › Sandbox › Allowed hosts.\n"
     )
 }
 
@@ -1036,6 +1054,21 @@ mod tests {
         assert!(seen_by_proxy.permits("late.example"));
         assert!(!allowed.add("http://nope"));
         assert_eq!(seen_by_proxy.hosts(), s(&["late.example"]));
+    }
+
+    /// Removing is exact: a wildcard entry goes only by its `*.` spelling,
+    /// and a name it never held is not an error.
+    #[test]
+    fn remove_takes_one_entry_away_through_every_clone() {
+        let allowed = Allowed::new(&[], &s(&["a.example", "*.b.example"]));
+        let seen_by_proxy = allowed.clone();
+        assert!(!allowed.remove("b.example"));
+        assert!(seen_by_proxy.permits("x.b.example"));
+        assert!(allowed.remove("*.B.example"));
+        assert!(!seen_by_proxy.permits("x.b.example"));
+        assert!(allowed.remove("A.example."));
+        assert!(!seen_by_proxy.permits("a.example"));
+        assert!(seen_by_proxy.hosts().is_empty());
     }
 
     #[test]

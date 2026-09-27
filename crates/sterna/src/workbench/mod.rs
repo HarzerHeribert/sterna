@@ -11,6 +11,7 @@
 mod chrome;
 mod document;
 pub mod facts;
+mod hosts;
 mod input;
 pub mod look;
 mod markdown;
@@ -27,6 +28,7 @@ pub mod voice;
 use crate::tui::{Panel, ScreenState};
 pub(crate) use chrome::frame;
 pub use document::{Document, Row, RowKind, Tone};
+pub use hosts::HostsSheet;
 pub use input::{Effect, mid_turn};
 pub use models::Navigator;
 use ratatui::layout::Rect;
@@ -66,6 +68,15 @@ pub enum Action {
     /// The sandbox sheet: the level, how it is enforced, and the answers
     /// remembered for the session.
     Sandbox,
+    /// The hosts sheet: the ecosystems commands may reach, and the person's
+    /// own hosts.
+    Hosts,
+    /// Switch one ecosystem, by its settings word, on or off.
+    Ecosystem(String),
+    /// Take one of the person's own hosts off the list.
+    RemoveHost(String),
+    /// Add the host typed on the hosts sheet.
+    AddHost,
     Activity,
     Setting(usize, Option<String>),
     /// Go to a named scope. It used to be a bare toggle shared by both
@@ -188,6 +199,11 @@ pub(crate) fn contains(r: Rect, x: u16, y: u16) -> bool {
 pub enum Answer {
     AllowOnce,
     AllowForSession,
+    /// Let the refused hosts through for the session; the command runs
+    /// again inside the sandbox.
+    AllowHost,
+    /// The same, and saved to the global `sandbox.hosts`.
+    AlwaysAllowHost,
     /// Refuse and say what to do instead.
     AnotherWay,
     Deny,
@@ -203,6 +219,8 @@ pub enum Answer {
 pub enum Source {
     /// The sandbox level, how it is enforced, and what was answered.
     Sandbox,
+    /// The allowed hosts, as the global settings hold them.
+    Hosts(Box<hosts::HostsSheet>),
     /// The confirmation before a change that lifts a boundary.
     Confirm(String),
     /// Every key, and what it does.
@@ -396,6 +414,13 @@ impl Workbench {
     pub fn models_mut(&mut self) -> Option<&mut Navigator> {
         match &mut self.top_mut()?.source {
             Source::Models(m) => Some(m.as_mut()),
+            _ => None,
+        }
+    }
+    /// The hosts sheet, if it is the top sheet.
+    pub(crate) fn hosts_mut(&mut self) -> Option<&mut hosts::HostsSheet> {
+        match &mut self.top_mut()?.source {
+            Source::Hosts(h) => Some(h.as_mut()),
             _ => None,
         }
     }

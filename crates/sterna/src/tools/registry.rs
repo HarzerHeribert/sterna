@@ -99,7 +99,9 @@ pub enum ArgKind {
     CommandLine,
     /// Words for the person: shown on the confirmation a call raises, and
     /// never part of the child's argv or environment. `bash`'s `outside`
-    /// (why a command asks to run outside the sandbox) is the one.
+    /// (why a command asks to run outside the sandbox) is the one. The model
+    /// is told to name a host the proxy refused there; the confirmation then
+    /// offers to allow that host and run the command inside the sandbox.
     Reason,
 }
 

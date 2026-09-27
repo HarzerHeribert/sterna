@@ -4579,3 +4579,96 @@ fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
         Effect::Command("/rollback cancel".into())
     );
 }
+
+/// The allowed hosts are one sheet away from the Sandbox sheet: every
+/// ecosystem is a switch, the person's own hosts can be added (a pasted URL
+/// is refused, not half-allowed) and removed, each change is saved to the
+/// global settings, and it reaches the running proxy's list at once.
+#[test]
+fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
+    use sterna::sandbox::proxy::{Allowed, ECOSYSTEMS};
+    let (t, mut s, _) = prefs();
+    let (c, n, _) = fixture();
+    let allowed = Allowed::defaults();
+    s.allowed = Some(allowed.clone());
+    let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
+        .unwrap()
+        .path(sterna::settings::Scope::Global);
+    let saved = || std::fs::read_to_string(&global).unwrap_or_default();
+    let mut u = Workbench::default();
+    u.open(Source::Sandbox);
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "sandbox:hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
+    assert!(
+        screen.contains("apply to this session's next command"),
+        "{screen}"
+    );
+    for ecosystem in ECOSYSTEMS {
+        assert!(
+            screen.contains(ecosystem.label),
+            "{}: {screen}",
+            ecosystem.label
+        );
+    }
+
+    click_item(&mut u, &mut s, &n, "eco:rust");
+    assert!(!allowed.permits("crates.io"), "switched off, still reached");
+    assert!(allowed.permits("registry.npmjs.org"));
+    assert!(saved().contains("ecosystems = ["), "{}", saved());
+    assert!(!saved().contains("\"rust\""), "{}", saved());
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "eco:rust");
+    assert!(allowed.permits("crates.io"));
+    assert!(saved().contains("\"rust\""), "{}", saved());
+
+    let type_host = |u: &mut Workbench, s: &mut ScreenState, host: &str| {
+        draw(&c, &n, s, u, 120, 60);
+        u.top_mut().unwrap().sheet.focus_id("host:new");
+        for ch in host.chars() {
+            key(u, s, &n, KeyCode::Char(ch));
+        }
+        key(u, s, &n, KeyCode::Enter);
+    };
+    type_host(&mut u, &mut s, "https://api.example.com/v1");
+    assert!(
+        u.top().unwrap().sheet.notice.contains("is not a host name"),
+        "{}",
+        u.top().unwrap().sheet.notice
+    );
+    assert!(!saved().contains("api.example.com"), "{}", saved());
+    ctrl(&mut u, &mut s, &n, 'u');
+    type_host(&mut u, &mut s, "api.example.com");
+    assert!(allowed.permits("api.example.com"));
+    assert!(
+        saved().contains("hosts = [\"api.example.com\"]"),
+        "{}",
+        saved()
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("Remove · api.example.com"), "{screen}");
+
+    click_item(&mut u, &mut s, &n, "host:api.example.com");
+    assert!(!allowed.permits("api.example.com"));
+    assert!(saved().contains("hosts = []"), "{}", saved());
+}
+
+/// With no proxy running, the sheet says a change waits for the next
+/// session, and still saves it.
+#[test]
+fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
+    let (_t, mut s, _) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Sandbox);
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "sandbox:hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("apply from the next session"), "{screen}");
+    click_item(&mut u, &mut s, &n, "eco:go");
+    assert_eq!(
+        u.top().unwrap().sheet.notice,
+        "Go is off from the next session."
+    );
+}

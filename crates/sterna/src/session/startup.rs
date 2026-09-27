@@ -102,6 +102,7 @@ pub(super) fn approval_gate(
     config: &crate::config::SternaConfig,
     profile: &crate::sandbox::profile::Profile,
     interactive: Option<&ui::LiveUi>,
+    proxy: Option<&std::sync::Arc<crate::sandbox::proxy::Proxy>>,
 ) -> crate::approval::Gate {
     let decisions = config.decisions.clone();
     let gate = match interactive {
@@ -110,8 +111,61 @@ pub(super) fn approval_gate(
         // is refused before it is sent.
         None => crate::approval::Gate::channel(level.clone()).0,
     };
-    gate.with_decisions(decisions.model, decisions.mode)
-        .with_pre_approved(profile.pre_approved().to_vec())
+    let gate = gate
+        .with_decisions(decisions.model, decisions.mode)
+        .with_pre_approved(profile.pre_approved().to_vec());
+    // A command refused a host can ask for that host, and the hosts sheet
+    // changes the same live list.
+    let Some(proxy) = proxy else {
+        return gate;
+    };
+    if let Some(ui) = interactive {
+        ui.share_hosts(proxy.allowed());
+    }
+    let refusals = std::sync::Arc::clone(proxy);
+    gate.with_hosts(crate::approval::Hosts::new(proxy.allowed(), move || {
+        refusals.take_refused()
+    }))
+}
+
+/// Sends confined commands through the proxy, when one runs.
+pub(super) fn route_through(
+    profile: crate::sandbox::profile::Profile,
+    proxy: Option<&crate::sandbox::proxy::Proxy>,
+) -> crate::sandbox::profile::Profile {
+    match proxy {
+        Some(proxy) => profile.with_proxy(crate::sandbox::profile::ProxyRoute {
+            port: proxy.port(),
+            unix: proxy.unix_path().map(std::path::Path::to_path_buf),
+            env: proxy.env(),
+        }),
+        None => profile,
+    }
+}
+
+/// The line a run with nobody at the terminal ends with when the proxy
+/// refused hosts: nobody could have allowed them, so the next run can.
+pub(super) fn refused_hosts_line(refused: &[String]) -> Option<String> {
+    let (last, rest) = refused.split_last()?;
+    let names = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    Some(format!(
+        "sandbox: commands could not reach {names}; to allow a host, run again with \
+         --allow-host HOST, or add it to sandbox.hosts"
+    ))
+}
+
+/// Says [`refused_hosts_line`] at the end of a run nobody watched.
+pub(super) fn refused_hosts(proxy: Option<&crate::sandbox::proxy::Proxy>, watched: bool) {
+    if let Some(line) = proxy
+        .filter(|_| !watched)
+        .and_then(|proxy| refused_hosts_line(&proxy.refused()))
+    {
+        session_println!("{line}");
+    }
 }
 
 /// The level this session starts on, and what it means in one clause.
@@ -455,5 +509,32 @@ pub(super) fn render_as_lines(transcript: &Transcript, served_by: &ServedBy) {
         if !line.is_empty() {
             println!("{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A run nobody watched names each refused host and says how the next
+    /// run can allow one; with none refused it says nothing.
+    #[test]
+    fn the_end_of_a_run_names_the_refused_hosts_and_the_flag() {
+        assert_eq!(super::refused_hosts_line(&[]), None);
+        assert_eq!(
+            super::refused_hosts_line(&["a.example".into()]).as_deref(),
+            Some(
+                "sandbox: commands could not reach a.example; to allow a host, run again \
+                 with --allow-host HOST, or add it to sandbox.hosts"
+            )
+        );
+        let three = super::refused_hosts_line(&[
+            "a.example".into(),
+            "b.example".into(),
+            "c.example".into(),
+        ])
+        .unwrap();
+        assert!(
+            three.contains("reach a.example, b.example and c.example;"),
+            "{three}"
+        );
     }
 }

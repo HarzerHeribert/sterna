@@ -500,14 +500,8 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     // After the gateway, which writes the process environment and so must
     // start while this process is still single-threaded; the proxy is the
     // first thread of its own.
-    let proxy = startup::start_proxy(&args, &loaded_settings.values);
-    if let Some(proxy) = proxy.as_ref() {
-        profile = profile.with_proxy(crate::sandbox::profile::ProxyRoute {
-            port: proxy.port(),
-            unix: proxy.unix_path().map(std::path::Path::to_path_buf),
-            env: proxy.env(),
-        });
-    }
+    let proxy = startup::start_proxy(&args, &loaded_settings.values).map(Arc::new);
+    profile = startup::route_through(profile, proxy.as_deref());
     // Collected once the profile is final: the manifest reports the grants
     // in force, and the bypass and the proxy applied above change what it
     // says.
@@ -662,6 +656,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         &config.borrow(),
         &profile,
         interactive.as_ref(),
+        proxy.as_ref(),
     ));
     let ask_gate = interactive.as_ref().map(ui::LiveUi::ask_gate);
     let session = Session {
@@ -700,6 +695,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     resume::offer(&args, &session, &session_id);
     let outcome = drive(&args, &session, &mut transcript, &mut rollout)
         .map_err(|message| startup::explain_failure(&message, &session));
+    startup::refused_hosts(proxy.as_deref(), interactive.is_some());
     // §5 again, and this one is the promise `session::run` itself makes: an
     // input that failed mid-task left `run_task` by `?` without reaching its
     // own shutdown, and a job of that task must not outlive the session

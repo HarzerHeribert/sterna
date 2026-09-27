@@ -978,6 +978,28 @@ impl Workbench {
                 }
             }
             Action::Sandbox => self.show(Source::Sandbox, from_sheet),
+            Action::Hosts => self.show(
+                Source::Hosts(Box::new(super::hosts::HostsSheet::open(s))),
+                from_sheet,
+            ),
+            Action::Ecosystem(name) => {
+                if let Some(h) = self.hosts_mut() {
+                    let notice = h.toggle(&name, s);
+                    self.say(notice);
+                }
+            }
+            Action::RemoveHost(host) => {
+                if let Some(h) = self.hosts_mut() {
+                    let notice = h.remove(&host, s);
+                    self.say(notice);
+                }
+            }
+            Action::AddHost => {
+                if let Some(h) = self.hosts_mut() {
+                    let notice = h.add(s);
+                    self.say(notice);
+                }
+            }
             Action::Activity => self.show(Source::Activity, from_sheet),
             Action::Telemetry => {
                 self.close_all();
@@ -1026,12 +1048,16 @@ impl Workbench {
             }
             Action::Setting(i, value) => return self.setting(i, value, s, busy),
             Action::FieldEdited(i) => {
-                let text = self.sheets.last().and_then(|layer| {
+                let field = self.sheets.last().and_then(|layer| {
                     match layer.sheet.items.get(i).map(|item| &item.kind) {
-                        Some(super::ItemKind::Field(field)) => Some(field.text.clone()),
+                        Some(super::ItemKind::Field(field)) => Some(field.clone()),
                         _ => None,
                     }
                 });
+                if let (Some(field), Some(h)) = (field.clone(), self.hosts_mut()) {
+                    h.draft = field;
+                }
+                let text = field.map(|field| field.text);
                 if let (Some(text), Some(p)) = (text, self.preferences_mut())
                     && let Some((_, buffer)) = &mut p.editing
                 {

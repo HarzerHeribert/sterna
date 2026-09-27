@@ -44,6 +44,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
     sheet.matched = None;
     let items = match source {
         Source::Sandbox => sandbox(sheet, s),
+        Source::Hosts(h) => super::hosts::items(sheet, h, s),
         Source::Confirm(what) => confirm(sheet, what),
         Source::Keys => keys(sheet),
         Source::Activity => activity(sheet, s),
@@ -110,6 +111,10 @@ fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     );
     items.push(Item::info(format!("Pre-approved      {}", unknown(&s.sandbox))).tone(Tone::Muted));
     items.push(Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted));
+    items.push(
+        Item::open("sandbox:hosts", "Allowed hosts", Action::Hosts)
+            .detail("the registries and hosts commands may reach"),
+    );
     // What was answered for the whole session is on this sheet too, where it
     // can be taken back: a refusal that stays must stay visibly.
     let remembered = s

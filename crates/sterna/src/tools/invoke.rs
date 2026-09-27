@@ -744,6 +744,9 @@ fn checked_call(
                 run_outside = outside && !ctx.profile.os_sandbox_bypassed();
                 None
             }
+            // The person let the refused host through instead: the command
+            // runs again inside the sandbox, which now reaches that host.
+            crate::approval::Admission::HostsAllowed => None,
             // Cancelled the way a running call is: reported as cancelled,
             // never as a refusal the model should work around.
             crate::approval::Admission::Cancelled => {

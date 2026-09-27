@@ -222,6 +222,9 @@ pub(super) enum Update {
     /// The approval gate's memory, sent once when the gate is made, so the
     /// Ask sheet can list and forget what was answered for the session.
     Memory(crate::approval::Memory),
+    /// The network proxy's live allowed list, sent once when the session
+    /// starts one, so the hosts sheet changes what commands reach now.
+    Hosts(crate::sandbox::proxy::Allowed),
     /// The transcript and how the turn stands; `None` when a control has
     /// been answered, which leaves the turn's ending and its clock alone.
     Snapshot(Box<(Conversation, Notebook, ServedBy, Option<Activity>)>),
@@ -361,6 +364,10 @@ impl LiveUi {
             }
         });
         gate
+    }
+    /// Shares the proxy's live allowed list with the screen.
+    pub(super) fn share_hosts(&self, allowed: crate::sandbox::proxy::Allowed) {
+        let _ = self.updates.send(Update::Hosts(allowed));
     }
     /// Forwards questions a cell asked to the terminal owner. Closing the
     /// terminal drops the pending question, which the session reads as
@@ -773,6 +780,7 @@ fn run(
                     prompts.ask(request);
                 }
                 Update::Memory(memory) => state.memory = Some(memory),
+                Update::Hosts(allowed) => state.allowed = Some(allowed),
                 Update::Snapshot(snapshot) => {
                     let (c, n, s, activity) = *snapshot;
                     let completed = n
@@ -1113,6 +1121,11 @@ fn run(
             match done {
                 decision::Done::Nothing => {}
                 decision::Done::Redraw => dirty = true,
+                decision::Done::KeepHosts(hosts) => {
+                    let notice = crate::workbench::facts::keep_hosts(&state, &hosts);
+                    state.note(notice);
+                    dirty = true;
+                }
                 // The same Ctrl-C as over a running turn: it stops the
                 // turn, and says so.
                 decision::Done::Interrupt => {

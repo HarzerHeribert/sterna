@@ -88,16 +88,43 @@ enter the sandbox: without them, publishing or pushing fails. `--allow-host
 HOST` adds a host for one session. The model's own web tool keeps its
 separate `[web]` list ([web](web.md)).
 
+**The Allowed hosts sheet** (Sandbox sheet › Allowed hosts) has one switch
+per ecosystem and your own hosts, each removable, with a field to add one
+(`api.example.com`, or `*.example.com` for every name under it; a pasted
+URL is refused, not half-allowed). Every change is saved to the global
+settings at once. When the session runs a proxy it also reaches the proxy's
+live list, so the next command sees it; where no proxy runs, it applies
+from the next session, and the sheet says which.
+
 ## Leaving the sandbox
 
 When a command needs something the sandbox refuses — a host that is not
 allowed, a path outside the writable places — the model can call `bash`
 again with `outside` set to one sentence saying why. That is the one
-question Sandboxed asks: the sheet shows the command and the reason, and
-offers to allow it once, to allow the host for the session, to always allow
-the host, another way, or to deny. On Ask it is asked like every other
-command; on Full access there is nothing to leave. With nobody at the
-terminal it is refused.
+question Sandboxed asks. On Ask it is asked like every other command; on
+Full access there is nothing to leave.
+
+**Reach a new host.** The proxy's refusal tells the model to name the
+refused host in `outside`. When the proxy refused a host since the command
+before, the question is titled *Reach a new host* and offers first to let
+the host through rather than the command out:
+
+| key | answer | the command runs |
+|---|---|---|
+| `h` | Allow *host* for this session | again, inside the sandbox |
+| `w` | Always allow *host* — also saved to the global `sandbox.hosts` | again, inside the sandbox |
+| `o` | Allow once, outside the sandbox | outside, this once |
+| `a` | Another way | not |
+| `d` | Deny | not |
+
+Without a refused host the question is titled *Leave the sandbox* and has
+the answers of every confirmation below. Each command takes the proxy's
+refusals before it, so a question never offers a host an older command was
+refused.
+
+**With nobody at the terminal** (`sterna -p`, `--task`) a request to leave
+is refused, and a run the proxy refused hosts in ends with one line naming
+them and the `--allow-host HOST` flag that allows one next time.
 
 **The confirmation** shows the exact checked arguments: `o` once, `s` this
 exact action for the session, `d` deny (remembered, and listed on the

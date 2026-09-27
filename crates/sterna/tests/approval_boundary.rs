@@ -329,6 +329,42 @@ fn an_allowed_command_leaves_the_sandbox_and_only_that_command() {
     assert!(target.exists(), "the allowed command did not run outside");
 }
 
+/// **Allowing a refused host keeps the command inside.** When the proxy
+/// refused a host before a command asked to leave the sandbox, the request
+/// names that host; "allow it for this session" adds it to the live list and
+/// runs the command confined -- so the same line that would have written
+/// outside the sandbox on "Allow once" writes nothing here.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn allowing_a_refused_host_adds_it_and_runs_the_command_confined() {
+    use sterna::approval::Hosts;
+    use sterna::sandbox::proxy::Allowed;
+    let fixture = Fixture::new();
+    let target = unwritable_target("host");
+    let line = serde_json::to_string(&format!("touch '{}'", target.display())).unwrap();
+    let allowed = Allowed::new(&[], &[]);
+    let refused = Arc::new(Mutex::new(vec!["api.example.com".to_string()]));
+    let hosts = Hosts::new(allowed.clone(), move || {
+        std::mem::take(&mut *refused.lock().unwrap())
+    });
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+    let gate = gate.with_hosts(hosts);
+    let responder = std::thread::spawn(move || {
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(request.hosts(), ["api.example.com".to_string()]);
+        assert!(request.respond(Decision::AllowHostSession));
+    });
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(&format!(
+        r#"const r = bash({{command: {line}, outside: "reaches api.example.com for the schema"}});
+           return r.exit_code === 0 ? "ran outside" : "ran confined";"#
+    ));
+    returned(&outcome, "ran confined");
+    responder.join().unwrap();
+    assert!(allowed.permits("api.example.com"));
+    assert!(!target.exists(), "the command left the sandbox");
+}
+
 /// Where nobody can be asked -- a subagent -- a command asking to leave the
 /// sandbox is refused before it runs.
 #[test]

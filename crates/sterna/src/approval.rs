@@ -89,6 +89,14 @@ pub enum Decision {
     /// them where it reads every other refusal. Empty text asks the model
     /// to propose another way itself.
     Redirect(String),
+    /// Let the hosts the proxy refused through for the rest of the session,
+    /// and run the command again inside the sandbox rather than outside it.
+    /// Offered only on a request that carries refused hosts.
+    AllowHostSession,
+    /// The same, and the person's global `sandbox.hosts` keeps the hosts for
+    /// every later session. The terminal saves the setting; the gate treats
+    /// it exactly as [`Decision::AllowHostSession`].
+    AllowHostAlways,
 }
 
 /// What the gate answered for one call.
@@ -105,12 +113,52 @@ pub enum Admission {
     DeniedEarlier,
     /// Cancelled by the person or stopped while it waited.
     Cancelled,
+    /// The person allowed the hosts the proxy refused: the call runs, and
+    /// **inside** the sandbox, even though it asked to leave it.
+    HostsAllowed,
 }
 
 impl Admission {
+    /// Whether the call runs at all -- confined or not.
     #[must_use]
     pub fn allowed(&self) -> bool {
-        *self == Self::Allowed
+        matches!(self, Self::Allowed | Self::HostsAllowed)
+    }
+}
+
+/// What the gate knows of the network proxy: the live list it checks, and
+/// the hosts it refused since the gate last looked.
+///
+/// **The refusals are taken at every command.** A command admitted takes
+/// what the proxy refused before it, so the hosts a request carries are the
+/// ones refused since the command before it began -- the command that
+/// failed and is now asking to leave the sandbox -- and never a host some
+/// command refused an hour ago.
+#[derive(Clone)]
+pub struct Hosts {
+    allowed: crate::sandbox::proxy::Allowed,
+    refused: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+}
+
+impl Hosts {
+    /// `refused` returns and clears the hosts refused so far
+    /// ([`crate::sandbox::proxy::Proxy::take_refused`] in a session).
+    pub fn new(
+        allowed: crate::sandbox::proxy::Allowed,
+        refused: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            allowed,
+            refused: Arc::new(refused),
+        }
+    }
+
+    /// The refused hosts that are still refused, in the order they were.
+    fn take(&self) -> Vec<String> {
+        (self.refused)()
+            .into_iter()
+            .filter(|host| !self.allowed.permits(host))
+            .collect()
     }
 }
 
@@ -326,6 +374,9 @@ pub struct Request {
     show_hint: bool,
     /// Why the rung put this call to a person, in its own words.
     reason: Option<String>,
+    /// The hosts the proxy refused before this call asked to leave the
+    /// sandbox; empty when it refused none or the call does not leave.
+    hosts: Vec<String>,
 }
 
 impl Request {
@@ -354,6 +405,17 @@ impl Request {
     /// Why this call needs a person, when the rung said.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
+    }
+
+    /// The hosts that were refused, which the person can allow instead of
+    /// letting the whole command out.
+    pub fn hosts(&self) -> &[String] {
+        &self.hosts
+    }
+
+    /// Whether this call asks to run outside the sandbox.
+    pub fn leaves_sandbox(&self) -> bool {
+        crate::permissions::outside_reason(self.action.tool(), self.action.arguments()).is_some()
     }
 
     /// Returns false when the waiting callback has ended. A queued reply may
@@ -398,6 +460,8 @@ pub struct Gate {
     /// What the person asked for instead, keyed by the exact action they
     /// refused; taken once by the refusal that carries it to the program.
     redirects: Arc<Mutex<std::collections::BTreeMap<Action, String>>>,
+    /// The proxy's allowed list and refusals, when the session runs one.
+    hosts: Option<Hosts>,
 }
 
 impl Gate {
@@ -414,6 +478,7 @@ impl Gate {
                 decisions: None,
                 task: None,
                 redirects: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+                hosts: None,
             },
             receiver,
         )
@@ -427,6 +492,14 @@ impl Gate {
             .lock()
             .ok()
             .and_then(|mut redirects| redirects.remove(action))
+    }
+
+    /// Attaches the session's proxy once at session start, so a command
+    /// that failed on a refused host can ask for that host.
+    #[must_use]
+    pub fn with_hosts(mut self, hosts: Hosts) -> Self {
+        self.hosts = Some(hosts);
+        self
     }
 
     /// The level this gate is judging on, shared with whatever changes it.
@@ -521,6 +594,13 @@ impl Gate {
         if stopped() {
             return Admission::Cancelled;
         }
+        // Every command takes the refusals before it, answered or not; see
+        // [`Hosts`]. Unattended, nobody could allow one, and the run's end
+        // names them instead (`startup::refused_hosts`).
+        let refused = match &self.hosts {
+            Some(hosts) if action.tool() == "bash" && !self.level.is_unattended() => hosts.take(),
+            _ => Vec::new(),
+        };
         if let Some(answer) = self.judged.answer(&action) {
             return unless_stopped(if answer {
                 Admission::Allowed
@@ -539,6 +619,8 @@ impl Gate {
             .is_none_or(|tool| tool.purity() == crate::tools::registry::Purity::Effectful);
         let pre_approved =
             |line: &str| crate::sandbox::profile::names_every_segment(line, &self.pre_approved);
+        let leaves =
+            crate::permissions::outside_reason(action.tool(), action.arguments()).is_some();
         let reason = match crate::permissions::judge(
             self.level.level(),
             action.tool(),
@@ -573,6 +655,7 @@ impl Gate {
                 hint: hint.clone(),
                 show_hint,
                 reason: Some(reason),
+                hosts: if leaves { refused.clone() } else { Vec::new() },
             })
             .is_err()
         {
@@ -684,6 +767,20 @@ impl Gate {
                             self.judged.remember(action, false);
                             Admission::Denied
                         }
+                        // Only the hosts the person was shown, and only
+                        // while there were some: an answer cannot allow
+                        // what the request did not name.
+                        Decision::AllowHostSession | Decision::AllowHostAlways => {
+                            match &self.hosts {
+                                Some(hosts) if leaves && !refused.is_empty() => {
+                                    for host in &refused {
+                                        hosts.allowed.add(host);
+                                    }
+                                    Admission::HostsAllowed
+                                }
+                                _ => Admission::Denied,
+                            }
+                        }
                     };
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Admission::Denied,
@@ -730,6 +827,58 @@ mod tests {
         assert!(request.reason().is_some_and(|why| why.contains("needs x")));
         assert!(request.respond(Decision::AllowOnce));
         assert!(asking.join().unwrap().allowed());
+    }
+
+    /// A gate whose proxy has refused `hosts` once; later reads find none.
+    fn with_refused(gate: Gate, hosts: &[&str]) -> (Gate, crate::sandbox::proxy::Allowed) {
+        let allowed = crate::sandbox::proxy::Allowed::new(&[], &[]);
+        let pending = Arc::new(Mutex::new(
+            hosts.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
+        ));
+        let gate = gate.with_hosts(Hosts::new(allowed.clone(), move || {
+            std::mem::take(&mut *pending.lock().unwrap())
+        }));
+        (gate, allowed)
+    }
+
+    /// The refused hosts ride on a request to leave the sandbox, and
+    /// allowing them runs the call confined; the host is then allowed.
+    #[test]
+    fn a_refused_host_is_offered_and_allowing_it_keeps_the_call_confined() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+        let (gate, allowed) = with_refused(gate, &["api.example.com"]);
+        let asked = gate.clone();
+        let asking =
+            std::thread::spawn(move || asked.admit(outside("curl api", "needs the api"), || false));
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("leaving the sandbox must be asked");
+        assert_eq!(request.hosts(), ["api.example.com".to_string()]);
+        assert!(request.leaves_sandbox());
+        assert!(request.respond(Decision::AllowHostSession));
+        assert_eq!(asking.join().unwrap(), Admission::HostsAllowed);
+        assert!(allowed.permits("api.example.com"));
+    }
+
+    /// **The refusals belong to the command after them.** A command that
+    /// does not leave the sandbox takes them too, so a later request to
+    /// leave carries only what was refused since.
+    #[test]
+    fn every_command_takes_the_refusals_before_it() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+        let (gate, allowed) = with_refused(gate, &["old.example.com"]);
+        assert!(gate.admit(bash("cargo build"), || false).allowed());
+        let asked = gate.clone();
+        let asking =
+            std::thread::spawn(move || asked.admit(outside("curl api", "needs the api"), || false));
+        let request = requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("leaving the sandbox must be asked");
+        assert!(request.hosts().is_empty(), "{:?}", request.hosts());
+        // With no host on the request, allowing a host allows nothing.
+        assert!(request.respond(Decision::AllowHostSession));
+        assert_eq!(asking.join().unwrap(), Admission::Denied);
+        assert!(!allowed.permits("old.example.com"));
     }
 
     /// With nobody to ask, a question is a refusal and never a silent yes.

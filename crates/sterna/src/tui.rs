@@ -182,6 +182,10 @@ pub struct ScreenState {
     /// The approval gate's memory: every call answered for the whole
     /// session, which the Ask sheet lists and can forget.
     pub memory: Option<crate::approval::Memory>,
+    /// The live list of hosts the session's network proxy lets through,
+    /// shared with it: the hosts sheet changes it from this thread. `None`
+    /// when no proxy runs.
+    pub allowed: Option<crate::sandbox::proxy::Allowed>,
     pub effort: crate::wire::Effort,
     pub status_line: StatusLine,
     pub panel: Option<Panel>,
