@@ -530,6 +530,8 @@ fn a_confident_read_only_intent_proposes_explore_for_one_request() {
             .contains("decision: explore for this request (read_only 0.97); /mode execute to pin"),
         "{stdout}"
     );
+    // The advice is the person's; the classifier's raw answer is not.
+    assert!(!stdout.contains("decision: intent"), "{stdout}");
 }
 
 /// Between 0.5 and `mode_above`, Sterna offers `/mode explore` with one line

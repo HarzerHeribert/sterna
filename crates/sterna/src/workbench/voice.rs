@@ -77,7 +77,8 @@ pub fn status(activity: Activity, cell: Option<usize>, writing_cell: bool) -> St
         Activity::Waiting => "waiting on a response · estimate unknown".into(),
         Activity::Compacting => "compacting · preparing bounded context".into(),
         Activity::AwaitingYou => "waiting for you".into(),
-        Activity::Failed => "action failed — inspect the cell".into(),
+        // A failed request has no cell; a failed cell says so on its card.
+        Activity::Failed => "failed · the message above says why".into(),
         Activity::Complete => "complete".into(),
         Activity::Stopped(crate::tui::Stopper::You) => "stopped · what ran stands".into(),
         Activity::Stopped(crate::tui::Stopper::Interrupt) => {
@@ -114,7 +115,7 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
         _ => "Model is responding",
     };
     let detail = if helper_waiting {
-        "Request sent · completion estimate unknown".to_string()
+        "Asked · waiting for its answer".to_string()
     } else {
         format!("Elapsed {elapsed} · nothing is assumed complete")
     };
@@ -122,19 +123,59 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
 }
 /// The one line on the composer's edge that teaches. It turns with the
 /// session -- one more cell, one more notice -- rather than with the clock,
-/// so it holds still while someone reads it.
-pub fn hint(n: usize) -> &'static str {
-    const HINTS: [&str; 8] = [
-        "Shift-Tab changes how often Sterna asks before it acts",
-        "F2 opens settings · choices save themselves; most apply now",
-        "Ctrl-T opens the instruments · Esc closes them",
-        "Click any control in the top bar to change it",
-        "Esc once stops after the current cell · twice cancels the call",
-        "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
-        "/diff opens the last cell's changes · F4 does the same",
-        "? lists every key · / for commands · @ for a path in this project",
+/// so it holds still while someone reads it. A hint that would not apply
+/// now is not offered: Escape stops only a running turn, and there is no
+/// diff before a cell has changed something.
+pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
+    const HINTS: [(&str, Needs); 8] = [
+        (
+            "Shift-Tab changes how often Sterna asks before it acts",
+            Needs::Nothing,
+        ),
+        (
+            "F2 opens settings · choices save themselves; most apply now",
+            Needs::Nothing,
+        ),
+        ("Ctrl-T opens telemetry · Esc closes it", Needs::Nothing),
+        (
+            "Click any control in the top bar to change it",
+            Needs::Nothing,
+        ),
+        (
+            "Esc once stops after the current cell · twice cancels the call",
+            Needs::Turn,
+        ),
+        (
+            "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
+            Needs::Nothing,
+        ),
+        (
+            "/diff opens the last cell's changes · F4 does the same",
+            Needs::Change,
+        ),
+        (
+            "? lists every key · / for commands · @ for a path in this project",
+            Needs::Nothing,
+        ),
     ];
-    HINTS[n % HINTS.len()]
+    let offered: Vec<&str> = HINTS
+        .iter()
+        .filter(|(_, needs)| match needs {
+            Needs::Nothing => true,
+            Needs::Turn => busy,
+            Needs::Change => changed,
+        })
+        .map(|(hint, _)| *hint)
+        .collect();
+    offered[n % offered.len()]
+}
+
+/// What a hint needs before it applies.
+#[derive(Clone, Copy)]
+enum Needs {
+    Nothing,
+    Turn,
+    Change,
 }
 /// The row for work still running behind the answer: `check` is the fresh
 /// checker, `learn` the notes writer. The answer above it stands either way.
@@ -302,6 +343,18 @@ mod tests {
             "{offered:?}"
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A hint that would not apply now is not offered.
+    #[test]
+    fn a_hint_applies_to_the_moment() {
+        for n in 0..16 {
+            let idle = hint(n, false, false);
+            assert!(!idle.starts_with("Esc"), "Esc stops nothing while idle");
+            assert!(!idle.starts_with("/diff"), "no diff before a change");
+        }
+        assert!((0..16).any(|n| hint(n, true, true).starts_with("Esc")));
+        assert!((0..16).any(|n| hint(n, true, true).starts_with("/diff")));
     }
 
     #[test]

@@ -387,7 +387,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "ui.sidebar",
         label: "Sidebar",
-        description: "The session card on the right. Auto shows it only when the terminal is wide enough to spare the columns.",
+        description: "The sidebar on the right. Auto shows it only when the terminal is wide enough to spare the columns.",
         kind: Kind::Choice,
         choices: SIDEBAR,
         basic: true,

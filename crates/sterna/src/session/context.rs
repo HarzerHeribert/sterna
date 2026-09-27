@@ -241,7 +241,8 @@ pub(super) fn send_task_turn_recovering(
             return Ok(sent);
         }
         Err(error) if error.is_context_overflow() => error,
-        Err(error) => return Err(format!("request failed: {error}")),
+        // The error already says the request failed.
+        Err(error) => return Err(error.to_string()),
     };
 
     let checkpoint = prompt::checkpoint(

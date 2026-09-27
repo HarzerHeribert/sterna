@@ -899,6 +899,13 @@ impl Workbench {
                     Some((cell, h))
                 };
             }
+            Action::HelperRaw(cell, h) => {
+                self.helper_raw = if self.helper_raw == Some((cell, h)) {
+                    None
+                } else {
+                    Some((cell, h))
+                };
+            }
             Action::Latest => s.scrollback = 0,
             Action::Settings => match Preferences::open(s) {
                 Ok(p) => self.show(Source::Settings(Box::new(p)), from_sheet),

@@ -335,6 +335,19 @@ impl Confinement {
         }
     }
 
+    /// Where the call ran, as a person reads it after `/tool`: the sandbox's
+    /// backend is the doctor's to name, not the result line's.
+    pub fn plainly(self) -> &'static str {
+        match self {
+            Confinement::BrokeredNetwork => "went through the web broker",
+            Confinement::Seatbelt | Confinement::Landlock | Confinement::AppContainer => {
+                "ran in the sandbox"
+            }
+            Confinement::DangerouslyUnconfined => "ran without the OS sandbox",
+            Confinement::InProcess => "ran inside Sterna",
+        }
+    }
+
     /// One word for a status line, where the sentence [`Confinement::as_str`]
     /// returns has no room.
     pub fn short(self) -> &'static str {
@@ -2315,6 +2328,28 @@ fn truncate(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/tool` result line says where a call ran in words, never by the
+    /// sandbox backend's name.
+    #[test]
+    fn where_a_call_ran_is_said_plainly() {
+        for backend in [
+            Confinement::Seatbelt,
+            Confinement::Landlock,
+            Confinement::AppContainer,
+        ] {
+            assert_eq!(backend.plainly(), "ran in the sandbox");
+        }
+        assert_eq!(Confinement::InProcess.plainly(), "ran inside Sterna");
+        assert_eq!(
+            Confinement::DangerouslyUnconfined.plainly(),
+            "ran without the OS sandbox"
+        );
+        assert_eq!(
+            Confinement::BrokeredNetwork.plainly(),
+            "went through the web broker"
+        );
+    }
 
     /// **The fallback's dialect, checked structurally because on a machine
     /// with ripgrep it never runs.** `checked_call` hands a `grep` call to

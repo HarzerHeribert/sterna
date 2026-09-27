@@ -518,8 +518,15 @@ impl Document {
                 }
                 if let Some(v) = v {
                     if let Some(e) = &v.error {
+                        // What `ask` throws is written for the model; the
+                        // person reads where to change it.
+                        let message = if e.message.contains(crate::ask::DISABLED) {
+                            "asking is off (Settings › Advanced › Ask the person)"
+                        } else {
+                            e.message.as_str()
+                        };
                         d.push(
-                            format!("✕ {}: {}", e.class, e.message),
+                            format!("✕ {}: {}", e.class, message),
                             Tone::Failure,
                             None,
                             inner,
@@ -1500,7 +1507,7 @@ impl Document {
                     "{} · {}",
                     h.helper,
                     if h.usage.model.is_empty() {
-                        "captured model unknown"
+                        "model not named"
                     } else {
                         h.usage.model.as_str()
                     }
@@ -1696,6 +1703,9 @@ impl Document {
                 kind,
             );
             if open {
+                // What was asked, what came back, and what it cites; the
+                // steps it took and the excerpts written for the model are
+                // its raw record, one chip away.
                 self.wrapped(
                     format!("Asked: {}", h.asked),
                     Tone::Normal,
@@ -1705,50 +1715,69 @@ impl Document {
                     2,
                 );
                 if !h.usage.model.is_empty() {
-                    let model = &h.usage.model;
                     self.wrapped(
-                        format!("Captured model: {model}"),
-                        Tone::Normal,
+                        format!("Model: {}", h.usage.model),
+                        Tone::Muted,
                         None,
                         width,
                         id,
                         2,
                     );
                 }
-                for step in &h.looked {
-                    self.wrapped(
-                        format!("Observed: {step}"),
-                        Tone::Normal,
-                        None,
-                        width,
-                        id,
-                        2,
-                    );
-                }
+                let (answer, cited, raw) = helper_account(&h.outcome.text);
                 if waiting {
-                    self.wrapped(
-                        "Waiting for a returned value; no completed result yet.",
-                        Tone::Normal,
-                        None,
-                        width,
-                        id,
-                        2,
-                    );
+                    self.wrapped("Waiting for its answer.", Tone::Normal, None, width, id, 2);
+                } else if h.outcome.ok {
+                    self.wrapped(format!("Answer: {answer}"), tone, None, width, id, 2);
                 } else {
+                    self.wrapped(format!("Failed: {answer}"), tone, None, width, id, 2);
+                }
+                if !cited.is_empty() {
                     self.wrapped(
-                        format!("Returned: {}", h.outcome.text),
-                        tone,
+                        format!("Cited: {}", cited.join(", ")),
+                        Tone::Muted,
                         None,
                         width,
                         id,
                         2,
                     );
+                }
+                if !h.looked.is_empty() || !raw.is_empty() {
+                    self.chips(
+                        vec![(
+                            "raw".to_string(),
+                            Action::HelperRaw(cell, i),
+                            ui.helper_raw == Some((cell, i)),
+                        )],
+                        id,
+                    );
+                    if ui.helper_raw == Some((cell, i)) {
+                        for step in &h.looked {
+                            self.wrapped(step.clone(), Tone::Muted, None, width, id, 4);
+                        }
+                        self.wrapped(raw.to_string(), Tone::Muted, None, width, id, 4);
+                    }
                 }
             }
         }
     }
 }
 const OPEN_DIFF: &str = "open diff ↗";
+
+/// A helper's returned text as a person reads it: the answer, the
+/// `path:lines` spans it cites, and the excerpt block written for the model.
+fn helper_account(text: &str) -> (&str, Vec<String>, &str) {
+    let Some(at) = text.find(crate::excerpts::HEADING) else {
+        return (text.trim(), Vec::new(), "");
+    };
+    let raw = &text[at..];
+    let cited = raw
+        .lines()
+        .filter_map(|line| line.strip_prefix("### "))
+        .map(str::to_string)
+        .collect();
+    (text[..at].trim(), cited, raw.trim())
+}
 
 /// The start of an `answer("…")` literal, up to its closing quote: whole
 /// when it fits in `room` characters, else cut at a word and marked cut.

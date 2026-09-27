@@ -511,10 +511,7 @@ pub(crate) fn expanded(
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "  LIVE INSTRUMENTS     ↑↓ request · Esc returns",
-            Style::default().fg(MUTED),
-        ),
+        Span::styled("  ↑↓ request · Esc returns", Style::default().fg(MUTED)),
     ]);
     frame.render_widget(
         Paragraph::new(heading),

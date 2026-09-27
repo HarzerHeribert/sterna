@@ -56,6 +56,9 @@ pub enum Action {
     Path(String),
     Tab(usize, CellTab),
     Helper(usize, usize),
+    /// A helper call's raw record -- its preparation steps and the excerpt
+    /// block written for the model -- shown or put away.
+    HelperRaw(usize, usize),
     Latest,
     Settings,
     Models,
@@ -242,6 +245,8 @@ pub struct Workbench {
     pub collapsed: BTreeSet<usize>,
     pub tabs: std::collections::BTreeMap<usize, CellTab>,
     pub helper: Option<(usize, usize)>,
+    /// The helper call whose raw record is open.
+    pub helper_raw: Option<(usize, usize)>,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
     pub sheets: Vec<Layer>,

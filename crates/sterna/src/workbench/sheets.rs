@@ -292,7 +292,11 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ("F5", "the selected cell's helpers", None),
         ("Ctrl-O", "expand or collapse the selected cell", None),
         ("Alt-↑ ↓", "select the previous or next cell", None),
-        ("Ctrl-T", "the live instruments", Some(Action::Telemetry)),
+        (
+            "Ctrl-T",
+            "telemetry: the live view of requests",
+            Some(Action::Telemetry),
+        ),
         ("Ctrl-B", "show or hide the sidebar", None),
         ("Ctrl-F", "hide or restore the chrome", None),
         (

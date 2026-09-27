@@ -442,6 +442,15 @@ pub(crate) fn advice(
             }
         });
     }
+    // The endpoint did not answer at all: nothing about a cell, the model or
+    // a login's validity is known yet.
+    if message.contains("request failed: io:") {
+        return Some(if interactive {
+            "Couldn't reach the model's endpoint · check /login".to_string()
+        } else {
+            "Couldn't reach the model's endpoint · check the gateway and your login".to_string()
+        });
+    }
     if message.contains("unknown provider for model") {
         return Some(if interactive {
             format!("`{model}` is not a model the gateway serves. /model lists the ones it does.")

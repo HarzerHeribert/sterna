@@ -2913,12 +2913,12 @@ fn answer_tool(rest: &str, session: &Session<'_>) {
         Ok(result) => {
             session_println!("{}{}", result.stdout, result.stderr);
             session_println!(
-                "/tool {tool}: exit {} under {}",
+                "/tool {tool}: exit {} · {}",
                 result
                     .exit_code
                     .map(|code| code.to_string())
                     .unwrap_or_else(|| "signal".to_string()),
-                result.confinement.as_str()
+                result.confinement.plainly()
             );
         }
         Err(ToolError::Denied(denied)) => session_println!("{denied}"),

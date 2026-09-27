@@ -867,7 +867,8 @@ fn live_cell_helper_shows_its_lane_before_its_provider_returns() {
         let text = screen.contents();
         text.contains("find")
             && text.contains("scanning")
-            && text.contains("1 lines")
+            && text.contains("scanning find the needle")
+            && text.contains("find · helper-tier")
             && text.contains("executing")
     });
 
@@ -1009,6 +1010,11 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
     app.send(b"fail this\r");
     app.contains("ERROR:");
     app.contains("request failed");
+    app.contains("Couldn't reach the model's endpoint");
+    app.refute(
+        "a failure says what failed once",
+        "request failed: request failed",
+    );
     app.send(b"/theme amber\r");
     app.contains("Theme: amber");
     app.send(b"/effort medium\r");
@@ -1357,7 +1363,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
     app.send(b"/motion off\r");
     app.contains("Motion reduced");
     app.send(b"/telemetry\r");
-    app.contains("LIVE INSTRUMENTS");
+    app.contains("↑↓ request · Esc returns");
     assert!(requests.try_recv().is_err());
     app.send(b"answer this\r");
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1370,7 +1376,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
     app.send(b"\x14");
     app.contains_line("LIVE RESULT INTACT");
     app.send(b"\x14");
-    app.contains("LIVE INSTRUMENTS");
+    app.contains("↑↓ request · Esc returns");
     app.send(b"next draft");
     for width in [60, 80, 120, 200] {
         app.resize(width);
@@ -1380,7 +1386,7 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
             (25..30).any(|row| {
                 screen
                     .contents_between(row, 0, row, width)
-                    .contains("ctx 123")
+                    .contains("context 123 tokens")
             })
         });
         app.contains("REQUEST 01");

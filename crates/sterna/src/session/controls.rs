@@ -14,7 +14,7 @@ use crate::tui::{Mode, Panel, PanelRow, TierModels};
 fn cell_limit(limits: &crate::config::Limits) -> String {
     match limits.cells {
         Some(cap) => format!("{cap} cells"),
-        None => "none (a task ends on evidence, not a count)".to_string(),
+        None => "none".to_string(),
     }
 }
 

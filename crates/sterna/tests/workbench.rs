@@ -366,6 +366,8 @@ fn helper_details_preserve_assignment_model_and_evidence() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     u.helper = Some((1, 0));
+    // How the helper prepared its input is one chip further in.
+    u.helper_raw = Some((1, 0));
     let t = words(&doc(&c, &n, &s, &u));
     for part in [
         "Retain failures",
@@ -965,10 +967,10 @@ fn sidebar_visibility_is_respected_without_opaque_surfaces() {
     s.sidebar = sterna::tui::SidebarVisibility::Shown;
     let with = draw(&c, &n, &s, &mut u, 140, 40);
     let shown = u.geometry.transcript.width;
-    assert!(text(&with).contains("THIS SESSION"));
+    assert!(text(&with).contains("GUARDRAILS"));
     s.sidebar = sterna::tui::SidebarVisibility::Hidden;
     let without = draw(&c, &n, &s, &mut u, 140, 40);
-    assert!(!text(&without).contains("THIS SESSION"));
+    assert!(!text(&without).contains("GUARDRAILS"));
     assert!(u.geometry.transcript.width > shown);
 }
 
@@ -1398,7 +1400,7 @@ fn a_parrot_theme_speaks_the_one_plain_voice() {
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
     for fact in [
-        "THIS SESSION",
+        "GUARDRAILS",
         "✓ EXECUTED",
         "┃ you",
         "⟨ Settings ⟩",
@@ -3906,4 +3908,67 @@ fn a_rolled_back_cell_says_so() {
     let shown = text(&draw(&c, &n, &s, &mut u, 140, 40));
     assert!(shown.contains("↶ ROLLED BACK"), "{shown}");
     assert!(!shown.contains("1 file changed"), "{shown}");
+}
+
+/// A helper's account is what was asked, what came back and what it cites;
+/// its preparation and the excerpts written for the model are one chip away.
+#[test]
+fn a_helpers_account_is_for_the_person() {
+    let (c, mut n, s) = fixture();
+    n.cells[0].helpers[0].looked = vec!["listed src/".into()];
+    n.cells[0].helpers[0].outcome.text = format!(
+        "The guard is in src/motion.rs.\n\n{}\n### src/motion.rs:1-3\n1 | fn guard() {{}}",
+        sterna::excerpts::HEADING
+    );
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    u.helper = Some((1, 0));
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(
+        shown.contains("Answer: The guard is in src/motion.rs."),
+        "{shown}"
+    );
+    assert!(shown.contains("Cited: src/motion.rs:1-3"), "{shown}");
+    assert!(!shown.contains("## Excerpts"), "{shown}");
+    assert!(!shown.contains("listed src/"), "{shown}");
+    u.helper_raw = Some((1, 0));
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(shown.contains("listed src/"), "{shown}");
+    assert!(shown.contains("## Excerpts"), "{shown}");
+}
+
+/// The sidebar has no heading over nothing, and its tally says what each
+/// count is.
+#[test]
+fn the_sidebar_says_what_its_counts_are() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(!screen.contains("THIS SESSION"), "{screen}");
+    assert!(screen.contains("✓ 1 ran "), "{screen}");
+    assert!(
+        !screen.contains("0 running") && !screen.contains("0 failed"),
+        "{screen}"
+    );
+}
+
+/// What a disabled ask throws is written for the model; the card says
+/// where to turn asking on.
+#[test]
+fn a_disabled_ask_reads_as_where_to_turn_it_on() {
+    let (c, mut n, s) = fixture();
+    n.cells[0].error = Some(CellError {
+        class: "ToolError".into(),
+        message: sterna::ask::DISABLED.into(),
+        line: None,
+        column: None,
+    });
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    let shown = words(&doc(&c, &n, &s, &u));
+    assert!(
+        shown.contains("asking is off (Settings › Advanced › Ask the person)"),
+        "{shown}"
+    );
+    assert!(!shown.contains("[ask] enabled"), "{shown}");
 }

@@ -816,19 +816,23 @@ fn session_card(
         }
     });
     let running = usize::from(matches!(s.activity, Activity::Executing));
-    let mut lines: Vec<(String, Tone, Option<Action>)> = vec![
-        ("THIS SESSION".into(), Tone::Accent, None),
-        (
-            match (id, s.pulse.elapsed_ms) {
-                (Some(id), 0) => id,
-                (Some(id), ms) => format!("{id} · {} on this turn", clip_clock(ms)),
-                (None, 0) => String::new(),
-                (None, ms) => format!("{} on this turn", clip_clock(ms)),
-            },
-            Tone::Muted,
-            None,
-        ),
-        (String::new(), Tone::Normal, None),
+    let session_line = match (id, s.pulse.elapsed_ms) {
+        (Some(id), 0) => id,
+        (Some(id), ms) => format!("{id} · {} on this turn", clip_clock(ms)),
+        (None, 0) => String::new(),
+        (None, ms) => format!("{} on this turn", clip_clock(ms)),
+    };
+    // A heading over nothing is not drawn.
+    let mut lines: Vec<(String, Tone, Option<Action>)> = if session_line.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            ("THIS SESSION".into(), Tone::Accent, None),
+            (session_line, Tone::Muted, None),
+            (String::new(), Tone::Normal, None),
+        ]
+    };
+    lines.extend([
         ("GUARDRAILS".into(), Tone::Accent, None),
         (
             if s.full_access {
@@ -869,7 +873,7 @@ fn session_card(
             Tone::Muted,
             Some(Action::SettingsAt(2)),
         ),
-    ];
+    ]);
     if let Some(word) = &s.subagents {
         lines.push((
             format!("subagents {word}"),
@@ -895,12 +899,17 @@ fn session_card(
         Tone::Normal,
         None,
     ));
-    if ran > 0 {
-        lines.push((
-            format!("✓ {ok}  ● {running}  ✕ {failed}"),
-            Tone::Muted,
-            None,
-        ));
+    // Each count on its own line, and only when there is one: the words
+    // say what the marks mean, and the narrow card never cuts them.
+    for (count, said) in [(ok, "ran"), (running, "running"), (failed, "failed")] {
+        if count > 0 {
+            let mark = match said {
+                "ran" => "✓",
+                "running" => "●",
+                _ => "✕",
+            };
+            lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
+        }
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
@@ -1229,7 +1238,18 @@ fn dock_bottom(
     // the session rather than with the clock, so it is stable inside one
     // screenshot and inside one test.
     if s.status_line == StatusLine::Full {
-        let hint = format!(" {} ", voice::hint(n.cells.len() + s.history.len()));
+        let changed = n
+            .cells
+            .iter()
+            .any(|c| c.changes.as_deref().is_some_and(|d| !d.is_empty()));
+        let hint = format!(
+            " {} ",
+            voice::hint(
+                n.cells.len() + s.history.len(),
+                s.activity.working(),
+                changed
+            )
+        );
         let hw = chrome::width(&hint);
         if x + hw + 2 < limit {
             row(
