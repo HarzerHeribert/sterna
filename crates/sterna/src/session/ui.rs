@@ -34,6 +34,14 @@ pub(super) fn sender() -> Option<mpsc::Sender<Update>> {
     OUTPUT.with(|output| output.borrow().clone())
 }
 
+/// Whether this screen is reached over SSH, where a browser or a file
+/// viewer would open on the wrong machine.
+pub(super) fn over_ssh() -> bool {
+    ["SSH_CONNECTION", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
 pub(super) fn output(message: String) {
     if super::output::active() {
         eprintln!("{message}");
@@ -185,6 +193,10 @@ pub(super) enum Update {
     Suggest(String, String),
     /// Take away the opening chip that sends this.
     Unsuggest(String),
+    /// A sign-in started beside the session: how to stop it and feed it.
+    SignInStarted(super::controls::sign_in::Handle),
+    /// What a running sign-in says.
+    SignIn(super::controls::sign_in::Event),
     Delta(String),
     ToolDelta(String),
     /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
@@ -365,16 +377,11 @@ impl LiveUi {
     /// **Nothing typed into it reaches the editor, the transcript or the
     /// input history** -- it comes back here and nowhere else.
     pub(super) fn form(&self, form: tui::Form) -> Option<Vec<String>> {
-        // A paste nobody collected (a sign-in that ended first) must never
-        // answer a form that asks for a key.
+        // An answer nobody collected must never answer a form that asks
+        // for a key.
         while self.secrets.try_recv().is_ok() {}
         self.updates.send(Update::Form(Box::new(form))).ok()?;
         self.secrets.recv().ok().flatten()
-    }
-    /// What the person entered in a form the terminal opened on its own,
-    /// such as a sign-in panel's paste row, if anything has arrived.
-    pub(super) fn try_secret(&self) -> Option<String> {
-        self.secrets.try_recv().ok().flatten()?.into_iter().next()
     }
     pub(super) fn handler_cancellations(&self) -> Vec<String> {
         std::mem::take(&mut *super::lock(&self.handler_cancellations))
@@ -446,6 +453,14 @@ impl LiveUi {
         let _ = self
             .updates
             .send(Update::Suggest(label.into(), types.into()));
+    }
+    /// Hands the screen a sign-in that now runs beside the session.
+    pub(super) fn sign_in(&self, handle: super::controls::sign_in::Handle) {
+        let _ = self.updates.send(Update::SignInStarted(handle));
+    }
+    /// A sender for a thread that reports to the screen on its own.
+    pub(super) fn updates(&self) -> mpsc::Sender<Update> {
+        self.updates.clone()
     }
     /// Takes the opening chip that sends `types` away.
     pub(super) fn unsuggest(&self, types: &str) {
@@ -840,6 +855,13 @@ fn run(
     let mut editor = Editor::default();
     let mut served = ServedBy::default();
     let mut busy = false;
+    // A sign-in running beside the session: its handle, its latest panel,
+    // whether that panel has been shown, and whether the open form is the
+    // one that takes its pasted address.
+    let mut sign_in = super::controls::sign_in::Running::default();
+    let mut sign_in_panel: Option<tui::Panel> = None;
+    let mut sign_in_shown = false;
+    let mut paste_form = false;
     // A prompt sent while idle, shown at once: the session records it only
     // after its preflight (the decision, the Scout, the acceptance lister),
     // and until then the snapshots it sends do not hold it yet.
@@ -991,6 +1013,41 @@ fn run(
                 }
                 Update::Unsuggest(types) => {
                     state.suggestions.retain(|(_, said)| *said != types);
+                }
+                // A new sign-in replaces one still running: the older one
+                // is cancelled rather than left holding its callback port.
+                Update::SignInStarted(handle) => {
+                    state.signing_in = Some(handle.label.clone());
+                    // Replacing the hold cancels the older one.
+                    sign_in = super::controls::sign_in::Running(Some(handle));
+                    sign_in_shown = false;
+                }
+                Update::SignIn(super::controls::sign_in::Event::Note(message)) => {
+                    workbench.notice = message.lines().next().unwrap_or("").to_owned();
+                    state.note(message);
+                    state.landed_note();
+                }
+                // The panel opens once; after Esc it is kept, and the dock's
+                // "signing in" chip brings it back.
+                Update::SignIn(super::controls::sign_in::Event::Panel(panel)) => {
+                    if let Some(open) = workbench.panel_mut(&panel.title) {
+                        *open = (*panel).clone();
+                    } else if state
+                        .panel
+                        .as_ref()
+                        .is_some_and(|pending| pending.title == panel.title)
+                        || !sign_in_shown
+                    {
+                        // Not drawn yet, or never shown: this one opens.
+                        state.panel = Some((*panel).clone());
+                        sign_in_shown = true;
+                    }
+                    sign_in_panel = Some(*panel);
+                }
+                Update::SignIn(super::controls::sign_in::Event::Done) => {
+                    // Over on its own: nothing left to stop.
+                    sign_in.0 = None;
+                    state.signing_in = None;
                 }
                 Update::Tiers(helpers_on, subagents) => {
                     state.helpers_on = helpers_on;
@@ -1228,7 +1285,32 @@ fn run(
                     continue;
                 }
                 crate::workbench::Effect::PasteCallback => {
-                    state.form = Some(paste_callback_form());
+                    if sign_in.0.is_some() {
+                        state.form = Some(paste_callback_form());
+                        paste_form = true;
+                    } else {
+                        say(&mut workbench, "No sign-in is waiting for an address.");
+                    }
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::CancelSignIn => {
+                    if let Some(handle) = &sign_in.0 {
+                        handle
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        say(
+                            &mut workbench,
+                            format!("Cancelling the sign-in to {}…", handle.label),
+                        );
+                    }
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::ReopenSignIn => {
+                    if let Some(panel) = &sign_in_panel {
+                        state.panel = Some(panel.clone());
+                    }
                     dirty = true;
                     continue;
                 }
@@ -1295,12 +1377,22 @@ fn run(
                             Some(crate::workbench::FormHit::Submit) => {
                                 if form.enter() {
                                     let given = state.form.take().map(tui::Form::take);
-                                    let _ = answers.secrets.send(given);
+                                    answer_form(
+                                        given,
+                                        &mut paste_form,
+                                        sign_in.0.as_ref(),
+                                        answers.secrets,
+                                    );
                                 }
                             }
                             Some(crate::workbench::FormHit::Back) => {
                                 state.form = None;
-                                let _ = answers.secrets.send(None);
+                                answer_form(
+                                    None,
+                                    &mut paste_form,
+                                    sign_in.0.as_ref(),
+                                    answers.secrets,
+                                );
                             }
                             None => {}
                         }
@@ -1352,12 +1444,17 @@ fn run(
                         KeyCode::Enter => {
                             if form.enter() {
                                 let answers_given = state.form.take().map(tui::Form::take);
-                                let _ = answers.secrets.send(answers_given);
+                                answer_form(
+                                    answers_given,
+                                    &mut paste_form,
+                                    sign_in.0.as_ref(),
+                                    answers.secrets,
+                                );
                             }
                         }
                         KeyCode::Esc => {
                             state.form = None;
-                            let _ = answers.secrets.send(None);
+                            answer_form(None, &mut paste_form, sign_in.0.as_ref(), answers.secrets);
                         }
                         KeyCode::Tab | KeyCode::Down => form.move_focus(true),
                         KeyCode::BackTab | KeyCode::Up => form.move_focus(false),
@@ -1807,6 +1904,25 @@ fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
         Some(layer) => layer.sheet.notice = text,
         None => workbench.notice = text,
     }
+}
+
+/// A form's answer, to whoever asked: the sign-in running beside the session
+/// for a pasted address, else the session thread waiting on the form.
+fn answer_form(
+    given: Option<Vec<String>>,
+    paste_form: &mut bool,
+    sign_in: Option<&super::controls::sign_in::Handle>,
+    secrets: &mpsc::Sender<Option<Vec<String>>>,
+) {
+    if std::mem::take(paste_form) {
+        if let (Some(address), Some(handle)) =
+            (given.and_then(|given| given.into_iter().next()), sign_in)
+        {
+            let _ = handle.pastes.send(address);
+        }
+        return;
+    }
+    let _ = secrets.send(given);
 }
 
 /// The form that takes the address a browser ended on after signing in on

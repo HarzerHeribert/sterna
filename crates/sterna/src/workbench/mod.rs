@@ -111,8 +111,14 @@ pub enum Action {
     Theme(crate::tui::Theme),
     /// The live instruments.
     Telemetry,
-    /// Open a link in the person's browser.
+    /// Open a link in the person's browser: what a confirmation's Yes does.
     OpenLink(String),
+    /// Ask before opening a link in the person's browser.
+    AskOpenLink(String),
+    /// Stop the sign-in running beside the session.
+    CancelSignIn,
+    /// Bring back the running sign-in's panel.
+    ReopenSignIn,
     /// Put this text on the clipboard.
     Copy(String),
     /// The form that takes the address a browser ended on.

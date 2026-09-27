@@ -1089,6 +1089,14 @@ fn dock_bottom(
         // except the effort, which is a control stepped in place: a chip
         // that vanished at `default` could not be stepped again.
         let items = [
+            // A sign-in running beside the session, one click from its panel.
+            (
+                s.signing_in
+                    .as_ref()
+                    .map(|label| format!("signing in to {label} ▸"))
+                    .unwrap_or_default(),
+                Action::ReopenSignIn,
+            ),
             (super::facts::effort_word(s), Action::Effort),
             (
                 if s.helpers_on {

@@ -184,7 +184,13 @@ fn access(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
 /// The one confirmation sheet, for the Never asks rung (`full`) and for
 /// full access (`access`). It opens on Cancel.
 fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
-    let (label, warning, yes) = if let Some(model) = what.strip_prefix("pin:") {
+    let (label, warning, yes) = if let Some(link) = what.strip_prefix("open:") {
+        (
+            "Open the page in your browser".to_string(),
+            "This opens your default browser on this computer.",
+            Action::OpenLink(link.to_string()),
+        )
+    } else if let Some(model) = what.strip_prefix("pin:") {
         (
             format!("Pin {model}"),
             "This turns favourites off: every subagent runs on this one model.",
@@ -618,7 +624,12 @@ pub fn render_form(
         let under = match (&form.error, field.verdict()) {
             (Some((at, error)), _) if *at == index => Some((format!("✕ {error}"), Tone::Failure)),
             (_, Some(Err(problem))) => Some((format!("✕ {problem}"), Tone::Warning)),
-            (_, Some(Ok(praise))) => Some((format!("✓ {praise}"), Tone::Success)),
+            (_, Some(Ok(crate::tui::form::Verdict::Fine(praise)))) => {
+                Some((format!("✓ {praise}"), Tone::Success))
+            }
+            (_, Some(Ok(crate::tui::form::Verdict::Warning(doubt)))) => {
+                Some((format!("! {doubt}"), Tone::Warning))
+            }
             _ if focused && !field.hint.is_empty() => Some((field.hint.clone(), Tone::Muted)),
             _ => None,
         };

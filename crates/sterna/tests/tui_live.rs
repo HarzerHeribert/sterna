@@ -1146,6 +1146,61 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     assert_eq!(app.exited(), 0);
 }
 
+/// **A sign-in runs beside the session.** The panel opens on the link to
+/// copy; Esc leaves it running behind a dock chip; commands keep working
+/// meanwhile; and leaving Sterna takes the gateway's sign-in down with it.
+#[cfg(unix)]
+#[test]
+fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    let pid_file = app.root.join("sign-in.pid");
+    let executable = app.root.join("no-gateway");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  subscriptions)\n    echo $$ > '{}'\n    printf '%s\\n' '{{\"state\":\"opened\",\"authorize_url\":\"https://accounts.x.ai/sign-in?x=1\"}}'\n    exec sleep 60 ;;\n  *) printf '%s\\n' '{{\"version\":1,\"accounts\":[]}}' ;;\nesac\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    app.send(b"/login grok\r");
+    app.contains("SIGN IN · GROK");
+    app.contains("copy the sign-in link");
+    // Nothing opened a browser: the gateway was told not to, and the open
+    // row asks first.
+    app.settle(200);
+    app.send(b"\x1b");
+    app.contains("signing in to Grok ▸");
+    // The session is free: a command answers while the sign-in waits.
+    app.send(b"/status\r");
+    app.contains("Ask: Auto-review");
+    app.settle(200);
+    app.send(b"\x1b");
+    app.wait("the status sheet closes", |screen| {
+        !screen.contents().contains("Esc · Close")
+    });
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(), "the sign-in outlived the session");
+}
+
 #[cfg(unix)]
 #[test]
 fn model_picker_sorts_accounts_and_selects_a_real_request_model() {

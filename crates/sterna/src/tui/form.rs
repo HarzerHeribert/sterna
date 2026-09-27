@@ -13,9 +13,18 @@
 //! bullets too, so a screen state that is cloned, logged or dumped carries
 //! no key.
 
-/// A check against what is typed: `Ok` is praise worth saying, `Err` what
-/// is wrong.
-pub type Check = fn(&str) -> Result<String, String>;
+/// A check against what is typed: `Ok` is what is worth saying about an
+/// answer that can be sent, `Err` what is wrong with one that cannot.
+pub type Check = fn(&str) -> Result<Verdict, String>;
+
+/// What a check says of an answer it lets through.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Worth a check mark.
+    Fine(String),
+    /// Sendable, but worth a second look: never drawn with a check mark.
+    Warning(String),
+}
 
 /// What a field holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +106,7 @@ impl Field {
     }
     /// The check's verdict on what is typed now; nothing while it is empty.
     #[must_use]
-    pub fn verdict(&self) -> Option<Result<String, String>> {
+    pub fn verdict(&self) -> Option<Result<Verdict, String>> {
         (!self.is_empty())
             .then_some(self.check)
             .flatten()
@@ -262,7 +271,7 @@ impl Form {
 }
 
 /// What an API key looks like for the providers whose keys say so.
-pub fn key_shape(key: &str) -> Result<String, String> {
+pub fn key_shape(key: &str) -> Result<Verdict, String> {
     if key.chars().any(char::is_whitespace) {
         return Err("a key has no spaces in it; paste it again".into());
     }
@@ -279,13 +288,13 @@ pub fn key_shape(key: &str) -> Result<String, String> {
         .iter()
         .find(|(prefix, _)| key.starts_with(prefix))
         .map_or_else(
-            || "pasted".to_string(),
-            |(_, what)| format!("looks like {what}"),
+            || Verdict::Warning("unrecognised shape: check it is the whole key".to_string()),
+            |(_, what)| Verdict::Fine(format!("looks like {what}")),
         ))
 }
 
 /// An endpoint's base URL: a scheme and a host.
-pub fn base_url(url: &str) -> Result<String, String> {
+pub fn base_url(url: &str) -> Result<Verdict, String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -298,9 +307,9 @@ pub fn base_url(url: &str) -> Result<String, String> {
     Ok(
         if url.starts_with("http://") && !rest.starts_with("localhost") && !rest.starts_with("127.")
         {
-            "http, not https: the key would travel unencrypted".into()
+            Verdict::Warning("http, not https: the key would travel unencrypted".into())
         } else {
-            "a URL".into()
+            Verdict::Fine("a URL".into())
         },
     )
 }
@@ -366,8 +375,17 @@ mod tests {
     fn a_key_says_whose_it_looks_like() {
         assert_eq!(
             key_shape("sk-ant-api03-x").unwrap(),
-            "looks like an Anthropic key"
+            Verdict::Fine("looks like an Anthropic key".into())
         );
         assert!(key_shape("sk-or v1").is_err());
+        // Anything else can be sent, and is never praised.
+        assert!(matches!(
+            key_shape("abc123").unwrap(),
+            Verdict::Warning(said) if said.starts_with("unrecognised shape")
+        ));
+        assert!(matches!(
+            base_url("http://api.example.com").unwrap(),
+            Verdict::Warning(_)
+        ));
     }
 }

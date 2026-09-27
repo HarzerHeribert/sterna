@@ -335,17 +335,12 @@ fn run() -> Result<()> {
                     no_browser,
                 },
         } => {
-            let entitlement = match entitlement {
-                Some(name) => name.clone(),
-                None => declare_default_subscription(&cli, *provider)?,
-            };
-            let config = load_config(&cli)?;
             let how = ConnectHow {
                 json: *json,
                 device_code: *device_code,
                 no_browser: *no_browser,
             };
-            connect(&config, &data_dir(&cli)?, *provider, &entitlement, how)
+            connect_account(&cli, *provider, entitlement.as_deref(), how)
         }
         Command::Providers {
             command:
@@ -481,10 +476,49 @@ fn config_path(cli: &Cli) -> Result<PathBuf> {
         .context("could not determine where the gateway configuration lives; pass --config")
 }
 
+/// `subscriptions connect`: signs in to `entitlement`, or to the provider's
+/// default account when none is named. That account is declared only once
+/// the sign-in works -- held in memory until then -- so a failed or
+/// cancelled sign-in leaves no account behind to read "unknown · sign in".
+fn connect_account(
+    cli: &Cli,
+    provider: SubscriptionProvider,
+    entitlement: Option<&str>,
+    how: ConnectHow,
+) -> Result<()> {
+    let mut config = load_config(cli)?;
+    let (entitlement, declare) = match entitlement {
+        Some(name) => (name.to_owned(), false),
+        None => {
+            let (name, body) = default_subscription(provider);
+            let declare = !config.accounts.contains_key(name);
+            if declare {
+                let held = config::parse(&format!("[accounts.{name}]\n{body}"))?;
+                config.accounts.extend(held.accounts);
+            }
+            (name.to_owned(), declare)
+        }
+    };
+    connect(&config, &data_dir(cli)?, provider, &entitlement, how)?;
+    if declare {
+        declare_default_subscription(cli, provider)?;
+    }
+    Ok(())
+}
+
 /// The account a subscription sign-in connects when none is named, declared
-/// in the configuration the first time -- so signing in needs no file edit.
+/// in the configuration once it is connected -- so signing in needs no file
+/// edit.
 fn declare_default_subscription(cli: &Cli, provider: SubscriptionProvider) -> Result<String> {
-    let (name, body) = match provider {
+    let (name, body) = default_subscription(provider);
+    config::declare_table(&config_path(cli)?, &format!("accounts.{name}"), body)?;
+    Ok(name.to_owned())
+}
+
+/// The name and table of the account a subscription sign-in connects when
+/// none is named.
+fn default_subscription(provider: SubscriptionProvider) -> (&'static str, &'static str) {
+    match provider {
         SubscriptionProvider::Openai => (
             "chatgpt-subscription",
             "kind = \"chatgpt\"\nvendor = \"openai\"\nsubscription_broker = \"cliproxyapi\"\n",
@@ -513,9 +547,7 @@ fn declare_default_subscription(cli: &Cli, provider: SubscriptionProvider) -> Re
             "muse-subscription",
             "kind = \"meta\"\nvendor = \"meta\"\nsubscription_broker = \"cliproxyapi\"\n",
         ),
-    };
-    config::declare_table(&config_path(cli)?, &format!("accounts.{name}"), body)?;
-    Ok(name.to_owned())
+    }
 }
 
 /// Declares `[accounts.<provider>]` for a provider whose key was just stored,
@@ -1944,6 +1976,37 @@ mod tests {
             "an account already uses groq"
         );
         assert!(!after.accounts.contains_key("no-such-provider"));
+    }
+
+    /// A sign-in that fails declares nothing: the account a person never
+    /// connected does not appear afterwards as one to sign in to.
+    #[test]
+    fn a_failed_sign_in_declares_no_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gateway.toml");
+        let data = dir.path().join("data");
+        let cli = Cli::parse_from([
+            "inference-gateway",
+            "--config",
+            path.to_str().unwrap(),
+            "--data-dir",
+            data.to_str().unwrap(),
+            "entitlements",
+        ]);
+        let how = ConnectHow {
+            json: true,
+            device_code: false,
+            no_browser: true,
+        };
+        // No broker is installed in the test's data directory, so the
+        // sign-in fails before any browser or network is involved.
+        assert!(connect_account(&cli, SubscriptionProvider::Xai, None, how).is_err());
+        let declared = config::load(Some(&path)).unwrap().config;
+        assert!(
+            !declared.accounts.contains_key("grok-subscription"),
+            "{:?}",
+            declared.accounts.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -1311,6 +1311,28 @@ impl Document {
                 } else {
                     (" ", Tone::Muted)
                 };
+                // A link is kept whole: laid over as many rows as it needs,
+                // and a click on any of them copies it.
+                let trimmed = line.trim();
+                if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+                    let room = width.saturating_sub(5).max(1);
+                    let chars: Vec<char> = trimmed.chars().collect();
+                    for (part, chunk) in chars.chunks(room).enumerate() {
+                        self.kinded(
+                            vec![
+                                (
+                                    format!("  {} ", if part == 0 { mark } else { " " }),
+                                    mark_tone,
+                                ),
+                                (chunk.iter().collect(), text_tone),
+                            ],
+                            Some(Action::Copy(trimmed.to_string())),
+                            usize::MAX - 4,
+                            RowKind::Note,
+                        );
+                    }
+                    continue;
+                }
                 self.kinded(
                     vec![
                         (format!("  {mark} "), mark_tone),

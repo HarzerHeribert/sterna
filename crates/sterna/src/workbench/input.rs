@@ -24,6 +24,8 @@ pub enum Effect {
     OpenLink(String),
     /// Open the form that takes the address a browser ended on.
     PasteCallback,
+    CancelSignIn,
+    ReopenSignIn,
     HandlerOff(String),
 }
 impl Workbench {
@@ -1083,7 +1085,19 @@ impl Workbench {
                 self.notice.clear();
                 self.say(format!("Theme is now {}", theme.title()));
             }
-            Action::OpenLink(link) => return Effect::OpenLink(link),
+            Action::OpenLink(link) => {
+                if matches!(
+                    self.sheets.last().map(|l| &l.source),
+                    Some(Source::Confirm(_))
+                ) {
+                    self.sheets.pop();
+                }
+                return Effect::OpenLink(link);
+            }
+            // **Nothing opens a browser on a single click.**
+            Action::AskOpenLink(link) => self.push(Source::Confirm(format!("open:{link}"))),
+            Action::CancelSignIn => return Effect::CancelSignIn,
+            Action::ReopenSignIn => return Effect::ReopenSignIn,
             Action::Copy(text) => return Effect::Copy(text),
             Action::PasteCallback => return Effect::PasteCallback,
             Action::HandlerOff(name) => {

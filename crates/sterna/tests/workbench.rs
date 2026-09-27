@@ -3061,3 +3061,89 @@ fn settings_subagents_links_to_the_picker() {
             .any(|item| item.action == Some(Action::Command("/subagents".into())))
     );
 }
+
+/// A sign-in link kept in the chat is whole: laid over as many rows as it
+/// needs, and a click on any of them copies all of it.
+#[test]
+fn a_link_in_a_note_is_whole_and_copies() {
+    let (_, n, mut s) = fixture();
+    let c = Conversation::default();
+    let link = "https://claude.ai/oauth/authorize?client_id=abcdefghijklmnopqrstuvwxyz0123456789&scope=user%3Aprofile&state=s";
+    s.startup_notes = Some(0);
+    s.note(format!("Sign-in link for Claude:\n{link}"));
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 60, 30));
+    let joined: String = screen
+        .lines()
+        .map(|line| line.trim().trim_start_matches('·').trim())
+        .collect();
+    assert!(joined.contains(link), "the link is whole:\n{screen}");
+    let copies = u
+        .geometry
+        .hits
+        .iter()
+        .filter(|(_, a)| *a == Action::Copy(link.into()))
+        .count();
+    assert!(copies >= 2, "every row of the link copies it");
+}
+
+/// Nothing opens a browser on a single click: the row asks first, and the
+/// confirmation opens on Cancel.
+#[test]
+fn opening_a_browser_asks_first() {
+    let (c, n, mut s) = fixture();
+    let link = "https://x.ai/device";
+    let mut panel = Panel::rows(
+        "Sign in · Grok",
+        vec![sterna::tui::PanelRow::run(
+            "open the page in your browser",
+            Action::AskOpenLink(link.into()),
+        )],
+    );
+    panel.selected = 0;
+    let mut u = Workbench::default();
+    u.open(Source::Panel(Box::new(panel)));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    let row = u.top().unwrap().sheet.items[u.top().unwrap().sheet.focus]
+        .id
+        .clone();
+    assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    // Enter on the opening focus is Cancel: nothing opens.
+    assert_eq!(key(&mut u, &mut s, &n, KeyCode::Enter), Effect::Consumed);
+    draw(&c, &n, &s, &mut u, 100, 30);
+    assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
+    draw(&c, &n, &s, &mut u, 100, 30);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "confirm:yes"),
+        Effect::OpenLink(link.into())
+    );
+}
+
+/// A sign-in running beside the session keeps a chip on the dock that
+/// brings its panel back, and its panel can cancel it.
+#[test]
+fn a_running_sign_in_is_one_chip_away() {
+    let (c, n, mut s) = fixture();
+    s.signing_in = Some("Grok".into());
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("signing in to Grok ▸"), "{screen}");
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::ReopenSignIn),
+        Effect::ReopenSignIn
+    );
+    u.open(Source::Panel(Box::new(Panel::rows(
+        "Sign in · Grok",
+        vec![sterna::tui::PanelRow::run(
+            "cancel sign-in",
+            Action::CancelSignIn,
+        )],
+    ))));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(0))),
+        Effect::CancelSignIn
+    );
+}

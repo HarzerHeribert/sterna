@@ -1,6 +1,7 @@
 //! Human-invoked session inspection and configuration. No model dispatch.
 use super::*;
 use crate::config::AgentsMode;
+pub(super) mod sign_in;
 mod subagents;
 #[cfg(test)]
 use crate::config::SternaConfig;
@@ -144,10 +145,11 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
 fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
     let why = session.gateway.why_unreachable();
     let fix = if why.contains("not installed") {
-        "The Sterna installer puts it beside `sterna`; run the installer again, then try again."
+        "The Sterna installer puts it beside sterna; run the installer again, then try again."
     } else {
         "Fix what it said, then try again."
     };
+    let why = why.replace('`', "");
     // A sheet row is one line; the reason and the fix are laid into as
     // many as they need rather than clipped mid-word at the edge.
     let mut rows = Vec::new();
@@ -164,6 +166,14 @@ fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
         }
         rows.extend(lines.into_iter().map(tui::PanelRow::info));
     }
+    // Asked again, the same sheet is redrawn with the time it was last
+    // asked, so a try that failed again is seen to have tried.
+    rows.push(tui::PanelRow::info(
+        match crate::workbench::voice::local_hhmm() {
+            Some(time) => format!("still not answering · {time}"),
+            None => "still not answering".to_string(),
+        },
+    ));
     rows.push(tui::PanelRow::command("Try again", retry));
     let mut panel = Panel::rows(title, rows);
     panel.selected = panel.rows.len() - 1;
@@ -427,7 +437,8 @@ pub(super) fn login(session: &Session<'_>, argument: Option<&str>) {
             .iter()
             .find(|entry| entry.connect_with.as_deref() == Some(provider))
             .map(|entry| entry.account.clone());
-        stream_connect(session, provider, declared.as_deref(), device_code);
+        let again = format!("/login {}", argument.unwrap_or_default().trim());
+        sign_in::start(session, provider, declared.as_deref(), device_code, again);
         return;
     }
     if account == "custom" {
@@ -460,7 +471,8 @@ pub(super) fn login(session: &Session<'_>, argument: Option<&str>) {
         return;
     };
 
-    stream_connect(session, &provider, Some(account), device_code);
+    let again = format!("/login {}", argument.unwrap_or_default().trim());
+    sign_in::start(session, &provider, Some(account), device_code, again);
 }
 
 /// A subscription the broker can sign in to: how the wizard names it, the
@@ -561,14 +573,20 @@ fn warning_before(subscription: &Subscription, accepted: bool) -> Option<&'stati
 /// make it a risk, with the choice to go on or back.
 fn warning_panel(subscription: &Subscription, warning: &str) -> Panel {
     let word = subscription.words[0];
-    Panel::rows(
-        format!("Sign in › {}", subscription.label),
-        vec![
-            tui::PanelRow::info(format!("⚠ {warning}")),
-            tui::PanelRow::command("Sign in anyway", format!("/login {word} anyway")),
-            tui::PanelRow::command("Back", "/login subscription"),
-        ],
-    )
+    // The whole warning, laid into lines, and the sheet opens on Back: going
+    // on is the choice that has to be made on purpose.
+    let mut rows: Vec<_> = wrap_line(&format!("⚠ {warning}"), 70)
+        .into_iter()
+        .map(tui::PanelRow::info)
+        .collect();
+    rows.push(tui::PanelRow::command(
+        "Sign in anyway",
+        format!("/login {word} anyway"),
+    ));
+    rows.push(tui::PanelRow::command("Back", "/login subscription"));
+    let mut panel = Panel::rows(format!("Sign in › {}", subscription.label), rows);
+    panel.selected = panel.rows.len() - 1;
+    panel
 }
 
 /// `/login custom`: an endpoint's URL, what it speaks, and its key, asked one
@@ -680,13 +698,13 @@ fn key_form(provider: &str) -> crate::tui::Form {
     let form = Form::new(
         format!("Sign in › API key · {provider}"),
         format!(
-            "Paste your {provider} key below. It goes straight to the gateway's key store: it is never shown, logged, or written to a file."
+            "Paste your {provider} key below. It goes straight to the gateway's key store and is never logged or written to a file."
         ),
         vec![
             Field::new(
                 "API key",
                 Kind::Secret,
-                "paste here: Cmd+V, Ctrl+Shift+V or right-click · Ctrl-R shows it",
+                "paste here: Cmd+V or Ctrl+Shift+V · Ctrl-R shows it while you type",
             )
             .checked(key_shape),
         ],
@@ -778,7 +796,9 @@ pub(super) fn announce_missing_credential(session: &Session<'_>, started_the_gat
 /// One row per provider that declares a key, after the accounts: where the
 /// key resolves from now, and `/key <provider>` to enter one.
 fn key_rows(keys: &[crate::gateway::CredentialRow]) -> Vec<tui::PanelRow> {
-    keys.iter()
+    let mut keys: Vec<_> = keys.iter().collect();
+    keys.sort_by_key(|row| row.provider.to_lowercase());
+    keys.into_iter()
         .map(|row| {
             let state = match (row.source.as_deref(), row.native_store.as_deref()) {
                 (Some("file"), _) => "stored in the gateway's credential file".to_string(),
@@ -944,288 +964,31 @@ fn key_panel(keys: &[crate::gateway::CredentialRow]) -> Panel {
 /// never put in the editor, the conversation, the rollout, a panel or a log
 /// -- the panel this ends with names the *variable*, never the key.
 pub(super) fn key(session: &Session<'_>, provider: Option<&str>) {
+    // Bare, it is the list of providers that take a key.
     let Some(provider) = provider.filter(|value| !value.is_empty()) else {
-        show(
-            session,
-            Panel::text(
-                "API key",
-                "/key <provider> takes an API key for one provider -- `/key anthropic`. \
-                 /login lists the providers this gateway knows.",
-            ),
-        );
+        show(session, key_panel(&api_keys(session)));
         return;
     };
-    let Some(value) = fill(session, key_form(provider))
-        .and_then(|answers| answers.into_iter().next())
-        .filter(|value| !value.is_empty())
-    else {
-        session_println!("no key entered");
-        return;
-    };
-    match crate::gateway::store_credential(session.gateway, provider, &value) {
-        Some(variable) => show(
-            session,
-            Panel::text(
-                "API key",
-                format!("Stored the {variable} for {provider} in the gateway."),
-            ),
-        ),
-        None => show(
-            session,
-            Panel::text(
-                "API key",
-                format!(
-                    "The gateway did not store the key; run `inference-gateway credentials \
-                     set {provider}` in a shell to see why."
-                ),
-            ),
-        ),
-    }
-}
-
-/// Runs the sign-in, showing what the gateway reports as it arrives.
-///
-/// Streamed rather than awaited because the first line is the link a person
-/// must open and the last arrives minutes later. While it runs, an address
-/// pasted into the panel's prompt goes to the gateway's stdin, which is how a
-/// machine with no browser finishes: open the link anywhere, sign in, paste
-/// where the browser landed.
-fn stream_connect(
-    session: &Session<'_>,
-    provider: &str,
-    declared: Option<&str>,
-    device_code: bool,
-) {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-    use std::sync::mpsc::RecvTimeoutError;
-
-    // No account named: the gateway connects, and declares, the provider's
-    // default one.
-    let mut arguments = vec!["subscriptions", "connect", provider];
-    if let Some(account) = declared {
-        arguments.extend(["--entitlement", account]);
-    }
-    arguments.push("--json");
-    let account = declared.unwrap_or(match provider {
-        "openai" => "ChatGPT",
-        "anthropic" => "Claude",
-        other => other,
-    });
-    if device_code {
-        arguments.push("--device-code");
-    }
-    let unreachable = |text: &str| show(session, Panel::text("Connect an account", text));
-    let Some(mut command) = session.gateway.control_command(&arguments) else {
-        return unreachable("The inference gateway is not reachable.");
-    };
-    // Its own group, so a cancelled sign-in takes the broker's login (which
-    // holds the provider's callback port) down with the gateway.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let Ok(mut child) = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return unreachable("The inference gateway could not be started.");
-    };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        return;
-    };
-    let mut pasted_to = child.stdin.take();
-    let (lines, arrived) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut panel = SignIn::new(account);
-    show(session, panel.render());
-    // Ctrl-C cancels the sign-in, as it cancels a tool call.
-    let token = crate::tools::invoke::CancellationToken::new();
-    session.interrupt.arm(token.clone());
+    let mut form = key_form(provider);
     loop {
-        match arrived.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) => {
-                if let Some(progress) = SignInProgress::read(&line) {
-                    session_println!("{}", panel.apply(progress));
-                    show(session, panel.render());
-                }
-            }
-            Err(RecvTimeoutError::Timeout) if token.is_cancelled() => {
-                #[cfg(unix)]
-                crate::tools::invoke::kill_group(child.id());
-                let _ = child.kill();
-                session.interrupt.consumed();
-                session_println!("Sign-in to {account} cancelled.");
-                break;
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if let (Some(ui), Some(pipe)) = (session.ui, pasted_to.as_mut())
-                    && let Some(pasted) = ui.try_secret()
-                    && writeln!(pipe, "{}", pasted.trim())
-                        .and_then(|()| pipe.flush())
-                        .is_ok()
-                {
-                    panel.pasted = true;
-                    show(session, panel.render());
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    drop(pasted_to);
-    let _ = child.wait();
-}
-
-/// One progress line the gateway's `subscriptions connect --json` writes.
-/// Unknown shapes are dropped rather than printed raw: this is another
-/// program's output and the panel is not a place to echo bytes nobody
-/// recognised.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SignInProgress {
-    Opened { link: String, browser_opened: bool },
-    DeviceCode { link: String, code: String },
-    Connected(Option<String>),
-    Failed(String),
-}
-
-impl SignInProgress {
-    fn read(line: &str) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
-        let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
-        Some(match text("state")? {
-            "opened" => Self::Opened {
-                link: text("authorize_url")?.to_owned(),
-                browser_opened: value
-                    .get("browser_opened")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-            },
-            "device_code" => Self::DeviceCode {
-                link: text("verification_url")?.to_owned(),
-                code: text("user_code")?.to_owned(),
-            },
-            "connected" => Self::Connected(text("account").map(str::to_owned)),
-            "failed" => Self::Failed(text("reason").unwrap_or("").to_owned()),
-            _ => return None,
-        })
-    }
-}
-
-/// The sign-in panel: what to do next, and every way to do it.
-#[derive(Debug, Default)]
-struct SignIn {
-    account: String,
-    link: Option<(String, bool)>,
-    device: Option<(String, String)>,
-    pasted: bool,
-    outcome: Option<String>,
-}
-
-impl SignIn {
-    fn new(account: &str) -> Self {
-        Self {
-            account: account.to_owned(),
-            ..Self::default()
-        }
-    }
-
-    /// Records `progress` and returns the line the chat keeps for it: the
-    /// whole link or code, so it can be read and selected after the panel is
-    /// gone.
-    fn apply(&mut self, progress: SignInProgress) -> String {
-        let account = self.account.clone();
-        match progress {
-            SignInProgress::Opened {
-                link,
-                browser_opened,
-            } => {
-                let note = format!("Sign-in link for {account}:\n{link}");
-                self.link = Some((link, browser_opened));
-                note
-            }
-            SignInProgress::DeviceCode { link, code } => {
-                let note = format!("Sign in to {account}: open {link} and enter the code {code}");
-                self.device = Some((link, code));
-                note
-            }
-            SignInProgress::Connected(label) => {
-                let said = match label {
-                    Some(label) => format!("{account} is connected as {label}."),
-                    None => format!("{account} is connected."),
-                };
-                self.outcome = Some(said.clone());
-                said
-            }
-            SignInProgress::Failed(reason) => {
-                self.outcome = Some(format!("failed: {reason}"));
-                format!("ERROR: signing in to {account} failed: {reason}")
-            }
-        }
-    }
-
-    fn render(&self) -> Panel {
-        use crate::workbench::Action;
-        let info = |text: &str| tui::PanelRow::info(text);
-        let mut rows = Vec::new();
-        if let Some((link, browser_opened)) = &self.link {
-            rows.push(info(if *browser_opened {
-                "Sign in in the browser that just opened."
-            } else {
-                "Open the sign-in link in a browser."
-            }));
-            rows.push(tui::PanelRow::run(
-                "open the sign-in link in your default browser",
-                Action::OpenLink(link.clone()),
-            ));
-            rows.push(tui::PanelRow::run(
-                "copy the sign-in link",
-                Action::Copy(link.clone()),
-            ));
-            rows.push(tui::PanelRow::open(
-                "no browser here? paste the address the browser ended on",
-                Action::PasteCallback,
-            ));
-        }
-        if let Some((link, code)) = &self.device {
-            rows.push(tui::PanelRow::info(format!("On any device, open {link}")));
-            rows.push(tui::PanelRow::info(format!("and enter the code {code}")));
-            rows.push(tui::PanelRow::run(
-                "copy the code",
-                Action::Copy(code.clone()),
-            ));
-            rows.push(tui::PanelRow::run(
-                "open the link in your default browser",
-                Action::OpenLink(link.clone()),
-            ));
-        }
-        if self.pasted && self.outcome.is_none() {
-            rows.push(info("pasted; finishing the sign-in…"));
-        }
-        rows.push(tui::PanelRow::info(self.outcome.clone().unwrap_or_else(
-            || "waiting for the sign-in, then one request to check it works…".into(),
-        )));
-        // The browser's last page is the broker's local callback, which has
-        // already closed by the time a person looks at it.
-        if self
-            .outcome
-            .as_deref()
-            .is_some_and(|said| !said.starts_with("failed:"))
+        let Some(value) = fill(session, form)
+            .and_then(|answers| answers.into_iter().next())
+            .filter(|value| !value.is_empty())
+        else {
+            session_println!("no key entered");
+            return;
+        };
+        if let Some(variable) = crate::gateway::store_credential(session.gateway, provider, &value)
         {
-            rows.push(info(
-                "The browser tab may say it cannot connect — that is expected once the sign-in has finished; you can close it.",
-            ));
+            session_println!("Stored the {variable} for {provider} in the gateway.");
+            return;
         }
-        let mut panel = Panel::rows(format!("Connecting {}", self.account), rows);
-        panel.selected = panel.rows.iter().position(tui::PanelRow::acts).unwrap_or(0);
-        panel
+        // Refused: the same form again, saying so, rather than a sentence
+        // that sends the person to a shell.
+        form = key_form(provider).with_error(
+            0,
+            "the gateway did not store this key; check it is the whole key and paste it again",
+        );
     }
 }
 
@@ -1876,76 +1639,6 @@ pub(super) mod tests {
 
     use super::*;
 
-    /// The gateway's sign-in lines become progress; the link and code arrive
-    /// whole, and a line of another shape is dropped.
-    #[test]
-    fn sign_in_progress_reads_the_gateway_lines_whole() {
-        let link = "https://claude.ai/oauth/authorize?client_id=x&scope=user%3Aprofile&state=s";
-        assert_eq!(
-            SignInProgress::read(&format!(
-                r#"{{"state":"opened","authorize_url":"{link}","browser_opened":true}}"#
-            )),
-            Some(SignInProgress::Opened {
-                link: link.into(),
-                browser_opened: true
-            })
-        );
-        assert_eq!(
-            SignInProgress::read(
-                r#"{"state":"device_code","verification_url":"https://auth.openai.com/codex/device","user_code":"ABCD-EFGH"}"#
-            ),
-            Some(SignInProgress::DeviceCode {
-                link: "https://auth.openai.com/codex/device".into(),
-                code: "ABCD-EFGH".into()
-            })
-        );
-        assert_eq!(
-            SignInProgress::read(r#"{"state":"connected","account":"me@example.com"}"#),
-            Some(SignInProgress::Connected(Some("me@example.com".into())))
-        );
-        assert_eq!(SignInProgress::read("waiting for the browser"), None);
-    }
-
-    /// The panel offers every way through with the whole link behind each
-    /// row, starts on the first thing to do, and the chat keeps the link.
-    #[test]
-    fn the_sign_in_panel_opens_copies_or_takes_a_pasted_address() {
-        let link = "https://claude.ai/oauth/authorize?client_id=x&scope=user%3Aprofile&state=s";
-        let mut sign_in = SignIn::new("claude-max");
-        let note = sign_in.apply(SignInProgress::Opened {
-            link: link.into(),
-            browser_opened: false,
-        });
-        assert_eq!(note, format!("Sign-in link for claude-max:\n{link}"));
-        let panel = sign_in.render();
-        let actions: Vec<_> = panel
-            .rows
-            .iter()
-            .filter_map(|row| row.action.clone())
-            .collect();
-        use crate::workbench::Action;
-        assert_eq!(
-            actions,
-            vec![
-                Action::OpenLink(link.into()),
-                Action::Copy(link.into()),
-                Action::PasteCallback,
-            ]
-        );
-        assert_eq!(
-            panel.rows[panel.selected].action,
-            Some(Action::OpenLink(link.into()))
-        );
-        assert_eq!(
-            sign_in.apply(SignInProgress::Failed("status 400".into())),
-            "ERROR: signing in to claude-max failed: status 400"
-        );
-        assert_eq!(
-            sign_in.render().rows.last().unwrap().text,
-            "failed: status 400"
-        );
-    }
-
     #[test]
     fn model_catalogue_groups_by_provider_then_account_and_preserves_model_ids() {
         let catalogue = serde_json::from_value(serde_json::json!({
@@ -2114,6 +1807,48 @@ pub(super) mod tests {
             settings_global: Some(root.join("user-settings")),
         };
         body(&session);
+    }
+
+    /// A subscription's warning is read whole before signing in, and the
+    /// sheet opens on Back: going on is chosen on purpose.
+    #[test]
+    fn a_subscription_warning_is_whole_and_starts_on_back() {
+        let (claude, warning) = SUBSCRIPTIONS
+            .iter()
+            .find_map(|subscription| subscription.warning.map(|w| (subscription, w)))
+            .expect("one subscription carries a warning");
+        let panel = warning_panel(claude, warning);
+        let said: Vec<String> = panel
+            .rows
+            .iter()
+            .filter(|row| row.action.is_none())
+            .map(|row| row.text.clone())
+            .collect();
+        assert_eq!(
+            said.join(" ").split_whitespace().collect::<Vec<_>>(),
+            format!("⚠ {warning}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(panel.rows[panel.selected].text, "Back");
+    }
+
+    /// The providers that take a key are listed by name.
+    #[test]
+    fn the_key_list_is_in_name_order() {
+        let row = |provider: &str| crate::gateway::CredentialRow {
+            provider: provider.into(),
+            variable: None,
+            source: None,
+            native_store: None,
+        };
+        let panel = key_panel(&[row("openai"), row("Anthropic"), row("groq")]);
+        let names: Vec<_> = panel
+            .rows
+            .iter()
+            .map(|row| row.text.split(' ').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(names, ["Anthropic", "groq", "openai"]);
     }
 
     /// A model that cannot hold a conversation is refused on every route

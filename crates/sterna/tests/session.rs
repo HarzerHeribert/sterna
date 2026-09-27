@@ -6183,8 +6183,10 @@ fn the_model_and_login_controls_reach_the_gateway_without_a_scope() {
         "/login must read entitlements through the gateway: {seen}"
     );
     assert!(
-        lines.contains(&"subscriptions connect anthropic --entitlement work@example.com --json"),
-        "/login must run the connect flow through the gateway: {seen}"
+        lines.contains(
+            &"subscriptions connect anthropic --entitlement work@example.com --json --no-browser"
+        ),
+        "/login must run the connect flow through the gateway, which opens no browser itself: {seen}"
     );
     assert!(
         !seen.contains("--scope"),
@@ -6406,8 +6408,8 @@ fn the_model_and_login_controls_of_a_hosted_session_reach_the_gateway_binary() {
     assert!(
         seen.lines()
             .any(|line| line
-                == "subscriptions connect anthropic --entitlement work@example.com --json"),
-        "/login must run the connect flow through the gateway binary: {seen}"
+                == "subscriptions connect anthropic --entitlement work@example.com --json --no-browser"),
+        "/login must run the connect flow through the gateway binary, which opens no browser itself: {seen}"
     );
     assert!(
         !seen.contains("--scope"),

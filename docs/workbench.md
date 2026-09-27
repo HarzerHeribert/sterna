@@ -69,6 +69,14 @@ the gateway where it exists, unknown where it does not), `/theme`,
 [configuration](configuration.md). Choosing a model in the navigator
 assigns the model; the gateway still chooses the account that serves it.
 
+A subscription sign-in runs beside the session: its sheet offers the link
+to copy, the address to paste back and a cancel row; Esc leaves it running
+behind a "signing in to … ▸" chip on the dock, and commands keep working.
+Nothing opens a browser on a single click: opening the page asks first,
+and over SSH it is not offered at all. A sign-in with no answer after five
+minutes stops and says so; one that fails or is cancelled offers to start
+again and declares no account. Leaving Sterna ends a sign-in still running.
+
 ## Themes
 
 `/theme` shows the palettes grouped by family, beside a preview of the one

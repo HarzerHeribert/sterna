@@ -178,6 +178,9 @@ pub struct ScreenState {
     pub settings_profile: Option<String>,
     pub settings_models: Vec<String>,
     pub mode: Mode,
+    /// The subscription a sign-in is running for, beside the session: the
+    /// dock's chip that brings its panel back.
+    pub signing_in: Option<String>,
     /// Whether the mode is pinned. Unpinned, a confident read-only request
     /// may propose Explore, and the chip says `· auto`.
     pub mode_pinned: bool,

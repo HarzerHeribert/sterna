@@ -175,6 +175,15 @@ pub fn suggestions(
 /// The local hour, for the greeting. `None` where the platform cannot say,
 /// and the greeting then simply has no time of day in it.
 pub fn local_hour() -> Option<u8> {
+    local_time().map(|(hour, _)| hour)
+}
+
+/// The local time as `HH:MM`, where the platform can say.
+pub fn local_hhmm() -> Option<String> {
+    local_time().map(|(hour, minute)| format!("{hour:02}:{minute:02}"))
+}
+
+fn local_time() -> Option<(u8, u8)> {
     #[cfg(unix)]
     {
         // SAFETY: `localtime_r` writes only into the `tm` we hand it, and
@@ -185,7 +194,10 @@ pub fn local_hour() -> Option<u8> {
             if libc::localtime_r(&now, &mut tm).is_null() {
                 return None;
             }
-            u8::try_from(tm.tm_hour).ok()
+            Some((
+                u8::try_from(tm.tm_hour).ok()?,
+                u8::try_from(tm.tm_min).ok()?,
+            ))
         }
     }
     #[cfg(not(unix))]
