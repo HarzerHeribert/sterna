@@ -432,6 +432,17 @@ impl App {
                     self.terminal_flags,
                     "raw terminal mode was not restored"
                 );
+                // A session that ended some other way than the two it is
+                // asked to end by says why: what it printed last.
+                if ![0, 130].contains(&status.exit_code()) {
+                    let tail = &self.bytes[self.bytes.len().saturating_sub(2000)..];
+                    eprintln!(
+                        "sterna exited {}; its screen:\n{}\nits last output: {:?}",
+                        status.exit_code(),
+                        self.screen.screen().contents(),
+                        String::from_utf8_lossy(tail)
+                    );
+                }
                 return status.exit_code();
             }
             assert!(
@@ -671,6 +682,9 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     app.wait("cancelled approval closes", |screen| {
         !screen.contents().contains("APPROVE")
     });
+    // Ctrl-C at an approval stops the turn as Ctrl-C does anywhere, and
+    // says so.
+    app.contains("stopped by Ctrl-C");
     assert!(!app.root.join("cancelled.txt").exists());
     app.settle(300);
     app.send(b"/exit\r");
@@ -1154,7 +1168,8 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     // Cancel.
     app.send(b"/permissions full\r");
     app.contains("CONFIRM");
-    app.settle(120);
+    // A key sooner than half a second is held back: the confirm arms first.
+    app.settle(600);
     app.send(b"\r");
     app.wait("Cancel goes back unchanged", |screen| {
         !screen.contents().contains("CONFIRM")
@@ -1162,7 +1177,7 @@ fn the_rung_that_stops_asking_is_reachable_by_typing_it_in_full() {
     app.refute("a reflexive Enter changes nothing", "Ask is now");
     app.send(b"/permissions never asks\r");
     app.contains("CONFIRM");
-    app.settle(120);
+    app.settle(600);
     app.send(b"\x1b[B");
     app.settle(60);
     app.send(b"\r");
@@ -2215,9 +2230,12 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
         requests.recv_timeout(Duration::from_secs(6)).is_err(),
         "a turn was sent after the person stopped the task"
     );
-    app.wait("the cell that was in flight kept its result", |screen| {
-        screen.contents().contains('2')
-    });
+    // The turn has ended, and said so: a bare `2` would match the session
+    // id in the header before anything ran.
+    app.wait(
+        "the cell that was in flight ran and the turn stopped",
+        |screen| screen.contents().contains("stopped · what ran stands"),
+    );
     assert!(
         app.child.try_wait().unwrap().is_none(),
         "stopping a turn ended the session"
@@ -2226,6 +2244,16 @@ fn live_escape_ends_the_turn_at_the_cell_boundary_with_no_further_model_turn() {
     app.send(b"\x03");
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
+/// Two Ctrl-C read in one go -- a quick double tap, or a terminal that
+/// sends both at once -- are two presses, and two presses end the session.
+#[test]
+fn two_ctrl_c_read_together_end_the_session() {
+    let mut app = App::start("http://127.0.0.1:1");
+    app.ready();
+    app.send(b"\x03\x03");
     assert_eq!(app.exited(), 130);
 }
 
@@ -2486,6 +2514,29 @@ fn esc_puts_the_popup_away_and_enter_runs_the_exact_command() {
     assert_eq!(app.exited(), 130);
 }
 
+/// After an `@` popup is put away, a second Esc takes back the `@` word it
+/// was for and nothing else the person typed.
+#[test]
+fn a_second_escape_after_a_path_popup_keeps_the_rest_of_the_draft() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    std::fs::write(app.root.join("notes-for-escape.md"), "notes").unwrap();
+    app.send(b"look at @notes-for");
+    app.contains("notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the popup is put away", "notes-for-escape.md");
+    app.send(b"\x1b");
+    app.refute("the @ word is taken back", "@notes-for");
+    app.contains("look at");
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    thread::sleep(Duration::from_millis(100));
+    app.send(b"\x03");
+    assert_eq!(app.exited(), 130);
+}
+
 #[test]
 fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let (base, _requests) = provider();
@@ -2588,6 +2639,36 @@ fn ctrl_c_over_a_selection_copies_and_interrupts_nothing() {
     thread::sleep(Duration::from_millis(100));
     app.send(b"\x03");
     app.settle(300);
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
+/// Shift-Tab moves the rung like every other route that moves it: saved,
+/// and offered back beside its notice, where a click takes it back.
+#[test]
+fn shift_tab_offers_the_rung_it_left_back() {
+    let (base, _requests) = provider();
+    let mut app = App::start(&base);
+    app.ready();
+    app.contains("⟨ Auto-review ⟩");
+    app.send(b"\x1b[Z");
+    app.contains("undo · Ask Auto-review");
+    app.refute("the rung moved", "⟨ Auto-review ⟩");
+    let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
+    let (y, row) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.contains("undo · Ask Auto-review"))
+        .unwrap();
+    let x = row
+        .char_indices()
+        .position(|(byte, _)| row[byte..].starts_with("undo"))
+        .unwrap()
+        + 1;
+    let y = y + 1;
+    app.send(format!("\x1b[<0;{x};{y}M").as_bytes());
+    app.send(format!("\x1b[<0;{x};{y}m").as_bytes());
+    app.contains("⟨ Auto-review ⟩");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }

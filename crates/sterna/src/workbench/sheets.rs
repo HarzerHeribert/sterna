@@ -30,6 +30,13 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
     let undo = (ui.offer_undo && !ui.changes.is_empty()).then_some(Action::Undo);
     let Layer { sheet, source, .. } = &mut ui.sheets[depth - 1];
     sheet.root = depth == 1;
+    // A confirm, and a panel whose leaving is itself an answer (the rollback
+    // preview), are decisions: armed before a key answers them.
+    sheet.decision = match source {
+        Source::Confirm(_) => true,
+        Source::Panel(panel) => panel.back.is_some(),
+        _ => false,
+    };
     sheet.undo = undo;
     sheet.aside = 0;
     sheet.tools.clear();

@@ -76,6 +76,12 @@ impl Workbench {
             self.offer_undo = true;
         }
     }
+    /// A change made outside the workbench -- Shift-Tab's rung -- said where
+    /// every notice is said and offered back beside it.
+    pub(crate) fn offer_back(&mut self, notice: String, change: super::Change) {
+        self.say(notice);
+        self.remember(change);
+    }
     /// After a save on the open Settings: its change goes on the undo list
     /// and the command it owes the running session is handed back.
     fn drain_save(&mut self) -> Option<String> {
@@ -512,11 +518,20 @@ impl Workbench {
                         match self.geometry.hit(m.column, m.row) {
                             Some(Action::Composer) => self.composer_click(s, m.column, m.row),
                             Some(Action::Sheet(hit)) => {
+                                if self.held_back() {
+                                    return Effect::Consumed;
+                                }
                                 let outcome = match self.sheets.last_mut() {
                                     Some(layer) => layer.sheet.click(&hit),
                                     None => Outcome::Nothing,
                                 };
                                 self.apply(outcome, s, n, busy)
+                            }
+                            // A fold on a sheet's own strip lists what it
+                            // holds over the sheet, which stays under it.
+                            Some(action @ Action::More(_)) => {
+                                let from_sheet = !self.sheets.is_empty();
+                                self.activate(action, s, n, busy, from_sheet)
                             }
                             Some(action) => self.activate(action, s, n, busy, false),
                             // A click on the backdrop outside a sheet is Esc,
@@ -569,6 +584,7 @@ impl Workbench {
                     _ => Effect::Ignored,
                 }
             }
+            Event::Paste(_) if self.held_back() => Effect::Consumed,
             Event::Paste(text) => match self.sheets.last_mut() {
                 Some(layer) => {
                     let outcome = layer.sheet.paste(text);
@@ -596,6 +612,9 @@ impl Workbench {
                 self.notice.clear();
                 if !self.sheets.is_empty() {
                     super::sheets::build(self, s, n);
+                    if self.held_back() {
+                        return Effect::Consumed;
+                    }
                     if let Some(action) = self.accelerator(k) {
                         return self.activate(action, s, n, busy, true);
                     }
@@ -719,6 +738,13 @@ impl Workbench {
             (Source::Models(_), KeyCode::Char('o')) if ctrl => Some(Action::Scores),
             _ => None,
         }
+    }
+    /// Whether the top sheet is a decision that is not armed yet: the event
+    /// is held back, and the sheet says so.
+    fn held_back(&mut self) -> bool {
+        self.sheets
+            .last_mut()
+            .is_some_and(|layer| layer.sheet.hold_back(std::time::Instant::now()))
     }
     /// Whether a point is outside the open sheet, on its backdrop, and the
     /// sheet is one a backdrop click may dismiss.
@@ -1087,7 +1113,11 @@ impl Workbench {
                             {
                                 p.notice = error;
                             }
-                            self.drain_save();
+                            // Saved, and applied now like every setting whose
+                            // row says it applies now.
+                            if let Some(live) = self.drain_save() {
+                                return Effect::Command(live);
+                            }
                         } else {
                             return Effect::Command(cmd);
                         }
@@ -1160,6 +1190,17 @@ impl Workbench {
                 ) {
                     self.sheets.pop();
                     self.child_of = None;
+                }
+                // A picker row's command moves the picker's marks at once,
+                // as a chosen model does.
+                if (!busy || mid_turn(&cmd))
+                    && matches!(
+                        self.sheets.last().map(|l| &l.source),
+                        Some(Source::Models(_))
+                    )
+                    && let Some(notice) = self.models_mut().and_then(|m| m.sent(&cmd))
+                {
+                    self.say(notice);
                 }
                 if busy && mid_turn(&cmd) {
                     return Effect::Command(cmd);
@@ -1311,6 +1352,29 @@ impl Workbench {
                     return Effect::Consumed;
                 }
                 _ => {}
+            }
+            // Pinned and favourites name a model. Chosen with none named,
+            // each opens where one is named -- the picker for the pinned
+            // model, the favourites for a slot -- instead of saving a rule
+            // the settings file refuses.
+            if spec.key == "agents.mode" {
+                let agents = &p.loaded.config.agents;
+                let opens = match value.as_str() {
+                    "pinned" if agents.model.is_none() => Some("/models"),
+                    "roster" if agents.slots.is_empty() => Some("/subagents"),
+                    _ => None,
+                };
+                if let Some(command) = opens {
+                    if busy {
+                        p.notice = super::voice::BETWEEN_TURNS.into();
+                        return Effect::Consumed;
+                    }
+                    if command == "/models" {
+                        self.browsing = Some("agents.model".into());
+                    }
+                    self.child_of = Some(command.into());
+                    return Effect::Command(command.into());
+                }
             }
             // Full access lifts the sandbox from the next session: it is
             // confirmed first, on the sheet the Never asks rung uses.

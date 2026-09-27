@@ -576,7 +576,10 @@ impl<'s, 'a> EffortLease<'s, 'a> {
             (crate::config::DecisionMode::On, Some(effort)) => {
                 lease.restore = Some(session.effort.replace(effort));
                 lease.set = Some(effort);
-                session_println!("decision: effort {} for this task", effort.name());
+                session_println!(
+                    "Effort {} for this task: it looks like a question, not a change.",
+                    effort.name()
+                );
             }
             (crate::config::DecisionMode::Shadow, Some(effort)) => {
                 lease.would_set = Some(effort);

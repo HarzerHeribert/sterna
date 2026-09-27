@@ -156,6 +156,14 @@ fn click_item(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, id: &str) ->
         .unwrap_or_else(|| panic!("no row {id}"));
     click(u, s, n, Action::Sheet(Hit::Item(index)))
 }
+/// The top sheet has been on screen, quietly, long enough to take a key:
+/// what a person waiting half a second before answering a decision gets.
+fn armed(u: &mut Workbench) {
+    if let Some(layer) = u.top_mut() {
+        layer.sheet.shown =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+    }
+}
 fn doc(c: &Conversation, n: &Notebook, s: &ScreenState, u: &Workbench) -> Document {
     Document::build(c, n, s, u, 100)
 }
@@ -376,6 +384,24 @@ fn helper_details_preserve_assignment_model_and_evidence() {
     ] {
         assert!(t.contains(part), "{t}");
     }
+}
+/// A helper opened inside its card offers its raw record as a chip that a
+/// click opens, like every other chip.
+#[test]
+fn a_helper_in_a_card_opens_its_raw_record_on_a_click() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.helper = Some((1, 0));
+    draw(&c, &n, &s, &mut u, 100, 40);
+    let raw = Action::HelperRaw(1, 0);
+    assert!(
+        u.geometry.hits.iter().any(|(_, a)| *a == raw),
+        "the raw chip is not clickable"
+    );
+    click(&mut u, &mut s, &n, raw);
+    assert_eq!(u.helper_raw, Some((1, 0)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("prepare failure windows"), "{screen}");
 }
 #[test]
 fn long_wait_has_time_but_no_fake_percentage() {
@@ -794,6 +820,69 @@ fn direct_save_and_undo_use_the_native_store() {
     ctrl(&mut u, &mut s, &n, 'z');
     assert_eq!(u.top().unwrap().sheet.notice, "Nothing to undo.");
 }
+/// Every action a click reaches on screen: the chips drawn, and the ones
+/// folded into a `⟨ +N ▾ ⟩` chip's list.
+fn reachable(u: &Workbench) -> Vec<Action> {
+    let mut all = Vec::new();
+    for (_, action) in &u.geometry.hits {
+        match action {
+            Action::More(folded) => all.extend(folded.iter().map(|(_, a)| a.clone())),
+            other => all.push(other.clone()),
+        }
+    }
+    all
+}
+/// A settings sheet narrower than its section strip folds the sections it
+/// cannot draw into `⟨ +N ▾ ⟩`, as every chip row does: none is cut off,
+/// and one chosen from the fold opens.
+#[test]
+fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    for width in [80, 50] {
+        draw(&c, &n, &s, &mut u, width, 30);
+        let reach = reachable(&u);
+        // Everyday, Display, Little helpers, Models & accounts, Subagents,
+        // Advanced, Tuning.
+        for i in 0..7 {
+            assert!(
+                reach.contains(&Action::Sheet(Hit::Section(i))),
+                "{width} columns: section {i} cannot be reached"
+            );
+        }
+        for i in 0..2 {
+            assert!(
+                reach.contains(&Action::Sheet(Hit::Tool(i))),
+                "{width} columns: tool {i} cannot be reached"
+            );
+        }
+    }
+    draw(&c, &n, &s, &mut u, 80, 30);
+    let tuning = 6;
+    let fold = u
+        .geometry
+        .hits
+        .iter()
+        .find_map(|(_, a)| {
+            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(tuning))))
+                .then(|| a.clone())
+        })
+        .expect("Tuning is folded at 80 columns");
+    click(&mut u, &mut s, &n, fold);
+    draw(&c, &n, &s, &mut u, 80, 30);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.title == "Tuning")
+        .expect("the fold lists Tuning");
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(row)));
+    assert_eq!(u.preferences().unwrap().category, tuning);
+}
 #[test]
 fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
     let (_t, mut s, mut p) = prefs();
@@ -944,15 +1033,21 @@ fn never_ask_requires_confirmation_without_changing_work_or_access() {
     click_item(&mut u, &mut s, &n, "rung:full");
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
-    // The confirmation starts on Cancel: a reflexive Enter changes nothing
-    // and goes back to the rungs.
+    // A key typed as the confirmation appears answers nothing.
     draw(&c, &n, &s, &mut u, 100, 40);
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert!(u.top().unwrap().sheet.notice.contains("held back"));
+    // Half a second without a key arms it; it starts on Cancel, so a
+    // reflexive Enter changes nothing and goes back to the rungs.
+    std::thread::sleep(sterna::workbench::sheet::ARMING + std::time::Duration::from_millis(50));
     key(&mut u, &mut s, &n, KeyCode::Enter);
     assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
     assert!(u.showing(|source| matches!(source, Source::Ask)));
     draw(&c, &n, &s, &mut u, 100, 40);
     click_item(&mut u, &mut s, &n, "rung:full");
     draw(&c, &n, &s, &mut u, 100, 40);
+    armed(&mut u);
     click_item(&mut u, &mut s, &n, "confirm:yes");
     assert_eq!(s.permissions.rung(), sterna::permissions::Rung::Full);
     assert_eq!(s.mode, mode);
@@ -1000,6 +1095,100 @@ fn reader_anchor_survives_rows_inserted_above_it() {
     assert_eq!(s.scrollback, 0);
 }
 
+/// Turning favourites on, emptying a slot and turning a tier off change
+/// the picker at once, as choosing a model does: its rows never show the
+/// assignment from before the command was sent.
+#[test]
+fn the_picker_shows_what_its_own_commands_did() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.role = 2;
+    m.assignment.slots.insert(
+        "quick".into(),
+        sterna::config::AgentSlot {
+            model: "fixture-helper".into(),
+            effort: sterna::wire::Effort::Low,
+        },
+    );
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let toggle = |u: &Workbench| {
+        u.top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .find(|item| item.id == "favourites")
+            .map(|item| item.kind.clone())
+    };
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(false)));
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "favourites"),
+        Effect::Command("/subagents on".into())
+    );
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(true)));
+    // The one favourite emptied: the slot goes, and favourites with it.
+    u.models_mut().unwrap().slot = Some("quick".into());
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "off"),
+        Effect::Command("/subagents quick off".into())
+    );
+    assert!(u.models().unwrap().assignment.slots.is_empty());
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(false)));
+    // A tier turned off says so where the picker says what it is now.
+    u.models_mut().unwrap().role = 1;
+    u.models_mut().unwrap().slot = None;
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "off"),
+        Effect::Command("/model helper off".into())
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("Now: off"), "{screen}");
+}
+
+/// A locked account's models share one reason, and it is said once under
+/// the first of them, not repeated under each.
+#[test]
+fn a_reason_shared_by_a_run_of_rows_is_said_once() {
+    let (c, n, s) = fixture();
+    let panel = Panel::models(
+        "Models",
+        vec![ModelGroup {
+            provider: "B".into(),
+            account: "b-subscription".into(),
+            scope: "subscription".into(),
+            models: vec!["b-one".into(), "b-two".into(), "b-three".into()],
+            selectable: Some(false),
+            unavailable_reason: Some("Not connected · sign in above".into()),
+            connect: Some("b".into()),
+            pooled: None,
+            note: None,
+        }],
+        TierModels {
+            parent: "b-one".into(),
+            helper: None,
+            subagent: None,
+        },
+    );
+    let mut m = Navigator::from_panel(&panel).unwrap();
+    // Every account, the locked ones too.
+    m.all_sources = true;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("b-three"), "{screen}");
+    assert_eq!(
+        screen.matches("Not connected · sign in above").count(),
+        1,
+        "{screen}"
+    );
+}
+
 #[test]
 fn favorites_picker_assigns_one_slot_and_preserves_other_roles() {
     let mut m = navigator();
@@ -1033,15 +1222,17 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
     u.push(Source::Models(Box::new(m)));
     let (c, n, _) = fixture();
     draw(&c, &n, &s, &mut u, 110, 40);
-    assert!(matches!(
+    // Saved, and applied to the running session like every other setting
+    // that applies now: the helper changes, the main model does not.
+    assert_eq!(
         click_item(
             &mut u,
             &mut s,
             &n,
             &format!("model:{}:{}", chosen.route, chosen.model)
         ),
-        Effect::Consumed
-    ));
+        Effect::Command(format!("/model helper {}", chosen.model))
+    );
     let chosen = chosen.model;
     assert_eq!(s.model.as_deref(), Some("live-main"));
     let p = u.preferences().unwrap();
@@ -2441,6 +2632,47 @@ fn every_route_to_the_rung_saves_it_and_says_the_same() {
     assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
 }
 
+/// Pinned and favourites name a model. Chosen with none named, each opens
+/// the surface where one is named, and nothing is saved that the settings
+/// file would refuse -- no "[agents] mode = pinned requires `model`".
+#[test]
+fn subagent_modes_without_a_model_open_where_one_is_chosen() {
+    let (c, n, _) = fixture();
+    // Off, pinned, favourites: the second and third chips.
+    for (chip, command, browsing) in [
+        (1, "/models", Some("agents.model")),
+        (2, "/subagents", None),
+    ] {
+        let (_t, mut s, mut p) = prefs();
+        p.category = 4;
+        let mut u = Workbench::default();
+        u.open(Source::Settings(Box::new(p)));
+        draw(&c, &n, &s, &mut u, 110, 40);
+        let item = u
+            .top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .position(|item| item.id == "setting:agents.mode")
+            .unwrap();
+        let effect = click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, chip)));
+        assert_eq!(effect, Effect::Command(command.into()), "chip {chip}");
+        assert_eq!(u.browsing.as_deref(), browsing, "chip {chip}");
+        let p = u.preferences().unwrap();
+        assert_eq!(
+            p.loaded.config.agents.mode,
+            sterna::config::AgentsMode::Off,
+            "chip {chip}: nothing is saved yet"
+        );
+        let notice = &u.top().unwrap().sheet.notice;
+        assert!(
+            !notice.contains("requires") && !notice.contains("configure"),
+            "{notice}"
+        );
+    }
+}
+
 /// A mode or effort command on its way to the session is saved once,
 /// whichever route sent it; Auto pins nothing and saves nothing.
 #[test]
@@ -2977,6 +3209,7 @@ fn pinning_over_favourites_asks_first() {
     assert_eq!(click_item(&mut u, &mut s, &n, &id), Effect::Consumed);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     draw(&c, &n, &s, &mut u, 120, 60);
+    armed(&mut u);
     assert_eq!(
         click_item(&mut u, &mut s, &n, "confirm:yes"),
         Effect::Command("/model subagent fixture-main".into())
@@ -3117,11 +3350,13 @@ fn opening_a_browser_asks_first() {
     assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     draw(&c, &n, &s, &mut u, 100, 30);
+    armed(&mut u);
     // Enter on the opening focus is Cancel: nothing opens.
     assert_eq!(key(&mut u, &mut s, &n, KeyCode::Enter), Effect::Consumed);
     draw(&c, &n, &s, &mut u, 100, 30);
     assert_eq!(click_item(&mut u, &mut s, &n, &row), Effect::Consumed);
     draw(&c, &n, &s, &mut u, 100, 30);
+    armed(&mut u);
     assert_eq!(
         click_item(&mut u, &mut s, &n, "confirm:yes"),
         Effect::OpenLink(link.into())
@@ -4266,8 +4501,61 @@ fn a_light_terminal_gets_colours_that_read_on_it() {
     }
 }
 
+/// The instruments are drawn by older code with colours of their own; they
+/// read on a light terminal like everything else, and a terminal without
+/// true colour is sent none of theirs either.
+#[test]
+fn the_instruments_read_on_a_light_terminal_and_send_no_rgb_without_it() {
+    use sterna::workbench::look::{LIGHT_GROUND, contrast};
+    let (c, n, mut s) = fixture();
+    s.telemetry_open = true;
+    s.activity = Activity::Thinking;
+    s.theme = Theme::Neon;
+    s.truecolor = true;
+    s.light = true;
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    let mut checked = 0;
+    for cell in b
+        .content()
+        .iter()
+        .filter(|cell| !cell.symbol().trim().is_empty())
+    {
+        let on_ground = matches!(cell.bg, Color::Reset);
+        match cell.fg {
+            Color::Reset => {}
+            Color::Rgb(..) if on_ground => {
+                let fg = rgb_of(cell.fg).unwrap();
+                assert!(
+                    contrast(fg, LIGHT_GROUND) >= 3.0,
+                    "{:?} is {fg:06x} on a light ground",
+                    cell.symbol()
+                );
+                checked += 1;
+            }
+            Color::Rgb(..) => {}
+            // A named colour is the terminal's own, drawn for its dark
+            // ground: on a light one it is not left to chance.
+            named if on_ground => panic!("{:?} is drawn in {named:?}", cell.symbol()),
+            _ => {}
+        }
+    }
+    assert!(checked > 20, "the instruments were drawn: {checked}");
+    s.light = false;
+    s.truecolor = false;
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    for cell in b.content() {
+        assert!(
+            rgb_of(cell.fg).is_none() && rgb_of(cell.bg).is_none(),
+            "{:?} is sent as 24-bit colour",
+            cell.symbol()
+        );
+    }
+}
+
 /// On a light terminal a bird wears its light palette: the tern's white
-/// is the grey its drawing names for a light ground.
+/// is the grey its drawing names for a light ground, shaded just enough to
+/// keep its outline there.
 #[test]
 fn a_bird_on_a_light_terminal_wears_its_light_palette() {
     let (_, _, mut s) = fixture();
@@ -4290,8 +4578,10 @@ fn a_bird_on_a_light_terminal_wears_its_light_palette() {
     let dark = colours(&s);
     s.light = true;
     let light = colours(&s);
-    assert!(dark.contains(&0xeef0f2) && !dark.contains(&0xdce1e6));
-    assert!(light.contains(&0xdce1e6) && !light.contains(&0xeef0f2));
+    let named = sterna::workbench::look::readable(0xdce1e6, true, 1.4);
+    assert!(dark.contains(&0xeef0f2) && !dark.contains(&named));
+    assert!(light.contains(&named) && !light.contains(&0xeef0f2));
+    assert!(sterna::workbench::look::contrast(named, sterna::workbench::look::LIGHT_GROUND) >= 1.4);
 }
 
 /// Mono is monochrome: the person and the helpers are told apart by
@@ -4330,4 +4620,29 @@ fn choosing_a_light_background_applies_now() {
     p.save("ui.background", Some("dark".into()), &mut s)
         .unwrap();
     assert!(!s.light);
+}
+
+/// A panel whose leaving is itself an answer -- the rollback preview -- is
+/// a decision: a key typed as it appears answers nothing.
+#[test]
+fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
+    let (c, n, mut s) = fixture();
+    let mut panel = Panel::rows(
+        "Rollback",
+        vec![
+            sterna::tui::PanelRow::run("Cancel", Action::Command("/rollback cancel".into())),
+            sterna::tui::PanelRow::danger("Roll back", Action::Command("/rollback confirm".into())),
+        ],
+    );
+    panel.back = Some(Action::Command("/rollback cancel".into()));
+    let mut u = Workbench::default();
+    u.open(Source::Panel(Box::new(panel)));
+    draw(&c, &n, &s, &mut u, 100, 30);
+    assert_eq!(key(&mut u, &mut s, &n, KeyCode::Enter), Effect::Consumed);
+    assert!(u.top().unwrap().sheet.notice.contains("held back"));
+    std::thread::sleep(sterna::workbench::sheet::ARMING + std::time::Duration::from_millis(50));
+    assert_eq!(
+        key(&mut u, &mut s, &n, KeyCode::Enter),
+        Effect::Command("/rollback cancel".into())
+    );
 }

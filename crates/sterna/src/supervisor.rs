@@ -117,7 +117,7 @@ impl Supervisor {
         };
         match wire::send_turn_with(&conversation, model, LOOK_MAX_TOKENS, Some(PURPOSE_HEADER)) {
             Ok(message) => parse_decision(&message),
-            Err(err) => Decision::not_intervene(format!("request failed: {err}")),
+            Err(err) => unanswered(&err),
         }
     }
 
@@ -228,6 +228,12 @@ pub fn active(config: &crate::config::SternaConfig) -> bool {
         && (config.supervisor.model.is_some()
             || (config.decisions.model.is_some()
                 && config.decisions.mode != crate::config::DecisionMode::Off))
+}
+
+/// A look that got no answer, named by its error alone: a transport error
+/// already says the request failed.
+fn unanswered(err: &wire::WireError) -> Decision {
+    Decision::not_intervene(err.to_string())
 }
 
 /// One look's two results: the nudge to head the next message, if any, and
@@ -382,6 +388,16 @@ fn render_call(call: &CallRecord) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_look_that_never_reached_the_endpoint_says_so_once() {
+        let err = wire::WireError::Http(Box::new(ureq::Error::Io(std::io::Error::other(
+            "connection refused",
+        ))));
+        let reason = unanswered(&err).reason;
+        assert_eq!(reason.matches("request failed").count(), 1, "{reason}");
+        assert!(reason.contains("connection refused"), "{reason}");
+    }
 
     #[test]
     fn compress_renders_the_head_the_outcome_and_the_calls_never_a_payload() {

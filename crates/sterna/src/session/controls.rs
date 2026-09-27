@@ -918,13 +918,14 @@ fn subscription_panel(catalogue: &Catalogue) -> Panel {
                 format!("/login {}", subscription.words[0]),
             ));
         }
+        // By the name it was declared with, and with the offer's warning;
+        // the gateway's scope word is not the person's.
         for entry in declared {
             rows.push(row(
                 format!(
-                    "{} · {} · {} · {}",
+                    "{} · {}{risk} · {}",
                     subscription.label,
                     entry.account,
-                    entry.scope,
                     state(entry)
                 ),
                 format!("/login {}", entry.account),
@@ -1009,7 +1010,9 @@ fn model_panel(catalogue: Option<Catalogue>, tiers: TierModels) -> Panel {
                         _ => None,
                     };
                     let unavailable_reason = match (&connect, account.unavailable_reason) {
-                        (Some(_), _) => Some("not connected — press enter to connect".into()),
+                        // Enter on a model does nothing; the account's own
+                        // sign-in row above it is the way in.
+                        (Some(_), _) => Some("Not connected · sign in above".into()),
                         (None, existing) => existing,
                     };
                     // A subscription is a member of its provider's pool,
@@ -1164,24 +1167,7 @@ pub(super) fn command(
             let c = &transcript.conversation;
             let estimated = estimate_request_tokens(c, &session.model.borrow());
             let bytes: usize = c.messages.iter().map(|m| message_text(m).len()).sum();
-            let measured = transcript
-                .notebook
-                .context
-                .map(|context| match context.cap {
-                    Some(cap) => format!(
-                        "Current request context: {}/{} tokens ({}%) · {}",
-                        context.used,
-                        cap,
-                        context.used.min(cap).saturating_mul(100) / cap.max(1),
-                        context.counted.as_str()
-                    ),
-                    None => format!(
-                        "Current request context: {} tokens · window unknown · {}",
-                        context.used,
-                        context.counted.as_str()
-                    ),
-                })
-                .unwrap_or_else(|| "Current request context: no request yet".into());
+            let measured = measured_context(transcript.notebook.context);
             show(
                 session,
                 Panel::text(
@@ -1530,8 +1516,55 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
     ))
 }
 
+/// `/context`'s line for the request just sent: its size, against the
+/// window when the window is known, and who counted it.
+fn measured_context(context: Option<crate::tui::ContextTokens>) -> String {
+    let Some(context) = context else {
+        return "Current request context: no request yet".into();
+    };
+    match context.cap {
+        Some(cap) => format!(
+            "Current request context: {}/{} tokens ({}%), {}",
+            context.used,
+            cap,
+            context.used.min(cap).saturating_mul(100) / cap.max(1),
+            context.counted.by()
+        ),
+        None => format!(
+            "Current request context: {} tokens, {}; the model's window size is not known",
+            context.used,
+            context.counted.by()
+        ),
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
+
+    #[test]
+    fn the_context_line_says_who_counted_and_what_is_not_known() {
+        use crate::tui::{ContextTokens, Counted};
+        let line = super::measured_context(Some(ContextTokens {
+            used: 12,
+            cap: None,
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Gateway,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 12 tokens, counted by the provider; the model's window size is not known"
+        );
+        let line = super::measured_context(Some(ContextTokens {
+            used: 50,
+            cap: Some(200),
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Estimated,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 50/200 tokens (25%), estimated"
+        );
+    }
 
     #[test]
     fn only_the_gemini_relay_key_is_warned_about_and_the_warning_names_the_terms() {
@@ -1590,6 +1623,45 @@ pub(super) mod tests {
         assert_eq!(subscription_provider("chatgpt"), Some("openai"));
         assert_eq!(subscription_provider("claude"), Some("anthropic"));
         assert_eq!(subscription_provider("antigravity"), Some("google"));
+    }
+
+    /// A model on an account that is not connected says so and points at
+    /// the account's own sign-in row; Enter on the model does nothing, so
+    /// it is not offered.
+    #[test]
+    fn a_model_on_an_unconnected_account_points_at_its_sign_in() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"openai-plus","provider":"openai","models":["m"],"scope":"subscription","selectable":true,"unavailable_reason":null,"authenticated":false,"connect_with":"openai"}]}"#,
+        )
+        .unwrap();
+        let panel = model_panel(Some(catalogue), TierModels::default());
+        let reasons = format!("{panel:?}");
+        assert!(
+            reasons.contains("Not connected · sign in above"),
+            "{reasons}"
+        );
+        assert!(!reasons.contains("press enter"), "{reasons}");
+    }
+
+    /// A declared subscription is listed by the name it was declared with
+    /// and keeps the offer's warning; the gateway's scope word is not shown.
+    #[test]
+    fn a_declared_subscription_keeps_its_words_and_its_warning() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"me@example.com","provider":"anthropic","models":[],"scope":"user","selectable":true,"unavailable_reason":null,"authenticated":true,"connect_with":"anthropic"}]}"#,
+        )
+        .unwrap();
+        let panel = subscription_panel(&catalogue);
+        let claude = panel
+            .rows
+            .iter()
+            .find(|row| row.text.starts_with("Claude"))
+            .unwrap();
+        assert_eq!(
+            claude.text,
+            "Claude · me@example.com · ⚠ read first · connected"
+        );
+        assert_eq!(claude.command_line(), Some("/login me@example.com"));
     }
 
     #[test]

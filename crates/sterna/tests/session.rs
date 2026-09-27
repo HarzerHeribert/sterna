@@ -6293,7 +6293,8 @@ fn the_login_panel_lists_api_key_rows_after_the_accounts() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let Some(account) = stdout.find("work@example.com · user") else {
+    let Some(account) = stdout.find("Claude · work@example.com · ⚠ read first · sign in")
+    else {
         panic!("the account row must still be listed:\n{stdout}");
     };
     let Some(key) = stdout.find("anthropic · API key · not set") else {
@@ -6596,7 +6597,7 @@ fn a_hosted_session_prefers_the_gateway_beside_the_binary_to_the_one_on_path() {
 
     let stdout = login("sess-gateway-on-path");
     assert!(
-        stdout.contains("work@example.com · user"),
+        stdout.contains("Claude · work@example.com · ⚠ read first · sign in"),
         "the gateway on PATH must have answered the catalogue:\n{stdout}"
     );
     let asked_on_path = fs::read_to_string(&path_record).unwrap();
@@ -6616,7 +6617,7 @@ fn a_hosted_session_prefers_the_gateway_beside_the_binary_to_the_one_on_path() {
     );
     let stdout = login("sess-gateway-beside");
     assert!(
-        stdout.contains("work@example.com · user"),
+        stdout.contains("Claude · work@example.com · ⚠ read first · sign in"),
         "the gateway beside the binary must have answered:\n{stdout}"
     );
     assert!(
