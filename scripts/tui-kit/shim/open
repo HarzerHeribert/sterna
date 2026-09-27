@@ -1,0 +1,4 @@
+#!/bin/sh
+# tui-kit: never open a browser or app from a driven session; log the request instead.
+printf "%s blocked: %s\n" "$(date +%H:%M:%S)" "$0 $*" >> "${TUI_KIT_LOG:-/tmp/tui-kit-blocked-open.log}"
+exit 0

@@ -1,0 +1,32 @@
+{
+  "R": "#D8241C",
+  "r": "#9C1410",
+  "Y": "#F6BA1C",
+  "G": "#5E8A3C",
+  "B": "#3558A8",
+  "T": "#C81E18",
+  "t": "#3558A8",
+  "W": "#EEE7E2",
+  "E": "#2A313B",
+  "U": "#DDCCB0",
+  "u": "#C9B48E",
+  "L": "#3A4450",
+  "F": "#4B5663",
+  "P": "#7A5634",
+  "_regions": {
+    "R": "scarlet plumage: crown, nape, throat, breast, belly, mantle and the red lesser wing coverts",
+    "r": "shadow line on the wing's leading edge, from the back edge at the shoulder (7,6) down to the band (12,11), separating the folded wing from the breast",
+    "Y": "yellow wing band (median/greater coverts)",
+    "G": "green tips of the yellow coverts, the scalloped lower edge of the band",
+    "B": "blue flight feathers (secondaries/primaries), ending at the perch",
+    "T": "red tail (long central tail feathers), red to the tip",
+    "t": "blue outer tail feathers along the tail's upper edge, stopping one row above the red tip",
+    "W": "bare white face patch; it encloses the eye on all 8 sides",
+    "E": "eye (1 px)",
+    "U": "pale horn upper mandible",
+    "u": "mid-horn front edge and hook tip of the upper mandible, so the beak profile holds on a light background",
+    "L": "black lower mandible (2x2), drawn dark slate so it never reads as a hole",
+    "F": "dark grey foot: a solid 2 px foot on top of the perch, under the belly, with one claw pixel over the perch's front",
+    "P": "perch branch"
+  }
+}

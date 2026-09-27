@@ -1,0 +1,31 @@
+{
+ "C": "#414B57",
+ "E": "#12161B",
+ "R": "#C8363F",
+ "W": "#EEF0F2",
+ "T": "#EEF0F2",
+ "U": "#C9CED4",
+ "G": "#A7AFB8",
+ "D": "#707A85",
+ "L": "#C94A45",
+ "P": "#6E5B4A",
+ "p": "#54463A",
+ "_regions": {
+  "C": "black cap, bill base to nape (dark slate, never black)",
+  "E": "eye (inside the cap, lower front)",
+  "R": "bill, blood-red dagger",
+  "W": "white cheek stripe, throat and white vent (undertail coverts)",
+  "T": "tail streamers, both forks (same white as W on dark; its own letter so light terminals can darken it)",
+  "U": "grey-washed breast, flank and belly",
+  "G": "pale grey mantle and folded wing",
+  "D": "darker grey primaries (folded wingtips)",
+  "L": "very short red legs and feet",
+  "P": "weathered wooden post",
+  "p": "post, shaded side"
+ },
+ "_light": {
+  "W": "#DCE1E6",
+  "T": "#B0B9C2",
+  "U": "#C2C9D0"
+ }
+}

@@ -1,0 +1,26 @@
+{
+ "B": "#2A93C4",
+ "D": "#3563B8",
+ "T": "#2F74BE",
+ "Y": "#D4900C",
+ "G": "#5C9632",
+ "W": "#E4E8EA",
+ "E": "#1B2229",
+ "N": "#4B5663",
+ "K": "#434D5A",
+ "F": "#5C6672",
+ "P": "#7A5A3C",
+ "_regions": {
+  "B": "turquoise-blue crown-back, nape, back and wing coverts",
+  "D": "deep-blue flight feathers (folded primaries); the wing tip lies along the top of the tail root and ends at (3,17)",
+  "T": "blue tail (upper surface)",
+  "Y": "golden-yellow cheek, neck, breast strip and vent",
+  "G": "green forehead",
+  "W": "bare white face patch",
+  "E": "eye (pupil; the face is white around it)",
+  "N": "upper mandible, the hooked beak (black in life, slate here)",
+  "K": "lower mandible and black throat band (a shade darker than the beak)",
+  "F": "feet, dark grey toes gripping the perch",
+  "P": "perch branch (not plumage; map to '' to drop it)"
+ }
+}

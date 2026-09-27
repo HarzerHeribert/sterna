@@ -1,0 +1,28 @@
+{
+ "H": "#3F5AA6",
+ "B": "#304C9C",
+ "W": "#3150BC",
+ "T": "#2B47AE",
+ "U": "#27367F",
+ "K": "#6A707B",
+ "k": "#3C424B",
+ "Y": "#F5C400",
+ "R": "#F7CB1C",
+ "E": "#1C2026",
+ "F": "#4B5058",
+ "P": "#8B6236",
+ "_regions": {
+  "H": "head: crown, nape, cheeks and throat (a paler, greyer blue than the body)",
+  "B": "body: breast and belly",
+  "W": "wing: folded wing, shoulder to the primary tips (the most vivid blue)",
+  "T": "tail: upper surface, solid 2 px wide below row 17",
+  "U": "undertail coverts and the underside at the tail base (rows 12-17 only; the lower tail is solid T)",
+  "K": "beak: upper mandible, the hooked arc (slate grey, lifted above the head blue in luminance)",
+  "k": "beak: lower mandible, inside the hook (darker grey)",
+  "Y": "lappet: bare yellow skin at the base of the lower mandible",
+  "R": "eye ring: bare yellow skin behind the eye",
+  "E": "eye (pupil and iris, 1 px)",
+  "F": "feet / talons (dark slate grey)",
+  "P": "perch: the broken branch the bird grips"
+ }
+}

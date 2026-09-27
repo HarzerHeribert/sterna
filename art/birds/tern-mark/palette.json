@@ -1,0 +1,43 @@
+{
+ "W": "#E9EEF2",
+ "T": "#CFD6DC",
+ "g": "#C4CBD2",
+ "P": "#8A94A0",
+ "G": "#9AA3AD",
+ "C": "#566175",
+ "E": "#7E8998",
+ "R": "#CF2B2B",
+ "_regions": {
+  "W": "white body, nape, cheek and throat",
+  "T": "tail: 2 px root wedge (x8-12, rows 24-25) forking into an upper streamer (~6 deg) and a lower one (~20 deg); a step greyer than the body, as in the photos",
+  "g": "near wing, raised (underside, pale grey); slender hand, broader arm",
+  "P": "dark outer web of the outermost primary, 1 px along the hand's leading edge from the tip (15,0) to the wrist (25,12)",
+  "G": "far wing, below and forward under the head, in shade; kept 2+ px clear of the bill",
+  "C": "black cap from bill base to nape (dark slate, never black on black)",
+  "E": "eye: a muted glint inside the cap, not a white spot",
+  "R": "bill, blood red, drooping ~22 deg as in the photo"
+ },
+ "_background": "#0A0E12",
+ "_light": {
+  "W": "#AEB9C3",
+  "T": "#7A8692",
+  "g": "#8F9BA6",
+  "P": "#5F6B78",
+  "G": "#75818D",
+  "C": "#1E252C",
+  "E": "#5E6A76",
+  "R": "#C4262A",
+  "_background": "#F4F6F8"
+ },
+ "_photo_samples": {
+  "white_neck_lit": "#C4BEC1 (max #ECE6E9) Myrar",
+  "body_side_lit": "#D6D2D3 Blonduos",
+  "tail_side": "#7B8493 Blonduos (tail greyer than body)",
+  "cap": "#2C2C3A..#333749",
+  "bill": "#C6252A",
+  "near_wing_underside_backlit": "#87756C..#968E8B",
+  "far_wing": "#9C8E8A..#A49184",
+  "tail_backlit": "#848385",
+  "sky": "#8CB2F0"
+ }
+}

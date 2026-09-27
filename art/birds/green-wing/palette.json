@@ -1,0 +1,28 @@
+{
+ "R": "#B8292A",
+ "r": "#7E1F20",
+ "T": "#A62726",
+ "t": "#862222",
+ "G": "#6E9431",
+ "B": "#2A8FA8",
+ "W": "#E8E3DE",
+ "U": "#C9B99C",
+ "K": "#46505C",
+ "E": "#343D48",
+ "F": "#6E757D",
+ "P": "#7A5B3E",
+ "_regions": {
+  "R": "body red: crown, nape, cheek, breast, belly, undertail coverts; the red pixel at [12,3] bites into the white face where the red feather lines are densest",
+  "r": "dark red lesser coverts along the wing's shoulder edge",
+  "T": "tail, upper (lit) side of the long central feathers",
+  "t": "tail, lower shaded edge",
+  "G": "green median/greater wing coverts (the 'green wing')",
+  "B": "blue flight feathers (secondaries/primaries), wing tip below the perch",
+  "W": "bare white facial skin (the eye sits alone inside it)",
+  "U": "pale horn upper mandible, hooked; tip at beak_tip",
+  "K": "dark lower mandible (black in life, slate here so it never reads black-on-black); x14 rows 4-5, under the white face and behind the pale hook",
+  "E": "eye (1 px, inside the white face)",
+  "F": "grey feet gripping the perch",
+  "P": "perch (optional; drop the letter to float the bird)"
+ }
+}

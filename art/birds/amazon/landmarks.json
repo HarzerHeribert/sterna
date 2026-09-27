@@ -1,0 +1,17 @@
+{
+  "eye": [14, 1],
+  "beak": [[16, 2], [17, 2], [15, 3], [16, 3], [17, 3], [17, 4]],
+  "beak_tip": [17, 4],
+  "crown": [14, 0],
+  "forehead": [[16, 0], [16, 1]],
+  "face": [[14, 0], [15, 0], [13, 1], [15, 1], [14, 2], [15, 2]],
+  "nape": [11, 1],
+  "throat": [15, 4],
+  "red_patch": [[13, 6], [13, 7]],
+  "speculum": [[10, 12], [9, 13], [8, 14], [7, 15]],
+  "wing_tip": [2, 18],
+  "tail_tip": [0, 23],
+  "feet": [[10, 18], [11, 18], [9, 19], [12, 19]],
+  "perch_row": 19,
+  "_coords": "[x, y] in sprite pixels, origin top-left, 18 wide x 24 tall; the bird faces right"
+}

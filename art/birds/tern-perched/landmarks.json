@@ -1,0 +1,19 @@
+{
+ "eye": [17, 7],
+ "beak": [[19, 7], [19, 8], [20, 8], [21, 8], [22, 8], [23, 8]],
+ "gape": [19, 8],
+ "beak_tip": [23, 8],
+ "crown": [16, 5],
+ "nape": [12, 8],
+ "cheek": [[14, 8], [15, 8], [16, 8], [17, 8], [18, 8], [15, 9], [16, 9], [17, 9], [18, 9]],
+ "breast": [21, 11],
+ "vent": [[11, 15], [12, 15], [13, 15]],
+ "wing_tip": [1, 15],
+ "tail_tip": [0, 16],
+ "tail_tip_far": [1, 18],
+ "feet": [[17, 16], [18, 16], [19, 16]],
+ "perch_top_row": 17,
+ "perch_cols": [15, 18],
+ "bird_bbox": {"cols": [0, 23], "rows": [5, 18]},
+ "head_crop": {"rows": [4, 11], "cols": [11, 23], "note": "8 px = 4 terminal rows, 13 wide; starts on an even row so half-block pairs match the full sprite; 1 px of air behind the nape (col 12), bill tip on col 23"}
+}

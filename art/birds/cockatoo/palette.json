@@ -1,0 +1,28 @@
+{
+  "W": "#F6F4EE",
+  "S": "#E4E4DF",
+  "O": "#BCC3C9",
+  "G": "#B0B7BD",
+  "Y": "#EDD84A",
+  "R": "#B4D0E6",
+  "E": "#1B2127",
+  "K": "#434B55",
+  "k": "#646D77",
+  "F": "#6E757D",
+  "U": "#EAE08C",
+  "P": "#7A5230",
+  "_regions": {
+    "W": "white plumage in light: crown dome, face, throat, breast, belly, tail",
+    "S": "folded wing and tail top, white in shade",
+    "O": "pale grey rim on the lit front edge (forehead, throat, breast) and the tail's underside, so white reads on a light terminal",
+    "G": "grey rim on the shaded back, nape, tail edge and tail end",
+    "Y": "sulphur-yellow crest, partly raised, curving back from behind the crown dome",
+    "R": "pale blue bare eye ring",
+    "E": "eye (near-black, never touches the background)",
+    "K": "beak, dark slate (grey-black, lifted off terminal black)",
+    "k": "beak culmen highlight",
+    "F": "feet and claws, dark grey",
+    "U": "yellow wash on the undertail, one pixel inside the tail's underside rim",
+    "P": "perch (branch); may be mapped to transparent"
+  }
+}
