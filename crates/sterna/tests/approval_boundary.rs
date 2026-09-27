@@ -877,7 +877,9 @@ fn a_hint_that_answers_in_time_is_shown_beside_the_confirmation() {
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
     // The hint is words, not a score.
@@ -896,7 +898,9 @@ fn a_decision_delayed_past_the_timeout_never_delays_or_marks_the_confirmation() 
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"on\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     let sent = Instant::now();
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
@@ -923,7 +927,9 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
         &base,
         "[decisions]\nmodel = \"fake-decider\"\nmode = \"shadow\"\n",
     );
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
     // No text to wait on distinguishes "recorded but not shown" from "not
@@ -947,7 +953,9 @@ fn shadow_mode_records_the_hint_and_never_shows_the_line() {
 fn no_model_means_no_approval_hint_request() {
     let (base, decisions) = hint_provider(vec![]);
     let mut app = LiveApp::start(&base, "");
-    app.contains("fixture-model");
+    // The first frame is up. The model's name is not the sign: an
+    // 80-column header gives it up before the rung and the mode.
+    app.contains("⠿ STERNA");
     app.send(b"write a.txt for me\r");
     app.contains("APPROVE");
     app.settle(1_000);
