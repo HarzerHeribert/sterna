@@ -200,6 +200,21 @@ pub(super) fn read_line() -> io::Result<Option<String>> {
     Ok(Some(line))
 }
 
+fn next_input(
+    inputs: &mpsc::Receiver<Input>,
+    changed: &dyn Fn(),
+) -> Result<Option<String>, String> {
+    loop {
+        match inputs.recv() {
+            Ok(Input::Submit(text)) => return Ok(Some(text)),
+            Ok(Input::Exit) => return Ok(None),
+            Ok(Input::Failed(error)) => return Err(error),
+            Ok(Input::Changed) => changed(),
+            Err(_) => return Err("terminal input closed".into()),
+        }
+    }
+}
+
 pub(super) enum Update {
     Approval(crate::approval::Request),
     /// A question a cell put to the person, waiting on the session thread.
@@ -240,6 +255,10 @@ enum Input {
     Submit(String),
     Exit,
     Failed(String),
+    /// Something the session reads changed on its own -- a sign-in that
+    /// finished in the background -- so what the opening screen offers is
+    /// worked out again.
+    Changed,
 }
 
 /// The person's two levers over a task already running, shared with the
@@ -432,13 +451,10 @@ impl LiveUi {
     pub(super) fn steer_handle(&self) -> Arc<Steer> {
         Arc::clone(&self.steer)
     }
-    pub(super) fn next(&self) -> Result<Option<String>, String> {
-        match self.inputs.recv() {
-            Ok(Input::Submit(text)) => Ok(Some(text)),
-            Ok(Input::Exit) => Ok(None),
-            Ok(Input::Failed(error)) => Err(error),
-            Err(_) => Err("terminal input closed".into()),
-        }
+    /// The next thing typed; `changed` runs, on the session's thread, for
+    /// each change that arrives before it.
+    pub(super) fn next(&self, changed: &dyn Fn()) -> Result<Option<String>, String> {
+        next_input(&self.inputs, changed)
     }
     pub(super) fn publish(
         &self,
@@ -936,9 +952,11 @@ fn run(
                     sign_in_panel = Some(*panel);
                 }
                 Update::SignIn(super::controls::sign_in::Event::Done) => {
-                    // Over on its own: nothing left to stop.
+                    // Over on its own: nothing left to stop, and a setup
+                    // step it may have finished is counted again.
                     sign_in.0 = None;
                     state.signing_in = None;
+                    let _ = answers.inputs.send(Input::Changed);
                 }
                 Update::Tiers(helpers_on, subagents) => {
                     state.helpers_on = helpers_on;
@@ -1970,6 +1988,19 @@ fn paste_callback_form() -> tui::Form {
 
 #[cfg(test)]
 mod tests {
+    /// A change that arrives while the session waits is acted on where
+    /// the session is, and the wait goes on to what is typed next.
+    #[test]
+    fn a_change_is_acted_on_and_the_wait_goes_on() {
+        let (send, inputs) = std::sync::mpsc::channel();
+        send.send(super::Input::Changed).unwrap();
+        send.send(super::Input::Changed).unwrap();
+        send.send(super::Input::Submit("next".into())).unwrap();
+        let seen = std::cell::Cell::new(0);
+        let next = super::next_input(&inputs, &|| seen.set(seen.get() + 1));
+        assert_eq!(next, Ok(Some("next".into())));
+        assert_eq!(seen.get(), 2);
+    }
     /// While the turn waits on the person the card says so and the clock
     /// stands still; once they answer, the turn is what it was and the
     /// clock runs again without the wait in it.

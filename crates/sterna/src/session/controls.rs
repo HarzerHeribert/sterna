@@ -918,13 +918,14 @@ fn subscription_panel(catalogue: &Catalogue) -> Panel {
                 format!("/login {}", subscription.words[0]),
             ));
         }
+        // By the name it was declared with, and with the offer's warning;
+        // the gateway's scope word is not the person's.
         for entry in declared {
             rows.push(row(
                 format!(
-                    "{} · {} · {} · {}",
+                    "{} · {}{risk} · {}",
                     subscription.label,
                     entry.account,
-                    entry.scope,
                     state(entry)
                 ),
                 format!("/login {}", entry.account),
@@ -1009,7 +1010,9 @@ fn model_panel(catalogue: Option<Catalogue>, tiers: TierModels) -> Panel {
                         _ => None,
                     };
                     let unavailable_reason = match (&connect, account.unavailable_reason) {
-                        (Some(_), _) => Some("not connected — press enter to connect".into()),
+                        // Enter on a model does nothing; the account's own
+                        // sign-in row above it is the way in.
+                        (Some(_), _) => Some("Not connected · sign in above".into()),
                         (None, existing) => existing,
                     };
                     // A subscription is a member of its provider's pool,
@@ -1620,6 +1623,45 @@ pub(super) mod tests {
         assert_eq!(subscription_provider("chatgpt"), Some("openai"));
         assert_eq!(subscription_provider("claude"), Some("anthropic"));
         assert_eq!(subscription_provider("antigravity"), Some("google"));
+    }
+
+    /// A model on an account that is not connected says so and points at
+    /// the account's own sign-in row; Enter on the model does nothing, so
+    /// it is not offered.
+    #[test]
+    fn a_model_on_an_unconnected_account_points_at_its_sign_in() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"openai-plus","provider":"openai","models":["m"],"scope":"subscription","selectable":true,"unavailable_reason":null,"authenticated":false,"connect_with":"openai"}]}"#,
+        )
+        .unwrap();
+        let panel = model_panel(Some(catalogue), TierModels::default());
+        let reasons = format!("{panel:?}");
+        assert!(
+            reasons.contains("Not connected · sign in above"),
+            "{reasons}"
+        );
+        assert!(!reasons.contains("press enter"), "{reasons}");
+    }
+
+    /// A declared subscription is listed by the name it was declared with
+    /// and keeps the offer's warning; the gateway's scope word is not shown.
+    #[test]
+    fn a_declared_subscription_keeps_its_words_and_its_warning() {
+        let catalogue: Catalogue = serde_json::from_str(
+            r#"{"version":1,"accounts":[{"account":"me@example.com","provider":"anthropic","models":[],"scope":"user","selectable":true,"unavailable_reason":null,"authenticated":true,"connect_with":"anthropic"}]}"#,
+        )
+        .unwrap();
+        let panel = subscription_panel(&catalogue);
+        let claude = panel
+            .rows
+            .iter()
+            .find(|row| row.text.starts_with("Claude"))
+            .unwrap();
+        assert_eq!(
+            claude.text,
+            "Claude · me@example.com · ⚠ read first · connected"
+        );
+        assert_eq!(claude.command_line(), Some("/login me@example.com"));
     }
 
     #[test]

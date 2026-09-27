@@ -196,6 +196,47 @@ impl Navigator {
         self.select_current();
         notice
     }
+    /// The picker's own record of one of its rows' commands, sent to the
+    /// session: favourites on or off, a slot emptied, a tier turned off.
+    /// Like [`chosen`](Self::chosen), it moves the marks at once; returns
+    /// the notice that says what changed, or `None` for a command it does
+    /// not record.
+    pub fn sent(&mut self, command: &str) -> Option<String> {
+        use crate::config::AgentsMode;
+        let words: Vec<&str> = command.split_whitespace().collect();
+        let notice = match words.as_slice() {
+            ["/subagents", "on"] => {
+                self.assignment.mode = AgentsMode::Roster;
+                self.assignment.model = None;
+                "Favourites are on".to_string()
+            }
+            ["/subagents", "off"] => {
+                self.assignment.mode = AgentsMode::Off;
+                self.assignment.model = None;
+                "Subagents are off".to_string()
+            }
+            ["/subagents", slot, "off"] => {
+                self.assignment.slots.remove(*slot);
+                if self.assignment.slots.is_empty() && self.assignment.mode == AgentsMode::Roster {
+                    self.assignment.mode = AgentsMode::Off;
+                }
+                format!("{} is empty", slot.to_uppercase())
+            }
+            ["/model", "helper", "off"] => {
+                self.current.helper = Some("off".into());
+                "Helpers are off".to_string()
+            }
+            ["/model", "subagent", "off"] => {
+                self.current.subagent = Some("off".into());
+                self.assignment.mode = AgentsMode::Off;
+                self.assignment.model = None;
+                "Subagents are off".to_string()
+            }
+            _ => return None,
+        };
+        self.select_current();
+        Some(notice)
+    }
     /// The model on the row the picker is on, when it can be chosen.
     pub fn selected_model(&self) -> Option<String> {
         self.candidates()

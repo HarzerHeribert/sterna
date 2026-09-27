@@ -896,7 +896,7 @@ fn drive(
     }
 
     if let Some(ui) = session.ui {
-        while let Some(input) = ui.next()? {
+        while let Some(input) = ui.next(&|| setup::offer(session))? {
             // A turn has already said how it ended; a control reports no
             // turn at all, so the turn's clock and its ending stay as they
             // were.

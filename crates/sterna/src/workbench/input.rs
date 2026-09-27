@@ -1191,6 +1191,17 @@ impl Workbench {
                     self.sheets.pop();
                     self.child_of = None;
                 }
+                // A picker row's command moves the picker's marks at once,
+                // as a chosen model does.
+                if (!busy || mid_turn(&cmd))
+                    && matches!(
+                        self.sheets.last().map(|l| &l.source),
+                        Some(Source::Models(_))
+                    )
+                    && let Some(notice) = self.models_mut().and_then(|m| m.sent(&cmd))
+                {
+                    self.say(notice);
+                }
                 if busy && mid_turn(&cmd) {
                     return Effect::Command(cmd);
                 } else if busy {
@@ -1341,6 +1352,29 @@ impl Workbench {
                     return Effect::Consumed;
                 }
                 _ => {}
+            }
+            // Pinned and favourites name a model. Chosen with none named,
+            // each opens where one is named -- the picker for the pinned
+            // model, the favourites for a slot -- instead of saving a rule
+            // the settings file refuses.
+            if spec.key == "agents.mode" {
+                let agents = &p.loaded.config.agents;
+                let opens = match value.as_str() {
+                    "pinned" if agents.model.is_none() => Some("/models"),
+                    "roster" if agents.slots.is_empty() => Some("/subagents"),
+                    _ => None,
+                };
+                if let Some(command) = opens {
+                    if busy {
+                        p.notice = super::voice::BETWEEN_TURNS.into();
+                        return Effect::Consumed;
+                    }
+                    if command == "/models" {
+                        self.browsing = Some("agents.model".into());
+                    }
+                    self.child_of = Some(command.into());
+                    return Effect::Command(command.into());
+                }
             }
             // Full access lifts the sandbox from the next session: it is
             // confirmed first, on the sheet the Never asks rung uses.

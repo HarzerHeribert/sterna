@@ -1095,6 +1095,100 @@ fn reader_anchor_survives_rows_inserted_above_it() {
     assert_eq!(s.scrollback, 0);
 }
 
+/// Turning favourites on, emptying a slot and turning a tier off change
+/// the picker at once, as choosing a model does: its rows never show the
+/// assignment from before the command was sent.
+#[test]
+fn the_picker_shows_what_its_own_commands_did() {
+    let (c, n, mut s) = fixture();
+    let mut m = navigator();
+    m.role = 2;
+    m.assignment.slots.insert(
+        "quick".into(),
+        sterna::config::AgentSlot {
+            model: "fixture-helper".into(),
+            effort: sterna::wire::Effort::Low,
+        },
+    );
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let toggle = |u: &Workbench| {
+        u.top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .find(|item| item.id == "favourites")
+            .map(|item| item.kind.clone())
+    };
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(false)));
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "favourites"),
+        Effect::Command("/subagents on".into())
+    );
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(true)));
+    // The one favourite emptied: the slot goes, and favourites with it.
+    u.models_mut().unwrap().slot = Some("quick".into());
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "off"),
+        Effect::Command("/subagents quick off".into())
+    );
+    assert!(u.models().unwrap().assignment.slots.is_empty());
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(false)));
+    // A tier turned off says so where the picker says what it is now.
+    u.models_mut().unwrap().role = 1;
+    u.models_mut().unwrap().slot = None;
+    draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(
+        click_item(&mut u, &mut s, &n, "off"),
+        Effect::Command("/model helper off".into())
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("Now: off"), "{screen}");
+}
+
+/// A locked account's models share one reason, and it is said once under
+/// the first of them, not repeated under each.
+#[test]
+fn a_reason_shared_by_a_run_of_rows_is_said_once() {
+    let (c, n, s) = fixture();
+    let panel = Panel::models(
+        "Models",
+        vec![ModelGroup {
+            provider: "B".into(),
+            account: "b-subscription".into(),
+            scope: "subscription".into(),
+            models: vec!["b-one".into(), "b-two".into(), "b-three".into()],
+            selectable: Some(false),
+            unavailable_reason: Some("Not connected · sign in above".into()),
+            connect: Some("b".into()),
+            pooled: None,
+            note: None,
+        }],
+        TierModels {
+            parent: "b-one".into(),
+            helper: None,
+            subagent: None,
+        },
+    );
+    let mut m = Navigator::from_panel(&panel).unwrap();
+    // Every account, the locked ones too.
+    m.all_sources = true;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(m)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("b-three"), "{screen}");
+    assert_eq!(
+        screen.matches("Not connected · sign in above").count(),
+        1,
+        "{screen}"
+    );
+}
+
 #[test]
 fn favorites_picker_assigns_one_slot_and_preserves_other_roles() {
     let mut m = navigator();
@@ -2536,6 +2630,47 @@ fn every_route_to_the_rung_saves_it_and_says_the_same() {
     click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3)));
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+}
+
+/// Pinned and favourites name a model. Chosen with none named, each opens
+/// the surface where one is named, and nothing is saved that the settings
+/// file would refuse -- no "[agents] mode = pinned requires `model`".
+#[test]
+fn subagent_modes_without_a_model_open_where_one_is_chosen() {
+    let (c, n, _) = fixture();
+    // Off, pinned, favourites: the second and third chips.
+    for (chip, command, browsing) in [
+        (1, "/models", Some("agents.model")),
+        (2, "/subagents", None),
+    ] {
+        let (_t, mut s, mut p) = prefs();
+        p.category = 4;
+        let mut u = Workbench::default();
+        u.open(Source::Settings(Box::new(p)));
+        draw(&c, &n, &s, &mut u, 110, 40);
+        let item = u
+            .top()
+            .unwrap()
+            .sheet
+            .items
+            .iter()
+            .position(|item| item.id == "setting:agents.mode")
+            .unwrap();
+        let effect = click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, chip)));
+        assert_eq!(effect, Effect::Command(command.into()), "chip {chip}");
+        assert_eq!(u.browsing.as_deref(), browsing, "chip {chip}");
+        let p = u.preferences().unwrap();
+        assert_eq!(
+            p.loaded.config.agents.mode,
+            sterna::config::AgentsMode::Off,
+            "chip {chip}: nothing is saved yet"
+        );
+        let notice = &u.top().unwrap().sheet.notice;
+        assert!(
+            !notice.contains("requires") && !notice.contains("configure"),
+            "{notice}"
+        );
+    }
 }
 
 /// A mode or effort command on its way to the session is saved once,

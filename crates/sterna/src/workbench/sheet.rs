@@ -1177,7 +1177,13 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
             }
             _ => {
                 lines.push(Line::Title(i));
-                if !item.detail.is_empty() || item.disabled.is_some() {
+                // A reason shared by a run of rows -- a locked account's
+                // models -- is said under the first of them only.
+                let repeated = item.detail.is_empty()
+                    && item.disabled.is_some()
+                    && i > 0
+                    && sheet.items[i - 1].disabled == item.disabled;
+                if !repeated && (!item.detail.is_empty() || item.disabled.is_some()) {
                     let detail = match &item.disabled {
                         Some(reason) if item.detail.is_empty() => reason.clone(),
                         Some(reason) => format!("{} · {reason}", item.detail),
