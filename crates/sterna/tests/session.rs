@@ -45,21 +45,22 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// historical fixture model explicitly. A test that already persisted a
 /// parent omits the CLI flag, preserving the production precedence rule.
 ///
-/// The check is scoped to **project and legacy only, never global** --
-/// every spawning helper in this file isolates the *child's* global scope to
-/// an empty directory (`GH-PANE-TEST-CONFIG-ISOLATION`), and this process's
-/// own ambient `XDG_CONFIG_HOME` is not that directory. Checking the real
-/// global here would let a developer's or a measurement's own
-/// `~/.config/sterna/config.toml` decide `persisted`, while the isolated child
-/// sees no such thing -- exactly the mismatch that made a real global config
-/// turn `--model` into a silently skipped flag and the session into a
-/// "no parent model selected" refusal.
+/// The check reads the project and **the child's own isolated global
+/// folder**, never this process's: every spawning helper in this file
+/// isolates the child's global scope to `<root>/global-config`
+/// (`GH-PANE-TEST-CONFIG-ISOLATION`), and a model choice is saved there
+/// (decision 6). Checking the real global here would let a developer's or a
+/// measurement's own `~/.config/sterna/config.toml` decide `persisted`,
+/// while the isolated child sees no such thing -- exactly the mismatch that
+/// made a real global config turn `--model` into a silently skipped flag
+/// and the session into a "no parent model selected" refusal.
 fn supply_test_model(command: &mut Command, root: &Path) {
-    let persisted = sterna::settings::Store::with_global(root, None)
-        .and_then(|store| store.load(None))
-        .ok()
-        .and_then(|loaded| loaded.config.model.parent)
-        .is_some();
+    let persisted =
+        sterna::settings::Store::with_global(root, Some(root.join("global-config").join("sterna")))
+            .and_then(|store| store.load(None))
+            .ok()
+            .and_then(|loaded| loaded.config.model.parent)
+            .is_some();
     if !persisted {
         command.arg("--model").arg(sterna::wire::MODEL);
     }
@@ -4376,10 +4377,22 @@ fn a_project_starts_on_the_model_it_was_last_left_on() {
         stdout.contains("model changed to claude-opus-4-8"),
         "{stdout}"
     );
-    let saved = std::fs::read_to_string(root.join(".sterna/config.toml")).unwrap();
+    // Saved for every project (decision 6), in the store's own spelling of
+    // the person's settings folder; the project gets no file for it.
+    let global = sterna::settings::Store::with_global(
+        &root,
+        Some(root.join("global-config").join("sterna")),
+    )
+    .unwrap()
+    .path(sterna::settings::Scope::Global);
+    let saved = std::fs::read_to_string(&global).unwrap();
     assert!(
         saved.contains("claude-opus-4-8"),
         "the choice was not written: {saved}"
+    );
+    assert!(
+        !root.join(".sterna/config.toml").exists(),
+        "a model choice wrote into the project"
     );
 
     // A second session, told nothing on its command line, starts there.

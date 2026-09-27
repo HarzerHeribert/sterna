@@ -848,6 +848,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<(), String> {
         rollback_pending: Cell::new(None),
         plan: RefCell::new(None),
         requests: std::cell::Cell::new(0),
+        settings_global: crate::project::workflows::user_directory(),
     };
     output::interface(session.interface.get(), session.dialect());
     controls::announce_missing_credential(&session, _serving.is_some());
@@ -931,6 +932,10 @@ struct Session<'a> {
     plan: RefCell<Option<String>>,
     /// Requests this session has started, for the decision model's context.
     requests: std::cell::Cell<u32>,
+    /// The person's own settings folder, where a model, a setup pick or Jev
+    /// is saved (decision 6). `None` -- a machine with no home, a test that
+    /// names none -- saves to the project instead.
+    settings_global: Option<std::path::PathBuf>,
 }
 
 impl Session<'_> {
@@ -2572,34 +2577,14 @@ fn answer_command(
                 session_println!("{USAGE}");
                 return;
             }
-            if tier != crate::spend::Tier::Parent {
-                match controls::assign_model(session, tier, model) {
-                    Ok(outcome) => session_println!("{outcome}"),
-                    Err(reason) => session_println!("{reason}"),
+            match controls::use_model(session, tier, model) {
+                Ok(outcome) => session_println!("{outcome}"),
+                Err(reason) if tier == crate::spend::Tier::Parent => {
+                    session_println!("model unchanged: {reason}");
                 }
-                return;
+                Err(reason) => session_println!("{reason}"),
             }
-            // Validate and persist before changing the live request model.
-            // A rejected control word or malformed id therefore leaves both
-            // the file and the running session unchanged.
-            let model = &startup::settle_model(
-                model.to_string(),
-                &startup::served_accounts(session.gateway),
-            );
-            let remembered = controls::assign_model(session, tier, model);
-            if let Err(reason) = remembered {
-                session_println!("model unchanged: {reason}");
-                return;
-            }
-            *session.model.borrow_mut() = model.into();
-            // The effort a person chose survives a model change now. It used
-            // to be silently reset to `default` on a non-Claude model, because
-            // `xhigh` and `max` had no wire form there; they do, so taking
-            // the choice away would be taking away a level that works.
-            if let Some(ui) = session.ui {
-                ui.model(model);
-            }
-            session_println!("model changed to {model}");
+            setup::offer(session);
         } else {
             controls::models(session);
         }
@@ -3139,6 +3124,7 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: None,
         };
         let mut task_state = TaskState::new("admit", profile, &config.borrow());
         act_on(

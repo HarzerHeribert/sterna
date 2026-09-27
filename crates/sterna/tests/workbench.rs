@@ -1466,7 +1466,7 @@ fn the_opening_offers_the_projects_own_suggestions_as_chips() {
         u.geometry
             .hits
             .iter()
-            .any(|(_, a)| *a == Action::Insert("Run the tests and tell me what fails.".into()))
+            .any(|(_, a)| *a == Action::Draft("Run the tests and tell me what fails.".into()))
     );
     s.suggestions.clear();
     let mut u = Workbench::default();
@@ -2809,5 +2809,43 @@ fn a_global_save_the_project_overrides_says_so() {
         row.detail.starts_with("This project sets rose"),
         "{}",
         row.detail
+    );
+}
+
+/// The opening stays under the card when a note arrives before the first
+/// message, and its command chip runs the command instead of typing it.
+#[test]
+fn the_opening_survives_a_note_and_its_command_chip_runs() {
+    let (_, n, mut s) = fixture();
+    let c = Conversation::default();
+    s.startup_notes = Some(0);
+    s.note("Theme is now Ice");
+    s.suggestions = vec![
+        ("finish setup · 3 steps left".into(), "/wizard".into()),
+        (
+            "run the tests".into(),
+            "Run the tests and tell me what fails.".into(),
+        ),
+    ];
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    let chip = screen
+        .find("⟨ finish setup")
+        .expect("the setup chip is drawn");
+    let note = screen.find("Theme is now Ice").expect("the note is drawn");
+    assert!(chip < note, "the opening sits above the note:\n{screen}");
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Command("/wizard".into())),
+        Effect::Command("/wizard".into())
+    );
+    draw(&c, &n, &s, &mut u, 100, 40);
+    assert_eq!(
+        click(
+            &mut u,
+            &mut s,
+            &n,
+            Action::Draft("Run the tests and tell me what fails.".into())
+        ),
+        Effect::Draft("Run the tests and tell me what fails.".into())
     );
 }

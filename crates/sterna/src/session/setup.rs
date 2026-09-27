@@ -261,6 +261,9 @@ fn models_panel(progress: &Progress) -> Panel {
                 ),
                 "/wizard models apply",
             ),
+            PanelRow::info(
+                "Sets these three models for every project, and helpers run on theirs. Jev is step 3.",
+            ),
             PanelRow::opens("Choose each one myself", "/models"),
         ],
     )
@@ -327,7 +330,7 @@ fn apply_recommended(session: &Session<'_>, jev: bool) {
         .map(|(entry, _)| (entry.key.to_string(), Some(entry.value.to_string())))
         .collect();
     if !edits.is_empty() {
-        match controls::save_settings(session, crate::settings::Scope::Local, &edits) {
+        match controls::save_home(session, &edits, None) {
             Ok(loaded) => {
                 let mut live = session.config.borrow_mut();
                 live.helpers.enabled = loaded.config.helpers.enabled;
@@ -375,19 +378,26 @@ fn apply_models(session: &Session<'_>) {
         controls::show(session, models_panel(&progress(session)));
         return;
     };
+    if let Err(error) = apply_picks(session, &picks) {
+        session_println!("ERROR: {error}");
+        return;
+    }
+    controls::show(session, overview(&progress(session)));
+}
+
+/// Sets the three models the way `/model` does: saved for every project and
+/// in force now -- the header, the sidebar and /status name the main one at
+/// once. Nothing else is switched on: helpers run on the helper model they
+/// are given, and Jev stays step 3.
+fn apply_picks(session: &Session<'_>, picks: &Picks) -> Result<(), String> {
     for (tier, model) in [
         (Tier::Parent, &picks.main),
         (Tier::Helpers, &picks.helpers),
         (Tier::Subagents, &picks.subagents),
     ] {
-        if let Err(error) = controls::assign_model(session, tier, model) {
-            session_println!("ERROR: {error}");
-            return;
-        }
+        controls::use_model(session, tier, model)?;
     }
-    // Sterna's picks come with Sterna's settings.
-    apply_recommended(session, progress(session).jev_key);
-    controls::show(session, overview(&progress(session)));
+    Ok(())
 }
 
 fn jev_on(session: &Session<'_>) {
@@ -398,7 +408,7 @@ fn jev_on(session: &Session<'_>) {
             Some(crate::decide::DEFAULT_MODEL.to_string()),
         ),
     ];
-    match controls::save_settings(session, crate::settings::Scope::Local, &edits) {
+    match controls::save_home(session, &edits, None) {
         Ok(loaded) => {
             let mut live = session.config.borrow_mut();
             live.decisions.mode = loaded.config.decisions.mode;
@@ -436,27 +446,82 @@ pub(super) fn at_start(session: &Session<'_>, no_model: bool) {
         );
         return;
     }
+    offer_for(session, &progress);
+}
+
+/// The opening screen's way back into setup, recomputed after anything that
+/// can finish a step -- a sign-in, a key, a model, the wizard itself -- and
+/// taken away once every step is done.
+pub(super) fn offer(session: &Session<'_>) {
+    if session.ui.is_some() {
+        offer_for(session, &progress(session));
+    }
+}
+
+fn offer_for(session: &Session<'_>, progress: &Progress) {
     let done = progress.done();
+    let Some(ui) = session.ui else {
+        if done < STEPS {
+            session_println!("Setup: {done} of {STEPS} done · /wizard finishes it");
+        }
+        return;
+    };
     if done < STEPS {
         let left = STEPS - done;
-        match session.ui {
-            // On the opening screen it is the first thing to press, not a
-            // note that also rode the dock and the card.
-            Some(ui) => ui.suggest(
-                &format!(
-                    "finish setup · {left} step{} left",
-                    if left == 1 { "" } else { "s" }
-                ),
-                "/wizard",
+        // On the opening screen it is the first thing to press, not a note
+        // that also rode the dock and the card.
+        ui.suggest(
+            &format!(
+                "finish setup · {left} step{} left",
+                if left == 1 { "" } else { "s" }
             ),
-            None => session_println!("Setup: {done} of {STEPS} done · /wizard finishes it"),
-        }
+            "/wizard",
+        );
+    } else {
+        ui.unsuggest("/wizard");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sterna's picks are saved for every project and are in force now:
+    /// the project folder is left alone and the session answers on the
+    /// main pick at once. Nothing else is switched on.
+    #[test]
+    fn sternas_picks_are_saved_globally_and_in_force_now() {
+        let root = std::env::temp_dir().join(format!("sterna-picks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        super::super::controls::tests::with_session(&root, |session| {
+            let picks = Picks {
+                main: "claude-opus-4-8".into(),
+                helpers: "gpt-5.6-luna".into(),
+                subagents: "claude-sonnet-5".into(),
+            };
+            apply_picks(session, &picks).unwrap();
+            let store =
+                crate::settings::Store::with_global(&root, Some(root.join("user-settings")))
+                    .unwrap();
+            let global = store.read(crate::settings::Scope::Global).unwrap();
+            assert_eq!(
+                global.values["model"]["parent"].as_str(),
+                Some("claude-opus-4-8")
+            );
+            assert!(
+                !root.join(".sterna").join("config.toml").exists(),
+                "setup writes nothing into the project"
+            );
+            assert_eq!(*session.model.borrow(), "claude-opus-4-8");
+            assert_ne!(
+                session.config().decisions.mode,
+                crate::config::DecisionMode::On,
+                "Jev stays step 3"
+            );
+        });
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn sterna_picks_its_tuned_models_from_what_is_served() {

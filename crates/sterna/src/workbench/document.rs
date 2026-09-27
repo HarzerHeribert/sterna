@@ -267,6 +267,15 @@ impl Document {
         // What the card drew is the session's own header, not conversation:
         // an empty conversation is still empty underneath it.
         let card_rows = d.rows.len();
+        // An empty conversation's way in sits under the card, above any note
+        // that arrives before the first message, so a note never hides it.
+        if c.messages.iter().all(|m| m.historical.is_some())
+            && s.streaming_text.is_none()
+            && s.streaming_tool_input.is_none()
+            && s.streaming_reasoning.is_none()
+        {
+            d.opening(s, width);
+        }
         // A card's body sits inside two edges, a three-column indent and the
         // column kept clear before the gutter: nine columns in all.
         let inner = width.saturating_sub(9).max(1);
@@ -576,9 +585,6 @@ impl Document {
                 d.turn_sterna(usize::MAX - 1);
             }
             d.arriving(&text, s, width);
-        }
-        if d.rows.len() == card_rows {
-            d.opening(s, width);
         }
         d
     }
@@ -1258,7 +1264,16 @@ impl Document {
             s.suggestions.clone()
         }
         .into_iter()
-        .map(|(label, message)| (label, Action::Insert(message), false))
+        // A command chip runs; a prompt chip becomes the draft, or is added
+        // to one after a blank line -- it never replaces what is typed.
+        .map(|(label, message)| {
+            let action = if message.starts_with('/') {
+                Action::Command(message)
+            } else {
+                Action::Draft(message)
+            };
+            (label, action, false)
+        })
         .collect();
         self.chips(chips, 0);
         self.blank(0);

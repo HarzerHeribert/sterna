@@ -44,7 +44,12 @@ pub enum CellTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Cell(usize),
+    /// Put this in the composer in place of what is there: a command the
+    /// completion list or /help offers.
     Insert(String),
+    /// A suggested message: the draft when the composer is empty, else added
+    /// to it after a blank line.
+    Draft(String),
     Path(String),
     Tab(usize, CellTab),
     Helper(usize, usize),

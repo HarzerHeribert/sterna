@@ -212,7 +212,8 @@ pub fn project_suggestions(root: &std::path::Path) -> Vec<(String, String)> {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
     let last_commit = git(&["log", "-1", "--format=%s"]).filter(|s| !s.is_empty());
-    let dirty = git(&["status", "--porcelain"])
+    // Sterna's own folder is not the person's change.
+    let dirty = git(&["status", "--porcelain", "--", ".", ":(exclude).sterna"])
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
     let has_tests = [
@@ -230,6 +231,43 @@ pub fn project_suggestions(root: &std::path::Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sterna's own folder in a project is not the person's change: a clean
+    /// repository with only `.sterna/` in it offers no review.
+    #[test]
+    fn sternas_own_folder_is_not_an_uncommitted_change() {
+        let root = std::env::temp_dir().join(format!("sterna-dirty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .is_ok_and(|out| out.status.success())
+        };
+        if !git(&["init", "-q"]) {
+            return;
+        }
+        std::fs::write(root.join(".sterna").join("config.toml"), "[ui]\n").unwrap();
+        let offered = project_suggestions(&root);
+        assert!(
+            !offered
+                .iter()
+                .any(|(label, _)| label.contains("uncommitted")),
+            "{offered:?}"
+        );
+        std::fs::write(root.join("notes.txt"), "mine\n").unwrap();
+        let offered = project_suggestions(&root);
+        assert!(
+            offered
+                .iter()
+                .any(|(label, _)| label == "review 1 uncommitted change"),
+            "{offered:?}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn every_line_states_the_fact_plainly() {

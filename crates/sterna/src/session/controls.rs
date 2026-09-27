@@ -208,9 +208,83 @@ pub(super) fn publish_tiers(session: &Session<'_>) {
     }
 }
 
+/// The settings store this session writes through: the project, and the
+/// person's own settings folder when there is one.
+pub(super) fn store(session: &Session<'_>) -> Result<crate::settings::Store, String> {
+    crate::settings::Store::with_global(&session.project.root, session.settings_global.clone())
+}
+
+/// Where a choice made outside Settings is saved: globally (decision 6), or
+/// the project when this machine has no user settings folder.
+pub(super) fn home_scope(session: &Session<'_>) -> crate::settings::Scope {
+    if session.settings_global.is_some() {
+        crate::settings::Scope::Global
+    } else {
+        crate::settings::Scope::Local
+    }
+}
+
+/// Saves a choice made outside Settings: globally (decision 6), and in the
+/// project too for a key the project already sets, because there the
+/// project's value wins and a global save alone would change nothing here.
+/// A project that sets none of the keys is left untouched. A session running
+/// a named profile saves into that profile, which lives in the project.
+pub(super) fn save_home(
+    session: &Session<'_>,
+    edits: &[(String, Option<String>)],
+    profile: Option<&str>,
+) -> Result<crate::settings::Loaded, String> {
+    use crate::settings::Scope;
+    let store = store(session)?;
+    if profile.is_some() {
+        let snapshot = store.read(Scope::Local)?;
+        return store.save_profile(Scope::Local, &snapshot, edits, profile);
+    }
+    let scope = home_scope(session);
+    let snapshot = store.read(scope)?;
+    let mut loaded = store.save(scope, &snapshot, edits)?;
+    if scope == Scope::Global {
+        let project = store.read(Scope::Local)?;
+        let shadowed: Vec<_> = edits
+            .iter()
+            .filter(|(key, _)| crate::settings_session::value(&project.values, key).is_some())
+            .cloned()
+            .collect();
+        if !shadowed.is_empty() {
+            loaded = store.save(Scope::Local, &project, &shadowed)?;
+        }
+    }
+    Ok(loaded)
+}
+
+/// One route for a model choice -- `/model`, the picker and setup alike:
+/// the id is settled against what is served, saved, and put in force, the
+/// session's own model and the screen's with it.
+pub(super) fn use_model(session: &Session<'_>, tier: Tier, id: &str) -> Result<String, String> {
+    if tier != Tier::Parent {
+        return assign_model(session, tier, id);
+    }
+    // Validate and persist before changing the live request model. A
+    // rejected control word or malformed id therefore leaves both the file
+    // and the running session unchanged.
+    let model = super::startup::settle_model(
+        id.to_string(),
+        &super::startup::served_accounts(session.gateway),
+    );
+    assign_model(session, tier, &model)?;
+    *session.model.borrow_mut() = model.clone();
+    // The effort a person chose survives a model change: `xhigh` and `max`
+    // have a wire form on every model, so taking the choice away would be
+    // taking away a level that works.
+    if let Some(ui) = session.ui {
+        ui.model(&model);
+    }
+    Ok(format!("model changed to {model}"))
+}
+
 /// Assigns a model to one tier, and persists the two that outlive the session.
 ///
-/// All three are written to `.sterna/config.toml`, under the active named
+/// All three are saved globally ([`home_scope`]), under the active named
 /// profile when selected. The effective configuration stays live and travels
 /// to delegated agents as a snapshot.
 ///
@@ -238,8 +312,6 @@ pub(super) fn assign_model(
         }
         Tier::Subagents => ("agents", "model", value == "off"),
     };
-    let store = crate::settings::Store::new(&session.project.root)?;
-    let snapshot = store.read(crate::settings::Scope::Local)?;
     let mut edits = vec![(
         format!("{section}.{key}"),
         if key_removed {
@@ -258,12 +330,7 @@ pub(super) fn assign_model(
         };
         edits.push(("agents.mode".into(), Some(mode.into())));
     }
-    let loaded = store.save_profile(
-        crate::settings::Scope::Local,
-        &snapshot,
-        &edits,
-        session.selected_profile.as_deref(),
-    )?;
+    let loaded = save_home(session, &edits, session.selected_profile.as_deref())?;
     // A live model choice must not activate unrelated preferences saved for restart.
     let mut live = session.config.borrow_mut();
     match tier {
@@ -744,7 +811,7 @@ pub(super) fn save_settings(
     scope: crate::settings::Scope,
     edits: &[(String, Option<String>)],
 ) -> Result<crate::settings::Loaded, String> {
-    let store = crate::settings::Store::new(&session.project.root)?;
+    let store = store(session)?;
     let snapshot = store.read(scope)?;
     store.save_profile(scope, &snapshot, edits, None)
 }
@@ -1481,8 +1548,16 @@ pub(super) fn command(
         "models" | "entitlements" => {
             models(session);
         }
-        "login" => login(session, argument),
-        "wizard" | "setup" => super::setup::command(session, argument),
+        // Each of these can finish a setup step, so the opening chip that
+        // leads back into setup is recomputed after it.
+        "login" => {
+            login(session, argument);
+            super::setup::offer(session);
+        }
+        "wizard" | "setup" => {
+            super::setup::command(session, argument);
+            super::setup::offer(session);
+        }
         "pool" => pool(session, argument),
         "usage" => {
             let now = std::time::SystemTime::now()
@@ -1493,7 +1568,10 @@ pub(super) fn command(
                 super::usage::panel(super::usage::read(session).as_ref(), now),
             );
         }
-        "key" => key(session, argument),
+        "key" => {
+            key(session, argument);
+            super::setup::offer(session);
+        }
         _ => return false,
     }
     true
@@ -1647,7 +1725,7 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
 
     #[test]
     fn only_the_gemini_relay_key_is_warned_about_and_the_warning_names_the_terms() {
@@ -1932,6 +2010,7 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: Some(root.join("user-settings")),
         };
         permissions(&session, Some("allow Read(**)")).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
@@ -1951,7 +2030,10 @@ mod tests {
     }
 
     /// Builds a session rooted at `root` and runs `body` against it.
-    fn with_session(root: &std::path::Path, body: impl FnOnce(&Session<'_>)) {
+    pub(in crate::session) fn with_session(
+        root: &std::path::Path,
+        body: impl FnOnce(&Session<'_>),
+    ) {
         with_selected_session(root, None, body)
     }
 
@@ -2003,6 +2085,7 @@ mod tests {
             rollback_pending: Cell::new(None),
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
+            settings_global: Some(root.join("user-settings")),
         };
         body(&session);
     }
@@ -2021,6 +2104,15 @@ mod tests {
         )
         .unwrap();
 
+        // What the next session loads: the project and the person's own
+        // settings, where a model choice is saved.
+        let load = || {
+            crate::settings::Store::with_global(&root, Some(root.join("user-settings")))
+                .unwrap()
+                .load(None)
+                .unwrap()
+                .config
+        };
         with_session(&root, |session| {
             assert_eq!(tier_models(session).parent, "opus-5");
             assert_eq!(tier_models(session).helper, None, "helpers ship off");
@@ -2029,23 +2121,29 @@ mod tests {
             // Live, with no restart -- the next cell's runtime is built from
             // this.
             assert_eq!(tier_models(session).helper.as_deref(), Some("gpt-5.6-luna"));
-            // Persisted, because `agent.rs` loads this file itself when a
+            // Persisted, because `agent.rs` loads the settings itself when a
             // delegated goal starts.
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.helpers.model.as_deref(), Some("gpt-5.6-luna"));
             // Choosing a model IS the opt-in, so an earlier `enabled = false`
-            // does not silently swallow it.
+            // does not silently swallow it: the project set it, so it is
+            // changed there, where it wins.
             assert!(saved.helpers.enabled);
+            assert!(
+                fs::read_to_string(&file)
+                    .unwrap()
+                    .contains("enabled = true")
+            );
             // And an unrelated setting survived the edit.
             assert_eq!(saved.limits.cells, Some(42));
 
             assign_model(session, Tier::Subagents, "claude-sonnet-5").unwrap();
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.agents.mode, AgentsMode::Pinned);
             assert_eq!(saved.agents.model.as_deref(), Some("claude-sonnet-5"));
 
             assign_model(session, Tier::Subagents, "off").unwrap();
-            let saved = SternaConfig::load(&root).unwrap();
+            let saved = load();
             assert_eq!(saved.agents.mode, AgentsMode::Off);
             assert_eq!(saved.agents.model, None);
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
@@ -2053,13 +2151,10 @@ mod tests {
             // Reversible, which is what makes the panel safe to press.
             assign_model(session, Tier::Helpers, "off").unwrap();
             assert_eq!(tier_models(session).helper, None);
-            assert_eq!(SternaConfig::load(&root).unwrap().helpers.model, None);
+            assert_eq!(load().helpers.model, None);
             assert!(assign_model(session, Tier::Subagents, "inherit").is_err());
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
-            assert_eq!(
-                SternaConfig::load(&root).unwrap().agents.mode,
-                AgentsMode::Off
-            );
+            assert_eq!(load().agents.mode, AgentsMode::Off);
 
             // A value the config refuses fails with the config's own sentence
             // and leaves the file byte-identical: one validator, not two.
@@ -2070,10 +2165,7 @@ mod tests {
             // The parent is remembered too: the tier a person changes most
             // was the only one that used to forget.
             assign_model(session, Tier::Parent, "claude-opus-4-8").unwrap();
-            assert_eq!(
-                SternaConfig::load(&root).unwrap().model.parent.as_deref(),
-                Some("claude-opus-4-8")
-            );
+            assert_eq!(load().model.parent.as_deref(), Some("claude-opus-4-8"));
             let before = fs::read_to_string(&file).unwrap();
             assert!(assign_model(session, Tier::Parent, "auto").is_err());
             assert_eq!(fs::read_to_string(&file).unwrap(), before);

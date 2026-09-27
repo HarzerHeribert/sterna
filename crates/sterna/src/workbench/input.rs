@@ -10,6 +10,8 @@ use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Insert(String),
+    /// Add to the draft: in place of an empty one, else after a blank line.
+    Draft(String),
     OpenPath(String),
     Pass,
     /// Handled; draw.
@@ -759,6 +761,10 @@ impl Workbench {
                 // it gives the keyboard back.
                 self.close_all();
                 return Effect::Insert(command);
+            }
+            Action::Draft(message) => {
+                self.close_all();
+                return Effect::Draft(message);
             }
             Action::Path(path) => return Effect::OpenPath(path),
             Action::Cell(cell) => {

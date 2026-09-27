@@ -183,6 +183,8 @@ pub(super) enum Update {
     Tiers(bool, String),
     /// A chip offered first on the opening screen: its label, and what it types.
     Suggest(String, String),
+    /// Take away the opening chip that sends this.
+    Unsuggest(String),
     Delta(String),
     ToolDelta(String),
     /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
@@ -444,6 +446,10 @@ impl LiveUi {
         let _ = self
             .updates
             .send(Update::Suggest(label.into(), types.into()));
+    }
+    /// Takes the opening chip that sends `types` away.
+    pub(super) fn unsuggest(&self, types: &str) {
+        let _ = self.updates.send(Update::Unsuggest(types.into()));
     }
 
     pub(super) fn tiers(&self, helpers_on: bool, subagents: &str) {
@@ -983,6 +989,9 @@ fn run(
                     state.suggestions.retain(|(_, said)| *said != types);
                     state.suggestions.insert(0, (label, types));
                 }
+                Update::Unsuggest(types) => {
+                    state.suggestions.retain(|(_, said)| *said != types);
+                }
                 Update::Tiers(helpers_on, subagents) => {
                     state.helpers_on = helpers_on;
                     state.subagents = Some(subagents);
@@ -1174,6 +1183,17 @@ fn run(
             match workbench.event(&input_event, &mut state, &notebook, busy) {
                 crate::workbench::Effect::Insert(command) => {
                     editor.text = command;
+                    editor.cursor = editor.text.len();
+                    editor.selected = 0;
+                    dirty = true;
+                    continue;
+                }
+                crate::workbench::Effect::Draft(message) => {
+                    if editor.text.trim().is_empty() {
+                        editor.text = message;
+                    } else {
+                        editor.text = format!("{}\n\n{message}", editor.text.trim_end());
+                    }
                     editor.cursor = editor.text.len();
                     editor.selected = 0;
                     dirty = true;
