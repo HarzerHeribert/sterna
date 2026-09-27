@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 
 use sterna::sandbox::linux::{self, complement};
-use sterna::sandbox::profile::Profile;
 
 fn tree(dir: &Path) -> Vec<PathBuf> {
     let names: &[&str] = match dir.to_str().unwrap() {
@@ -115,6 +114,7 @@ fn a_confined_command_reads_widely_and_writes_only_the_writable_places() {
 fn inner() {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
+    use sterna::sandbox::profile::Profile;
 
     let home = PathBuf::from(std::env::var_os("HOME").unwrap());
     let root = home.join("code/project");

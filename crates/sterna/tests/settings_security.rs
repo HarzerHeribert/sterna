@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use sterna::sandbox::profile::{Access, Profile};
-use sterna::sandbox::{linux, windows};
+use sterna::sandbox::windows;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -119,6 +119,7 @@ fn macos_refuses_sterna_settings_writes_by_tools_and_admitted_shells() {
 #[test]
 fn linux_refuses_an_admitted_shell_sterna_settings_writes_where_it_can_and_says_where_not() {
     use std::process::{Command, Stdio};
+    use sterna::sandbox::linux;
 
     let regime = linux::regime();
     if regime == linux::Regime::Unconfined {

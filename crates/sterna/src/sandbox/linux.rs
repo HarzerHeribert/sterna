@@ -17,7 +17,7 @@
 //! at all, and the protected paths inside the project are guarded by Sterna's
 //! own checks alone.
 
-use super::profile::{Profile, SCRATCH_DIR};
+use super::profile::Profile;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -333,7 +333,7 @@ pub fn confine(profile: &Profile, command: &mut std::process::Command) -> std::i
         Regime::Namespaced { .. } => Some(super::linux_ns::View::prepare(
             &profile.secret_paths(),
             &profile.protected_paths(),
-            &[profile.root().join(SCRATCH_DIR)],
+            &[profile.root().join(super::profile::SCRATCH_DIR)],
             profile
                 .proxy()
                 .and_then(|route| route.unix.as_deref().map(|unix| (route.port, unix))),
