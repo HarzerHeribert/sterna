@@ -736,6 +736,8 @@ fn draw_row(
                         t,
                     );
                 }
+            } else if !r.chips.is_empty() {
+                chrome::chips(f, g, inner_x, area.y, limit, &r.chips, ui.press, t);
             } else {
                 spans_at(f, g, inner_x, limit);
                 if let Some(act) = &r.action {

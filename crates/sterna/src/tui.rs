@@ -561,8 +561,11 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect standing handlers · /handlers off <name>",
                 ),
                 ("/help".to_string(), "show available commands"),
-                ("/sidebar".to_string(), "auto, show or hide telemetry"),
-                ("/theme".to_string(), "choose a palette · classic or parrot"),
+                (
+                    "/sidebar".to_string(),
+                    "auto, show or hide the sidebar · Ctrl-B",
+                ),
+                ("/theme".to_string(), "choose a bird or a classic palette"),
                 (
                     "/telemetry".to_string(),
                     "live activity, requests and execution · Ctrl-T",
@@ -746,6 +749,15 @@ impl Counted {
             Counted::Gateway => "reported",
             Counted::Estimated => "estimated",
             Counted::Mixed => "part estimated",
+        }
+    }
+
+    /// Who counted, in a sentence's words.
+    pub(crate) fn by(self) -> &'static str {
+        match self {
+            Counted::Gateway => "counted by the provider",
+            Counted::Estimated => "estimated",
+            Counted::Mixed => "partly estimated",
         }
     }
 }

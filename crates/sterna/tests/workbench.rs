@@ -385,6 +385,24 @@ fn helper_details_preserve_assignment_model_and_evidence() {
         assert!(t.contains(part), "{t}");
     }
 }
+/// A helper opened inside its card offers its raw record as a chip that a
+/// click opens, like every other chip.
+#[test]
+fn a_helper_in_a_card_opens_its_raw_record_on_a_click() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.helper = Some((1, 0));
+    draw(&c, &n, &s, &mut u, 100, 40);
+    let raw = Action::HelperRaw(1, 0);
+    assert!(
+        u.geometry.hits.iter().any(|(_, a)| *a == raw),
+        "the raw chip is not clickable"
+    );
+    click(&mut u, &mut s, &n, raw);
+    assert_eq!(u.helper_raw, Some((1, 0)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("prepare failure windows"), "{screen}");
+}
 #[test]
 fn long_wait_has_time_but_no_fake_percentage() {
     let (c, mut n, mut s) = fixture();

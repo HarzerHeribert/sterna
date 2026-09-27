@@ -526,12 +526,14 @@ fn a_confident_read_only_intent_proposes_explore_for_one_request() {
         "{stdout}"
     );
     assert!(
-        stdout
-            .contains("decision: explore for this request (read_only 0.97); /mode execute to pin"),
+        stdout.contains(
+            "Exploring for this request: it looks read-only. /mode execute pins executing."
+        ),
         "{stdout}"
     );
     // The advice is the person's; the classifier's raw answer is not.
     assert!(!stdout.contains("decision: intent"), "{stdout}");
+    assert!(!stdout.contains("read_only 0.97"), "{stdout}");
 }
 
 /// Between 0.5 and `mode_above`, Sterna offers `/mode explore` with one line
@@ -548,7 +550,9 @@ fn a_read_only_intent_below_mode_above_offers_explore_and_runs_as_today() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(root.join("src/new.rs").exists(), "{stdout}");
     assert!(
-        stdout.contains("decision: read_only 0.70 below mode_above; /mode explore to pin"),
+        stdout.contains(
+            "This request looks read-only, not surely enough to explore it. /mode explore pins exploring."
+        ),
         "{stdout}"
     );
 }
@@ -565,10 +569,7 @@ fn mode_execute_pins_and_a_confident_intent_never_proposes() {
     let output = run(&root, &[], &["/mode execute", "add a module"], &base_url);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(root.join("src/new.rs").exists(), "{stdout}");
-    assert!(
-        !stdout.contains("decision: explore for this request"),
-        "{stdout}"
-    );
+    assert!(!stdout.contains("Exploring for this request"), "{stdout}");
 }
 
 /// `/mode auto` clears the pin: the same confident intent proposes again.
@@ -589,8 +590,9 @@ fn mode_auto_unpins_and_a_confident_intent_proposes_again() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!root.join("src/new.rs").exists(), "{stdout}");
     assert!(
-        stdout
-            .contains("decision: explore for this request (read_only 0.97); /mode execute to pin"),
+        stdout.contains(
+            "Exploring for this request: it looks read-only. /mode execute pins executing."
+        ),
         "{stdout}"
     );
 }

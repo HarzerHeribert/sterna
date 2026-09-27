@@ -1164,24 +1164,7 @@ pub(super) fn command(
             let c = &transcript.conversation;
             let estimated = estimate_request_tokens(c, &session.model.borrow());
             let bytes: usize = c.messages.iter().map(|m| message_text(m).len()).sum();
-            let measured = transcript
-                .notebook
-                .context
-                .map(|context| match context.cap {
-                    Some(cap) => format!(
-                        "Current request context: {}/{} tokens ({}%) · {}",
-                        context.used,
-                        cap,
-                        context.used.min(cap).saturating_mul(100) / cap.max(1),
-                        context.counted.as_str()
-                    ),
-                    None => format!(
-                        "Current request context: {} tokens · window unknown · {}",
-                        context.used,
-                        context.counted.as_str()
-                    ),
-                })
-                .unwrap_or_else(|| "Current request context: no request yet".into());
+            let measured = measured_context(transcript.notebook.context);
             show(
                 session,
                 Panel::text(
@@ -1530,8 +1513,55 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
     ))
 }
 
+/// `/context`'s line for the request just sent: its size, against the
+/// window when the window is known, and who counted it.
+fn measured_context(context: Option<crate::tui::ContextTokens>) -> String {
+    let Some(context) = context else {
+        return "Current request context: no request yet".into();
+    };
+    match context.cap {
+        Some(cap) => format!(
+            "Current request context: {}/{} tokens ({}%), {}",
+            context.used,
+            cap,
+            context.used.min(cap).saturating_mul(100) / cap.max(1),
+            context.counted.by()
+        ),
+        None => format!(
+            "Current request context: {} tokens, {}; the model's window size is not known",
+            context.used,
+            context.counted.by()
+        ),
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
+
+    #[test]
+    fn the_context_line_says_who_counted_and_what_is_not_known() {
+        use crate::tui::{ContextTokens, Counted};
+        let line = super::measured_context(Some(ContextTokens {
+            used: 12,
+            cap: None,
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Gateway,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 12 tokens, counted by the provider; the model's window size is not known"
+        );
+        let line = super::measured_context(Some(ContextTokens {
+            used: 50,
+            cap: Some(200),
+            cap_source: crate::models::WindowSource::Unknown,
+            counted: Counted::Estimated,
+        }));
+        assert_eq!(
+            line,
+            "Current request context: 50/200 tokens (25%), estimated"
+        );
+    }
 
     #[test]
     fn only_the_gemini_relay_key_is_warned_about_and_the_warning_names_the_terms() {

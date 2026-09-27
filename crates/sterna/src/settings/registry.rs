@@ -217,7 +217,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "model.parent",
         label: "Main model",
-        description: "Which model answers you. Takes effect on your next message; a call already in flight keeps the model it started on.",
+        description: "Which model answers you. Applies from the next request, even during a turn; a request already in flight keeps the model it started on.",
         kind: Kind::Model,
         choices: &[],
         basic: true,
