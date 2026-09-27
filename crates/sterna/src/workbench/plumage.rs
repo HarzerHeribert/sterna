@@ -327,15 +327,17 @@ impl Art {
     /// The pixels in colour, on a canvas wide enough for the marks beside
     /// the head, from the first pixel row pair with anything drawn on it.
     fn pixels(&self, mood: Mood, light: bool) -> Vec<Vec<Option<u32>>> {
-        // On a light ground a letter takes its `_light` colour; one the
-        // drawing gives none and that would vanish into the ground (the
-        // cockatoo's white) is shaded just enough to hold its outline.
+        // On a light ground a letter takes its `_light` colour, or its own
+        // when the drawing gives none; either one that would vanish into the
+        // ground (the cockatoo's white, the tern's) is shaded just enough to
+        // hold its outline.
         let colour = |letter: char| {
             let dark = self.palette.get(&letter).copied()?;
             Some(match (light, self.light.get(&letter)) {
                 (false, _) => dark,
-                (true, Some(light)) => *light,
-                (true, None) => super::look::readable(dark, true, OUTLINE),
+                (true, light) => {
+                    super::look::readable(light.copied().unwrap_or(dark), true, OUTLINE)
+                }
             })
         };
         let (top, right) = (self.top(), self.head_right());
@@ -651,8 +653,9 @@ mod tests {
         }
     }
 
-    /// On a light ground no plumage vanishes: a colour the drawing gives
-    /// no light variant keeps an outline's worth of contrast.
+    /// On a light ground no plumage vanishes: every colour -- the drawing's
+    /// own light variant, or one shaded for it -- keeps an outline's worth
+    /// of contrast.
     #[test]
     fn a_light_ground_loses_no_bird() {
         use super::super::look::{LIGHT_GROUND, contrast};
@@ -666,7 +669,7 @@ mod tests {
                 .skip(art.top() - art.top() % 2)
             {
                 for (x, letter) in row.iter().enumerate() {
-                    let Some(letter) = letter.filter(|l| !art.light.contains_key(l)) else {
+                    let Some(letter) = letter else {
                         continue;
                     };
                     let rgb = light[y - (art.top() - art.top() % 2)][x].unwrap();

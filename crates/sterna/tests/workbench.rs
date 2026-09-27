@@ -4501,8 +4501,61 @@ fn a_light_terminal_gets_colours_that_read_on_it() {
     }
 }
 
+/// The instruments are drawn by older code with colours of their own; they
+/// read on a light terminal like everything else, and a terminal without
+/// true colour is sent none of theirs either.
+#[test]
+fn the_instruments_read_on_a_light_terminal_and_send_no_rgb_without_it() {
+    use sterna::workbench::look::{LIGHT_GROUND, contrast};
+    let (c, n, mut s) = fixture();
+    s.telemetry_open = true;
+    s.activity = Activity::Thinking;
+    s.theme = Theme::Neon;
+    s.truecolor = true;
+    s.light = true;
+    let mut u = Workbench::default();
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    let mut checked = 0;
+    for cell in b
+        .content()
+        .iter()
+        .filter(|cell| !cell.symbol().trim().is_empty())
+    {
+        let on_ground = matches!(cell.bg, Color::Reset);
+        match cell.fg {
+            Color::Reset => {}
+            Color::Rgb(..) if on_ground => {
+                let fg = rgb_of(cell.fg).unwrap();
+                assert!(
+                    contrast(fg, LIGHT_GROUND) >= 3.0,
+                    "{:?} is {fg:06x} on a light ground",
+                    cell.symbol()
+                );
+                checked += 1;
+            }
+            Color::Rgb(..) => {}
+            // A named colour is the terminal's own, drawn for its dark
+            // ground: on a light one it is not left to chance.
+            named if on_ground => panic!("{:?} is drawn in {named:?}", cell.symbol()),
+            _ => {}
+        }
+    }
+    assert!(checked > 20, "the instruments were drawn: {checked}");
+    s.light = false;
+    s.truecolor = false;
+    let b = draw(&c, &n, &s, &mut u, 140, 40);
+    for cell in b.content() {
+        assert!(
+            rgb_of(cell.fg).is_none() && rgb_of(cell.bg).is_none(),
+            "{:?} is sent as 24-bit colour",
+            cell.symbol()
+        );
+    }
+}
+
 /// On a light terminal a bird wears its light palette: the tern's white
-/// is the grey its drawing names for a light ground.
+/// is the grey its drawing names for a light ground, shaded just enough to
+/// keep its outline there.
 #[test]
 fn a_bird_on_a_light_terminal_wears_its_light_palette() {
     let (_, _, mut s) = fixture();
@@ -4525,8 +4578,10 @@ fn a_bird_on_a_light_terminal_wears_its_light_palette() {
     let dark = colours(&s);
     s.light = true;
     let light = colours(&s);
-    assert!(dark.contains(&0xeef0f2) && !dark.contains(&0xdce1e6));
-    assert!(light.contains(&0xdce1e6) && !light.contains(&0xeef0f2));
+    let named = sterna::workbench::look::readable(0xdce1e6, true, 1.4);
+    assert!(dark.contains(&0xeef0f2) && !dark.contains(&named));
+    assert!(light.contains(&named) && !light.contains(&0xeef0f2));
+    assert!(sterna::workbench::look::contrast(named, sterna::workbench::look::LIGHT_GROUND) >= 1.4);
 }
 
 /// Mono is monochrome: the person and the helpers are told apart by

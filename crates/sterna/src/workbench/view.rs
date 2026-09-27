@@ -581,6 +581,8 @@ pub fn render(
         // around them does.
         g.hits.retain(|(r, _)| !r.intersects(area));
         crate::tui::telemetry::expanded(f, area, c, _served, n, s);
+        // Drawn with colours of its own: they are taken through the look.
+        super::look::adopt(f.buffer_mut(), area, super::look::get());
         let back = "Esc · Back";
         let w = chrome::width(back) + 4;
         if area.width > w + 2 && area.height > 0 {
