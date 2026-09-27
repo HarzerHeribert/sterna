@@ -1,37 +1,34 @@
 #!/bin/sh
-# Install Pane, the inference gateway and Glasshouse from a GitHub release.
+# Install Sterna and the inference gateway from a GitHub release.
 #
-#   curl -fsSL https://harzerheribert.github.io/glasshouse/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --pane-only      # no `glasshouse` link
-#   GLASSHOUSE_VERSION=v0.1.0-pre.2 sh install.sh         # a specific release
+#   curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh
+#   STERNA_VERSION=v0.1.0-pre.2 sh install.sh             # a specific release
 #
 # What it does, in order, and nothing else:
 #   1. picks the release (the newest, pre-releases included, or
-#      $GLASSHOUSE_VERSION) and this machine's archive;
+#      $STERNA_VERSION) and this machine's archive;
 #   2. refuses the archive unless its SHA-256 matches the release's SHA256SUMS;
-#   3. unpacks it into ~/.local/lib/glasshouse/versions/<tag>/bin -- a fresh
+#   3. unpacks it into ~/.local/lib/sterna/versions/<tag>/bin -- a fresh
 #      directory, never over a binary that may be running -- and points
-#      ~/.local/lib/glasshouse/current at it;
-#   4. links pane, inference-gateway (and glasshouse) into ~/.local/bin;
+#      ~/.local/lib/sterna/current at it;
+#   4. links sterna and inference-gateway into ~/.local/bin, and removes
+#      Pane's old `pane` link and ~/.local/lib/glasshouse install;
 #   5. downloads the CLIProxyAPI build the release pins (cliproxyapi.toml),
 #      refuses it unless its SHA-256 matches the pin, and hands it to
 #      `inference-gateway subscriptions adopt-binary`.
 # It installs no harness, touches no credential and edits no shell profile.
 set -eu
 
-REPO="${GLASSHOUSE_REPO:-HarzerHeribert/glasshouse}"
+REPO="${STERNA_REPO:-HarzerHeribert/sterna}"
 # Test seams: where releases are listed and downloaded from.
-API="${GLASSHOUSE_RELEASES_API:-https://api.github.com/repos/$REPO/releases?per_page=30}"
-DOWNLOADS="${GLASSHOUSE_RELEASE_DOWNLOADS:-https://github.com/$REPO/releases/download}"
-BROKER_DOWNLOADS="${GLASSHOUSE_BROKER_DOWNLOADS:-}"
-ROOT="${GLASSHOUSE_HOME:-$HOME/.local/lib/glasshouse}"
-BIN_DIR="${GLASSHOUSE_BIN_DIR:-$HOME/.local/bin}"
-PANE_ONLY=0
+API="${STERNA_RELEASES_API:-https://api.github.com/repos/$REPO/releases?per_page=30}"
+DOWNLOADS="${STERNA_RELEASE_DOWNLOADS:-https://github.com/$REPO/releases/download}"
+BROKER_DOWNLOADS="${STERNA_BROKER_DOWNLOADS:-}"
+ROOT="${STERNA_HOME:-$HOME/.local/lib/sterna}"
+BIN_DIR="${STERNA_BIN_DIR:-$HOME/.local/bin}"
 for arg in "$@"; do
-  case "$arg" in
-    --pane-only) PANE_ONLY=1 ;;
-    *) echo "install.sh: unknown option $arg" >&2; exit 2 ;;
-  esac
+  echo "install.sh: unknown option $arg" >&2
+  exit 2
 done
 
 say() { printf '%s\n' "$*"; }
@@ -59,13 +56,13 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) TARGET=aarch64-apple-darwin ;;
   Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64 | Linux-arm64) TARGET=aarch64-unknown-linux-gnu ;;
-  *) die "no release is built for $(uname -s) $(uname -m); on Windows use install.ps1" ;;
+  *) die "this installer does not support $(uname -s) $(uname -m); release archives are at https://github.com/$REPO/releases" ;;
 esac
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-TAG="${GLASSHOUSE_VERSION:-}"
+TAG="${STERNA_VERSION:-}"
 if [ -z "$TAG" ]; then
   fetch "$API" "$TMP/releases.json"
   # The list's own order puts pre.9 above pre.10: rank the tags by version,
@@ -80,7 +77,7 @@ if [ -z "$TAG" ]; then
   [ -n "$TAG" ] || die "could not read the newest release of $REPO"
 fi
 VERSION="${TAG#v}"
-ARCHIVE="glasshouse-$VERSION-$TARGET.tar.gz"
+ARCHIVE="sterna-$VERSION-$TARGET.tar.gz"
 BASE="$DOWNLOADS/$TAG"
 
 say "Installing $TAG for $TARGET"
@@ -91,26 +88,49 @@ WANT="$(grep " $ARCHIVE\$" "$TMP/SHA256SUMS" | cut -d' ' -f1)"
 [ "$(sha256_of "$TMP/$ARCHIVE")" = "$WANT" ] || die "$ARCHIVE does not match its SHA-256; refusing it"
 
 DEST="$ROOT/versions/$TAG"
-if [ -x "$DEST/bin/pane" ]; then
+if [ -x "$DEST/bin/sterna" ]; then
   say "$TAG is already installed at $DEST"
 else
   tar xzf "$TMP/$ARCHIVE" -C "$TMP"
-  STAGE="$TMP/glasshouse-$VERSION-$TARGET"
+  STAGE="$TMP/sterna-$VERSION-$TARGET"
   mkdir -p "$ROOT/versions" "$DEST.partial/bin"
-  for b in pane inference-gateway glasshouse; do
+  for b in sterna inference-gateway; do
     [ -f "$STAGE/$b" ] && cp "$STAGE/$b" "$DEST.partial/bin/$b"
   done
   [ -f "$STAGE/cliproxyapi.toml" ] && cp "$STAGE/cliproxyapi.toml" "$DEST.partial/"
-  [ -x "$DEST.partial/bin/pane" ] || die "the archive carried no pane binary"
+  [ -x "$DEST.partial/bin/sterna" ] || die "the archive carried no sterna binary"
   mv "$DEST.partial" "$DEST"
 fi
 ln -sfn "$DEST" "$ROOT/current"
 
 mkdir -p "$BIN_DIR"
-for b in pane inference-gateway glasshouse; do
-  [ "$b" = glasshouse ] && [ "$PANE_ONLY" = 1 ] && continue
+for b in sterna inference-gateway; do
   [ -x "$ROOT/current/bin/$b" ] && ln -sfn "$ROOT/current/bin/$b" "$BIN_DIR/$b"
 done
+
+# Sterna was called Pane, which installed into ~/.local/lib/glasshouse and
+# linked `pane` next to these. The `pane` link goes; the old install root
+# goes once no link in $BIN_DIR points into it any more.
+OLD_ROOT="$HOME/.local/lib/glasshouse"
+if [ -L "$BIN_DIR/pane" ]; then
+  case "$(readlink "$BIN_DIR/pane")" in
+    "$OLD_ROOT"/*)
+      rm -f "$BIN_DIR/pane"
+      say "Removed the old pane command; sterna replaces it."
+      ;;
+  esac
+fi
+if [ -d "$OLD_ROOT" ]; then
+  LINKED=""
+  for link in "$BIN_DIR"/*; do
+    [ -L "$link" ] || continue
+    case "$(readlink "$link")" in "$OLD_ROOT"/*) LINKED="$link" ;; esac
+  done
+  if [ -z "$LINKED" ]; then
+    rm -rf "$OLD_ROOT"
+    say "Removed Pane's old install at $OLD_ROOT; your settings and sessions move on sterna's first start."
+  fi
+fi
 
 # The subscription broker the release was built with.
 PIN="$DEST/cliproxyapi.toml"
@@ -131,8 +151,8 @@ if [ -f "$PIN" ]; then
   fi
 fi
 
-say "Installed $TAG. Pane updates itself from here on; run \`pane\` to start, \`pane doctor\` to check."
+say "Installed $TAG. Sterna updates itself from here on; run \`sterna\` to start, \`sterna doctor\` to check."
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) say "Add $BIN_DIR to your PATH to run pane from any shell." ;;
+  *) say "Add $BIN_DIR to your PATH to run sterna from any shell." ;;
 esac

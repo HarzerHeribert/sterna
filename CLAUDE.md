@@ -1,728 +1,122 @@
-# Claude Code project instructions
-
-Glasshouse uses a spec-to-evidence, multi-harness development process.
-
-## How work is done — user ruling 2026-09-17, and it outranks every process section below
-
-**The user, on the packet-and-worker cycle: "I have a feeling this whole writing
-packets and using workers and rebuilding context thing is highly ineffective"; on
-the replacement: "I like your new approach, makes total sense"; and: "make sure
-future sessions never fall back to the inefficient work SDLC."** Measured that
-day: five commits in six hours done in-session with no packets; the night before,
-one deletion took four worker passes, three hand-applied integrations and two
-workers dead of context. The packet path pays for the same knowledge three
-times — reading the code to write the packet, the worker reading it again to
-start, reading the diff to integrate.
-
-**Three tiers, chosen per task by two questions — does this session already hold
-what the task needs, and is it long enough and independent enough to run beside
-other work?**
-
-1. **In-session, by default.** Work this session understands is done here or by a
-   **fork** (`Agent` with `subagent_type: "fork"`): the fork starts with this
-   session's whole context — the code sites, the VM, the rules — and edits the
-   main tree directly; there is no packet, no worktree, no report file and no
-   integration. The orchestrator commits by pathspec when the fork reports.
-   Forks that edit run one at a time per file set; a second fork on disjoint files
-   is fine.
-2. **A plain subagent for reading, design and review** (`Agent`, general-purpose
-   or Explore): a brief in the prompt, the answer straight back. An independent
-   review is still worth a fresh reader that is not anchored on this session.
-3. **A worktree worker in cmux only for a long, parallel, file-disjoint build the
-   user wants to watch** — and then with a **short packet**: the contract
-   sentence, the box lines, the files, the tests, the one mutation, the Phase −1
-   links. Everything else a packet used to repeat lives in this file and
-   `worker-capabilities.md`; `new-packet.sh`'s skeleton is that tier's form.
-
-**What stays at every tier:** Phase −1 as a question answered before the work
-starts; the targeted gate before a commit — **and, when a contract changes (a
-refusal where there was none, a global no longer bound), a grep of
-`crates/*/tests` for the feature's name with every target found run too,
-because the blast radius traces distance-zero targets only** (measured
-2026-09-17: the fetch wave's gate was green and two untraced tests in
-`competitive_web_runtime.rs` went red on the sweep); one decisive mutation on a
-decision; commit by pathspec; the VM leg for anything Windows; a paragraph of
-evidence per line, not a ceremony. **What is retired:** mandatory packets for everything, the
-"keep two workers running" floor, `pipeline.sh` nagging, per-worker watches as a
-default, `integrate.sh` as the default path, and the rule that hidden subagents
-are forbidden — the user lifted it on 2026-09-17. **Every sentence below that
-says dispatch, packet, worker, board, watch, pipeline or integrate describes the
-worktree tier and applies only when that tier is chosen.** Memory:
-`in-session-work-first`.
-
-## Decompression — user ruling 2026-09-03, and the process changes it makes
-
-**The ruling** (design-decisions, *Decompression*; map **Phase 59**, lines 2043–2054):
-*Glasshouse is not sloppy; it is extraordinarily conscientious — in places too
-conscientious. The biggest risk is now complexity through over-assurance: files too
-large, too much historical documentation, a process whose evidence system itself
-needs maintaining. Before a broader release: no further large features; a hardening
-and simplification phase — split modules, cut redundant explanation, run real long
-sessions, close the open items by risk rather than by checkbox count. Keep what was
-good; changing the process is explicitly allowed.* **Phase 59 outranks every feature
-package until its lines are closed.** What stays: Phase −1, the targeted gate and the
-trailing sweep, a mutation on every decision an Amber or Red package makes, the
-register, visible workers in worktrees, the co-edit protocol, an independent verifier
-for Red. What changes:
-
-1. **A size ratchet runs in every gate.** `scripts/check-file-sizes.py` ends
-   `blast-radius.sh` and sits in `ci-local.sh`'s lint lane: a file over 2,500
-   production lines may only shrink, per `scripts/file-size-baseline.txt`. A
-   decomposition package ends with `--update`; the reviewer diffs the baseline.
-2. **A pure move is Green and owes no mutation.** *(Boundary scans follow the
-   move: several `#[cfg(test)]` tests read source files by literal
-   `include_str!("<file>.rs")` — `routing/mod.rs`, `harness/mod.rs`,
-   `shell/mod.rs`, `shell/view.rs`, `guardrails/store.rs`, `shim.rs` — **and
-   `crates/glasshouse/tests/`, where three more live**. A split packet greps
-   `include_str!` for the file across **both `src/` and `tests/`** first and
-   lists every scanning test; the scan's include list must cover every
-   successor file, and that edit is part of the move even when the scanning
-   test lives outside the module — put those files in the packet's YOURS, not
-   its FORBIDDEN. `GH-DECOMP-ROUTING-SESSION` reported itself partial for lack
-   of this line; `GH-DECOMP-DISPOSABLE` reported itself partial again for the
-   `tests/` half of it, and a `src/`-only grep is why. **A crate-root
-   decomposition greps one thing more**: bare `crate::<name>` paths from the
-   crate's own sibling modules — `GH-DECOMP-MAIN`'s packet claimed a binary
-   crate root has no outside callers, and `api/unix.rs` had ten.)* It is verified by the full targeted
-   gate (for `config` or `main.rs` that is most of the crate), a moved-lines
-   accounting (`git diff --color-moved=zebra --stat`; the worker reports how many
-   lines are not moves and what they are), every existing import path kept valid by
-   `pub use` re-exports, and the ratchet. **Trimming comments is a separate package**,
-   reviewed by reading, never mixed into a move.
-3. **A doc comment states the invariant and why it holds now.** How a decision was
-   reached goes to `design-decisions.md` or the measurements behind a one-line
-   pointer. No new comment block over 20 lines in production code unless its first
-   sentence is the invariant.
-4. **A flake costs one rerun, not a ceremony.** A red target in a known load-sensitive
-   family (`terminal_loss`, `session_supervision`, the pty fixtures) is re-run alone
-   once by the gate and reported `flaky-pass`, which is not red and gets no attribution
-   write-up; three flaky-passes in a week buy a determinism packet for that test.
-   `blast-radius.sh` does the rerun for the local gate, and since 2026-09-11 the
-   GitHub sweep does it too: `scripts/ci/rerun-failed-alone.sh` reruns every
-   failed test alone once at the end of the cell and names each `flaky-pass`;
-   a red Test step no longer stops the cell's doctests, clippy and rustdoc
-   (user, 2026-09-11: a flaky pty test was hiding every red behind it).
-5. **Evidence entries and checkpoints are bounded.** An evidence entry is the
-   contract, the tests by name, the mutation table (Amber/Red) and the limits — the
-   worker's report is the record, linked by path. A checkpoint is under 150 lines. A
-   new practice section is a rule under 20 lines; the file is closed to stories.
-6. **Dogfooding is a lane.** One real session per working day — the shipped binary
-   driving a real harness on a real project for at least an hour, the orchestrator
-   watching memory extraction, routing, the firewall and the shell — with findings in
-   `docs/process/dogfooding.md` and packets by risk.
-7. **Open lines are worked by risk, not count.** The user named 1534, 1535, 1545,
-   1129, 1044, 1294 and 1610 as product-relevant; their refusals are superseded by
-   *design it* (map line 2054). Everything else open stays refused unless a producer
-   lands.
-
-8. **No new coupling debt — user ruling 2026-09-03, and it outlives Phase 59.**
-   The splits fixed the physical shape. Several successors still talk through
-   broad `pub(super)` surfaces and re-exports, and **that is accepted, not a
-   defect**: it is an improvement, not a repair, and it gets **no second
-   refactoring wave**. Decoupling happens organically, from evidence — re-cut
-   a shared responsibility only when two modules keep having to change
-   together; introduce a small domain API only when one module needs many
-   internals of another; remove a re-export only when real new code paths show
-   which interface is durably needed. **Never invent an abstract trait or a new
-   crate for the sake of clean architecture.** The enforcing half binds every
-   package from today, Phase 59 or not: **a new function stays in the module
-   that owns it, and `main.rs` and every `mod.rs` are a dispatch and
-   composition layer only.** `design-decisions.md` (*Coupling: the physical
-   split is done*) carries the ruling and names `scripts/co-change.py` as the
-   successor that measures which boundaries are actually wrong — written after
-   a stretch of real product changes, not before, because today's history is
-   dominated by the decomposition itself and would mostly report what a split
-   touched. Order of work: close Phase 59's remaining lines, then product work
-   and dogfooding.
-
-Order of the splits: `config`, `routing/evidence`, `shell` first (no live worker
-touches them), then `routing/session`, then `main.rs → commands/` once the package
-holding `main.rs` integrates; a trim package follows each split; dogfooding runs
-beside all of it.
-
-## The orchestrator's reading, and why it is no longer eleven documents
-
-**Start here, in this order:**
-
-0. `docs/product/architecture.md` — the three-component split (Pane, the
-   inference gateway, Glasshouse); one page, read it once.
-1. `.agent-runtime/CONTINUATION.md` — the previous session's exact checkpoint
-2. `docs/process/ORIENT.md` — **generated** by `scripts/orient.py`: where the
-   map stands, every phase ranked by open lines, the nearly-finished phases
-   quoted in full, the practice index to read **by number**, and the recent
-   checkpoints. Regenerate it with `scripts/orient.py` after any map or handoff
-   change; `--check` fails if it is stale.
-3. `docs/process/agent-sdlc.md` and `docs/process/worker-capabilities.md` —
-   the proof process and the model-tier boundaries. Short, and both load-bearing.
-
-**That is roughly 15,000 tokens and it is enough to start.**
-
-**Then read on demand, never end to end:**
-
-- `docs/product/capability-map.md` — **authoritative**, and 214 KB. `ORIENT.md`
-  carries the open lines for nearly-finished phases; for any other phase use
-  `scripts/discover.py --phase <id>`. Open the map itself to quote a specific
-  line, not to find out what is open.
-- `docs/process/orchestration-practice.md` — 234 KB. **Read sections by number.**
-  `ORIENT.md` has the index with one-line summaries.
-- `docs/product/evidence/phase-<id>.md` — the entry for the phase in hand.
-- `docs/process/assurance-economics.md` — before writing a packet; **Phase −1 is
-  a hard gate** (see below).
-- `docs/process/orchestration-measurements.md`, `docs/product/design-decisions.md`,
-  `docs/process/harness-hook-protocol.md`, `docs/process/orchestrator-prompt.md`
-  — when the task actually reaches them.
-
-**Why this changed.** The old "read these eleven completely" list cost about
-**228,000 tokens** before any work happened; `ORIENT.md` is **4,900** and derives
-from the same documents. Nothing was deleted — you now open a document because
-you need it rather than to discover whether you do.
-
-## If you are a worker, this list is not yours
-
-The documents above are the **orchestrator's** reading. A worker that works
-through them spends more context orienting than working — measured: a four-box
-package used 288k tokens, over half of it on documents it did not need. **A
-worker should not read `ORIENT.md` either**: it is a map of work the worker was
-not asked to choose between.
-
-**A worker reads only this**, and its packet names anything extra:
-
-1. this file
-2. its own packet
-3. `docs/process/worker-capabilities.md` — what its tier may and may not decide
-4. the practice sections its packet names, by number
-5. `docs/product/evidence/phase-<id>.md` for the phases in its package
-6. its own box lines, quoted in the packet
-
-That is roughly 5,000 tokens instead of 175,000. `scripts/discover.py --phase
-<id>` prints items 5 and 6 together.
-
-**The orchestrator writing the packet owes the worker this scoping.** A packet
-that says "read CLAUDE.md and the files it names" has handed a Sonnet the
-orchestrator's job and will be paid for in context that produced nothing.
-
-The capability map is authoritative. Work in its stated order. Do not check a
-box until its evidence-ledger entry is `COMPLETE`. Only the primary Opus
-orchestrator integrates, commits, and updates project-status records.
-
-`docs/process/orchestration-practice.md` is not optional reading. It records
-how to run this process without repeating mistakes that have already cost
-whole cycles — task sizing for real parallelism, never losing a finished
-worker, reading a failure before fixing it, and the shell traps that have bitten.
-Its later sections cover running several workers at once, team leads that
-subcontract, and the cheap leaf tier.
-
-**Run workers in parallel** *(worktree tier only — see the ruling at the top)*. Partition batches by the files they touch, order
-those batches by the map, and name the other live workers' files in each
-packet's `FORBIDDEN FILES`. Map order is a priority, not a mutex — one worker
-at a time has already cost this project a session.
-
-**Since the 2026-08-29 move to a 20x plan, quota is no longer the reason to stop
-at three.** Dispatch four or five when the partitions are genuinely disjoint. But
-the ceiling did not disappear, it changed shape: practice §9 measured the real
-limit as **review collision** — reviews are serial and worker wall-clock is not —
-and the orchestrator's own context is still the scarcest thing here. Past three
-concurrent editing workers, use a **team lead** (§10) so review is paid out of
-the lead's context rather than yours. Measured 2026-08-29: the main checkout
-produced more output tokens than the next seven worker directories combined.
-
-`docs/process/orchestration-measurements.md` is a standing inherited experiment
-measuring which model tier closes capability boxes at what cost. Add every
-batch to its ledger and answer one of its open questions when you can.
-
-`docs/process/assurance-economics.md` is how verification compute is spent, and
-its **Phase −1 is a hard gate you owe before every dispatch**: a packet must
-demonstrate, from current production code, that each claimed input has a
-producer, a caller that carries it, a propagation path, and a consumer that can
-observe it. **If one link cannot be shown, do not dispatch — return the packet as
-premise-invalid.** Two packets on 2026-08-28 failed this and cost ~$30 of worker
-compute that no downstream optimization could recover. `scripts/validate_round.py`
-enforces it, so the check is free.
-
-**Start every packet** *(worktree tier only)* **with `scripts/new-packet.sh <name> [--recon]
-[--lines N,M] [--worktree]`** rather than hand-writing one. It emits a
-skeleton that already passes `validate_round.py` — the correct
-`READ ONLY THIS` scoping, a `FEASIBILITY` block in the one-line form that
-does not shadow itself, and box lines quoted verbatim and unwrapped from
-`--lines` — so the only edit-and-revalidate cycle left is the one for the
-task's actual substance.
-
-**Every worker gets a nagging watch, armed in the same turn it is started** *(worktree tier only)*:
-`Monitor(command: "scripts/worker-watch.sh <name> <surface> <report>", persistent: true)`.
-It reminds until you run `scripts/worker-ack.sh <name>`. Before starting new
-work, run `scripts/worker-ack.sh --list` and clear anything waiting.
-
-**And one watch none of the others replace — the permission prompt.** A worker
-that runs `cd <worktree> && grep …` trips auto mode's classifier and its pane
-sits on *Do you want to proceed?* with no token moving, which every other watch
-reads as thinking; on 2026-09-03 three workers sat that way for half an hour.
-Arm `Monitor(command: "PROMPT_WATCH_SELF=workspace:<yours> scripts/prompt-watch.sh",
-persistent: true)` in your first turn; it names the pane and the command, and
-`cmux send-key --workspace <ws> Enter` approves it. The launch prompt now tells
-workers never to `cd`.
-
-**That watch is yours, not the worker's, and it is not a continuity watch.** It
-reads the worker's *pane* from your session and tells *you* the pane went
-quiet — which is exactly what a worker that died of context looks like, and it
-cannot tell the worker anything. So every long-running session, this one
-included, also arms its own:
-
-    Monitor(command: "<repo>/scripts/continuity-watch.sh --role orchestrator",
-            persistent: true)
-
-`--role worker` is the other half, and `scripts/dev/new-worker.sh` now puts
-that in the launch prompt itself, so a worker arms it before it reads anything.
-The script finds its own session by branch and refuses out loud rather than
-watching the wrong one. **Arm yours in your first turn** — and pass an absolute
-path: `.agent-runtime/` exists only in the main checkout, so the relative form
-that used to be documented here failed with exit 127 in 63 of 64 worktrees
-while the pane looked armed.
-
-Measured 2026-08-29: three Opus workers, two hours in, no watch between them,
-and the user noticed before any mechanism did.
-`scripts/tests/test_launch_prompts.py` fails the gate if a launch prompt loses
-the instruction again — the rule is enforced now rather than written down.
-
-**Keep the pipeline fed, and let `scripts/pipeline.sh` remember it for you** *(worktree tier only; retired as a default by the 2026-09-17 ruling)*.
-Every other watch in this project fires on a worker *event*. An empty board
-produces no events, so it is quiet in exactly the way that looks like nothing is
-wrong — and on 2026-08-29 an orchestrator sat at one worker with ~90% of the
-tree unclaimed until the user asked why. Arm this in your first turn alongside
-the continuity watch:
-
-    Monitor(command: "scripts/pipeline.sh --watch 600", persistent: true)
-
-It stays silent while two or more workers are live and names the undispatched
-packets when they are not. **The floor is two, not one**: by the time the board
-is empty the refill has already cost wall-clock that parallel work would have
-absorbed. The ceiling is still §74's — past three concurrent editing workers use
-a team lead, because review is what catches a mutation killed by the wrong
-assertion, and review is yours.
-
-**Or arm one Monitor for the whole board instead of the per-worker and standing
-watches above** (`GH-BOARD-WATCH`, 2026-09-05; measured: one event, one turn,
-roughly a third of an orchestrator's turns spent on notices needing no act).
-`scripts/board-watch.sh` composes the same detection — worker panes, prompts,
-pipeline dryness, stale panes, CI runs — into one digest line per window plus
-an immediate line for exactly five things: a report landing, a stuck prompt, a
-worker gone quiet with no signal, a CI run concluding failure, the board going
-dry. Everything else waits for the digest.
-
-    Monitor(command: "scripts/board-watch.sh --window 120 \
-      --worker <name>:<surface-ref>:<report-path> [--worker ...] \
-      --ci <run-id> [--ci ...] --self <your-workspace-ref>", persistent: true)
-
-The per-worker `worker-watch.sh` and the three standing watches stay valid and
-may be armed instead — supervising exactly one worker is the case for them.
-
-**Before choosing what to dispatch, run `scripts/cluster-b.py` and then read
-`docs/process/refusal-register.md` — in that order, and read the register
-before you commit to anything.** The script finds the shape that closed four of
-batch 51's eight lines: production code whose every call site falls after its
-file's `#[cfg(test)]`. The register is what stops you packaging a phase that
-looks open and is not — six of Phase 32A's nine open lines are Cluster E, *"the
-provider signal genuinely does not arrive, do not package"*, and an orchestrator
-recommended that phase anyway by counting open lines instead of reading the
-register first.
-
-**Run practice §16's mutation ritual with `scripts/mutate.sh`, not by hand.**
-It backs up, mutates, touches, runs the given test, and always restores from
-the backup — failing loudly if the restore does not come back byte-identical.
-A SURVIVED result is the valuable one: it names behaviour no test in the
-command actually watches.
-
-**Integrate with `scripts/integrate.sh <name>...`, and read what it prints.**
-It takes bare worker **names** (`api-routing`), not paths — it builds
-`.worktrees/<name>` itself, and a path argument fails with `MISSING`. It applies
-each worker's diff, copies the untracked deliverables `git diff` cannot see (a
-tests-only worker has *no* tracked changes — three of batch 45's six were
-invisible), runs fmt, and runs the blast radius. It refuses a dirty tree, a
-non-ancestor base, and any file two worktrees both touched.
-
-**Pass every finished worktree in one call. Do not integrate serially.** The
-interactions between patches only appear once the diffs share a tree, so serial
-integration hides exactly what integration is for — batch 47's non-`Default`
-field on `SessionRecord` broke five struct literals inside *another* worker's
-files. Attribution does not suffer: the tool refuses any file two worktrees both
-touched, so the patches stay file-disjoint and the blast radius names the target.
-
-**It deliberately stops there.** It never commits, ticks a box, writes evidence,
-or runs a mutation. The mechanics caught nothing on their own in batch 45 —
-every real catch came from reading a diff or choosing a mutation, and the
-classify-caller refusal was noticed *while applying the patch*. Automating the
-mechanics is a win; delegating them to an agent would remove the exposure that
-produces the rulings. **The ruling, every packet's Phase −1, and the diff of
-anything that decides something stay with you.** Not *every* diff: ten wrongly
-ticked boxes have been corrected so far and **all ten were found by audit
-workers, after the orchestrator had read the diff and ticked it** — every one of
-them the "no production caller" shape `cluster-b.py` finds mechanically. Run the
-script instead, and spend the reading on decisions (§86).
-
-**In the edit loop, run the specific affected cargo test. Before a worker
-reports, run `scripts/blast-radius.sh --targeted <every changed .rs file>`.** It
-maps the files you changed to their distance-zero cargo targets and runs them.
-Do not omit the filenames: auto-detection includes every other dirty worker
-file in the checkout, and the PreToolUse guard rejects that ambiguous form.
-The orchestrator runs `scripts/blast-radius.sh --full` once per integration
-wave; the PreToolUse guard rejects an accidental bare direct invocation.
-Practice §79 exists
-because a worker ran §69's grep, the grep correctly named the affected file, and
-the worker then *read* that file and judged it unaffected — costing a full gate
-cycle for something one eight-second test run catches. Once a grep names a file,
-run its tests; do not read them and decide.
-
-**The full sweep is TRAILING, not blocking — user ruling 2026-09-01** (*"most
-of our SDLC has become waiting … do this the smarter way"*). The blocking gate
-before an integration commit is the TARGETED one: the changed files' own
-targets plus the worker's quoted tests, re-run on the merged tree
-(`blast-radius.sh --targeted`). Commit and push on targeted green. The
-FULL two-lane sweep runs in the background per WAVE — once per two-to-four
-integrations, not once each — **and since 2026-09-05 the push itself starts
-the twelve-cell GitHub sweep, so the local wave sweep is `--macos` and the
-platform legs come from GitHub for free** — and a trailing red spawns a fix-forward worker
-(§84) while the line keeps moving; 2026-09-01's own history is the model: a
-missed regression shipped, the next tree's sweep caught it, the fix landed
-two commits later with zero damage. What does NOT weaken: per-box targeted
-tests and mutations stay blocking for every tick, `--targeted` prints how
-many full-trace targets it skipped so nobody mistakes it for the sweep, and
-the trailing sweep's failures are enumerated PER TARGET before attribution
-(the truncated-grep rule in the batch-70 measurements entry). Batch waves
-into one integrate call where finishes align; co-editors stay serial but now
-pay only the targeted price.
-
-**Dispatch with `scripts/dev/new-worker.sh <name> <cwd> <packet>`** *(worktree tier only)*. It creates
-the pane, launches the harness, types the prompt in, and **proves the prompt
-landed** before returning. Passing a prompt as a command-line argument silently
-does not work here, and `cmux identify --workspace X` reports the *app's*
-focused surface rather than that workspace's — both cost real time on
-2026-08-29, one of them by typing a launch command into the user's own pane.
-
-**Turn a worker's report into a ledger draft with
-`scripts/evidence_from_report.py`.** Workers emit a ```glasshouse-facts``` block;
-the script renders the mechanical part of the evidence entry. It decides nothing
-— it emits `⟨RULING REQUIRED⟩` and lists what you still owe. **No script may put
-a box in a state that would authorise ticking it.**
-
-`scripts/dev/` holds the dev shims, symlinked onto `PATH`: `glasshouse` runs
-the binary this repo builds, and `agy-gh` starts an Antigravity leaf worker
-unattended. Use them instead of re-deriving the workaround or asking the user
-to intervene — practice §19 explains why they are not the product's shims.
-
-Worktree-tier workers stay visible in cmux; forks and subagents are hidden by design since the 2026-09-17 ruling.
-**Every editing worker gets an isolated worktree, and it goes in `.worktrees/<name>`
-inside this repository** — gitignored, excluded from the gate's container copy, and
-removed by `scripts/close-worker.sh`. Do not create sibling directories next to the
-checkout; sixty-one of those accumulated before anyone noticed. Practice §73 has the
-reasoning and the one trap. Start Ox with the normal `ox` TUI—never
-`ox run` or a headless loop. Follow the worker do/don't rules and the safe hook
-protocol rather than personal global routing configuration.
-
-## Proportional assurance — ADVISORY, from the monitoring agent (not a user ruling)
-
-**Status: advisory recommendation, not a product requirement** — the user's ruling
-of 2026-09-03. It came from a monitoring agent the user runs, was first recorded
-here as a *user ruling*, and that attribution was wrong. Keep it: the advice is
-sound and worth following by default. But it is **not immutable**, it does not
-outrank a user decision, and where it conflicts with one the user's decision
-wins. The *Decompression* ruling above and rule 8 (*no new coupling debt*) are
-the user's own and do carry that authority.
-
-The quality standard stands: project isolation, fail-closed behaviour, real
-regression tests, a mutation where one is owed, the local gate, evidence
-consistency, honest residual risk. What changes is the **amount**. The goal is
-correct product behaviour delivered per unit of review, not a complete proof
-machine. Priority order: user-visible correctness and safety > finishing the
-capability in hand > maintainability > sufficient evidence > process.
-
-**Classify before acting.** Every finding is exactly one of: **Blocker**
-(the capability cannot work or be verified), **Defect** (behaviour is
-observably wrong, unsafe or misleading), **Debt** (it works; structure could
-improve), **Curiosity** (interesting, no demonstrated effect). Only a blocker
-or material defect may interrupt the task in hand. Debt becomes one successor
-line and is left alone. **A curiosity never becomes a package.** Being
-investigable, testable or documentable is not a reason to promote something.
-
-**State the contract before implementing**, in one sentence each: the
-observable behaviour changing, the invariant or failure mode that matters, the
-narrowest production path, and the smallest test that fails when the behaviour
-is removed. Prove that and the existing gates, then **stop** — no extra
-assertions, no adjacent polish, no second hypothesis, unless a concrete
-failure is still open. **One decisive mutation beats six variations**; the
-count is not a metric.
-
-**New machinery** — a map line, practice section, validator rule, script,
-evidence state, ledger field, mandatory packet section, or standing worker
-duty — requires **all five**: the failure is material; it has happened twice
-or once irreversibly; no existing invariant or gate covers it; automation
-beats a one-line clarification to a rule that already exists; the effort saved
-exceeds the upkeep. Otherwise record it **once**, in one place, and continue.
-A lesson becomes a principle, not a preserved incident. Do not retell the same
-finding in the handoff, the ledger, the measurements, the design record and
-the commit message — pick one home and link.
-
-**An investigation opens with a falsifiable question and gets two probes.**
-Then: supported → act; disproved → drop; uncertain but not blocking → record
-the uncertainty and move on; blocking → escalate the exact decision. Never
-explore to context exhaustion because an answer might exist.
-
-**Before every dispatch, four questions.** Does this change product behaviour
-or remove demonstrated risk? Is the scope smaller than the value? What exact
-condition ends it? What will we deliberately not do? A packet that cannot
-answer them is narrowed or refused. **If the task no longer fits one
-behavioural-contract sentence, split it or stop.**
-
-**After every integration, four short lines**: Outcome, Evidence, Residual
-risk, Next highest-value action.
-
-**The feature-freeze reading is superseded — user decision 2026-09-03.** The rule is
-now: *do not add further large **speculative** capabilities before a broader
-release.* **Missing producers required by already committed behaviour are
-permitted**, and so is the approved A/B/C/F/H coordination slice (Phase 60).
-*"Do not add capability-map lines"* applies to **process machinery** — validators,
-ledger fields, checklist expansion — and does **not** prohibit recording product
-capabilities the user has explicitly approved. Risk-based ordering still applies to
-executable work. Deliberately deferred experiment gates (Phases 52, 53) are not in
-the active execution queue and must not be presented as blockers. **Open, deferred,
-experimental, refused and awaiting-user-decision are five distinct statuses; keep
-them distinct.** The decisions themselves live in `design-decisions.md`,
-*Steering decisions of record*.
-
-## Scale the ceremony to the task, and prove the board is closing boxes
-
-Output tokens per net closed box, by day: **57k → 109k → 126k → 811k**
-(2026-08-27..30, §86). The last step is 6.4× in a day, and box difficulty does
-not step 6.4× overnight. Two rules follow, and both are meant to be applied from
-memory in seconds.
-
-**1. Every packet is Green, Amber or Red.** Decide it from the packet you just
-wrote, not from the codebase — it takes under a minute. This is the scale already
-in `worker-capabilities.md`; do not invent a second one.
-
-| tier | model | effort | entry criterion | it owes | it **skips** |
-|---|---|---|---|---|---|
-| **Green** | Sonnet | low–medium | adds no new decision — wires an existing value to an existing consumer, a `Display`/serde impl, a flag forwarding to a settled function, tests only, docs or config literals, **a pure move (Phase 59 decomposition)** | the box's own targeted test, plus one assertion that the production caller runs it | mutation, independent reviewer, orchestrator diff read, and any blast radius beyond the named target |
-| **Amber** | Sonnet | medium–high | adds or changes a decision — a branch, threshold, ordering, ranking, persisted field, or public API shape | targeted tests, blast radius, **one** mutation on the decision the box names | the independent reviewer, unless the worker flags a decisive claim; and you read the diff of the decision, not of the whole package |
-| **Red** | Opus specialist | high–xhigh | PTY/process lifecycle, signals, shutdown, migrations, session identity or resume, project isolation, secrets, `#[cfg(...)]` platform code — or a disputed architecture | full relevant regression, platform legs, the semantic mutation suite, an independent verifier | nothing |
-
-**The tier picks the model and the effort with it — one decision, not three.**
-`worker-capabilities.md`'s risk routing and `dev/new-worker.sh --model` are this
-same scale; never choose them separately. **One harness, one flag: Green and
-Amber are both Sonnet and differ only in effort.** **The default is not Opus.**
-This session dispatched 6 Sonnet and 8 Opus — but the **last five in a row were
-Opus**, and at least two were over-tiered: writing prose from facts the
-orchestrator already gathered is Amber at most. **xhigh on a mechanical task is
-waste** — effort buys deliberation over a decision, and a Green packet contains
-none by definition.
-
-**Phase −1 is never skipped, at any tier.** It is the cheapest check here and
-guards the only spend the ledger calls pure waste. *Uncertain tier escalates* —
-but "this feels small" is not uncertainty, it is a Green.
-
-**2. Three rules that keep the board closing boxes.** Each fires without
-interpretation:
-
-- **A validated, undispatched implementation packet outranks any new
-  investigation.** `validate_round.py` passing is the whole trigger. Declining
-  it for a contended file is not free: **a co-edit is the normal case** —
-  `coedit.sh claim` — and declining one needs a specific reason written into the
-  checkpoint, not a judgement made silently.
-- **An investigation package names, in its own packet, the implementation
-  package it unblocks.** No named successor, no dispatch. A refusal-register row
-  is not a deliverable; the package it routes to is (§83).
-- **Above 250k output tokens per net closed box over the last two days, the
-  next dispatch must be implementation** — and no investigation goes out until
-  it is back under. Two commands: `python3 scripts/usage-snapshot.py
-  --glasshouse`, and `git show <rev>:docs/product/capability-map.md | grep -c
-  '^☑'` at each end of the window. 250k is 2× the worst healthy day measured.
-
-## Size the package by the mechanism, and the six token traps
-
-Long form and every number: **practice §87**. Batch 55 managed **0.77 boxes per
-package** across thirteen packages; its outlier closed **five boxes in 66 lines**
-because those five map lines were facets of one `store.context(&id)` call.
-
-**Size a package by the mechanism, not by the line — target 3–6 boxes.** One
-producer, one call site or one reader serving several map lines is *one*
-package. A 1-box package is right only when the phase has one **reachable** line
-(Phase 31: one of seven, the rest Cluster Q). Three shapes find the fat
-mechanisms: a phase whose first line is the mechanism and whose rest are its
-filters (34C — 1431 selects, 1432–1443 are its rules); several lines that are
-fields of one returned value (Phase 30's 1161–1165, one `SessionContext`); a
-recon grouped **by root cause** — Phase 51's 34 lines were 4 causes, and the
-causes are the package boundaries.
-
-**The traps, each one structural and invisible at the moment it is chosen.**
-
-| # | trap | rule |
-|---|---|---|
-| 1 | investigation ending in a document instead of a dispatch — register 280→969 on the day the map moved +9 | §86: name the successor package in the packet |
-| 2 | small packages multiply a fixed integration cost — the blast radius ran **41–56 test targets** per run, priced by files touched, not boxes closed | batch disjoint partitions into ONE `integrate.sh` call; this is what makes 3–6 above worth anything |
-| 3 | a co-edit buys dispatch parallelism and sells integration parallelism — `integrate.sh` refuses a shared file, so co-editors integrate **one at a time**, each paying trap 2 in full | partition by mechanism to stay file-disjoint; reserve a co-edit for a large package that must share `main.rs` |
-| 4 | reading for a property a script decides — all ten un-ticked boxes were `cluster-b.py`'s shape, every one found *after* the orchestrator read the diff | run the script; spend the reading on **decisions**, and on Phase −1 |
-| 5 | polling a running job — `sleep`-and-check pays a tool round to learn "still running" | arm a `Monitor` whose filter names the **failure** signatures too, or background it and wait; a bounded one-shot check is the only exception |
-| 6 | skipping the batch's ledger row — batches 46–55 are unlogged, exactly the span where out-per-box went 57k→811k | one row per batch; it is the only instrument that sees a regime change while it happens |
-
-Trap 3 does not contradict *"do not integrate serially"*: that rule is about
-**disjoint** partitions, where serial integration hides the cross-patch
-interaction it exists to find. Co-editors of one file are the case
-`integrate.sh` refuses to batch, and one at a time is correct there.
-
-## Trust the report's artifacts, and verify where the act is irreversible
-
-Long form: **practice §88**. **Not one worker has misreported.** All ten wrongly
-ticked boxes were *accurate* reports about correct code nobody had asked the right
-question about (`bd81e04`), and all ten were found *after* the orchestrator read
-the diff — while `integrate.sh` re-runs every quoted test on the merged tree.
-
-**Act on a report carrying all five artifacts**, reading it for the decision it
-hands you rather than to re-derive its facts: `validate_round.py` passed before
-dispatch (so Phase −1 is established) · a well-formed ```glasshouse-facts``` block
-· mutations **KILLED, killing test named and failure text quoted** · gates quoting
-real `test result:` lines with counts, not "tests pass" (§68) · `blast-radius.sh`
-exit 0. A missing artifact is a question for the worker, not a re-derivation.
-
-**Verify anyway in these five cases and no others**, each tied to irreversibility
-or to a signal the report itself raised — never to suspicion:
-
-- **an authority-carrying act**: ticking a box, un-ticking one, or ruling;
-- **Phase −1, before every dispatch, at every tier**;
-- **the report names its own thin spot** — spend it there, not on the whole report;
-- **two sources disagree**, or `packet_errors` contradicts the packet;
-- **a red result** — two runs to attribute it before naming a cause (§34).
-
-**Never re-derive** test results the blast radius re-runs, §81 line numbers, a
-mutation reported with its killing test and output, or a script's verdict (trap 4).
-
-**A worker caught misreporting loses trust for that class of claim for the rest of
-the batch, and the checkpoint says so. That has never fired** — untested, not
-proven. No scoring and no per-worker ledger: bookkeeping is dropped first.
-
-## An orchestrator does not idle, and does not hand off cold *(worktree tier; the 2026-09-17 ruling retires the dispatch floor)*
-
-**`scripts/pipeline.sh --watch 600` is not advisory** *(retired as a default, 2026-09-17; it applies only while the worktree tier is in use)*. **When it fires, dispatch —
-do not reply to it with a reason.** On 2026-08-29 it fired twice and the
-orchestrator answered both times with a well-argued explanation of why waiting
-was reasonable. Both explanations were wrong, and the user had to say so twice.
-There is always work: `cluster-b.py` finds candidates in seconds, the refusal
-register says which are packageable, and `new-packet.sh` emits a valid packet.
-
-**Reviewing, integrating, ruling and committing are not "being busy".** They are
-what you do *between* dispatches, not instead of them. Two or three workers
-should be running while you do them.
-
-**Hand off HOT.** When the continuity watch fires, the instinct is to finish
-cleanly and leave a tidy empty board. That is backwards: the successor is a
-fresh context that can review anything, and an idle board wastes the whole
-window it takes them to spin up. **Fill the board first, then write the
-checkpoint, then relaunch.** The successor inherits running workers and reviews
-their reports as its first act — which is the cheapest possible start.
-
-**Do not stop for a gate, an integration, or a barrier.** A red gate gets a fix
-worker and the line keeps moving (§84). A co-edit barrier blocks one *file*, not
-the board (§77). An integration blocks nothing.
-
-**The only reasons to leave the board empty** *(worktree tier)* are the user asking you to stop, or
-a defect so central that every candidate package would build on it. Neither has
-happened yet.
-
-## Every script, because naming only some of them cost a session
-
-**CLAUDE.md named fifteen of these and the repo has twenty-seven**, which cost a
-round queued behind `main.rs` with `scripts/coedit.sh` sitting unread and §77 in
-an index already loaded. The fix is a list, not more prose.
-
-**Round mechanics:** `new-packet.sh` · `validate_round.py` · `dev/new-worker.sh`
-· `worker-watch.sh` · `worker-ack.sh` · `worker-done.sh` · `close-worker.sh` ·
-`integrate.sh` · `evidence_from_report.py`
-
-**Deciding what to work on:** `discover.py` · `orient.py` · `cluster-b.py`
-(finds production code with no production caller — the shape behind four of
-batch 51's eight closures) · `pipeline.sh` (nags when the board runs dry) ·
-`map-index.py` · `progress.py`
-
-**Verification:** `ci-local.sh` (`--scoped` for the fast tier; `--macos
---linux --windows-vm` for legs; **any flag suppresses the macOS+Linux
-default**) · `blast-radius.sh` · `mutate.sh` · `msrv-check.sh` ·
-`check-doc-boundary.sh` · `check-evidence-coverage.py` · **`check-secrets.py`** (the key-leak guard, user instruction 2026-09-06: your local key values by exact match and never printed, provider key shapes with an entropy bar, a fingerprint allowlist `check-secrets-allow.txt` for planted fixtures, the `glasshouse:not-a-secret` marker; it runs as `scripts/git-hooks/{pre-commit,pre-push}` through `core.hooksPath` — `install-git-hooks.sh` sets it, shared by every worktree — and in both lint lanes; `--fingerprint <path>:<line>` prints the allowlist entry for a new fixture) · `lib/accel.sh`
-(sourced by both gates: sccache when installed, silent when not)
-
-**The LOCAL gate is the BLOCKING gate; GitHub is the trailing sweep — since
-2026-09-05, when the repository went public (user instruction).**
-`.github/workflows/ci-extended.yml` runs on every push: twelve cells — five
-OS/arch targets × the declared compiler and the MSRV, plus beta and nightly —
-with the real harnesses installed via npm so every adapter's `Declared` fact is
-re-verified against a live binary, `--no-fail-fast`, and a RustSec audit. It is
-free on a public repository, so a push needs no justification, and a red there
-gets a fix-forward worker (§84) exactly as a trailing local sweep would. The
-old seven-job `ci.yml` stays `workflow_dispatch` and can be deleted.
-`ci-local.sh` remains what a worker runs before reporting — faster than any
-hosted runner — and `--windows-vm` remains the only Windows-ARM64 run besides
-the `windows-11-arm` cell.
-
-**Six build rules. The first five are defects measured on 2026-09-05 (`efdf3ea`;
-the numbers and the findings are in `docs/process/handoff.md`, that date); the
-sixth is four reds of one shape on 2026-09-06:**
-
-1. **Never set `RUSTFLAGS`.** Warnings are denied by `[workspace.lints.rust]`,
-   identically for every invocation. `RUSTFLAGS` is part of cargo's
-   fingerprint; three values across gate steps and interactive builds left one
-   `target/` holding 1203 fingerprint variants of `glasshouse` and 98.7 GiB.
-2. **One compiler.** `[workspace.metadata.ci] toolchain` and
-   `rust-toolchain.toml` name the same version — bump both in one commit.
-   `ci-local.sh` uses it on every leg and warns by name when it is not
-   installed; until this rule the macOS leg had never built with it. On the
-   development machine Homebrew `rust` is unlinked and `rustup` owns `cargo`.
-3. **An inherited `ANTHROPIC_BASE_URL` is warned about in the caller's own
-   shell, never scrubbed there — and every cargo child the gate spawns runs
-   under `env -u`** (user ruling 2026-09-05, `GH-ENV-SCRUB`). Claude Code
-   exports it into every child, and `tests/pty_smoke.rs:3526` correctly
-   refuses to certify overlay hygiene under it. `ci-local.sh` and
-   `blast-radius.sh` now unset the three provider variables for their own
-   cargo invocations, so a gate from any pane sees a clean environment. A
-   `cargo test` run by hand needs the `env -u` prefix **only when
-   `env | grep ^ANTHROPIC_` names one** — on 2026-09-23 none was set in the
-   user's shell or in the session's, and the user asked for the reflexive
-   prefix to stop. The worker's own `claude` keeps its
-   environment — it needs the base URL to reach the API at all. Do not "fix"
-   the test.
-4. **macOS `cargo test` is fail-fast.** One red target hides every later one;
-   the Codex catalogue drift sat behind `pty_smoke` for a whole run. Before
-   attributing a red, enumerate with `--no-fail-fast` or read the GitHub sweep,
-   which already runs that way.
-5. **`--scoped` is a tier, not the gate.** Lints plus `blast-radius.sh`,
-   macOS-only, refuses platform legs, and prints a NOTE that it is not a CI
-   prediction. Run it in the loop; run the full gate before any push claim.
-6. **pane's Windows test compile is verified only by the `pane (windows-latest)`
-   cell.** `rusty_v8` wants MSVC, so `blast-radius.sh`'s windows-gnu check
-   cannot build pane's tests, and `cargo check --tests -p pane --target
-   x86_64-pc-windows-msvc` does not build on this host either (`ring`'s C
-   build refuses the target; tried once, 2026-09-06). A `cfg`-gated test's
-   helpers and imports are gated **by reading** before a merge ask — dead is an
-   error under `-D warnings` — and the cell is the check. Four sweep reds of
-   exactly this shape in the week to 2026-09-06 (`b67b66c` is the last).
-
-Measured, so nobody re-measures: cold, three platforms, from a wiped tree,
-**2371s**; warm macOS **≈300s**, of which ≈175s is 136 test binaries run one
-at a time (median 0.51s — process startup, not test work). That is the next
-lever and it is a nextest-with-a-**generated**-serial-list package, not a
-cache: an attempt with a hand-written serial lane matched 7 targets where
-`blast-radius.sh`'s classification matches 112, and was backed out for it.
-
-**Sharing a contended file — read §77 before queueing on `main.rs`:**
-`coedit.sh claim|peers|diff|done|status|ready|list|release`. Contention on
-`main.rs` is **structural**, not bad luck: §32 says put the caller's file in the
-partition and that is where every production caller lives. Batch 45 deferred six
-of seven packets on it.
-
-**Continuity and housekeeping:** `continuity-watch.sh` (`--role
-worker|orchestrator`) · `orchestrator-heartbeat.sh` · `usage-snapshot.py` ·
-`reap-worktrees.sh` · `ask-user.sh` · `stale-workspaces.sh` (`--watch 900` —
-arm it in the first turn; it names every provably redundant cmux pane and
-nags until each is closed, because two sessions left fifteen behind)
-
-**Hooks (`scripts/hooks/`), which enforce rather than remind:**
-`guard-worktree-boundary.sh` · `guard-destructive-git.sh` ·
-`coedit-peer-notice.sh` · `coedit-unreleased-guard.sh` · `worker-turn-ended.sh`
-
-Current phase and next action belong in `docs/process/handoff.md`; do not encode
-phase-specific assumptions in this file.
+# Sterna — instructions for coding agents
+
+This repository builds two programs:
+
+- **`sterna`** (`crates/sterna`) — a coding agent for the terminal. The model
+  writes one TypeScript program per turn; tool results stay live in an
+  embedded V8 isolate as named handles. Helpers, scouts and checkers are
+  cheap models it calls from inside that program.
+- **`inference-gateway`** (`crates/inference-gateway`) — the standalone model
+  gateway Sterna starts beside itself: providers, API keys, subscriptions,
+  pooling, protocol translation and usage.
+
+`docs/architecture.md` is the one-page map; `docs/README.md` indexes the rest.
+Read a doc when the task reaches it, not up front.
+
+## Build and test
+
+```sh
+cargo build -p sterna -p inference-gateway          # sterna embeds V8: the first build is long
+cargo test -p sterna --test <target>                # in the edit loop: the one target you touched
+cargo test -p inference-gateway --lib <module>
+scripts/install-local.sh                            # build, install into a fresh version dir, make it current
+scripts/install-local.sh --rollback                 # point `current` back at the previous version
+```
+
+- Run cargo plainly. Do not prefix it with `env -u …` out of habit; only when
+  `env | grep ^ANTHROPIC_` actually names a variable.
+- Never set `RUSTFLAGS`. Warnings are denied by `[workspace.lints.rust]`;
+  a `RUSTFLAGS` value splits the build cache.
+- One compiler: `rust-toolchain.toml` and `[workspace.metadata.ci] toolchain`
+  name the same version and are bumped together, in one commit.
+- Batch edits and verify once; do not compile after every small edit.
+
+## The gate before a commit
+
+1. `scripts/blast-radius.sh --targeted <every changed .rs file>` — list the
+   files explicitly. Bare `scripts/blast-radius.sh` is the full sweep and a
+   hook refuses it; `--full` is for a deliberate pre-push sweep.
+2. `cargo fmt --all` and `cargo clippy -p <crate> --all-targets` for every
+   crate you touched.
+3. The size ratchet, `python3 scripts/check-file-sizes.py`: a file over
+   2,500 production lines may only shrink (`scripts/file-size-baseline.txt`).
+   Over the ceiling means split the module, not trim its comments.
+4. When a change alters a contract (a new refusal, a removed option), grep
+   `crates/*/tests` for the feature's name and run every target it names —
+   the targeted gate only traces distance-zero targets.
+5. A decision you add (a branch, a threshold, an ordering) gets one mutation
+   that a test kills: `scripts/mutate.sh --allow-dirty --file F --find X
+   --replace Y --test <cargo test args>` (flags before `--test`).
+6. Workbench changes (`crates/sterna/src/workbench/`, `tui*`) also run
+   `cargo test -p sterna --test tui_live` (the real binary under a PTY) and
+   the `workbench` and `tui_look` targets: they pin screen strings the
+   targeted gate does not trace.
+7. Windows-only code (`#[cfg(windows)]`) is checked by the CI's Windows cells;
+   gate its test helpers and imports by reading, because dead code is an
+   error under deny-warnings.
+
+Report real `test result:` lines, never "tests pass". A red target in a
+known timing-sensitive family (`tui_live`, `lifecycle_cutoff`, `session::ui`)
+is rerun alone once — the gate does this itself; a pass there is a flaky
+pass, not a red.
+
+## Git
+
+- Commit by pathspec: `git commit -m … -- <paths>`. Never `git add -A`,
+  `git checkout --`, `git restore`, `git stash` or `git clean`; a hook refuses
+  the destructive forms.
+- Every push runs the twelve-cell GitHub sweep (`ci-extended.yml`: five
+  OS/arch targets on the declared compiler and the MSRV, plus beta and
+  nightly). It trails the local gate; a red cell is fixed forward.
+- Tag a release only after that sweep is green on the commit being tagged.
+
+## Keys and processes
+
+- Provider keys stay local. Never print one, never put one on a command line
+  (argv is visible to every process), never hand one to an agent, and never
+  read the key files or the gateway's credential store to "check" them.
+- `scripts/check-secrets.py` runs in the pre-commit and pre-push hooks
+  (`scripts/install-git-hooks.sh` sets `core.hooksPath`). A fixture that
+  looks like a key gets the `glasshouse:not-a-secret` marker (the scanner's literal) or an allowlist fingerprint.
+- Kill only processes you started, by PID. No `pkill`, `killall` or pattern
+  kills: other sessions and the user's own programs share this machine.
+
+## Installing a build
+
+An installed version is immutable. `scripts/install-local.sh` builds into a
+fresh `~/.local/lib/sterna/versions/<id>` and repoints `current`. Never
+overwrite an installed binary in place: macOS kills a re-signed binary at
+the same path.
+
+## Product rules
+
+- **No legacy code.** A replaced feature is deleted outright: no shims,
+  aliases or compatibility branches. The one exception is a saved settings
+  file: never break one — migrate it, or retire the old word with a one-time
+  notice that says what to do.
+- **Setup is a designed sheet, never a one-line prompt.** Pickers, keys,
+  sign-in, settings and wizards get a laid-out surface; mock it up first.
+- **Mouse first, one interaction model.** Every surface is clickable and
+  behaves like every other surface; keys are there too.
+- **Plain copy.** Say what happened in plain words. No bird puns, no
+  cute voice.
+- **Nothing black on black.** Every foreground stays readable on the
+  terminal's own background, in every theme.
+- **Animal art is drawn from reference photos.** Sprites are traced from
+  real photographs (credited in the README), never drawn from memory.
+
+## How work is done here
+
+- Do the work in this session. A fork (a subagent that shares this context)
+  is for a disjoint file set that can run beside you; a plain subagent is for
+  reading, design questions and independent review.
+- Nothing beyond that: no hand-off documents, no separate long-running
+  sessions to supervise, no process machinery. State the behaviour you are
+  changing in one sentence, prove it with the smallest failing test, pass
+  the gate, commit, stop.
+- An investigation starts with a falsifiable question and gets two probes;
+  then act, drop it, or write down the open question and move on.
+- Suggestions never block: note a non-essential question and continue on a
+  sensible default.
+- A decision for the user is written as distinct options (A/B/C) with what
+  each means and costs.

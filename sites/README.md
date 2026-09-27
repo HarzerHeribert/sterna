@@ -1,100 +1,45 @@
-# Glasshouse + Pane product site
+# Sterna product page
 
-A coding harness where tool results stay in the runtime and the model writes code over them.
-
-Static, independently built product pages. Everything for the website lives here;
-the Rust build and project-status documents are unaffected.
-
-## Local preview
+One static page, built with Vite and published by
+`.github/workflows/pages.yml` on every push to `main` that touches
+`sites/**`. The workflow runs `npm ci` and `npm run build` here and deploys
+`sites/dist/`.
 
 ```sh
 cd sites
 npm ci
-npm run dev
+npm run dev       # http://127.0.0.1:5173
+npm run build     # writes dist/
+npm run preview   # serves dist/
 ```
 
-## Production build
+## What is where
 
-```sh
-npm run build
-```
+| path | what |
+|---|---|
+| `index.html` | the whole page, as static HTML: it reads the same with scripts off |
+| `src/style.css` | the look |
+| `src/main.js` | the fonts and the copy button, nothing else |
+| `public/mark.svg` | the tern in flight: the favicon and the hero bird |
+| `public/perched.svg` | the perched tern, in the themes section |
+| `public/sterna-banner.png` | the social preview image (the README banner) |
+| `public/install.sh` | the installer, served at `/install.sh`; it is part of the release tooling, not of the page |
 
-Publish `sites/dist/` as the GitHub Pages artifact. The homepage, `glasshouse/`,
-and `pane/` use relative links and assets, supporting both the repository Pages
-prefix and a later custom domain. No server, API keys, or external runtime CDN
-is required. Fonts are bundled locally.
+Vite copies `public/` to the site root, so the installer's URL is
+`https://harzerheribert.github.io/sterna/install.sh`. Links are relative
+(`base: './'`), so the build works under the Pages prefix and on a custom
+domain alike.
 
-For GitHub Pages, the repository owner/orchestrator can place the example workflow
-below at `.github/workflows/pages.yml` and enable GitHub Actions as the Pages
-source in repository settings. It is intentionally documented here rather than
-changing the active orchestrator's workflow files. No publication has been performed.
+## The look
 
-```yaml
-name: Product site
-on:
-  push:
-    branches: [main]
-    paths: ['sites/**', '.github/workflows/pages.yml']
-  workflow_dispatch:
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-concurrency:
-  group: pages
-  cancel-in-progress: true
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: sites/package-lock.json
-      - run: npm ci
-        working-directory: sites
-      - run: npm run build
-        working-directory: sites
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: sites/dist
-      - name: Deploy
-        id: deployment
-        uses: actions/deploy-pages@v4
-```
-
-Custom domain setup: configure the domain in GitHub Pages settings, configure its
-DNS according to GitHub's instructions, and enable HTTPS after verification.
-https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site
-
-## Design contract
-
-- No frosted cards, backdrop blur, Gaussian blur, or diffuse glass surfaces.
-- The hero is a complete 3D glasshouse with zero-roughness transmissive walls
-  and a pitched roof. Natural specimens recur behind clear beveled glass.
-- Three.js handles transmission and refraction. GSAP sequences the specimens
-  between detailed and terminal-raster states, with quiet holds between them.
-- Six striking features per product live in `src/products.js`; the homepage
-  highlights three each, and the product pages show all six.
-- Page text remains in the DOM and outside the optical effect.
-- Motion pauses offscreen and in background tabs. Reduced-motion starts still;
-  a visible pause/resume control is always available when WebGL works.
-- A static typographic or specimen fallback remains visible without WebGL or
-  if the effect cannot load.
-- Glasshouse and Pane have distinct product pages and acquisition destinations.
-- Pane runtime concepts are labeled as in development, not advertised as shipped.
-
-The library comparison, source links, product-positioning rationale, and original
-artwork prompt are in [DESIGN-RESEARCH.md](DESIGN-RESEARCH.md).
-
-## References
-
-- https://threejs.org/docs/pages/ShaderMaterial.html
-- https://threejs.org/docs/pages/WebGLRenderer.html
-- https://docs.github.com/en/pages
+- One family: JetBrains Mono, bundled from `@fontsource/jetbrains-mono`; no
+  font or script is loaded from another server.
+- Terminal black `#0A0E12` with the banner's dot grid, ice `#E9EEF2` for
+  headings and code, fog `#9AA6B0` for text, dim `#7F8C98` for notes, and
+  the beak red `#E0473B` as the only colour. Every foreground clears 4.5:1
+  on the background; nothing is drawn black on black.
+- The tern sprites are the ones in `docs/assets/`, traced from photographs;
+  the credits are in the repository README.
+- Works at phone width: 16 px gutters, no horizontal page scroll. The
+  cursor stops blinking under `prefers-reduced-motion`.
+- The content is the README's. When a claim changes there, change it here.

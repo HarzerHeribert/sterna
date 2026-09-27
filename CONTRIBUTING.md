@@ -9,7 +9,7 @@ Open an issue with the **Bug report** form. The most useful reports have:
 
 - what you ran and what you expected,
 - what happened instead (the exact message, or a screenshot of the screen),
-- `pane --version`, your OS, and how you installed (install script, `pane update`, or from source).
+- `sterna --version`, your OS, and how you installed (install script, `sterna update`, or from source).
 
 **Never paste an API key, a token or a login file** into an issue, even a
 revoked one. If a log contains one, cut it out first.
@@ -19,7 +19,7 @@ Security problems do not go in issues: see [SECURITY.md](SECURITY.md).
 ## Asking a question or suggesting an idea
 
 Questions and open-ended ideas go to
-[Discussions](https://github.com/HarzerHeribert/glasshouse/discussions). A
+[Discussions](https://github.com/HarzerHeribert/sterna/discussions). A
 concrete feature request, one you can say in a sentence, can be an issue with
 the **Feature request** form.
 
@@ -34,16 +34,16 @@ the **Feature request** form.
    ```sh
    cargo fmt --all
    cargo clippy --workspace --all-targets
-   cargo test -p pane            # or the crate you changed
+   cargo test -p sterna          # or the crate you changed
    ```
 
    CI runs the full matrix (macOS, Linux, Windows) on your pull request once a
    maintainer approves the run.
 
-The workspace has three parts: `crates/pane` (the terminal app),
-`crates/inference-gateway` (the model gateway) and `crates/glasshouse` (the
-project layer). [`docs/product/architecture.md`](docs/product/architecture.md)
-is a one-page map of how they fit together.
+The workspace has two parts: `crates/sterna` (the terminal app) and
+`crates/inference-gateway` (the model gateway).
+[`docs/architecture.md`](docs/architecture.md) is a one-page map of how they
+fit together.
 
 ## The terms of a contribution
 

@@ -1,63 +1,33 @@
-# Glasshouse process documents — index
+# Sterna documentation
 
-These are the spec-to-evidence process documents `CLAUDE.md` and `AGENTS.md`
-point every orchestrator at, in the order those files name. `README.md`,
-`CLAUDE.md`, `AGENTS.md` and `CLAUDE_CODE_START_PROMPT.md` stay at the
-repository root; everything else lives here, split into two worlds.
+Start with [architecture](architecture.md): two programs, one page.
 
-## The boundary: product vs. process
+**Using it**
 
-- **`docs/product/`** — what Glasshouse *is*. Capability requirements,
-  behavioral contracts, and the design decisions that shaped them.
-- **`docs/process/`** — how *we build it*. Orchestration mechanics, worker
-  routing, model tiers, and the SDLC an agent follows to implement a
-  capability.
+- [usage](usage.md) — the command line, slash commands, machine output, CI
+- [configuration](configuration.md) — settings files, keys, profiles, imports
+- [workbench](workbench.md) — the terminal interface, keys, themes
+- [subscriptions](subscriptions.md) — which subscriptions can sign in, and the terms risk of each
+- [web](web.md) — `web.fetch` and `web.search`
 
-**The rule that follows from it: product source code (`crates/**`) may cite
-`docs/product/**` in its doc comments, and must never cite `docs/process/**`.**
-A doc comment explaining a design decision or a capability belongs to the
-product world; a citation of orchestration mechanics in shipped source is a
-sign something is wired to the wrong layer.
+**How it works**
 
-## `docs/product/` — what Glasshouse is
+- [model contract](model-contract.md) — what the model is sent and what it may send back
+- [runtime](runtime.md) — cells, handles, previews, ending a task, resume
+- [tools](tools.md) — the tools, the host globals, the three interfaces, command lifting
+- [events](events.md) — background jobs, subagents, standing handlers
+- [sandbox](sandbox.md) — grants, platforms, modes, how often you are asked
+- [helpers](helpers.md) — the scout, reducer and checker; subagents
+- [decisions](decisions.md) — Jev, the classifier
+- [supervisor](supervisor.md) — the loop watcher
+- [project context](project-context.md) — instructions, MCP servers, source context
+- [observing](observing.md) — the live event stream
+- [gateway](gateway.md) — the inference gateway
 
-- [`architecture.md`](product/architecture.md) — the three-component split:
-  Pane, the inference gateway, Glasshouse.
-- [`capability-map.md`](product/capability-map.md) — the authoritative
-  capability map.
-- [`design-decisions.md`](product/design-decisions.md) — settled design
-  decisions and their reasoning.
-- [`evidence/`](product/evidence/README.md) — the capability evidence ledger,
-  split by phase; start at its `README.md`.
-- [`glasshouse/`](product/glasshouse/README.md) — Glasshouse's own product
-  docs; start at its `README.md`.
-- [`gateway/`](product/gateway/README.md) — the inference gateway's product
-  docs; start at its `README.md`.
+**Measuring it**
 
-## `docs/history/` — archived, not current
+- [ruler](ruler.md) — `sterna ruler run`
+- [measurements](measurements.md) — results so far
 
-- [`history/README.md`](history/README.md) — superseded process prose moved
-  out of the files below, kept only so nothing is lost; every ruling stayed
-  in `design-decisions.md`.
-
-## `docs/process/` — how we build it
-
-- [`handoff.md`](process/handoff.md) — current phase, verified work, next
-  action.
-- [`agent-sdlc.md`](process/agent-sdlc.md) — the implementation and
-  verification lifecycle.
-- [`worker-capabilities.md`](process/worker-capabilities.md) — Opus, Sonnet,
-  and Ox responsibilities and limits.
-- [`harness-hook-protocol.md`](process/harness-hook-protocol.md) — safe
-  Claude Code/OpenCode completion reporting between worker sessions. Despite
-  the name, this is a contract for project-local adapters, not a Glasshouse
-  product feature.
-- [`orchestrator-prompt.md`](process/orchestrator-prompt.md) — the reusable
-  phase-independent Opus prompt.
-- [`orchestration-practice.md`](process/orchestration-practice.md) — how to
-  run the process without repeating mistakes that have already cost whole
-  cycles.
-- [`orchestration-measurements.md`](process/orchestration-measurements.md) —
-  the standing inherited experiment on model-tier cost/quality.
-- [`dogfooding-index.md`](process/dogfooding-index.md) — the dogfooding
-  protocol and dated session files, indexed with the current log named.
+`assets/` holds the banner the README shows, and the tern sprites as PNGs;
+the product page draws its terns from `sites/public/`.

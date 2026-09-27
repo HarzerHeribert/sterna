@@ -3,14 +3,198 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f3f5f4" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0e1210" media="(prefers-color-scheme: dark)" />
-  <meta name="description" content="Pane is a coding agent for your terminal that works with the ChatGPT or Claude subscription you already have: the same finished work as Codex on 18 % fewer tokens, checked the way your project asks. Pre-release for macOS and Linux." />
-  <meta property="og:title" content="Pane — a coding agent for your terminal" />
-  <meta property="og:description" content="Pane is a coding agent for your terminal that works with the ChatGPT or Claude subscription you already have: the same finished work as Codex on 18 % fewer tokens, checked the way your project asks. Pre-release for macOS and Linux." />
-  <title>Pane — more work per plan</title>
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0A0E12" />
+  <title>Sterna — a coding agent for your terminal</title>
+  <meta name="description" content="Sterna is a coding agent for your terminal: one TypeScript program per turn instead of a round trip per tool, cheap helper models inside that program, and a local gateway for your subscription or API key. Pre-release for macOS and Linux." />
+  <meta property="og:title" content="Sterna — STERNA Trades Endless Round-trips for Nested Actions" />
+  <meta property="og:description" content="one program per turn · a flock of helpers · the longest run on the least" />
+  <meta property="og:image" content="https://harzerheribert.github.io/sterna/sterna-banner.png" />
+  <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="./mark.svg" type="image/svg+xml" />
 </head>
-<body data-page="home"><div id="app"></div><noscript><main><h1>Pane</h1><p>The coding harness of the Glasshouse project: a coding agent for your terminal. Tool results stay in a live runtime; the model writes TypeScript over them.</p><pre>curl -fsSL https://harzerheribert.github.io/glasshouse/install.sh | sh</pre><p>Against the Codex CLI on four tasks, same model: the same 12 of 12 finished, on 18 % fewer tokens.</p><p><a href="./pane/">Install and sign in</a> · <a href="https://github.com/HarzerHeribert/glasshouse">Source</a> · <a href="./glasshouse/">Glasshouse (preview)</a></p></main></noscript><script type="module" src="./src/main.js"></script></body>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="bar">
+    <a class="brand" href="./" aria-label="Sterna home">
+      <img src="./mark.svg" alt="" width="38" height="31" />
+      <span>sterna</span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#what">what</a>
+      <a href="#install">install</a>
+      <a href="#start">start</a>
+      <a href="#accounts">accounts</a>
+      <a href="#themes">themes</a>
+      <a class="out" href="https://github.com/HarzerHeribert/sterna">source&nbsp;↗</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="title">
+      <div class="hero-text">
+        <p class="prompt" aria-hidden="true">$ sterna</p>
+        <h1 id="title" class="word">sterna<span class="cursor" aria-hidden="true">_</span></h1>
+        <p class="backronym"><b>S</b>TERNA <b>T</b>rades <b>E</b>ndless <b>R</b>ound-trips for <b>N</b>ested <b>A</b>ctions</p>
+        <p class="tagline">one program per turn · a flock of helpers · the longest run on the least</p>
+        <div class="install" data-install>
+          <span class="sigil" aria-hidden="true">$</span>
+          <code>curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code>
+          <button type="button" class="copy" data-copy="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh">copy</button>
+        </div>
+        <p class="note">Public pre-release · macOS and Linux · Windows archives on the <a href="https://github.com/HarzerHeribert/sterna/releases">releases page</a></p>
+      </div>
+      <img class="hero-bird" src="./mark.svg" alt="A pixel-art Arctic tern in flight" width="456" height="372" />
+    </section>
+
+    <section id="what" class="section" aria-labelledby="what-h">
+      <h2 id="what-h"><span class="hash" aria-hidden="true">##</span> what it is</h2>
+      <p class="lede">A coding agent for your terminal. You give it a task in a project; it works the task in turns, the way Claude Code or Codex does. It is named for <i>Sterna paradisaea</i>, the Arctic tern, which makes the longest migration of any animal.</p>
+
+      <div class="grid">
+        <article>
+          <h3>one program per turn</h3>
+          <p>Instead of a round trip per tool, the model writes one TypeScript program each turn — a <em>cell</em> — that runs in a V8 isolate inside Sterna. <code>read</code>, <code>grep</code>, <code>edit</code> and <code>bash</code> are functions in it, so one turn can read, search, edit, run the tests and branch on the result.</p>
+        </article>
+        <article>
+          <h3>results stay live</h3>
+          <p>What a tool returns stays in the isolate as a named handle. The model sees a bounded preview and works on the handle in the next cell; a large grep costs a preview, not its bytes on every later turn.</p>
+        </article>
+        <article>
+          <h3>a flock of helpers</h3>
+          <p>Cheap models answer narrow questions from inside a cell without costing a turn: the <b>scout</b> finds where something lives, the <b>reducer</b> cuts a log to its failures, the <b>checker</b> tests a claim before a task is accepted. <b>Subagents</b> take a separable goal and run beside the task.</p>
+        </article>
+        <article>
+          <h3>the longest run on the least</h3>
+          <p>History only grows, so each request extends the last one and the provider's prompt cache holds. When the context stops fitting it is compacted while the isolate keeps running — a result from turn three is still there.</p>
+        </article>
+      </div>
+
+      <pre class="terminal" aria-label="Two cells: one gathers what the next step will change, the next edits and checks"><code><span class="c">// cell 1 — everything the next step is about to change</span>
+const [limits, hits] = await Promise.all([
+  context({path: "src/config.rs", symbol: "Limits"}),
+  rg({pattern: "cell_wall_clock", path: "src"}),
+]);
+return {matched: hits.length};
+
+<span class="c">// cell 2 — the edits those results earned, and the check for them</span>
+await edit({path: "src/config.rs", old: OLD, replacement: NEW});
+const run = await bash({command: "cargo test --lib config"});
+const failures = await helper.reduce(run.stdout);
+return {passed: run.exit_code === 0, failures};</code></pre>
+
+      <dl class="facts">
+        <div>
+          <dt>~210 tokens</dt>
+          <dd>to show the model about 275 KB of grep output. A test on every build generates the tree and fails at 300.</dd>
+        </div>
+        <div>
+          <dt>12 of 12</dt>
+          <dd>tasks finished, the same as the Codex CLI on the same model — on 18&nbsp;% fewer tokens (2026-09-24, three attempts each).</dd>
+        </div>
+        <div>
+          <dt>1.28×</dt>
+          <dd>faster for Codex on those four tasks, most of it a gate script Sterna ran more often. <a href="https://github.com/HarzerHeribert/sterna/blob/main/docs/measurements.md">The measurements</a>.</dd>
+        </div>
+      </dl>
+
+      <p class="also">Also: plan and explore modes, an OS sandbox (Seatbelt, Landlock and seccomp, AppContainer), four levels of how often you are asked, background jobs, a to-do list, web search and fetch when you enable them, MCP servers, image input, rollback of the agent's changes, and resume.</p>
+    </section>
+
+    <section id="install" class="section" aria-labelledby="install-h">
+      <h2 id="install-h"><span class="hash" aria-hidden="true">##</span> install and update</h2>
+      <div class="install" data-install>
+        <span class="sigil" aria-hidden="true">$</span>
+        <code>curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code>
+        <button type="button" class="copy" data-copy="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh">copy</button>
+      </div>
+      <p>The installer picks this machine's archive from the newest release, verifies it against the release's <code>SHA256SUMS</code>, unpacks it into a fresh <code>~/.local/lib/sterna/versions/&lt;tag&gt;</code> and links <code>sterna</code> and <code>inference-gateway</code> into <code>~/.local/bin</code>. It installs nothing else, touches no credential and edits no shell profile.</p>
+      <table class="table">
+        <tbody>
+          <tr><th scope="row">macOS, Apple silicon</th><td>installer</td></tr>
+          <tr><th scope="row">Linux x86_64, arm64</th><td>installer</td></tr>
+          <tr><th scope="row">Windows x64, arm64</th><td><code>.zip</code> archives on the <a href="https://github.com/HarzerHeribert/sterna/releases">releases page</a>; no installer yet</td></tr>
+        </tbody>
+      </table>
+      <p>A release install checks for a newer release when a session starts and installs it beside the running one; the next start uses it. <code>sterna update</code> does it on demand, <code>sterna update --check</code> only asks.</p>
+    </section>
+
+    <section id="start" class="section" aria-labelledby="start-h">
+      <h2 id="start-h"><span class="hash" aria-hidden="true">##</span> start</h2>
+      <pre class="terminal"><code>$ cd your-project
+$ sterna</code></pre>
+      <p>The first time, type <code>/login</code> to connect a subscription in the browser, store an API key or add your own endpoint; <code>/models</code> chooses the model and its effort. Sterna reads what the project already has: <code>AGENTS.md</code> and <code>CLAUDE.md</code>, commands and skills in <code>.claude/</code>, and the MCP servers in <code>.mcp.json</code>.</p>
+      <div class="cols">
+        <table class="table commands">
+          <caption>from the shell</caption>
+          <tbody>
+            <tr><th scope="row"><code>sterna</code></th><td>a session in this folder</td></tr>
+            <tr><th scope="row"><code>sterna -p "task"</code></th><td>one task, then exit</td></tr>
+            <tr><th scope="row"><code>sterna exec … --output-format json</code></th><td>the same, for scripts</td></tr>
+            <tr><th scope="row"><code>sterna --resume</code></th><td>pick an earlier session</td></tr>
+            <tr><th scope="row"><code>sterna --plan</code></th><td>start in plan mode</td></tr>
+            <tr><th scope="row"><code>sterna --full-access</code></th><td>no questions, for a machine you trust</td></tr>
+            <tr><th scope="row"><code>sterna doctor</code></th><td>what Sterna found and what is missing</td></tr>
+          </tbody>
+        </table>
+        <table class="table commands">
+          <caption>inside a session</caption>
+          <tbody>
+            <tr><th scope="row"><code>/login</code> · <code>/key</code></th><td>connect an account, store a key</td></tr>
+            <tr><th scope="row"><code>/models</code></th><td>switch models between turns</td></tr>
+            <tr><th scope="row"><kbd>Shift-Tab</kbd></th><td>how often Sterna asks before it acts</td></tr>
+            <tr><th scope="row"><code>/mode</code></th><td>execute, explore or plan</td></tr>
+            <tr><th scope="row"><code>/rollback</code></th><td>undo what the session changed</td></tr>
+            <tr><th scope="row"><code>/settings</code></th><td>every setting, global or project</td></tr>
+            <tr><th scope="row"><kbd>?</kbd></th><td>every key</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="accounts" class="section" aria-labelledby="accounts-h">
+      <h2 id="accounts-h"><span class="hash" aria-hidden="true">##</span> accounts and models</h2>
+      <p>Sterna talks to models through the <b>inference gateway</b>, a separate program it starts beside itself. The gateway holds your API keys and subscription logins — they never enter the conversation, the transcript or a log — pools several accounts of one kind, and translates between the Anthropic, OpenAI and Gemini wire formats. It picks the provider and account for a request and never changes the model or effort you chose.</p>
+      <pre class="terminal"><code>$ inference-gateway subscriptions usage   <span class="c"># each subscription's limits, and when they reset</span>
+$ inference-gateway credentials set openai <span class="c"># store a key, read from stdin</span></code></pre>
+      <p>Signing a subscription in to a third-party tool is against some providers' terms; Sterna shows each warning before it signs in.</p>
+    </section>
+
+    <section id="themes" class="section" aria-labelledby="themes-h">
+      <h2 id="themes-h"><span class="hash" aria-hidden="true">##</span> themes</h2>
+      <div class="themes">
+        <ul class="families">
+          <li><b>classic</b> — a palette alone: neon, amber, ice, mono, violet, cobalt, mint, rose.</li>
+          <li><b>parrots</b> — eight parrots whose plumage is the palette, perched on the session card: Blue-fronted Amazon, Sun Conure, Hyacinth Macaw, Scarlet Macaw, Blue-and-gold Macaw, Green-winged Macaw, Military Macaw, Sulphur-crested Cockatoo.</li>
+        </ul>
+        <figure class="perched">
+          <img src="./perched.svg" alt="A pixel-art Arctic tern perched on a post" width="240" height="240" />
+          <figcaption><code>/theme</code> — the birds need a terminal that shows true colour</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="build" class="section" aria-labelledby="build-h">
+      <h2 id="build-h"><span class="hash" aria-hidden="true">##</span> build from source</h2>
+      <pre class="terminal"><code>$ cargo build --release -p sterna -p inference-gateway
+$ scripts/install-local.sh              <span class="c"># install into a new version directory</span>
+$ scripts/install-local.sh --rollback   <span class="c"># back to the previous version</span></code></pre>
+      <p>Each binary is self-contained: no daemon, Node or Python. Sterna embeds V8, so its first build takes a while.</p>
+    </section>
+
+    <section id="contributing" class="section" aria-labelledby="contributing-h">
+      <h2 id="contributing-h"><span class="hash" aria-hidden="true">##</span> contributing and licence</h2>
+      <p>Bug reports, ideas and pull requests are welcome — <a href="https://github.com/HarzerHeribert/sterna/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> says how. The repository is not open source: a pull request grants HarzerHeribert a perpetual, worldwide, royalty-free, irrevocable licence to use, modify, distribute and relicense it as part of the project, and you keep the copyright in your own work.</p>
+      <p>Copyright © 2026 HarzerHeribert. All rights reserved. The source is public to be read, reviewed and referenced; that is not a licence to use, copy, modify or distribute it. <a href="https://github.com/HarzerHeribert/sterna/blob/main/LICENSE">LICENSE</a></p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>The birds are pixel art traced from photographs on Wikimedia Commons; each photograph's author and licence is listed in the <a href="https://github.com/HarzerHeribert/sterna#art">README</a>.</p>
+    <p><a href="https://github.com/HarzerHeribert/sterna">github.com/HarzerHeribert/sterna</a></p>
+  </footer>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
 </html>

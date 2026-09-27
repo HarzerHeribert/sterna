@@ -8,7 +8,7 @@ personal attacks and discriminatory language are not tolerated in issues,
 discussions, pull requests or any other project space.
 
 Report a problem privately to the maintainer through
-[a private security advisory](https://github.com/HarzerHeribert/glasshouse/security/advisories/new)
+[a private security advisory](https://github.com/HarzerHeribert/sterna/security/advisories/new)
 (mark it "conduct"), or by email to the address on the maintainer's GitHub profile.
 The maintainer may edit, hide or remove contributions, and block anyone, that
 breaks this code.
