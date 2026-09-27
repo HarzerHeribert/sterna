@@ -959,14 +959,28 @@ fn no_runtime_input_can_widen_a_grant() {
 
 /// The wide ruleset: everything off the way to a secret is read and run,
 /// each directory on the way is listed only, and the writable places are
-/// granted whole -- or as their own complement when one holds a secret.
+/// granted whole -- or write without read when one holds a secret. A
+/// secret inside a temp folder is the one Landlock alone leaves to Sterna's
+/// own check: carving it out would break the temp folder.
 #[test]
 fn the_landlock_ruleset_is_exactly_the_declared_paths() {
     let fixture = Fixture::new("landlock");
     let profile = fixture.profile(Some(&settings_for(&fixture.root)));
     let rules = linux::landlock_rules(&profile, sterna::sandbox::linux::Secrets::Ruleset);
-    let secrets = profile.secret_paths();
+    let temp: Vec<&Path> = profile.temp_dirs().collect();
+    let secrets: Vec<PathBuf> = profile
+        .secret_paths()
+        .into_iter()
+        .filter(|secret| !temp.iter().any(|dir| secret.starts_with(dir)))
+        .collect();
     assert!(!secrets.is_empty(), "the fixture home has secrets to hide");
+    for dir in &temp {
+        assert!(
+            rules.read_write.iter().any(|place| place == dir),
+            "{} is not writable whole: {rules:?}",
+            dir.display()
+        );
+    }
 
     for secret in &secrets {
         for granted in rules.read.iter().chain(rules.read_write.iter()) {
