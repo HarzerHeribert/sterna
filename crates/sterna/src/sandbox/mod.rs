@@ -9,4 +9,5 @@ pub mod linux;
 pub mod macos;
 pub mod modes;
 pub mod profile;
+pub mod proxy;
 pub mod windows;
