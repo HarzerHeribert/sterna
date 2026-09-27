@@ -103,7 +103,7 @@ impl Regime {
                 "Landlock ABI {abi} with seccomp, without namespaces (this kernel refuses unprivileged user namespaces): \
                  every file is readable except the secrets and writes reach the writable places, but commands have no network, \
                  and .git/hooks, .sterna and .claude inside the project, and a secret inside a writable place, are protected from writes \
-                 by Sterna's own checks only."
+                 by Sterna's own checks only (a secret inside a temp folder from reads too)."
             ),
             Regime::Unconfined => {
                 "no Landlock ABI 3 or no supported seccomp architecture on this host, \
@@ -165,7 +165,15 @@ pub fn landlock_rules_over(
     secrets_are: Secrets,
     children: &dyn Fn(&Path) -> Vec<PathBuf>,
 ) -> LandlockRules {
-    let secrets = profile.secret_paths();
+    let mut secrets = profile.secret_paths();
+    // A secret inside a temp folder cannot be carved out by Landlock alone
+    // without breaking the folder: a file created there later is only as
+    // readable as the folder is. Without the mounts such a secret is left
+    // to Sterna's own check, and the temp folder stays whole.
+    if secrets_are == Secrets::Ruleset {
+        let temp: Vec<&Path> = profile.temp_dirs().collect();
+        secrets.retain(|secret| !temp.iter().any(|dir| secret.starts_with(dir)));
+    }
     // Covered secrets need no complement: one rule on `/` rather than one
     // per entry of every directory on the way to a secret.
     let reads = match secrets_are {
@@ -312,7 +320,7 @@ pub fn regime() -> Regime {
     let abi = landlock_abi();
     if abi < 3 || !seccomp_supported_arch() {
         Regime::Unconfined
-    } else if std::env::var_os("STERNA_AB_NO_NS").is_none() && super::linux_ns::available() {
+    } else if super::linux_ns::available() {
         Regime::Namespaced { abi }
     } else {
         Regime::LandlockAndSeccomp { abi }

@@ -84,6 +84,8 @@ fn a_confined_command_reads_widely_and_writes_only_the_writable_places() {
     let _ = std::fs::remove_dir_all(&base);
     let home = base.join("home");
     std::fs::create_dir_all(&home).unwrap();
+    let state = std::env::temp_dir().join(format!("wide-sandbox-state-{}", std::process::id()));
+    std::fs::create_dir_all(state.join("inference-gateway")).unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -99,9 +101,13 @@ fn a_confined_command_reads_widely_and_writes_only_the_writable_places() {
         // Cargo names its own home for the processes it runs; the fixture's
         // `~/.cargo` is the toolchain home under test.
         .env_remove("CARGO_HOME")
+        // The gateway's state -- a secret -- inside the temp folder, as CI's
+        // keyring fixture puts it: the temp folder must stay writable.
+        .env("XDG_STATE_HOME", &state)
         .output()
         .unwrap();
     let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&state);
     assert!(
         output.status.success(),
         "stdout: {}\nstderr: {}",

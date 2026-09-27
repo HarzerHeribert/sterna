@@ -148,7 +148,8 @@ minutes.
   they are not, commands get no network at all and the doctor says so.
   Without namespaces those paths, and a secret that sits inside a writable
   place, are kept from writes by Sterna's own check only (the secret stays
-  unreadable), and a Sterna running as root has its environment readable
+  unreadable, except one inside a temp folder, which only that check
+  keeps), and a Sterna running as root has its environment readable
   by the commands it runs.
 - **Windows — an AppContainer** entered at `CreateProcessW`, with no
   capabilities (`internetClient` included). Commands have no network there;
