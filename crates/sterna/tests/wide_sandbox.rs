@@ -235,6 +235,69 @@ fn inner() {
         "{out}"
     );
     assert!(proxy.refused().iter().any(|host| host == "example.com"));
+    // A project that holds a secret -- here the home folder itself: a new
+    // file lands directly in it, and the secret inside stays unreadable,
+    // because the mounts cover it.
+    let home_project = Profile::compile(&home, None);
+    let run_home = |line: &str| -> (bool, String) {
+        let mut command = Command::new("/bin/bash");
+        command
+            .args(["-c", line])
+            .current_dir(&home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        assert!(linux::confine(&home_project, &mut command).unwrap());
+        let output = command.output().unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    };
+    let (ok, _) = run_home("echo x > made-in-home");
+    assert!(
+        ok,
+        "a file could not be created in a project that holds a secret"
+    );
+    let (_, out) = run_home("cat .ssh/id_test");
+    assert!(
+        out.is_empty(),
+        "the secret inside the project was read: {out}"
+    );
+    // The relay holds nothing but its listener, however many descriptors
+    // this process has open: one left behind -- `spawn`'s exec-status pipe
+    // above 1024 -- kept the spawning thread waiting for ever.
+    let held: Vec<std::fs::File> = (0..1100)
+        .map(|_| std::fs::File::open("/dev/null").unwrap())
+        .collect();
+    let (sent, spawned) = std::sync::mpsc::channel();
+    let profile_for_spawn = profile.clone();
+    let root_for_spawn = root.clone();
+    std::thread::spawn(move || {
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .current_dir(&root_for_spawn)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(linux::confine(&profile_for_spawn, &mut command).unwrap());
+        let _ = sent.send(command.spawn().unwrap());
+    });
+    let mut sleeper = spawned
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the confined spawn never returned");
+    drop(held);
+    let children =
+        std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", sleeper.id())).unwrap();
+    let relay = children.split_whitespace().next().expect("the relay runs");
+    let fds = std::fs::read_dir(format!("/proc/{relay}/fd"))
+        .unwrap()
+        .count();
+    assert_eq!(fds, 4, "the relay holds more than stdio and its listener");
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+
     // A Unix socket on disk would reach out of the namespace; refused.
     let (ok, _) =
         run("python3 -c 'import socket; socket.socket(socket.AF_UNIX)' 2>/dev/null || exit 1");

@@ -237,7 +237,8 @@ fn linux_grants_the_added_root_as_a_writable_place_and_nothing_beside_it() {
     let profile = Profile::compile(fixture.0.join("project"), None)
         .with_additional_root("../extra")
         .unwrap();
-    let rules = sterna::sandbox::linux::landlock_rules(&profile);
+    let rules =
+        sterna::sandbox::linux::landlock_rules(&profile, sterna::sandbox::linux::Secrets::Ruleset);
     assert!(
         rules.read_write.contains(&fixture.0.join("extra")),
         "{rules:?}"

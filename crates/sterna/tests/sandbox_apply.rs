@@ -694,8 +694,14 @@ fn a_plan_leaves_the_os_sandbox_exactly_as_the_profile_renders_it() {
         macos::profile_text(&profile),
     );
     assert_eq!(
-        format!("{:?}", linux::landlock_rules(&narrowed)),
-        format!("{:?}", linux::landlock_rules(&profile)),
+        format!(
+            "{:?}",
+            linux::landlock_rules(&narrowed, sterna::sandbox::linux::Secrets::Ruleset)
+        ),
+        format!(
+            "{:?}",
+            linux::landlock_rules(&profile, sterna::sandbox::linux::Secrets::Ruleset)
+        ),
     );
     // Windows refuses exec of a program the session could write; that probe
     // must keep the session's answer while planning.
@@ -882,9 +888,11 @@ fn no_runtime_input_can_widen_a_grant() {
     );
     assert!(!denied.writable_places().contains(&root));
     assert!(
-        !linux::landlock_rules(&denied).read_write.contains(&root),
+        !linux::landlock_rules(&denied, sterna::sandbox::linux::Secrets::Ruleset)
+            .read_write
+            .contains(&root),
         "{:?}",
-        linux::landlock_rules(&denied)
+        linux::landlock_rules(&denied, sterna::sandbox::linux::Secrets::Ruleset)
     );
     assert!(
         windows::acl_grants(&denied, Path::new(RESOLVED))
@@ -932,8 +940,8 @@ fn no_runtime_input_can_widen_a_grant() {
         let other = fixture.profile(Some(&pre_approving));
         assert_eq!(macos::profile_text(&other), macos::profile_text(&stable));
         assert_eq!(
-            linux::landlock_rules(&other),
-            linux::landlock_rules(&stable)
+            linux::landlock_rules(&other, sterna::sandbox::linux::Secrets::Ruleset),
+            linux::landlock_rules(&stable, sterna::sandbox::linux::Secrets::Ruleset)
         );
     }
 
@@ -953,7 +961,7 @@ fn no_runtime_input_can_widen_a_grant() {
 fn the_landlock_ruleset_is_exactly_the_declared_paths() {
     let fixture = Fixture::new("landlock");
     let profile = fixture.profile(Some(&settings_for(&fixture.root)));
-    let rules = linux::landlock_rules(&profile);
+    let rules = linux::landlock_rules(&profile, sterna::sandbox::linux::Secrets::Ruleset);
     let secrets = profile.secret_paths();
     assert!(!secrets.is_empty(), "the fixture home has secrets to hide");
 
@@ -988,6 +996,14 @@ fn the_landlock_ruleset_is_exactly_the_declared_paths() {
         !rules.read_write.contains(&home()),
         "the home folder is writable: {rules:?}"
     );
+    // Where mounts cover the secrets, every writable place is granted whole,
+    // so a file can be created directly in a place that holds a secret.
+    let covered = linux::landlock_rules(&profile, linux::Secrets::Covered);
+    for place in profile.writable_places() {
+        assert!(covered.read_write.contains(&place), "{covered:?}");
+    }
+    assert_eq!(covered.read, [PathBuf::from("/")], "{covered:?}");
+    assert!(covered.list.is_empty(), "{covered:?}");
 
     // A read grant is open, list and run -- never a write and never a
     // `MAKE_*`; a directory on the way to a secret is list only.

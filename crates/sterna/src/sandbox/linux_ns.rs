@@ -451,10 +451,40 @@ unsafe fn quiet(dev_null: &CString, keep: libc::c_int) {
                 libc::close(null);
             }
         }
-        for fd in 3..1024 {
-            if fd != keep {
-                libc::close(fd);
-            }
+        // Every descriptor, with no ceiling: the parent may hold thousands
+        // (the ruleset's path handles), and one left open here -- `spawn`'s
+        // own exec-status pipe among them -- keeps the spawning thread
+        // waiting for ever.
+        if keep > 3 {
+            close_range(3, keep as libc::c_uint - 1);
+        }
+        close_range(keep.max(2) as libc::c_uint + 1, libc::c_uint::MAX);
+    }
+}
+
+/// Closes every descriptor from `first` to `last`, falling back to a
+/// descriptor-by-descriptor loop up to the process's limit where the kernel
+/// predates `close_range` (5.9).
+///
+/// # Safety
+/// Async-signal-safe.
+unsafe fn close_range(first: libc::c_uint, last: libc::c_uint) {
+    // SAFETY: `close_range` and `getrlimit` take integers and one owned
+    // struct; neither allocates.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, first, last, 0u32) == 0 {
+            return;
+        }
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            limit.rlim_cur.min(1 << 20) as libc::c_uint
+        } else {
+            1 << 16
+        };
+        let mut fd = first;
+        while fd <= last && fd < top {
+            libc::close(fd as libc::c_int);
+            fd += 1;
         }
     }
 }

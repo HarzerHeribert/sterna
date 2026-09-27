@@ -133,19 +133,40 @@ pub struct LandlockRules {
     pub read_write: Vec<PathBuf>,
 }
 
+/// Whether the secrets are also covered by the namespace view's mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Secrets {
+    /// Landlock alone keeps them out: a writable place that holds one is
+    /// granted as its own complement, so a file cannot be created directly
+    /// in a directory on the way to a secret.
+    Ruleset,
+    /// Empty mounts cover them, which a Landlock-restricted process cannot
+    /// remove; a writable place is granted whole.
+    Covered,
+}
+
 /// The ruleset `profile` implies, reading directories on this host.
-pub fn landlock_rules(profile: &Profile) -> LandlockRules {
-    landlock_rules_over(profile, &entries)
+pub fn landlock_rules(profile: &Profile, secrets: Secrets) -> LandlockRules {
+    landlock_rules_over(profile, secrets, &entries)
 }
 
 /// The ruleset `profile` implies, with `children` listing a directory's
 /// entries; injected so the derivation is testable on any host.
 pub fn landlock_rules_over(
     profile: &Profile,
+    secrets_are: Secrets,
     children: &dyn Fn(&Path) -> Vec<PathBuf>,
 ) -> LandlockRules {
     let secrets = profile.secret_paths();
-    let reads = complement(Path::new("/"), &secrets, children);
+    // Covered secrets need no complement: one rule on `/` rather than one
+    // per entry of every directory on the way to a secret.
+    let reads = match secrets_are {
+        Secrets::Covered => Complement {
+            granted: vec![PathBuf::from("/")],
+            listed: Vec::new(),
+        },
+        Secrets::Ruleset => complement(Path::new("/"), &secrets, children),
+    };
     let mut list = reads.listed;
     let mut read_write = vec![PathBuf::from("/dev/null")];
     for place in profile.writable_places() {
@@ -155,7 +176,9 @@ pub fn landlock_rules_over(
         if secrets.iter().any(|secret| place.starts_with(secret)) {
             continue;
         }
-        if secrets.iter().any(|secret| secret.starts_with(&place)) {
+        if secrets_are == Secrets::Ruleset
+            && secrets.iter().any(|secret| secret.starts_with(&place))
+        {
             let inside = complement(&place, &secrets, children);
             read_write.extend(inside.granted);
             list.extend(inside.listed);
@@ -323,7 +346,14 @@ pub fn confine(profile: &Profile, command: &mut std::process::Command) -> std::i
         socket_deny_filter(std::env::consts::ARCH)
     }
     .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOTSUP))?;
-    let rules = landlock_rules(profile);
+    let rules = landlock_rules(
+        profile,
+        if view.is_some() {
+            Secrets::Covered
+        } else {
+            Secrets::Ruleset
+        },
+    );
     let mut handles: Vec<(OwnedFd, u64)> = Vec::new();
     for (paths, rights) in [
         (&rules.read, access::READ),
