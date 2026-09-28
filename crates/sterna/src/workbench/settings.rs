@@ -528,7 +528,17 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             } else {
                 None
             };
-        let item = if let Some(value) = editing {
+        // **One editor for the proxy's lists**: the Hosts sheet, which says
+        // when a change applies. A second editor here said "next session"
+        // while the sheet said "next command" for the same list.
+        let item = if matches!(spec.key, "sandbox.hosts" | "sandbox.ecosystems") {
+            Item::open(
+                id,
+                format!("{} · {}", spec.label, word(spec.key, &effective)),
+                Action::Hosts,
+            )
+            .detail("Opens the Hosts sheet, which says when a change applies")
+        } else if let Some(value) = editing {
             Item::field(
                 id,
                 spec.label,

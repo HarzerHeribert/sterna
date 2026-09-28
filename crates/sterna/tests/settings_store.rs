@@ -359,6 +359,20 @@ fn runtime_defaults_are_shown_before_anything_is_saved() {
         string(&loaded.values, "helpers.effort.check").as_deref(),
         Some(sterna::config::HelperEfforts::default().check.name())
     );
+    // The chips mark what runs: Ask weighting, the decision mode and each
+    // favourite's effort are the runtime's own defaults, never a guess.
+    assert_eq!(
+        sterna::settings::registry::shown_default("ask.jev").as_deref(),
+        Some(sterna::config::AskConfig::default().jev.as_str())
+    );
+    assert_eq!(
+        sterna::settings::registry::shown_default("decisions.mode").as_deref(),
+        Some(sterna::config::DecisionsConfig::default().mode.as_str())
+    );
+    assert_eq!(
+        sterna::settings::registry::shown_default("agents.slots.deep.effort").as_deref(),
+        Some(sterna::config::slot_effort("deep").name())
+    );
     assert_eq!(loaded.origins["helpers.enabled"], "built-in");
     assert_eq!(loaded.origins["limits.cells"], "built-in");
     // The three model ids have no default: unset is what "off" means for
