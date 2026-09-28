@@ -1122,9 +1122,13 @@ fn run_task_inner(
     let (decision, decision_failures, pending_decision) = task_decision(task, session, has_history);
     let effort_lease = system::EffortLease::for_kind(session, decision.as_ref());
     // The acceptance lister runs beside the Scout: two independent reads of
-    // the same request, and in series the person waited for both.
+    // the same request, and in series the person waited for both. A
+    // dissection writes the list itself, so the lister waits for it.
+    let dissecting = system::dissects(session, decision.as_ref());
     let (preflight_outcome, acceptance_record) = std::thread::scope(|scope| {
-        let lister = system::start_acceptance(task, session)
+        let lister = (!dissecting)
+            .then(|| system::start_acceptance(task, session))
+            .flatten()
             .map(|pending| scope.spawn(move || pending.call()));
         let preflight = preflight_block(task, session, transcript, decision.as_ref());
         (
@@ -1138,8 +1142,15 @@ fn run_task_inner(
     if let Some(preflight) = transcript.notebook.preflight.as_ref() {
         budget.add_helpers(std::slice::from_ref(preflight));
     }
-    let acceptance_items =
-        append_acceptance(session, acceptance_record, &mut task_context, &mut budget);
+    let (acceptance_items, acceptance_from) = append_acceptance(
+        task,
+        session,
+        preflight_outcome.acceptance.clone(),
+        (acceptance_record, dissecting),
+        &mut task_context,
+        &mut budget,
+    );
+    transcript.notebook.acceptance_from = acceptance_from;
     {
         let _line = session.interrupt.writing();
         rollout

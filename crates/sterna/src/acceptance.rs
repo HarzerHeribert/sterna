@@ -141,6 +141,28 @@ fn relative(path: &str) -> Option<String> {
     Some(path)
 }
 
+/// Where a task's acceptance list came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// The lister, which reads only the request's words.
+    #[default]
+    Request,
+    /// The Scout's dissection (`preflight::ACCEPT_HEADING`), written after
+    /// a look at the project.
+    Scout,
+}
+
+impl Origin {
+    /// Where the list came from, in the person's words.
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Request => "from your request only",
+            Self::Scout => "from the Scout's look",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {

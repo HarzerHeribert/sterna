@@ -1198,7 +1198,7 @@ const DECISIONS_ON_ONESHOT: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = 
 /// tracked files and offers no tool, and its dissection reaches the turn.
 #[test]
 fn an_explore_request_is_dissected_in_one_request_over_the_file_listing() {
-    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Verify\nbash -n scripts/setup.sh\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
+    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\nrun: bash -n scripts/setup.sh exits 0\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
     let root = root("kind-explore-oneshot");
     write_config(&root, DECISIONS_ON_ONESHOT);
     std::fs::write(root.join("README.md"), "# Demo\n").unwrap();
@@ -1252,6 +1252,112 @@ fn an_explore_request_is_dissected_in_one_request_over_the_file_listing() {
         result["telemetry"]["decisions"]["scout_brief"],
         "dissection"
     );
+}
+
+const DECISIONS_ON_ONESHOT_LISTED: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
+     [helpers]\nmodel = \"helper-tier\"\nacceptance_list = true\nscout_oneshot = true\n";
+
+/// A project with a README and a setup script, tracked, for a one-shot
+/// dissection's file listing.
+fn listed_root(label: &str) -> std::path::PathBuf {
+    let root = root(label);
+    write_config(&root, DECISIONS_ON_ONESHOT_LISTED);
+    std::fs::write(root.join("README.md"), "# Demo\n").unwrap();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::write(root.join("scripts/setup.sh"), "#!/bin/sh\n").unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["add", "README.md", "scripts/setup.sh"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .expect("git runs");
+    }
+    root
+}
+
+/// A dissection writes the task's acceptance list after a look at the
+/// project, so the lister -- which reads only the request's words -- never
+/// runs beside it, and the brief points at the list instead of repeating it.
+#[test]
+fn a_dissection_writes_the_acceptance_list_and_the_lister_never_runs() {
+    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\nfile: scripts/setup.sh exists\nfile: README.md contains Demo\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
+    let root = listed_root("dissection-lists");
+    let (endpoint, messages, _decisions, _headers) = providers(
+        vec![prose(DISSECTION), cell("c1", "answer(\"done\");")],
+        vec![Decision::Answer(decision_answer_with_kind(
+            "read_only",
+            0.94,
+            "explore",
+            0.90,
+        ))],
+        vec![],
+    );
+    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
+    let messages = messages.lock().unwrap();
+    assert_eq!(
+        messages.len(),
+        2,
+        "the dissection, then the task's own turn"
+    );
+    let turn = &messages[1];
+    assert!(
+        turn.contains("## Acceptance list") && turn.contains("file `scripts/setup.sh` exists"),
+        "the dissection's items are the list: {turn}"
+    );
+    assert!(
+        turn.contains(sterna::preflight::ACCEPT_CARRIED),
+        "the brief points at the list: {turn}"
+    );
+    let acceptance = &result["telemetry"]["acceptance"];
+    assert_eq!(acceptance["items"], 2, "{acceptance}");
+    assert_eq!(acceptance["met"], 2, "{acceptance}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A dissection that names no acceptance item hands the list back to the
+/// lister, which runs after it rather than beside it.
+#[test]
+fn a_dissection_naming_no_items_hands_the_list_back_to_the_lister() {
+    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\n(none found)\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
+    let root = listed_root("dissection-lists-nothing");
+    let (endpoint, messages, _decisions, _headers) = providers(
+        vec![
+            prose(DISSECTION),
+            prose("file: README.md exists"),
+            cell("c1", "answer(\"done\");"),
+        ],
+        vec![Decision::Answer(decision_answer_with_kind(
+            "read_only",
+            0.94,
+            "explore",
+            0.90,
+        ))],
+        vec![],
+    );
+    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
+    let messages = messages.lock().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "the dissection, the lister, then the task's own turn"
+    );
+    assert!(
+        messages[1].contains("acceptance items"),
+        "the second request is the lister's: {}",
+        messages[1]
+    );
+    assert!(
+        messages[2].contains("## Acceptance list")
+            && messages[2].contains("file `README.md` exists"),
+        "{}",
+        messages[2]
+    );
+    assert_eq!(result["telemetry"]["acceptance"]["items"], 1);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 const DECISIONS_ON_WITH_HELPERS: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
@@ -2522,7 +2628,7 @@ fn a_return_that_names_files_is_enriched_when_the_decision_model_says_it_is_not_
 /// what would have happened and nothing changes.
 #[test]
 fn an_explore_request_lowers_effort_and_briefs_the_scout_to_dissect() {
-    const DISSECTION: &str = "## Tasks\n1. Find the entry point — the command that starts the server is known\n2. Read the setup — every step scripts/setup.sh takes is listed\n\n## Files\nREADME.md:1 — task 1, the quick start\nscripts/setup.sh:1 — task 2, the setup script\n\n## Verify\nbash -n scripts/setup.sh\n\n## Needs\nwhich backend the person runs on\n\n## Skip\n(none found)\n";
+    const DISSECTION: &str = "## Tasks\n1. Find the entry point — the command that starts the server is known\n2. Read the setup — every step scripts/setup.sh takes is listed\n\n## Files\nREADME.md:1 — task 1, the quick start\nscripts/setup.sh:1 — task 2, the setup script\n\n## Accept\nrun: bash -n scripts/setup.sh exits 0\n\n## Needs\nwhich backend the person runs on\n\n## Skip\n(none found)\n";
     for (label, config, acting) in [
         // No `preflight = true`: a confident explore runs the dissection on
         // its own -- the A/B of 2026-09-23 ran three arms with the Scout

@@ -1676,9 +1676,19 @@ fn the_acceptance_list_is_a_tally_in_the_sidebar_or_a_chip_and_opens_whole() {
     assert!(wide.contains("ACCEPTANCE · 1 of 3 met"), "{wide}");
     assert!(wide.contains("✓ file src/motion.rs exists"), "{wide}");
     assert!(wide.contains("○ cargo test exits 0"), "{wide}");
+    assert!(wide.contains("from your request only"), "{wide}");
     assert!(
         !wide.contains("✓ 1 of 3 met"),
         "one tally on screen: {wide}"
+    );
+    let scouted = Notebook {
+        acceptance_from: sterna::acceptance::Origin::Scout,
+        ..n.clone()
+    };
+    let scouted_screen = text(&draw(&c, &scouted, &s, &mut u, 140, 40));
+    assert!(
+        scouted_screen.contains("from the Scout's look"),
+        "{scouted_screen}"
     );
 
     let narrow = text(&draw(&c, &n, &s, &mut u, 100, 30));
@@ -1687,7 +1697,7 @@ fn the_acceptance_list_is_a_tally_in_the_sidebar_or_a_chip_and_opens_whole() {
     click(&mut u, &mut s, &n, Action::Acceptance);
     let sheet = text(&draw(&c, &n, &s, &mut u, 100, 30));
     for line in [
-        "ACCEPTANCE › 1 of 3 met",
+        "ACCEPTANCE › 1 of 3 met · from your request only",
         "present, 12 bytes",
         "judge: the guard reads the setting",
         "checked when the task finishes",

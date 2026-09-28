@@ -27,7 +27,7 @@ that executes them all, so a new helper cannot add a new failure mode.
 | **dissector** (`dissect`) | the same, in one answer from the project's file listing and instruction headings | none | preflight, when `helpers.scout_oneshot` picks it |
 | **reducer** (`reduce`) | a log or command output reduced to its distinct failures, with `file:line` where the text names one | none | in a cell; after a large tool result |
 | **checker** (`check`) | whether a claim holds, as a verdict plus its evidence | `read`, `grep` | in a cell; at the completion gate |
-| **acceptance** | the request turned into a checklist of verifiable items | none | before the first turn, when `helpers.acceptance_list` is on |
+| **acceptance** | the request turned into a checklist of verifiable items | none | before the first turn, when `helpers.acceptance_list` is on and no dissection writes the list (its `## Accept` section, after a look at the project); after a dissection that named none |
 | **mender** | the syntax of a cell that failed to parse, repaired without changing its meaning | none | when a cell does not parse |
 
 Inside a cell a helper call is an ordinary `await`, so it can sit in a

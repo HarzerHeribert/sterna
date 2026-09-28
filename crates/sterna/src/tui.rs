@@ -865,6 +865,8 @@ pub struct Notebook {
     /// The task's acceptance list as it stands (`acceptance::standing`),
     /// empty when no list was derived. Presentation only, like `preflight`.
     pub acceptance: Vec<crate::acceptance::Verdict>,
+    /// Where that list came from: the request's words, or the Scout's look.
+    pub acceptance_from: crate::acceptance::Origin,
     pub inbox_depth: usize,
     pub batches_delivered: u64,
     pub handlers: Vec<crate::runtime::handlers::HandlerInfo>,

@@ -922,6 +922,11 @@ fn session_card(
             Tone::Accent,
             Some(Action::Acceptance),
         ));
+        lines.push((
+            n.acceptance_from.words().into(),
+            Tone::Muted,
+            Some(Action::Acceptance),
+        ));
         for verdict in n.acceptance.iter().take(ACCEPTANCE_LINES) {
             lines.push((
                 format!("{} {}", verdict.status.mark(), verdict.item.plain()),

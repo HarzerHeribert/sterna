@@ -310,7 +310,10 @@ fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
     use crate::acceptance::Status;
     let (met, total) = crate::acceptance::tally(&n.acceptance);
     sheet.title = "Acceptance".into();
-    sheet.crumbs = vec![format!("{met} of {total} met · derived from your request")];
+    sheet.crumbs = vec![format!(
+        "{met} of {total} met · {}",
+        n.acceptance_from.words()
+    )];
     if n.acceptance.is_empty() {
         return vec![Item::info("This task has no acceptance list.").tone(Tone::Muted)];
     }
