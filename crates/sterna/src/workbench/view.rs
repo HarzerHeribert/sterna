@@ -188,6 +188,9 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         s.theme,
     );
 }
+/// The empty columns kept between the transcript and the sidebar's rule.
+const SIDEBAR_GUTTER: u16 = 2;
+
 pub struct Layout {
     pub transcript: Rect,
     sidebar: Option<Rect>,
@@ -240,6 +243,19 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     };
     let mut transcript = transcript;
     transcript.width = transcript.width.saturating_sub(side_width);
+    let sidebar = (side_width > 0).then(|| {
+        Rect::new(
+            transcript.right() + 2,
+            transcript.y,
+            side_width - 2,
+            body_height,
+        )
+    });
+    // Empty columns between the transcript and the sidebar's rule: a line
+    // that ran to the transcript's last column touched the rule.
+    if sidebar.is_some() {
+        transcript.width = transcript.width.saturating_sub(SIDEBAR_GUTTER);
+    }
     Layout {
         header,
         footer,
@@ -248,14 +264,7 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
         queue_height,
         body_height,
         transcript,
-        sidebar: (side_width > 0).then(|| {
-            Rect::new(
-                transcript.right() + 2,
-                transcript.y,
-                side_width - 2,
-                body_height,
-            )
-        }),
+        sidebar,
     }
 }
 

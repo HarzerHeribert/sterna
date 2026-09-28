@@ -1601,6 +1601,46 @@ fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
     assert!(words(&d).contains(&table), "{}", words(&d));
 }
 
+/// Nothing in the transcript touches the sidebar's rule: the two columns
+/// before it stay empty on every row, even under a table that fills the
+/// transcript's whole width.
+#[test]
+fn the_transcript_keeps_a_gutter_before_the_sidebar() {
+    let (mut c, n, s) = fixture();
+    c.messages
+        .push(Message::text(Role::User, "Show the checks as a table."));
+    c.messages.push(Message::text(
+        Role::Assistant,
+        format!("| check | {} |", "x".repeat(300)),
+    ));
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let rule = lines[1]
+        .iter()
+        .position(|ch| *ch == '┬')
+        .expect("the sidebar's rule meets the header");
+    let body: Vec<&Vec<char>> = lines
+        .iter()
+        .skip(2)
+        .take_while(|l| l.get(rule) == Some(&'│'))
+        .collect();
+    assert!(body.len() > 10, "{screen}");
+    assert!(
+        body.iter()
+            .any(|l| l[..rule].iter().filter(|ch| **ch == 'x').count() > 50),
+        "the table fills the transcript: {screen}"
+    );
+    for line in body {
+        assert_eq!(
+            (line[rule - 2], line[rule - 1]),
+            (' ', ' '),
+            "{}",
+            line.iter().collect::<String>()
+        );
+    }
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]
