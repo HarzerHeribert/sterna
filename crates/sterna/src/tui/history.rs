@@ -46,6 +46,8 @@ impl ScreenState {
 /// The first words of the lines Sterna's work behind an answer leaves
 /// (`session/after.rs`, the gate's notes); [`NoteKind::of`] reads them.
 pub const CHECKED: &str = "checked after the answer: ";
+/// What separates a check's verdict from what the check used, on its line.
+pub const COST: &str = " · ";
 pub const LEARNED: &str = "learned: ";
 pub const NOTED: &str = "noted, not held: ";
 

@@ -27,7 +27,7 @@ pub mod voice;
 
 use crate::tui::{Panel, ScreenState};
 pub(crate) use chrome::frame;
-pub use document::{Document, READING_WIDTH, Row, RowKind, Tone};
+pub use document::{Document, Row, RowKind, Tone};
 pub use hosts::HostsSheet;
 pub use input::{Effect, mid_turn};
 pub use models::Navigator;
@@ -65,6 +65,9 @@ pub enum Action {
     /// The Scout's whole report, under the request it read, shown or put
     /// away.
     Scout,
+    /// A check's reasons, under its verdict line, shown or put away: the
+    /// index of the note in the session's history.
+    Note(usize),
     /// The task's acceptance list, whole, on its own sheet.
     Acceptance,
     Latest,
@@ -119,10 +122,6 @@ pub enum Action {
     ConfirmSetting(String, String),
     Sources,
     Scores,
-    /// Step the reasoning effort one place along its own ladder, in place.
-    /// The status strip's first control: the setting a person changes most
-    /// often, and the one the session bar has no room for.
-    Effort,
     /// Open settings already on the category that owns the thing just
     /// clicked, so a control on the strip is one click from the row that
     /// changes it rather than four.
@@ -147,8 +146,6 @@ pub enum Action {
     Copy(String),
     /// The form that takes the address a browser ended on.
     PasteCallback,
-    /// Turn a standing handler off.
-    HandlerOff(String),
     /// A click on one of the top sheet's own targets.
     Sheet(sheet::Hit),
     /// An answer on a decision prompt.
@@ -196,6 +193,18 @@ impl Geometry {
             .map(|(r, _)| *r)
     }
 }
+/// A tone as the workbench paints it in `theme`, for a surface drawn
+/// outside the workbench (telemetry) that must keep the same roles.
+pub(crate) fn tone_style(tone: Tone, theme: crate::tui::Theme) -> ratatui::style::Style {
+    theme::style(tone, theme)
+}
+
+/// The workbench's one filled style: a chosen chip, readable ink on the
+/// accent.
+pub(crate) fn chip_style(theme: crate::tui::Theme) -> ratatui::style::Style {
+    theme::chip_on(theme)
+}
+
 pub(crate) fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
 }
@@ -278,6 +287,8 @@ pub struct Workbench {
     pub helper_raw: Option<(usize, usize)>,
     /// Whether the Scout's report is open under its request.
     pub scout: bool,
+    /// The check notes whose reasons are open under their verdict.
+    pub notes_open: BTreeSet<usize>,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
     pub sheets: Vec<Layer>,
@@ -321,8 +332,6 @@ pub struct Workbench {
     pub reopening: bool,
     /// A settings row asked for the model picker: the setting it fills.
     pub browsing: Option<String>,
-    /// Handlers a person turned off whose turning-off has not shown yet.
-    pub turning_off: BTreeSet<String>,
 }
 /// How long a notice rides the dock's edge before it fades. It is still in
 /// the transcript and on the Activity surface after that.

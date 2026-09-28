@@ -2367,7 +2367,7 @@ fn agent_run_callback(
             None => {
                 throw_tool_error(
                     scope,
-                    "agent effort must be default, low, medium, high, xhigh, or max",
+                    "agent effort must be auto, low, medium, high, xhigh, or max",
                 );
                 return;
             }

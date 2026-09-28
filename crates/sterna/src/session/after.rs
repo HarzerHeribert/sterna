@@ -27,13 +27,12 @@ pub(super) struct Note {
 }
 
 impl Note {
-    /// The line the conversation shows: short when the answer held up, the
-    /// checker's evidence when it did not.
+    /// The note the conversation shows: the verdict and what the check
+    /// used on its first line, the checker's reasons under it. The
+    /// conversation folds the reasons under the verdict line.
     pub(super) fn line(&self) -> String {
         let checked = crate::tui::history::CHECKED;
-        if self.verdict == "holds" {
-            return format!("{checked}holds");
-        }
+        let head = format!("{checked}{}{}", self.verdict, self.cost());
         let body: String = self
             .text
             .lines()
@@ -42,7 +41,25 @@ impl Note {
             .take(6)
             .collect::<Vec<_>>()
             .join("\n");
-        format!("{checked}{}\n{body}", self.verdict)
+        if body.is_empty() {
+            head
+        } else {
+            format!("{head}\n{body}")
+        }
+    }
+
+    /// ` · 9.8k tokens` when the provider reported what the check read and
+    /// wrote; nothing when it did not, because unknown is not zero.
+    fn cost(&self) -> String {
+        let usage = &self.record.usage;
+        if usage.reported_requests == 0 {
+            return String::new();
+        }
+        format!(
+            "{}{}",
+            crate::tui::history::COST,
+            crate::tui::status::compact_tokens(usage.known_tokens())
+        ) + " tokens"
     }
 }
 
@@ -267,5 +284,43 @@ pub(super) fn finish_run() {
         for reason in &failed {
             eprintln!("behind the answer, failed: {reason}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Note;
+
+    fn note(verdict: &str, text: &str, reported: u32, tokens: u64) -> Note {
+        let mut record = crate::helpers::HelperRecord::default();
+        record.usage.reported_requests = reported;
+        record.usage.input_tokens = tokens;
+        Note {
+            verdict: verdict.into(),
+            text: text.into(),
+            record,
+        }
+    }
+
+    /// The verdict line says what the check used, and every verdict keeps
+    /// its reasons for the conversation to fold. A check whose use nobody
+    /// reported says no number: unknown is not zero.
+    #[test]
+    fn a_check_says_what_it_used_and_keeps_its_reasons() {
+        let held = note("holds", "holds\nThe greeting changed as asked.", 1, 9_800);
+        assert_eq!(
+            held.line(),
+            "checked after the answer: holds · 9.8k tokens\nThe greeting changed as asked."
+        );
+        let unknown = note(
+            "cannot tell",
+            "cannot tell\nNot read: docs/delivery.md",
+            0,
+            0,
+        );
+        assert_eq!(
+            unknown.line(),
+            "checked after the answer: cannot tell\nNot read: docs/delivery.md"
+        );
     }
 }

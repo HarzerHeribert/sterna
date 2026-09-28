@@ -26,8 +26,8 @@ project folder:
   checker, the acceptance list and the mender. Subagents take a whole goal
   and run beside the task ([helpers](helpers.md)). A classifier, Jev,
   answers typed questions in about two seconds in a live session
-  ([decisions](decisions.md)); a supervisor watches for loops
-  ([supervisor](supervisor.md)).
+  ([decisions](decisions.md)). A task that stops producing anything ends
+  on its own, without a model deciding so (`progress.rs`).
 - **The workbench.** The terminal interface ([workbench](workbench.md)).
 - **Its own files.** Configuration in `~/.config/sterna/config.toml` and
   `<project>/.sterna/config.toml`; sessions, memory and the scratchpad under

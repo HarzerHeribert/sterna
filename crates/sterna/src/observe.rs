@@ -97,7 +97,7 @@ const REDACTED: &str = "«redacted»";
 /// `span` id so a reader can pair them and take a duration: `session`,
 /// `task`, `turn`, `cell`, `helper`, `agent`. A **moment** happens once and
 /// closes nothing: `cell.repair`, `command.judge`, `file.change`,
-/// `answer.propose`, `ask.raise`, `supervisor.look`, `sandbox.move`,
+/// `answer.propose`, `ask.raise`, `sandbox.move`,
 /// `reduction.made`, `approval.raise`.
 ///
 /// **Seven can be refused** once the synchronous half exists
@@ -138,7 +138,6 @@ pub enum Kind {
     /// `answer(text)` was called and the task has not ended yet.
     AnswerPropose,
     AskRaise,
-    SupervisorLook,
     SandboxMove,
     ReductionMade,
     ApprovalRaise,
@@ -166,7 +165,6 @@ impl Kind {
             Self::AgentEnd => "agent.end",
             Self::AnswerPropose => "answer.propose",
             Self::AskRaise => "ask.raise",
-            Self::SupervisorLook => "supervisor.look",
             Self::SandboxMove => "sandbox.move",
             Self::ReductionMade => "reduction.made",
             Self::ApprovalRaise => "approval.raise",
@@ -535,7 +533,7 @@ mod tests {
 
     /// Every kind the vocabulary names, so a kind added without a decision
     /// about its shape cannot slip past.
-    const ALL: [Kind; 22] = [
+    const ALL: [Kind; 21] = [
         Kind::SessionBegin,
         Kind::SessionEnd,
         Kind::TaskBegin,
@@ -554,7 +552,6 @@ mod tests {
         Kind::AgentEnd,
         Kind::AnswerPropose,
         Kind::AskRaise,
-        Kind::SupervisorLook,
         Kind::SandboxMove,
         Kind::ReductionMade,
         Kind::ApprovalRaise,

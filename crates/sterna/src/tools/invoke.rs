@@ -759,7 +759,7 @@ fn checked_call(
                     .to_string(),
             ),
             crate::approval::Admission::DeniedEarlier => Some(
-                "you denied this exact call earlier in this session; it stays denied until you forget it on the Ask sheet"
+                "you denied this exact call earlier in this session; it stays denied until the person forgets it on the Sandbox sheet (/sandbox)"
                     .to_string(),
             ),
             // A person who refused with words gets them delivered where the

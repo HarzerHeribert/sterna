@@ -56,7 +56,7 @@ pub struct SettingSpec {
 
 /// Reasoning effort as the parent tier accepts it: `default` means *the
 /// provider's own*, which is not the same as removing a saved override.
-const EFFORT: &[&str] = &["default", "low", "medium", "high", "xhigh", "max"];
+const EFFORT: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
 /// Per-helper effort is a hard policy (`config.rs`): a helper never inherits
 /// `default`, so the curated word is absent here on purpose.
 const HARD_EFFORT: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -93,15 +93,15 @@ const AGENT_MODES: &[&str] = &["auto", "off", "pinned", "roster"];
 /// sheet and the settings row cannot disagree.
 const SANDBOX_LEVELS: &[&str] = &crate::permissions::Level::NAMES;
 const COMPLETION: &[&str] = &["silent", "recap"];
+const COMPLETION_CHECKS: &[&str] = &crate::config::CompletionCheck::NAMES;
 const PREFLIGHT_SCOPE: &[&str] = &["auto", "always"];
 const DECISION_MODES: &[&str] = &["off", "shadow", "on"];
 const ASK_JEV: &[&str] = &["off", "weight", "decide"];
 
 /// The top-level tables `SternaConfig` parses. A key under one of these is
 /// validated by the runtime parser; everything else is owned here.
-pub(crate) const RUNTIME_TABLES: [&str; 8] = [
+pub(crate) const RUNTIME_TABLES: [&str; 7] = [
     "limits",
-    "supervisor",
     "helpers",
     "agents",
     "model",
@@ -223,7 +223,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "session.effort",
         label: "Reasoning effort",
-        description: "How hard the model thinks before answering. Higher is slower and costs more. `default` asks GPT models for low effort (measured faster at equal results) and leaves every other provider's own setting alone, which is not the same as clearing an override you saved.",
+        description: "How hard the model thinks before answering. Higher is slower and costs more. `auto` lets the model choose: GPT models are asked for low effort (measured faster at equal results), and every other provider keeps its own setting.",
         kind: Kind::Choice,
         choices: EFFORT,
         basic: true,
@@ -485,10 +485,10 @@ static SPECS: &[SettingSpec] = &[
     },
     SettingSpec {
         key: "helpers.completion_check",
-        label: "Fresh completion check",
-        description: "After the answer, a second model checks it against the original request, the diff and exact evidence only. It never holds the answer and never reaches the model; the verdict is a note for you. A one-task run (sterna -p, exec) runs it only when you set this yourself.",
-        kind: Kind::Bool,
-        choices: &[],
+        label: "Check the answer",
+        description: "After the answer, a second model checks the work against your request, the answer, the diff and exact evidence. It never holds the answer back; the verdict is a note for you. `auto` checks after big work: a list the Scout wrote, or many files, lines or cells. `always` checks every answer that changed something. A turn that changed nothing is never checked. A one-task run (sterna -p, exec) checks only when you set this yourself.",
+        kind: Kind::Choice,
+        choices: COMPLETION_CHECKS,
         basic: false,
         restart: true,
     },
@@ -542,33 +542,6 @@ static SPECS: &[SettingSpec] = &[
         label: "Reduce above tokens",
         description: "Estimated command-output tokens above which the pushed reducer is worth a cheap request.",
         kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "supervisor.enabled",
-        label: "Supervisor",
-        description: "Whether the supervisor look runs.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "supervisor.every",
-        label: "Supervisor cadence",
-        description: "How many turns between supervisor looks.",
-        kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "supervisor.model",
-        label: "Supervisor model",
-        description: "The model the supervisor runs on. Unset means the supervisor is off.",
-        kind: Kind::Model,
         choices: &[],
         basic: false,
         restart: true,
@@ -718,15 +691,6 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
-        key: "decisions.supervision_above",
-        label: "Supervision confidence",
-        description: "Confidence at or above which the supervision question's answer is a reason to nudge the working model.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "limits.cell_wall_clock_s",
         label: "Cell time limit",
         description: "Seconds one cell may run.",
@@ -748,15 +712,6 @@ static SPECS: &[SettingSpec] = &[
         key: "limits.cells",
         label: "Cell budget",
         description: "Cells one task may run.",
-        kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "limits.task_tokens",
-        label: "Task token cap (retired)",
-        description: "Accepted so an existing project still starts; spend is accounted and never capped here.",
         kind: Kind::Integer,
         choices: &[],
         basic: false,
@@ -994,7 +949,19 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
         "ui.reduced_motion",
         "motion off freezes every animation the same way: /motion off",
     ),
+    ("supervisor.enabled", SUPERVISOR_GONE),
+    ("supervisor.every", SUPERVISOR_GONE),
+    ("supervisor.model", SUPERVISOR_GONE),
+    ("decisions.supervision_above", SUPERVISOR_GONE),
+    (
+        "limits.task_tokens",
+        "spend is shown and never capped: nobody knows up front how much a task needs",
+    ),
 ];
+
+/// Where the supervisor's job went when it was removed.
+const SUPERVISOR_GONE: &str =
+    "the supervisor is gone: a task that stops producing anything still ends on its own";
 
 /// Keys Sterna writes for itself. They load like any other and are never
 /// offered as a choice.
@@ -1003,6 +970,42 @@ const HIDDEN: &[&str] = &["wizard.seen", "legacy.imported"];
 /// Whether `key` is Sterna's own bookkeeping rather than a choice.
 pub fn hidden(key: &str) -> bool {
     HIDDEN.contains(&key)
+}
+
+/// The word a setting that changed kind is saved as now, for the word it
+/// was saved as before. `helpers.completion_check` was on or off; it is now
+/// when: on meant "every answer", and "auto" keeps the check where it pays.
+#[must_use]
+pub fn migrated_value(key: &str, word: &str) -> Option<&'static str> {
+    match (key, word) {
+        ("helpers.completion_check", "true") => Some("auto"),
+        ("helpers.completion_check", "false") => Some("off"),
+        // The effort the model chooses for itself was called `default`.
+        ("session.effort", "default") => Some("auto"),
+        _ => None,
+    }
+}
+
+/// The one-time sentence for a value [`migrated_value`] rewrote: what it
+/// is now, and what to do to keep the old behaviour where it differs.
+#[must_use]
+pub fn migration_notice(key: &str, word: &str, now: &str, written: bool) -> String {
+    let what = if written {
+        format!("`{key} = {word}` is now `\"{now}\"`")
+    } else {
+        format!("`{key} = {word}` is read as `\"{now}\"`")
+    };
+    match (key, now) {
+        ("helpers.completion_check", "auto") => format!(
+            "{what}: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
+        ),
+        ("session.effort", "auto") => {
+            format!(
+                "{what}: the same setting under a clearer name. The model chooses its own effort."
+            )
+        }
+        _ => format!("{what}; /settings changes it."),
+    }
 }
 
 /// The `sandbox.level` a retired permission word means, when the retired
@@ -1320,7 +1323,7 @@ pub fn shown_default(key: &str) -> Option<String> {
         "limits.instructions_outline" => crate::config::Limits::default()
             .instructions_outline
             .to_string(),
-        "helpers.completion_check" => helpers.completion_check.to_string(),
+        "helpers.completion_check" => helpers.completion_check.as_str().into(),
         "helpers.acceptance_list" => helpers.acceptance_list.to_string(),
         "helpers.preflight_scope" => "auto".into(),
         "helpers.reduce_above_tokens" => helpers.reduce_above_tokens.to_string(),
@@ -1329,7 +1332,13 @@ pub fn shown_default(key: &str) -> Option<String> {
         "helpers.scout_oneshot" => helpers.scout_oneshot.to_string(),
         "helpers.learn" => helpers.learn.to_string(),
         "ask.enabled" => ask.enabled.to_string(),
-        "ask.jev" => "off".into(),
+        // The runtime's own defaults, so the ● marks what actually runs.
+        "ask.jev" => ask.jev.as_str().into(),
+        "decisions.mode" => decisions.mode.as_str().into(),
+        "agents.slots.quick.effort" => crate::config::slot_effort("quick").name().into(),
+        "agents.slots.balanced.effort" => crate::config::slot_effort("balanced").name().into(),
+        "agents.slots.deep.effort" => crate::config::slot_effort("deep").name().into(),
+        "agents.slots.heavy.effort" => crate::config::slot_effort("heavy").name().into(),
         "ask.decide_above" => ask.decide_above.to_string(),
         "decisions.scout_above" => decisions.scout_above.to_string(),
         "decisions.hygiene_no_below" => decisions.hygiene_no_below.to_string(),
@@ -1339,7 +1348,6 @@ pub fn shown_default(key: &str) -> Option<String> {
         "decisions.drift_no_below" => decisions.drift_no_below.to_string(),
         "decisions.scout_relevance_below" => decisions.scout_relevance_below.to_string(),
         "decisions.helper_no_below" => decisions.helper_no_below.to_string(),
-        "decisions.supervision_above" => decisions.supervision_above.to_string(),
         _ => return None,
     })
 }

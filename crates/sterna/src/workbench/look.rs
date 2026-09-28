@@ -93,52 +93,6 @@ pub fn paint(colour: Color, look: Look) -> Color {
     }
 }
 
-/// What a colour is in red, green and blue: its own value, or the one a
-/// terminal's default palette gives a named colour.
-fn rgb_of(colour: Color) -> Option<u32> {
-    Some(match colour {
-        Color::Rgb(r, g, b) => u32::from_be_bytes([0, r, g, b]),
-        Color::Black => 0x000000,
-        Color::Red => 0xcd0000,
-        Color::Green => 0x00cd00,
-        Color::Yellow => 0xcdcd00,
-        Color::Blue => 0x0000ee,
-        Color::Magenta => 0xcd00cd,
-        Color::Cyan => 0x00cdcd,
-        Color::Gray => 0xe5e5e5,
-        Color::DarkGray => 0x7f7f7f,
-        Color::LightRed => 0xff0000,
-        Color::LightGreen => 0x00ff00,
-        Color::LightYellow => 0xffff00,
-        Color::LightBlue => 0x5c5cff,
-        Color::LightMagenta => 0xff00ff,
-        Color::LightCyan => 0x00ffff,
-        Color::White => 0xffffff,
-        _ => return None,
-    })
-}
-
-/// The colours a drawing that predates the look chose -- the instruments
-/// -- taken through it, for `area`: on a light ground each colour written on
-/// the terminal's own background is moved until it reads there, and without
-/// true colour every colour is the nearest of the 256.
-pub(super) fn adopt(buffer: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect, look: Look) {
-    let area = area.intersection(buffer.area);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let cell = &mut buffer[(x, y)];
-            if look.light
-                && cell.bg == Color::Reset
-                && let Some(rgb) = rgb_of(cell.fg)
-            {
-                cell.fg = crate::tui::theme::rgb(readable(rgb, true, 4.5));
-            }
-            cell.fg = paint(cell.fg, look);
-            cell.bg = paint(cell.bg, look);
-        }
-    }
-}
-
 /// The nearest of the 256 colours: the 6×6×6 cube or the grey ramp,
 /// whichever is closer.
 fn ansi256(r: u8, g: u8, b: u8) -> u8 {

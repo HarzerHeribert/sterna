@@ -70,7 +70,7 @@ impl AgentsConfig {
                 if slot.is_some() || model.is_some_and(|model| model != pinned) {
                     return Err("the requested model is outside the pinned subagent assignment".into());
                 }
-                Ok(AgentSlot { model: pinned.clone(), effort: Effort::Default })
+                Ok(AgentSlot { model: pinned.clone(), effort: Effort::Auto })
             }
             AgentsMode::Roster => {
                 let selected = if let Some(slot) = slot {
@@ -166,7 +166,7 @@ pub(super) fn parse_agents(value: &toml::Value) -> Result<AgentsConfig, String> 
                 .map(|v| {
                     v.as_str()
                         .and_then(Effort::parse)
-                        .filter(|e| *e != Effort::Default)
+                        .filter(|e| *e != Effort::Auto)
                         .ok_or("favorite effort must be low, medium, high, xhigh or max")
                 })
                 .transpose()?

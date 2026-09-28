@@ -101,8 +101,8 @@ may register at most 64 handlers of at most 65,536 source bytes each.
   its run is one rollout line.
 - A handler cannot register a handler: `on()` inside one throws
   `HandlerNesting`.
-- A handler that throws is disabled, not retried; `/handlers` shows the
-  error and `/handlers off <name>` cancels one.
+- A handler that throws is disabled, not retried; a handler ends with the
+  task that registered it.
 - Handlers are task-scoped and do not survive a resume.
 
 The interface shows the open window, the batches delivered to the model this

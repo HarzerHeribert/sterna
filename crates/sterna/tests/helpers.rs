@@ -761,7 +761,7 @@ fn a_historical_helper_record_deserializes_with_unknown_usage_coverage() {
 }
 
 /// A helper that could not answer is a throw, never a reduction that looks
-/// healthy — `supervisor.rs` shipped for weeks rendering the opposite.
+/// healthy.
 /// **Nothing stops a helper on a count.** Its spec says `max_turns: 2`, the
 /// old global ceiling was 8, and this one takes twelve turns and answers.
 /// The user, 2026-09-17: *"if a helper returns nonsense that can do more harm

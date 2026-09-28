@@ -1,4 +1,4 @@
-//! `/wizard` (also `/setup`): the first-start wizard -- sign in, a model for each workload,
+//! `/wizard`: the first-start wizard -- sign in, a model for each workload,
 //! and Jev -- and the one-line reminder a session prints while a step is
 //! still missing.
 //!
@@ -63,7 +63,7 @@ pub(super) const RECOMMENDED: &[Recommended] = &[
         key: "decisions.mode",
         value: "on",
         since: 1,
-        why: "Jev answers quick questions -- is this command safe, is the task stuck -- so fewer of them reach you",
+        why: "Jev answers quick questions -- does a call fit the request, is the task finished -- on a small, fast model",
         needs_jev: true,
         current: |config| config.decisions.mode.as_str().to_string(),
     },
@@ -153,24 +153,7 @@ fn progress(session: &Session<'_>) -> Progress {
         .iter()
         .any(|key| key.provider == startup::DECISIONS_PROVIDER && key.source.is_some());
     let config = session.config();
-    let models = match (
-        config.model.parent.clone(),
-        config
-            .helpers
-            .enabled
-            .then(|| config.helpers.model.clone())
-            .flatten(),
-        (config.agents.mode == crate::config::AgentsMode::Pinned)
-            .then(|| config.agents.model.clone())
-            .flatten(),
-    ) {
-        (Some(main), Some(helpers), Some(subagents)) => Some(Picks {
-            main,
-            helpers,
-            subagents,
-        }),
-        _ => None,
-    };
+    let models = chosen(&config);
     let jev_on = config.decisions.mode == crate::config::DecisionMode::On
         && config.decisions.model.is_some();
     let served = startup::served_accounts(session.gateway)
@@ -185,6 +168,31 @@ fn progress(session: &Session<'_>) -> Progress {
         jev_on,
         served,
     }
+}
+
+/// The three tiers as the configuration sets them, when every one is set.
+/// Subagents are set by one pinned model or by favourites: a roster with a
+/// model in it is as chosen as a pin.
+fn chosen(config: &crate::config::SternaConfig) -> Option<Picks> {
+    let main = config.model.parent.clone()?;
+    let helpers = config
+        .helpers
+        .enabled
+        .then(|| config.helpers.model.clone())
+        .flatten()?;
+    let subagents = match config.agents.mode {
+        crate::config::AgentsMode::Pinned => config.agents.model.clone()?,
+        crate::config::AgentsMode::Roster if !config.agents.slots.is_empty() => {
+            let count = config.agents.slots.len();
+            format!("{count} favourite{}", if count == 1 { "" } else { "s" })
+        }
+        _ => return None,
+    };
+    Some(Picks {
+        main,
+        helpers,
+        subagents,
+    })
 }
 
 const STEPS: usize = 3;
@@ -272,7 +280,7 @@ fn models_panel(progress: &Progress) -> Panel {
 /// The Jev step: what it is for, then the key and the switch.
 fn jev_panel(progress: &Progress) -> Panel {
     let mut rows = vec![PanelRow::info(
-        "Jev answers Sterna's quick decisions: whether a command in auto mode is safe to run without asking, whether a long task is stuck, what kind of task a request is. It is a TypeSafe model and needs a TypeSafe API key.",
+        "Jev answers Sterna's quick decisions: whether a call you are asked to approve fits your request (the approval shows its view), which files matter to a request, whether a task is finished, and a cell's question when you let Sterna decide. It is a TypeSafe model and needs a TypeSafe API key.",
     )];
     if !progress.jev_key {
         rows.push(PanelRow::opens(
@@ -444,8 +452,8 @@ pub(super) fn at_start(session: &Session<'_>, no_model: bool) {
         session_println!(
             "Sterna's recommended settings changed · /wizard update shows what and why"
         );
-        return;
     }
+    // The way into setup stays on the opening card either way.
     offer_for(session, &progress);
 }
 
@@ -489,6 +497,32 @@ mod tests {
     /// Sterna's picks are saved for every project and are in force now:
     /// the project folder is left alone and the session answers on the
     /// main pick at once. Nothing else is switched on.
+    /// Favourites set the subagents as surely as one pinned model: setup's
+    /// models step is done with either, and not with an empty roster.
+    #[test]
+    fn favourites_finish_the_models_step() {
+        let mut config = crate::config::SternaConfig::default();
+        config.model.parent = Some("main-model".into());
+        config.helpers.enabled = true;
+        config.helpers.model = Some("helper-model".into());
+        config.agents.mode = crate::config::AgentsMode::Roster;
+        assert!(chosen(&config).is_none(), "an empty roster chose nothing");
+        config.agents.slots.insert(
+            "quick".into(),
+            crate::config::AgentSlot {
+                model: "helper-model".into(),
+                effort: crate::wire::Effort::Low,
+            },
+        );
+        let picks = chosen(&config).expect("favourites choose the subagents");
+        assert_eq!(picks.subagents, "1 favourite");
+        config.agents.mode = crate::config::AgentsMode::Pinned;
+        config.agents.model = Some("sub-model".into());
+        assert_eq!(chosen(&config).unwrap().subagents, "sub-model");
+        config.agents.mode = crate::config::AgentsMode::Off;
+        assert!(chosen(&config).is_none());
+    }
+
     #[test]
     fn sternas_picks_are_saved_globally_and_in_force_now() {
         let root = std::env::temp_dir().join(format!("sterna-picks-{}", std::process::id()));

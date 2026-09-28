@@ -875,7 +875,7 @@ fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_retur
                 && text.contains("PREFLIGHT · SCOUT")
                 && text.contains("scanning")
                 && text.contains("searching")
-                && text.contains("effort medium")
+                && text.contains("· medium ▾")
         },
     );
 
@@ -1125,10 +1125,10 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
             >= 2
     });
     app.send(b"/context\r");
-    app.contains("Next request:");
+    app.contains("IN THE NEXT REQUEST");
     app.send(b"\x1b");
     // Closed means the panel's frame is gone, not only its text: a redraw
-    // caught halfway has already cleared "Next request:" while the frame
+    // caught halfway has already cleared the heading while the frame
     // is still drawn (measured locally, 2026-09-25), and an open text panel
     // swallows every plain key, Enter included -- so `/statusline compact`
     // and `/exit` sent into that gap never reach the composer, which is the
@@ -1137,7 +1137,7 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
     // the header was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
-        !screen.contains("Next request:") && !screen.contains("Esc · Close")
+        !screen.contains("IN THE NEXT REQUEST") && !screen.contains("Esc · Close")
     });
     app.send(b"/statusline compact\r");
     app.contains("Status line");
@@ -1213,10 +1213,15 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     // row asks first.
     app.settle(200);
     app.send(b"\x1b");
+    // The dock's chip shows while the sheet is still open, so the sheet
+    // going is what proves the Escape was read on its own.
+    app.wait("the sign-in sheet closes", |screen| {
+        !screen.contents().contains("SIGN IN · GROK")
+    });
     app.contains("signing in to Grok ▸");
     // The session is free: a command answers while the sign-in waits.
     app.send(b"/status\r");
-    app.contains("Sandbox: Sandboxed");
+    app.contains("SUBSCRIPTION LIMITS");
     app.settle(200);
     app.send(b"\x1b");
     app.wait("the status sheet closes", |screen| {
@@ -1239,6 +1244,28 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(!alive(), "the sign-in outlived the session");
+}
+
+/// A first start says the recommended settings changed **and** keeps the
+/// way into setup on the opening card: the one line never takes the chip's
+/// place.
+#[test]
+fn a_first_start_keeps_the_setup_chip_beside_the_changed_settings_line() {
+    let (base, _requests) = provider();
+    // Helpers off differs from a recommendation this install has not seen.
+    let mut app = App::start_seeded(&base, false, None, &[], &|root| {
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        std::fs::write(
+            root.join(".sterna/config.toml"),
+            "[helpers]\nenabled = false\n",
+        )
+        .unwrap();
+    });
+    app.ready();
+    app.contains("recommended settings changed");
+    app.contains("finish setup");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
 }
 
 #[cfg(unix)]
@@ -1427,6 +1454,9 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
         app.contains("next draft");
     }
     app.send(b"\x1b");
+    app.wait("telemetry closes", |screen| {
+        !screen.contents().contains("Esc returns")
+    });
     app.contains_line("LIVE RESULT INTACT");
     app.contains("next draft");
     app.send(b"\x15/exit\r");
@@ -1472,7 +1502,7 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.send(b"\x06");
     app.wait("header and status gone after Ctrl-F", |screen| {
         let screen = screen.contents();
-        !screen.contains("STERNA /") && !screen.contains("⟨ Settings ⟩")
+        !screen.contains("STERNA /") && !screen.contains("⟨ ◼ Sandboxed ⟩")
     });
     // The composer is not part of the hide-set, and neither is what is in it.
     app.contains("a draft mid-thought");
@@ -1480,7 +1510,7 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.contains("a draft mid-thought still typing");
     app.send(b"\x06");
     app.contains("STERNA /");
-    app.contains("⟨ Settings ⟩");
+    app.contains("⟨ ◼ Sandboxed ⟩");
     app.contains("a draft mid-thought still typing");
     app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
@@ -1497,11 +1527,11 @@ fn fullscreen_says_the_way_back_and_escape_takes_it() {
         !screen.contents().contains("STERNA /")
     });
     // Ctrl-F says what it did, as /fullscreen does, and the way back stays.
-    app.contains("Fullscreen. Ctrl-F or /fullscreen restores the chrome.");
-    app.contains("Ctrl-F restores");
+    app.contains("Fullscreen: the conversation and the composer only.");
+    app.contains("Ctrl-F leaves it");
     app.send(b"\x1b");
     app.contains("STERNA /");
-    app.contains("Chrome restored.");
+    app.contains("Fullscreen off.");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -1726,99 +1756,6 @@ fn fragmented_mouse_reports_do_not_become_prompt_text() {
         "WHEEL_INPUT_OK"
     );
     app.contains_line("LIVE RESULT INTACT");
-    app.send(b"/exit\r");
-    assert_eq!(app.exited(), 0);
-}
-
-#[test]
-fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let (waiting, requests) = mpsc::channel();
-    let (release, allowed) = mpsc::channel();
-    thread::spawn(move || {
-        for turn in 0..2 {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap();
-                }
-            }
-            let mut bytes = vec![0; length];
-            reader.read_exact(&mut bytes).unwrap();
-            if turn == 1 {
-                waiting.send(()).unwrap();
-                allowed.recv_timeout(Duration::from_secs(15)).unwrap();
-            }
-            let text = if turn == 0 {
-                "```sterna\nconst noise = on({}, 'batch.ack(batch.rest().map(e => e.id));');\n```"
-            } else {
-                "```sterna\nanswer('HANDLER CONTROL DONE');\n```"
-            };
-            let events = [
-                serde_json::json!({"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":20}}}),
-                serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":text}}),
-                serde_json::json!({"type":"message_delta","usage":{"output_tokens":12}}),
-                serde_json::json!({"type":"message_stop"}),
-            ];
-            let body = events
-                .iter()
-                .map(|e| format!("data: {e}\n\n"))
-                .collect::<String>();
-            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
-        }
-    });
-    let mut app = App::start(&base);
-    app.ready();
-    app.send(b"register noise handler\r");
-    requests.recv_timeout(Duration::from_secs(10)).unwrap();
-    app.send(b"/handlers\r");
-    app.contains("STANDING HANDLERS");
-    app.contains("noise");
-    app.contains("active");
-    app.send(b"\x1b");
-    app.wait("handler panel closed", |screen| {
-        !screen.contents().contains("STANDING HANDLERS")
-    });
-    app.send(b"/handlers off noise\r");
-    app.contains("cancellation queued");
-    app.send(b"/handlers\r");
-    app.contains("STANDING HANDLERS");
-    app.contains("noise");
-    app.resize(40);
-    app.contains("STANDING HANDLERS");
-    release.send(()).unwrap();
-    // Keep the panel open across task completion, including on a narrow
-    // terminal. Reopening it would conceal a stale snapshot regression.
-    app.contains("No handlers in this task");
-    app.send(b"\x1b");
-    app.wait("completed handler panel closed", |screen| {
-        !screen.contents().contains("STANDING HANDLERS")
-    });
-    app.resize(80);
-    app.contains("HANDLER CONTROL DONE");
-    app.send(b"/handles\r");
-    app.contains("LAST HANDLE PREVIEW");
-    app.contains("stale");
-    app.send(b"\x1b");
-    app.wait("handle panel closed", |screen| {
-        !screen.contents().contains("LAST HANDLE PREVIEW")
-    });
-    // With nothing standing, the answer is one line: a notice, not a sheet,
-    // so there is nothing to close before the next command.
-    app.send(b"/handlers\r");
-    app.contains("No handlers in this task");
-    app.settle(120);
-    assert!(!app.screen.screen().contents().contains("STANDING HANDLERS"));
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -2468,9 +2405,11 @@ fn a_rollback_marks_its_cell_and_says_so_in_one_line() {
         "the cell wrote its file"
     );
     app.send(b"/rollback\r");
-    app.contains("Confirm rollback");
+    app.contains("Roll back cell 001");
+    app.contains("This cannot be undone");
     app.settle(600);
-    app.send(b"\x1b[A");
+    // Cancel is first; the rollback is the row under it.
+    app.send(b"\x1b[B");
     // A decision sheet takes a key only after half a second without one.
     app.settle(700);
     app.send(b"\r");
@@ -2537,13 +2476,17 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.send(b"keep this draft");
     app.send(b"\x1bOQ"); // F2
     app.contains("SETTINGS");
-    app.send(b"\t");
-    app.contains("Display");
+    // Everyday, Models, Little helpers, then Display.
+    app.send(b"\t\t\t");
+    app.contains("SETTINGS › Display");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("amber"), "{saved}");
     app.send(b"\x1b");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
     app.contains("keep this draft");
     app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
@@ -2575,9 +2518,12 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     app.send(b"\x1b[C");
     app.contains("Effort is now low");
     app.send(b"\x1b");
-    // The strip reads the running session. If the choice had only reached
-    // the file, this would still say `default`.
-    app.contains("effort low");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
+    // The model chip reads the running session. If the choice had only
+    // reached the file, this would still say `auto`.
+    app.contains("· low ▾");
     // And it reached the file too, so the next session starts there.
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("low"), "{saved}");
@@ -2669,10 +2615,13 @@ fn a_typed_level_offers_the_one_it_left_back() {
 fn workbench_pointer_opens_settings_only_on_release_and_wheel_stays_local() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
-    app.contains("Settings");
+    app.ready();
+    // Wide enough that Settings has its own chip rather than the fold.
+    app.resize(120);
+    app.contains("⟨ Settings ⟩");
     // Header is one row; the chip's column is counted in cells, not bytes,
     // because the glyphs before it are more than one byte each.
-    let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
+    let rows: Vec<_> = app.screen.screen().rows(0, 120).collect();
     let x = rows[0]
         .char_indices()
         .position(|(byte, _)| rows[0][byte..].starts_with("Settings"))
@@ -2686,8 +2635,13 @@ fn workbench_pointer_opens_settings_only_on_release_and_wheel_stays_local() {
     app.send(b"\x1b[<65;30;12M");
     app.settle(120);
     assert!(app.screen.screen().contents().contains("SETTINGS"));
+    // The top bar stays in view while a sheet is open, so what proves the
+    // Escape landed is the sheet going; an Escape still unread when the
+    // next keys arrive is read with them as one Alt chord.
     app.send(b"\x1b");
-    app.contains("⠿ STERNA");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -2737,7 +2691,7 @@ fn motion_provider() -> (String, mpsc::Sender<()>) {
                         ("the check is cheap, so I will run it ", 500),
                         ("and report what it says.\n\n", 500),
                         (
-                            "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
+                            "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nawait write({path:'guard.txt',content:'3 of 3'});\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
                             0,
                         ),
                     ]
@@ -2793,7 +2747,18 @@ fn walk_a_turn(bird: bool) {
     } else {
         &[]
     };
-    let mut app = App::start_in(&base, false, Some("helper-tier"), &[], &|_| {}, colours);
+    // The check reads work: the turn writes a file, and every answer that
+    // changed something is checked.
+    let seed = |root: &std::path::Path| {
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        std::fs::write(
+            root.join(".sterna/config.toml"),
+            "[helpers]\nacceptance_list = false\nmodel = \"helper-tier\"\npreflight = true\n\
+             preflight_scope = \"always\"\ncompletion_check = \"always\"\n",
+        )
+        .unwrap();
+    };
+    let mut app = App::start_in(&base, false, None, &[], &seed, colours);
     app.ready();
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
@@ -3018,7 +2983,7 @@ fn live_acceptance_list_counts_the_file_the_cell_wrote() {
         std::fs::write(
             root.join(".sterna/config.toml"),
             "[helpers]\nmodel = \"helper-tier\"\npreflight = false\nacceptance_list = true\n\
-             completion_check = false\nlearn = false\n",
+             completion_check = \"off\"\nlearn = false\n",
         )
         .unwrap();
     });

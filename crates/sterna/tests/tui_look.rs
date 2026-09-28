@@ -5,7 +5,7 @@ use sterna::helpers::{HelperOutcome, HelperRecord};
 use sterna::runtime::handles::HandleTable;
 use sterna::tui::{
     Activity, CellError, CellView, ContextTokens, Counted, Notebook, ScreenState,
-    SidebarVisibility, SupervisorStatus, render_screen, screen_regions, slash_matches,
+    SidebarVisibility, render_screen, screen_regions, slash_matches,
 };
 
 fn state() -> ScreenState {
@@ -132,7 +132,6 @@ fn no_region_writes_outside_its_own_rect_at_60_80_120_and_200_columns() {
             ],
         };
         let notebook = Notebook {
-            supervisor: Some(SupervisorStatus::Nudged("Э".repeat(200))),
             cells: vec![CellView {
                 table: Some("Б".repeat(100)),
                 error: Some(CellError {
@@ -302,20 +301,16 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // wizard. `/bird` (2026-09-23) went on 2026-09-26: the parrots are themes.
     // `/stream` worked and was in no list until the settings pass. `/resume`
     // (2026-09-27) opens the resume sheet from inside a session.
-    assert_eq!(slash_matches("/").len(), 38);
+    // `/supervisor` went with the supervisor on 2026-09-28, and with it
+    // `/budget`, `/usage` (the Session sheet shows the limits), `/handles`,
+    // `/entitlements`, `/activity`, `/sidebar` (Ctrl-B) and `/handlers`.
+    assert_eq!(slash_matches("/").len(), 30);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(offered.len(), unique.len(), "no command is offered twice");
-    for command in [
-        "/diff",
-        "/activity",
-        "/subagents",
-        "/tool",
-        "/login",
-        "/mouse",
-    ] {
+    for command in ["/diff", "/subagents", "/tool", "/login", "/mouse"] {
         assert!(
             slash_matches("/").iter().any(|(name, _)| name == command),
             "{command} is offered"
@@ -425,7 +420,6 @@ fn wide_telemetry_preserves_reported_fields_and_budget_provenance() {
             helpers: Default::default(),
             counted: sterna::tui::Counted::Gateway,
         }),
-        supervisor: Some(SupervisorStatus::Nudged("check the request".into())),
         ..Notebook::default()
     };
     terminal
@@ -450,7 +444,6 @@ fn wide_telemetry_preserves_reported_fields_and_budget_provenance() {
         "Σ 579 tokens",
         "ctx",
         "44.6k/1.0M 4%",
-        "supervisor: check the request",
     ] {
         assert!(rendered.contains(field), "{field}: {rendered}");
     }
@@ -656,24 +649,26 @@ fn context_fill_animates_while_busy_without_changing_its_measurement() {
 #[test]
 fn the_sidebar_can_be_hidden_and_the_preference_survives_resize() {
     let mut state = state();
+    // The rail's task spend is the sentinel: it is drawn only there.
     let notebook = Notebook {
-        supervisor: Some(SupervisorStatus::Nudged("TELEMETRY_SENTINEL".into())),
+        tokens: Some(sterna::tui::TaskTokens {
+            used: 579,
+            parent_used: 579,
+            helpers: Default::default(),
+            counted: sterna::tui::Counted::Gateway,
+        }),
         ..Notebook::default()
     };
-    assert!(
-        text(&draw(120, 24, &state, &conversation(), &notebook)).contains("TELEMETRY_SENTINEL")
-    );
+    assert!(text(&draw(120, 24, &state, &conversation(), &notebook)).contains("Σ 579 tokens"));
     state.sidebar = SidebarVisibility::Hidden;
     for width in [200, 60, 120] {
         let buffer = draw(width, 24, &state, &conversation(), &notebook);
         assert_eq!(screen_regions(buffer.area, &state).details.width, 0);
-        assert!(!text(&buffer).contains("TELEMETRY_SENTINEL"));
+        assert!(!text(&buffer).contains("Σ 579 tokens"));
         assert!(text(&buffer).contains("gateway connected"));
     }
     state.sidebar = SidebarVisibility::Auto;
-    assert!(
-        text(&draw(120, 24, &state, &conversation(), &notebook)).contains("TELEMETRY_SENTINEL")
-    );
+    assert!(text(&draw(120, 24, &state, &conversation(), &notebook)).contains("Σ 579 tokens"));
 }
 
 #[test]

@@ -585,8 +585,7 @@ pub struct CellRecord {
     ///
     /// **It is the model's stated intention, not a record of what ran.**
     /// `calls` is the record; when the two disagree the trajectory is the
-    /// truth, and that disagreement is exactly what the supervisor's question
-    /// is meant to see. Absent for a cell whose model said nothing and for
+    /// truth. Absent for a cell whose model said nothing and for
     /// every rollout row written before this field existed, and absent is
     /// never an error: the notebook falls back to the cell's first source
     /// line, which is what it drew before.

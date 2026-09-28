@@ -41,11 +41,12 @@ const MODEL_HEADER: &str = "x-glasshouse-model";
 /// literal, so both stay in one place.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// User-selected response effort. Default leaves the existing wire body untouched.
+/// User-selected response effort. `auto` sends no effort: the model's own
+/// choice, and the wire body stays untouched.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Effort {
     #[default]
-    Default,
+    Auto,
     Low,
     Medium,
     High,
@@ -54,7 +55,7 @@ pub enum Effort {
 }
 impl Effort {
     /// What a main-model turn asks for: one the person chose is sent as
-    /// chosen; `default` on an OpenAI-family model is `low`
+    /// chosen; `auto` on an OpenAI-family model is `low`
     /// ([`crate::session`]'s `turn_effort` states why). The screen shows this,
     /// so the effort it names is the one sent.
     pub fn sent_for(self, model: &str) -> Effort {
@@ -62,7 +63,7 @@ impl Effort {
             crate::abi::Dialect::for_model(model),
             crate::abi::Dialect::OpenAi
         );
-        if self == Effort::Default && openai {
+        if self == Effort::Auto && openai {
             Effort::Low
         } else {
             self
@@ -71,7 +72,7 @@ impl Effort {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "default" => Some(Self::Default),
+            "auto" => Some(Self::Auto),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
@@ -89,7 +90,7 @@ impl Effort {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::Default => "default",
+            Self::Auto => "auto",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -406,7 +407,7 @@ pub fn request_body(conversation: &Conversation) -> Vec<u8> {
 
 /// The same request body used for sending and estimating an explicitly selected model.
 pub fn request_body_on_model(conversation: &Conversation, model: &str) -> Vec<u8> {
-    request_body_configured(conversation, model, Effort::Default)
+    request_body_configured(conversation, model, Effort::Auto)
 }
 
 /// Which tool definitions a request carries — `tool-abi.md` §3.
@@ -417,7 +418,7 @@ pub fn request_body_on_model(conversation: &Conversation, model: &str) -> Vec<u8
 /// interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
-    /// A supervisor look: no tools at all, so it cannot act.
+    /// A side errand (a helper): no tools at all, so it cannot act.
     TextOnly,
     /// A request that may act, and the façade it acts through.
     Acting {
@@ -572,7 +573,7 @@ fn effort_budget(effort: Effort) -> u32 {
         // `Default` never reaches here through [`configure_effort`]; this arm
         // is `Max` and the compiler cannot see that, so it is spelled rather
         // than a wildcard that would silently absorb a sixth level.
-        Effort::Max | Effort::Default => 65536,
+        Effort::Max | Effort::Auto => 65536,
     }
 }
 
@@ -585,7 +586,7 @@ fn effort_budget(effort: Effort) -> u32 {
 /// waste it then permitted. It asks this function now.
 #[must_use]
 pub fn wire_max_tokens(model: &str, allowance: Allowance, effort: Effort) -> u32 {
-    if effort == Effort::Default || model.contains("claude") {
+    if effort == Effort::Auto || model.contains("claude") {
         return allowance.declared();
     }
     match allowance {
@@ -595,7 +596,7 @@ pub fn wire_max_tokens(model: &str, allowance: Allowance, effort: Effort) -> u32
 }
 
 fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, allowance: Allowance) -> Vec<u8> {
-    if effort == Effort::Default {
+    if effort == Effort::Auto {
         return body;
     }
     let mut value: serde_json::Value = serde_json::from_slice(&body).expect("serialized request");
@@ -949,7 +950,7 @@ pub fn send_turn(conversation: &Conversation) -> Result<Turn, WireError> {
 
 /// A task request with its active model, preserving provider usage accounting.
 pub fn send_turn_on_model(conversation: &Conversation, model: &str) -> Result<Turn, WireError> {
-    send_turn_configured(conversation, model, Effort::Default)
+    send_turn_configured(conversation, model, Effort::Auto)
 }
 pub fn send_turn_configured(
     conversation: &Conversation,
@@ -1074,19 +1075,10 @@ pub fn send_turn_bounded_routed(
     parse_response(&text)
 }
 
-/// [`send_turn`] with an explicit `model`, `max_tokens` and one optional
-/// extra header -- the supervisor's look (`docs/supervisor.md`
-/// §3): a **cheaper** model than the task's own, a small `max_tokens` for its
-/// one-line JSON answer, and a header the ledger can key on before the
-/// gateway reads it itself.
-///
-/// The serializer is shared with task requests. This call supplies its own
-/// model and token limit; [`send_turn`] keeps the default [`MODEL`].
 /// A side errand's hard ceiling.
 ///
-/// [`send_turn_with`] has exactly two callers -- the supervisor's look and a
-/// little helper -- and neither is the task path. Both are supposed to be
-/// quick questions answered on a cheap model, and a helper's call runs inside
+/// A side errand -- a little helper's question -- is not the task path. It
+/// is a quick question answered on a cheap model, and a helper's call runs inside
 /// a native v8 callback where `terminate_execution` cannot reach it: without
 /// this, a provider that accepts and never answers outlives the cell's
 /// `cell_wall_clock_s` and `/stop` both. Generous against a real answer
@@ -1145,8 +1137,8 @@ pub const SIDE_ERRAND_BACKSTOP: std::time::Duration = std::time::Duration::from_
 /// A one-shot side errand over a stream, ended by silence rather than by
 /// duration (`SIDE_ERRAND_SILENCE`, `SIDE_ERRAND_FIRST_EVENT`).
 ///
-/// Same body as [`send_turn_with_usage_configured`] apart from `stream`, and
-/// the same [`Surface::TextOnly`]: a helper reaches no tool either way.
+/// A task request's body apart from its model, `max_tokens` and
+/// [`Surface::TextOnly`]: a helper reaches no tool.
 ///
 /// The provider request runs on its own thread and reports liveness over a
 /// channel, because the reading side blocks in the socket and cannot be
@@ -1325,86 +1317,7 @@ fn send_errand_within(
     }
 }
 
-pub fn send_turn_with(
-    conversation: &Conversation,
-    model: &str,
-    max_tokens: u32,
-    extra_header: Option<(&str, &str)>,
-) -> Result<Message, WireError> {
-    send_turn_with_usage(conversation, model, max_tokens, extra_header).map(|turn| turn.message)
-}
-
-/// [`send_turn_with`] without discarding the response's provider usage.
-/// Helpers retain it in their durable call record; the supervisor keeps the
-/// message-only compatibility wrapper above.
-pub fn send_turn_with_usage(
-    conversation: &Conversation,
-    model: &str,
-    max_tokens: u32,
-    extra_header: Option<(&str, &str)>,
-) -> Result<Turn, WireError> {
-    send_turn_with_usage_configured(
-        conversation,
-        model,
-        Effort::Default,
-        max_tokens,
-        extra_header,
-    )
-}
-
-/// [`send_turn_with_usage`] with a hard reasoning effort selected by a
-/// helper's role. The supervisor continues through the default wrapper.
-pub fn send_turn_with_usage_configured(
-    conversation: &Conversation,
-    model: &str,
-    effort: Effort,
-    max_tokens: u32,
-    extra_header: Option<(&str, &str)>,
-) -> Result<Turn, WireError> {
-    let url = format!("{}{MESSAGES_PATH}", base_url());
-    let body = configure_effort(
-        build_request_body(model, max_tokens, conversation, Surface::TextOnly),
-        model,
-        effort,
-        Allowance::Capped(max_tokens),
-    );
-
-    let mut request = ureq::post(&url)
-        .config()
-        .http_status_as_error(false)
-        .timeout_global(Some(SIDE_ERRAND_TIMEOUT))
-        .build()
-        .header("content-type", "application/json")
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header(MODEL_HEADER, model);
-    if let Some(key) = CACHE_KEY.get() {
-        request = request.header(SESSION_HEADER, key.as_str());
-    }
-    if let Some((name, value)) = extra_header {
-        request = request.header(name, value);
-    }
-    if let Some((name, value)) = credential_header() {
-        request = request.header(name, value);
-    }
-
-    let mut response = request
-        .send(body.as_slice())
-        .map_err(|err| WireError::Http(Box::new(err)))?;
-    let status = response.status().as_u16();
-    let text = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| WireError::Http(Box::new(err)))?;
-    if !response.status().is_success() {
-        return Err(WireError::Status {
-            status,
-            body_head: body_head(&text),
-        });
-    }
-    parse_response(&text)
-}
-
-/// Shared serialization for default, selected-model, and supervisor requests.
+/// Shared serialization for task requests and side errands.
 fn build_request_body(
     model: &str,
     max_tokens: u32,
@@ -1519,7 +1432,7 @@ fn deliver<'a>(blocks: impl Iterator<Item = &'a WireBlock>) -> Result<Vec<Block>
 /// time.
 ///
 /// The invariant: **a streamed turn and a whole-response turn are the same
-/// value.** The session, the rollout and the supervisor see no difference,
+/// value.** The session and the rollout see no difference,
 /// so streaming stays a transport concern and nothing downstream branches on
 /// it. Pure over its input and holding no socket, so the parse is tested
 /// without a server.
@@ -1961,7 +1874,7 @@ pub fn send_turn_streaming(
     model: &str,
     on_delta: &mut dyn FnMut(StreamDelta),
 ) -> Result<Turn, WireError> {
-    send_turn_streaming_configured(conversation, model, Effort::Default, on_delta)
+    send_turn_streaming_configured(conversation, model, Effort::Auto, on_delta)
 }
 pub fn send_turn_streaming_configured(
     conversation: &Conversation,
@@ -2276,7 +2189,7 @@ mod tests {
         let turn = send_errand_within(
             &sample_conversation(),
             "a-test-model",
-            Effort::Default,
+            Effort::Auto,
             Allowance::Capped(128),
             Surface::TextOnly,
             None,
@@ -2300,7 +2213,7 @@ mod tests {
         let outcome = send_errand_within(
             &sample_conversation(),
             "a-test-model",
-            Effort::Default,
+            Effort::Auto,
             Allowance::Capped(128),
             Surface::TextOnly,
             None,
@@ -2377,7 +2290,7 @@ mod tests {
     }
 
     #[test]
-    fn send_turn_with_names_the_model_it_is_given() {
+    fn a_side_errand_names_the_model_it_is_given() {
         let conversation = sample_conversation();
         let body = build_request_body(
             "cheap-model-for-the-test",
@@ -2390,11 +2303,11 @@ mod tests {
         assert_eq!(value["max_tokens"], 200);
         assert_ne!(
             value["model"], MODEL,
-            "the look must not fall back to the task's own model"
+            "a side errand must not fall back to the task's own model"
         );
         assert!(
             value.get("tools").is_none(),
-            "supervisor requests must stay text-only"
+            "side errands must stay text-only"
         );
         let task: serde_json::Value = serde_json::from_slice(&request_body(&conversation)).unwrap();
         assert_eq!(task["tools"][0]["name"], "execute_cell");
@@ -2598,14 +2511,14 @@ mod tests {
         let conversation = sample_conversation();
         let body = String::from_utf8(request_body(&conversation)).unwrap();
         assert!(!body.contains("stream"), "{body}");
-        let supervisor = String::from_utf8(build_request_body(
+        let errand = String::from_utf8(build_request_body(
             "m",
             200,
             &conversation,
             Surface::TextOnly,
         ))
         .unwrap();
-        assert!(!supervisor.contains("stream"), "{supervisor}");
+        assert!(!errand.contains("stream"), "{errand}");
     }
 
     #[test]
@@ -2977,9 +2890,9 @@ mod effort_tests {
 
     #[test]
     fn default_is_the_display_name_and_the_only_spelling() {
-        assert_eq!(Effort::parse("default"), Some(Effort::Default));
-        assert_eq!(Effort::parse("auto"), None);
-        assert_eq!(Effort::Default.name(), "default");
+        assert_eq!(Effort::parse("auto"), Some(Effort::Auto));
+        assert_eq!(Effort::parse("default"), None, "the retired word");
+        assert_eq!(Effort::Auto.name(), "auto");
     }
 
     #[test]
@@ -2989,7 +2902,7 @@ mod effort_tests {
             messages: vec![],
         };
         assert_eq!(
-            request_body_configured(&conversation, MODEL, Effort::Default),
+            request_body_configured(&conversation, MODEL, Effort::Auto),
             request_body(&conversation)
         );
         let claude: serde_json::Value = serde_json::from_slice(&request_body_configured(

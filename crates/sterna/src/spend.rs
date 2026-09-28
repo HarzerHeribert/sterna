@@ -222,8 +222,9 @@ impl Ledger {
                     out.push_str(&format!("  tokens: {tokens}\n"));
                 }
                 Some(tokens) => out.push_str(&format!(
-                    "  tokens: {tokens} (partial; {} call(s) unreported)\n",
-                    used.unreported_calls
+                    "  tokens: {tokens} (partial; {} call{} unreported)\n",
+                    used.unreported_calls,
+                    if used.unreported_calls == 1 { "" } else { "s" }
                 )),
                 None => out.push_str("  tokens: unreported\n"),
             }
@@ -322,7 +323,7 @@ mod tests {
         ledger.record(Tier::Helpers, "luna", None, None, None);
         let rendered = ledger.render();
         assert!(rendered.contains("partial"), "{rendered}");
-        assert!(rendered.contains("1 call(s) unreported"), "{rendered}");
+        assert!(rendered.contains("1 call unreported"), "{rendered}");
     }
 
     #[test]

@@ -25,9 +25,11 @@ is ignored and says so.
 
 ## Changing a setting
 
-- **`/settings`** (or F2) opens the settings sheet: Everyday, Display,
-  Little helpers, Models & accounts, Subagents, Advanced and Tuning (the
-  decision thresholds). It opens on Global; a choice is written to the
+- **`/settings`** (or F2) opens the settings sheet in five sections:
+  Everyday (what you change most), Models (which model does which job,
+  Main's effort, subagents, Jev and accounts), Little helpers, Display and
+  Advanced (limits, the web, permissions, and the confidence thresholds
+  last). It opens on Global; a choice is written to the
   project only when the Project tab (F6) is chosen, and a row the project
   overrides says so. Each row shows what the running session uses now. A
   choice validates and saves at once; Ctrl-Z, or the undo chip beside the
@@ -55,14 +57,13 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | key | what it decides |
 |---|---|
 | `model.parent` | the model that answers you |
-| `session.effort` | how hard it thinks: `low` … `max` |
+| `session.effort` | how hard Main thinks: `auto` (the model chooses) or `low` … `max`; a saved `default` is read as `auto` |
 | `sandbox.level` | global only: `ask`, `sandboxed` (default) or `full` ([sandbox](sandbox.md)) |
 | `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |
 | `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
-| `supervisor.model`, `supervisor.every` | the loop watcher ([supervisor](supervisor.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
 | `ui.motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
 | `web.enabled`, `web.allow_domains`, `web.search_endpoint`, … | the web broker ([web](web.md)) |

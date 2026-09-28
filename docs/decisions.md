@@ -35,14 +35,13 @@ threshold below is a `decisions.*` setting with the default shown.
 |---|---|---|
 | **intent** — `read_only`, `modify`, `run`, `other` | once, before the first turn | hold the first effectful cell once (`hold_above` 0.85); re-issued, it runs |
 | **complexity** — `trivial`, `routine`, `needs_exploration` | same request | add a reason to run the preflight scout (`scout_above` 0.85); never remove one |
-| **kind** — `explore`, `fix`, `implement`, `question`, `run` | same request | lower effort to `low` for `explore`/`question` when you left effort at `default`; brief the scout to dissect an `explore` request |
+| **kind** — `explore`, `fix`, `implement`, `question`, `run` | same request | lower effort to `low` for `explore`/`question` when you left effort at `auto`; brief the scout to dissect an `explore` request |
 | **drift** — does this cell do what the active plan step says | an effectful cell | hold it once, naming the step (`drift_no_below` 0.10) |
 | **completion** — does the diff satisfy the request | a claimed completion | a confident no adds a finding held once (`completion_no_below` 0.10); a confident yes with nothing else found spares the fresh checker (`completion_yes_above` 0.90) |
 | **hygiene** — `has_tests`, `out_of_scope`, `debug_leftovers`, `deletes_tests`, `changes_signature` | same request, when there is a diff | a finding held once (`hygiene_*` 0.10 / 0.90) |
 | **judge** items of the acceptance list | same request | satisfy an item without the checker, or hold once naming it (`judge_*`) |
 | **field shape** — `log`, `listing`, `source`, `prose`, `data` | a returned field over 2,048 tokens, with `helpers.reduce_returns` | send a `log` to the reducer; the whole value stays bound |
 | **enough** | a return that names unread project files, with `helpers.prefetch_returns` | fetch up to three of them into the same return budget, as text |
-| **supervision** | every few cells | see [supervisor](supervisor.md) |
 | **approval hint** | a pending confirmation | one line beside it: `fits the request: 0.91` |
 
 Every "held once" means the same call re-issued runs: a decision can make

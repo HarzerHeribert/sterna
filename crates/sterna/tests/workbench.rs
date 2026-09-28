@@ -247,14 +247,38 @@ fn code_public_explanation_and_results_remain_readable() {
                 .any(|(t, tone)| t.contains("99 / 99") && *tone == Tone::Normal)
     }));
 }
+/// A folded card counts its helpers on its own line and keeps their rows
+/// inside it: a helper row left under a folded card sat outside the card's
+/// edge, beside work it no longer showed. Opening the card shows them.
 #[test]
-fn collapsed_cell_keeps_helper_contributions() {
+fn a_folded_card_counts_its_helpers_and_keeps_them_inside() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     u.collapsed.insert(1);
-    let t = words(&doc(&c, &n, &s, &u));
+    let d = doc(&c, &n, &s, &u);
+    let t = words(&d);
     assert!(!t.contains("const result"));
-    assert!(t.contains("No failing tests"));
+    assert!(!t.contains("No failing tests"), "{t}");
+    let title = d
+        .rows
+        .iter()
+        .find(|r| {
+            matches!(
+                r.kind,
+                sterna::workbench::RowKind::CardTop { open: false, .. }
+            )
+        })
+        .expect("the folded card");
+    let sterna::workbench::RowKind::CardTop { right, .. } = &title.kind else {
+        unreachable!()
+    };
+    assert!(
+        right.iter().any(|(word, _)| word.contains("1 helper")),
+        "{right:?}"
+    );
+    u.collapsed.clear();
+    u.expanded.insert(1);
+    assert!(words(&doc(&c, &n, &s, &u)).contains("No failing tests"));
 }
 #[test]
 fn local_notices_are_not_model_conversation() {
@@ -848,9 +872,8 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
     for width in [80, 50] {
         draw(&c, &n, &s, &mut u, width, 30);
         let reach = reachable(&u);
-        // Everyday, Display, Little helpers, Models & accounts, Subagents,
-        // Advanced, Tuning.
-        for i in 0..7 {
+        // Everyday, Models, Little helpers, Display, Advanced.
+        for i in 0..5 {
             assert!(
                 reach.contains(&Action::Sheet(Hit::Section(i))),
                 "{width} columns: section {i} cannot be reached"
@@ -863,29 +886,29 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
             );
         }
     }
-    draw(&c, &n, &s, &mut u, 80, 30);
-    let tuning = 6;
+    draw(&c, &n, &s, &mut u, 50, 30);
+    let advanced = 4;
     let fold = u
         .geometry
         .hits
         .iter()
         .find_map(|(_, a)| {
-            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(tuning))))
+            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(advanced))))
                 .then(|| a.clone())
         })
-        .expect("Tuning is folded at 80 columns");
+        .expect("Advanced is folded at 50 columns");
     click(&mut u, &mut s, &n, fold);
-    draw(&c, &n, &s, &mut u, 80, 30);
+    draw(&c, &n, &s, &mut u, 50, 30);
     let row = u
         .top()
         .unwrap()
         .sheet
         .items
         .iter()
-        .position(|item| item.title == "Tuning")
-        .expect("the fold lists Tuning");
+        .position(|item| item.title == "Advanced")
+        .expect("the fold lists Advanced");
     click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(row)));
-    assert_eq!(u.preferences().unwrap().category, tuning);
+    assert_eq!(u.preferences().unwrap().category, advanced);
 }
 #[test]
 fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
@@ -995,15 +1018,15 @@ fn concurrent_file_edits_are_not_overwritten() {
 #[test]
 fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
     let (_t, _, mut p) = prefs();
-    for category in 0..5 {
+    // Every section but Advanced fits one screen.
+    for category in 0..4 {
         p.category = category;
         assert!(p.rows().len() <= 8, "category {category}");
     }
-    // Every key a person can choose; not Sterna's own bookkeeping, and not
-    // the retired key the parser still reads.
+    // Every key a person can choose; not Sterna's own bookkeeping.
     for spec in sterna::settings::specs()
         .iter()
-        .filter(|spec| !sterna::settings::hidden(spec.key) && spec.key != "limits.task_tokens")
+        .filter(|spec| !sterna::settings::hidden(spec.key))
     {
         p.query = spec.key.into();
         assert!(p.rows().iter().any(|s| s.key == spec.key), "{}", spec.key);
@@ -1326,7 +1349,7 @@ fn screenshot() {
     println!("\n===== CONFIRM FULL ACCESS 140x30 =====\n{}", text(&b));
     let mut sf = s.clone();
     sf.level = sterna::permissions::LiveLevel::new(sterna::permissions::Level::Full);
-    sf.network = Some("on".into());
+    sf.network = Some("web".into());
     let mut u = Workbench::default();
     let b = draw(&c, &n, &sf, &mut u, 80, 20);
     println!("\n===== FULL ACCESS 80x20 =====\n{}", text(&b));
@@ -1370,11 +1393,11 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
     let b = draw(&c, &n, &s, &mut u, 80, 30);
     let screen = text(&b);
     assert!(screen.contains("fixture-helper"), "{screen}");
-    // The tab row still names the session's main model; the *list* holds
-    // one row, and the model the query excluded is not among them.
-    // `fixture-main` is on the sheet once, in the line saying what Main
-    // runs on now, and nowhere in the list.
-    assert_eq!(screen.matches("fixture-main").count(), 1, "{screen}");
+    // The *list* holds one row, and the model the query excluded is not
+    // among them: `fixture-main` is on the sheet once, in the line saying
+    // what Main runs on now. (The session bar above the sheet names it too.)
+    let sheet: String = sheet_rows(&screen, "MODELS").join("\n");
+    assert_eq!(sheet.matches("fixture-main").count(), 1, "{screen}");
     assert!(!screen.contains("unavailable-model"), "{screen}");
 }
 
@@ -1561,11 +1584,12 @@ fn the_scout_folds_under_the_request_it_read() {
     );
 }
 
-/// Prose wraps at a reading width on a wide terminal, where a line of 160
-/// columns is too long to read; a table keeps the whole width, because a cut
-/// row stops being a row.
+/// Prose ends where the cards end, at every width: the same padding on the
+/// right as on the left, and no fixed column leaving a wide terminal's
+/// right third empty. A table keeps the whole width, because a cut row
+/// stops being a row.
 #[test]
-fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
+fn prose_ends_where_the_cards_end_and_a_table_keeps_the_whole_width() {
     let sentence = "The generator already tells missing data from a clean result. ";
     let table = format!("| check | {} |", "x".repeat(120));
     let c = Conversation {
@@ -1591,9 +1615,14 @@ fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
         .filter(|t| t.contains("generator"))
         .collect();
     assert!(prose.len() > 2, "{}", words(&d));
+    assert!(
+        prose.iter().any(|line| line.chars().count() > 120),
+        "prose uses a wide terminal's width: {prose:#?}"
+    );
     for line in &prose {
+        // The cards' right corner is three columns in from the edge.
         assert!(
-            line.chars().count() <= workbench::READING_WIDTH,
+            line.chars().count() <= 160 - 2,
             "{} columns: {line}",
             line.chars().count()
         );
@@ -1729,7 +1758,7 @@ fn the_top_bar_is_chips_and_each_one_hits_its_own_control() {
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
     let bar = screen.lines().next().unwrap();
     for chip in [
-        "⟨ fixture-main ▾ ⟩",
+        "⟨ fixture-main · auto ▾ ⟩",
         "⟨ ◼ Sandboxed ⟩",
         "⟨ Settings ⟩",
         "⟨ ? ⟩",
@@ -1779,8 +1808,8 @@ fn a_bare_question_mark_opens_the_key_sheet_and_escape_closes_it() {
 }
 
 /// The composer is a dock: its top edge says what the session is doing and
-/// its bottom edge carries the effort, which is stepped in place, and a chip
-/// for each other setting changed from Sterna's own default.
+/// its bottom edge a chip for each setting changed from Sterna's own
+/// default. The effort is not one of them: it rides with the model.
 #[test]
 fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     let (c, n, mut s) = fixture();
@@ -1793,7 +1822,7 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     assert!(top.contains("✓ complete"), "{top}");
     let bottom = screen.lines().last().unwrap();
     assert!(bottom.starts_with("╰─"), "{bottom}");
-    assert!(bottom.contains("⟨ effort default ⟩"), "{bottom}");
+    assert!(!bottom.contains("effort"), "{bottom}");
     for default in ["helpers", "subagents", "stream"] {
         assert!(
             !bottom.contains(default),
@@ -1804,12 +1833,7 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     s.helpers_on = true;
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     let bottom = screen.lines().last().unwrap();
-    assert!(bottom.contains("⟨ effort high ⟩"), "{bottom}");
     assert!(bottom.contains("⟨ ◇ helpers on ⟩"), "{bottom}");
-    assert!(
-        u.geometry.hits.iter().any(|(_, a)| *a == Action::Effort),
-        "the effort chip is a control"
-    );
     // And what typing lands on is still marked the way the transcript
     // marks what was said.
     assert!(screen.contains("│ ❯ "), "{screen}");
@@ -1853,10 +1877,9 @@ fn a_notice_fades_from_the_dock_and_takes_its_undo_with_it() {
     s.effort = sterna::wire::Effort::Medium;
     let mut u = Workbench::default();
     draw(&c, &n, &s, &mut u, 100, 40);
-    let Effect::Command(step) = click(&mut u, &mut s, &n, Action::Effort) else {
-        panic!("the effort chip steps the effort");
-    };
-    // The loop hands the command on; on its way out it joins the undo list.
+    // The Models sheet's effort row sends the command; on its way out it
+    // joins the undo list.
+    let step = "/effort high".to_string();
     u.sent(&step, &s);
     assert_eq!(
         u.changes.last().map(|c| c.was.as_str()),
@@ -2044,6 +2067,11 @@ fn the_answer_is_shown_once_under_the_card_and_not_again_inside_it() {
     let text = words(&doc(&c, &n, &s, &u));
     assert!(text.contains("the answer is below"), "{text}");
     assert_eq!(text.matches("Nothing else changed.").count(), 1, "{text}");
+    // A program that threw before its answer, answered by the runtime with
+    // other words, does not point at an answer it never gave.
+    n.cells[0].returned = Some("The write was refused, so nothing changed.".into());
+    let text = words(&doc(&c, &n, &s, &u));
+    assert!(!text.contains("the answer is below"), "{text}");
 }
 
 /// Cells that differ between two frames.
@@ -2634,19 +2662,49 @@ fn every_sheet_speaks_one_grammar() {
     assert!(u.sheets.is_empty(), "Esc at the root closes");
 }
 
-/// A panel the session sends opens as a sheet over the conversation, and
-/// nothing of the transcript behind it shows through.
+/// A panel the session sends opens as a sheet above the composer, as tall
+/// as what it holds, and nothing of the conversation it covers shows
+/// through it.
 #[test]
-fn a_session_panel_opens_as_a_sheet_that_erases_the_transcript() {
+fn a_session_panel_opens_as_a_sheet_that_erases_what_it_covers() {
     let (mut c, n, mut s) = fixture();
     c.messages
-        .push(Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(60)));
+        .push(Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(200)));
     s.panel = Some(Panel::text("Models", "one\ntwo"));
     let mut u = Workbench::default();
     u.absorb_panel(&mut s);
     let shown = text(&draw(&c, &n, &s, &mut u, 200, 40));
-    assert!(shown.contains("MODELS"), "{shown}");
-    assert!(!shown.contains("STALE_TRANSCRIPT"), "{shown}");
+    let sheet = sheet_rows(&shown, "MODELS");
+    assert!(sheet[1].contains("MODELS"), "{shown}");
+    assert!(sheet.len() < 15, "as tall as what it holds: {shown}");
+    assert!(
+        sheet.iter().all(|row| !row.contains("STALE_TRANSCRIPT")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("❯ Describe the next step"),
+        "the composer stays: {shown}"
+    );
+}
+
+/// The rows of the open sheet's frame, from its top edge to its bottom one:
+/// the edge is the line above the sheet's `TITLE`.
+fn sheet_rows(screen: &str, title: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains(&format!("│ {title}")))
+        .expect("the sheet's title")
+        - 1;
+    let bottom = top
+        + lines[top..]
+            .iter()
+            .position(|l| l.trim_start().starts_with("╰"))
+            .expect("the sheet's bottom edge");
+    lines[top..=bottom]
+        .iter()
+        .map(|l| (*l).to_string())
+        .collect()
 }
 
 /// A panel the session sends again under the same title -- a sign-in that
@@ -2658,36 +2716,30 @@ fn a_redrawn_panel_keeps_the_focused_row() {
     let (c, n, mut s) = fixture();
     let rows = |runs: usize| {
         vec![
-            PanelRow::info("Task-scoped"),
+            PanelRow::info("Signing in"),
             PanelRow::run(
-                format!("first · {runs} runs"),
-                Action::HandlerOff("first".into()),
+                format!("first · {runs} seconds"),
+                Action::Command("/first".into()),
             )
-            .with_id("handler:first"),
+            .with_id("row:first"),
             PanelRow::run(
-                format!("second · {runs} runs"),
-                Action::HandlerOff("second".into()),
+                format!("second · {runs} seconds"),
+                Action::Command("/second".into()),
             )
-            .with_id("handler:second"),
+            .with_id("row:second"),
         ]
     };
-    s.panel = Some(Panel::rows("Standing handlers", rows(0)));
+    s.panel = Some(Panel::rows("Sign in", rows(0)));
     let mut u = Workbench::default();
     u.absorb_panel(&mut s);
     draw(&c, &n, &s, &mut u, 120, 40);
     key(&mut u, &mut s, &n, KeyCode::Down);
-    assert_eq!(
-        u.top().unwrap().sheet.focused().unwrap().id,
-        "handler:second"
-    );
-    s.panel = Some(Panel::rows("Standing handlers", rows(3)));
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "row:second");
+    s.panel = Some(Panel::rows("Sign in", rows(3)));
     u.absorb_panel(&mut s);
     draw(&c, &n, &s, &mut u, 120, 40);
     assert_eq!(u.sheets.len(), 1, "the same panel replaced itself");
-    assert_eq!(
-        u.top().unwrap().sheet.focused().unwrap().id,
-        "handler:second"
-    );
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "row:second");
 }
 
 /// The keys sheet is drawn from the one keymap table: every key in it is on
@@ -2698,10 +2750,25 @@ fn the_keys_sheet_is_the_keymap() {
     let mut u = Workbench::default();
     u.open(Source::Keys);
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 50));
+    let mut columns = std::collections::BTreeSet::new();
     for (key, what, _) in workbench::keymap() {
         assert!(screen.contains(key), "{key} is missing:\n{screen}");
         assert!(screen.contains(what), "{what} is missing:\n{screen}");
+        // Every description starts in one column, a space clear of the
+        // widest key.
+        let line = screen.lines().find(|l| l.contains(what)).unwrap();
+        let at = line.find(what).unwrap();
+        assert!(
+            line[..at].ends_with("  "),
+            "{key} runs into its words: {line}"
+        );
+        columns.insert(line[..at].chars().count());
     }
+    assert_eq!(
+        columns.len(),
+        1,
+        "the descriptions are one column:\n{screen}"
+    );
     let acting = workbench::keymap()
         .into_iter()
         .filter(|(_, _, action)| action.is_some())
@@ -2815,29 +2882,54 @@ fn the_greeting_names_the_level_in_force() {
     );
 }
 
-/// The effort chip is a control stepped in place, so it stays on the dock
-/// at `default` and says what a model is actually sent.
+/// **The model and its effort are one chip** on the session bar, which
+/// says what a model is actually sent and opens the Models sheet, where
+/// Main's effort sits under its model.
 #[test]
-fn the_effort_chip_stays_on_the_dock_at_default() {
+fn the_model_chip_carries_the_effort_and_opens_where_both_are_chosen() {
     let (c, n, mut s) = fixture();
-    s.effort = sterna::wire::Effort::Default;
+    s.effort = sterna::wire::Effort::Auto;
     let mut u = Workbench::default();
-    draw(&c, &n, &s, &mut u, 140, 42);
-    assert!(
-        u.geometry
-            .hits
-            .iter()
-            .any(|(r, a)| *a == Action::Effort && r.y == 41),
-        "an effort chip on the dock at default"
-    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-main · auto ▾"), "{bar}");
     s.model = Some("gpt-5.5".into());
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
-    assert!(screen.contains("effort default (low)"), "{screen}");
-    // The ladder steps from the stored value, so the first step is a change.
-    assert_eq!(
-        click(&mut u, &mut s, &n, Action::Effort),
-        Effect::Command("/effort low".into())
+    assert!(
+        screen
+            .lines()
+            .next()
+            .unwrap()
+            .contains("gpt-5.5 · auto (low) ▾"),
+        "{screen}"
     );
+    let chip = u
+        .geometry
+        .hits
+        .iter()
+        .find(|(r, a)| *a == Action::Models && r.y == 0)
+        .map(|(_, a)| a.clone())
+        .expect("the chip is a target");
+    assert_eq!(chip, Action::Models);
+}
+
+/// At a narrow width Settings folds away before the model does: which
+/// model answers, and how hard it works, is the fact a person acts on.
+#[test]
+fn the_model_chip_outlasts_settings_at_a_narrow_width() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 80, 30));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-main · auto"), "{bar}");
+    assert!(!bar.contains("Settings"), "{bar}");
+    // A long project name gives up its room first, down to eight columns.
+    let mut s = s;
+    s.project = Some("sterna-live-24197-57-and-then-some".into());
+    s.model = Some("fixture-model-long".into());
+    let screen = text(&draw(&c, &n, &s, &mut u, 80, 30));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-model-long · auto"), "{bar}");
 }
 
 /// The level has one setter: the Sandbox sheet, a typed command and a
@@ -2919,7 +3011,7 @@ fn subagent_modes_without_a_model_open_where_one_is_chosen() {
         (2, "/subagents", None),
     ] {
         let (_t, mut s, mut p) = prefs();
-        p.category = 4;
+        p.category = 1;
         let mut u = Workbench::default();
         u.open(Source::Settings(Box::new(p)));
         draw(&c, &n, &s, &mut u, 110, 40);
@@ -2962,8 +3054,8 @@ fn an_effort_on_its_way_out_is_saved() {
     assert!(saved.contains("effort = \"high\""), "{saved}");
 }
 
-/// The sidebar's effort and helpers are two targets: stepping the effort
-/// never happens from the helpers line, and a helper's own line opens it.
+/// The sidebar's effort and helpers are two targets: the effort opens the
+/// Models sheet, never the helpers line, and a helper's own line opens it.
 #[test]
 fn the_sidebar_splits_effort_from_helpers() {
     let (c, n, mut s) = fixture();
@@ -2978,7 +3070,7 @@ fn the_sidebar_splits_effort_from_helpers() {
             .map(|(r, _)| r.y)
             .collect::<Vec<_>>()
     };
-    let effort = side(&Action::Effort);
+    let effort = side(&Action::Models);
     let helpers = side(&Action::SettingsAt(2));
     assert!(!effort.is_empty() && !helpers.is_empty());
     assert!(effort.iter().all(|y| !helpers.contains(y)));
@@ -3049,7 +3141,9 @@ fn settings_show_what_the_session_is_using_now() {
         .find(|item| item.id == "setting:session.effort")
         .unwrap()
         .clone();
-    assert!(row.detail.contains("not saved"), "{}", row.detail);
+    // Where the value comes from is on the card's bottom edge.
+    let source = row.card.map(|card| card.source).unwrap_or_default();
+    assert!(source.contains("not saved"), "{source}");
 }
 
 /// The sandbox level is global only: in Project scope its row says why it
@@ -3104,7 +3198,7 @@ fn a_setting_named_after_the_command_is_where_settings_opens() {
     let mut u = Workbench::default();
     assert!(u.local_command("/settings theme", &mut s, &n));
     let p = u.preferences().unwrap();
-    assert_eq!(p.category, 1, "Display");
+    assert_eq!(p.category, 3, "Display");
     assert_eq!(
         u.top().unwrap().sheet.prefer.as_deref(),
         Some("setting:ui.theme")
@@ -3129,7 +3223,7 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
     let (_t, mut s, mut p) = prefs();
     p.save("web.allow_domains", Some("old.example".into()), &mut s)
         .unwrap();
-    p.category = 5;
+    p.category = 4;
     let row = p
         .rows()
         .iter()
@@ -3174,32 +3268,32 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
 fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
     let (_t, _, mut p) = prefs();
     let mut elsewhere = std::collections::BTreeSet::new();
-    for category in [0, 1, 2, 3, 4, 6] {
+    for category in [0, 1, 2, 3] {
         p.category = category;
         elsewhere.extend(p.rows().iter().map(|spec| spec.key));
     }
-    p.category = 5;
+    p.category = 4;
     let advanced: Vec<_> = p.rows().iter().map(|spec| spec.key).collect();
     for key in &advanced {
         assert!(!elsewhere.contains(key), "{key} is repeated");
     }
-    for key in ["wizard.seen", "legacy.imported", "limits.task_tokens"] {
+    for key in ["wizard.seen", "legacy.imported"] {
         assert!(
             !advanced.contains(&key) && !elsewhere.contains(key),
             "{key}"
         );
     }
-    p.category = 6;
-    assert!(
-        p.rows()
-            .iter()
-            .all(|spec| spec.kind == sterna::settings::Kind::Float)
-    );
-    assert!(
-        p.rows()
-            .iter()
-            .any(|spec| spec.key == "decisions.hold_above")
-    );
+    // The confidence thresholds are Advanced's last rows, together.
+    let floats = advanced
+        .iter()
+        .position(|key| *key == "decisions.hold_above")
+        .expect("the thresholds are in Advanced");
+    let kinds: Vec<bool> = p
+        .rows()
+        .iter()
+        .map(|spec| spec.kind == sterna::settings::Kind::Float)
+        .collect();
+    assert!(kinds[floats..].iter().all(|float| *float), "{advanced:?}");
 }
 
 /// One undo list for the session: a level chosen on the Sandbox sheet comes
@@ -3247,7 +3341,7 @@ fn a_global_save_the_project_overrides_says_so() {
         p.notice,
         "Theme is saved globally; this project sets rose, which wins here."
     );
-    p.category = 1;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -3576,15 +3670,23 @@ fn a_locked_account_offers_its_sign_in_as_one_row() {
     );
 }
 
-/// Settings › Subagents is whether subagents run, and the way to the
-/// picker where the favourites are chosen.
+/// Settings › Models is which model does which job -- Main and its
+/// effort, helpers, whether subagents run, Jev -- and the way to the picker
+/// where the favourites are chosen.
 #[test]
-fn settings_subagents_links_to_the_picker() {
+fn settings_models_links_to_the_picker() {
     let (_t, s, mut p) = prefs();
-    p.category = 4;
+    p.category = 1;
     assert_eq!(
         p.rows().iter().map(|spec| spec.key).collect::<Vec<_>>(),
-        ["agents.mode"]
+        [
+            "model.parent",
+            "session.effort",
+            "helpers.model",
+            "agents.mode",
+            "decisions.model",
+            "decisions.mode"
+        ]
     );
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
@@ -3770,7 +3872,7 @@ fn the_diff_chip_is_a_view_of_its_own_cell() {
     s.activity = Activity::Complete;
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
-    assert!(screen.contains("show the diff"), "{screen}");
+    assert!(screen.contains("Show the diff"), "{screen}");
     let actions: Vec<Action> = u.geometry.hits.iter().map(|(_, a)| a.clone()).collect();
     assert!(
         !actions.contains(&Action::Command("/diff".into())),
@@ -4517,7 +4619,7 @@ fn a_disabled_ask_reads_as_where_to_turn_it_on() {
 fn the_active_theme_chip_is_always_drawn() {
     let (_t, mut s, mut p) = prefs();
     p.save("ui.theme", Some("cockatoo".into()), &mut s).unwrap();
-    p.category = 1;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -4799,9 +4901,9 @@ fn a_light_terminal_gets_colours_that_read_on_it() {
     }
 }
 
-/// The instruments are drawn by older code with colours of their own; they
-/// read on a light terminal like everything else, and a terminal without
-/// true colour is sent none of theirs either.
+/// The instruments are drawn in the workbench's roles: they read on a
+/// light terminal like everything else, use no named colour of their own,
+/// and a terminal without true colour is sent no 24-bit colour.
 #[test]
 fn the_instruments_read_on_a_light_terminal_and_send_no_rgb_without_it() {
     use sterna::workbench::look::{LIGHT_GROUND, contrast};
@@ -5035,5 +5137,545 @@ fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
     assert_eq!(
         u.top().unwrap().sheet.notice,
         "Go is off from the next session."
+    );
+}
+
+/// A check's reasons fold under its verdict line, which ends in what the
+/// check used, said quietly. A click opens the reasons, wrapped between
+/// words and never cut at the edge; another click folds them again.
+#[test]
+fn a_checks_reasons_fold_under_its_verdict_and_open_on_a_click() {
+    let (c, n, mut s) = fixture();
+    s.messages_seen = c.messages.len();
+    s.note(format!(
+        "{}cannot tell · 11.2k tokens\nThe documented delivery does support the packaging part: customers receive a ZIP for their setup, with tenant URLs filled in by the install script.\nNot read: docs/delivery.md",
+        sterna::tui::history::CHECKED
+    ));
+    let index = s.history.len() - 1;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(
+        screen.contains("checked after the answer: cannot tell · 11.2k tokens ▸"),
+        "{screen}"
+    );
+    assert!(!screen.contains("packaging part"), "folded: {screen}");
+    let d = doc(&c, &n, &s, &u);
+    let verdict = d
+        .rows
+        .iter()
+        .find(|r| r.text.contains("cannot tell"))
+        .unwrap();
+    assert!(
+        verdict
+            .spans
+            .iter()
+            .any(|(text, tone)| text.contains("11.2k tokens") && *tone == Tone::Muted),
+        "the cost is said quietly: {:?}",
+        verdict.spans
+    );
+
+    click(&mut u, &mut s, &n, Action::Note(index));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("cannot tell · 11.2k tokens ▾"), "{screen}");
+    assert!(
+        screen.contains("install script."),
+        "wrapped whole: {screen}"
+    );
+    assert!(screen.contains("Not read: docs/delivery.md"), "{screen}");
+    assert!(
+        !screen
+            .lines()
+            .any(|line| line.contains("packaging") && line.contains('…')),
+        "nothing is cut: {screen}"
+    );
+
+    click(&mut u, &mut s, &n, Action::Note(index));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(!screen.contains("packaging part"), "folded again: {screen}");
+}
+
+/// A cell's intent says what the cell is for: normal text, never cut with
+/// "…", wrapped under its own first word, with the state word kept on the
+/// first line, open or folded.
+#[test]
+fn a_cells_intent_wraps_in_normal_text_and_keeps_its_state_word() {
+    let (c, mut n, s) = fixture();
+    let intent = "I'll check the dashboard layout and delivery guidance for practical strengths and friction points before I answer.";
+    n.cells[0].description = Some(intent.into());
+    let mut u = Workbench::default();
+    for open in [true, false] {
+        if open {
+            u.expanded.insert(1);
+        } else {
+            u.expanded.clear();
+            u.collapsed.insert(1);
+        }
+        let d = Document::build(&c, &n, &s, &u, 84);
+        let title = d
+            .rows
+            .iter()
+            .find(|r| matches!(r.kind, sterna::workbench::RowKind::CardTop { .. }))
+            .expect("the card's title row");
+        assert!(!title.text.contains('…'), "cut: {}", title.text);
+        assert!(
+            title
+                .spans
+                .iter()
+                .any(|(t, tone)| t.starts_with("I'll check") && *tone == Tone::Normal),
+            "the intent stands out: {:?}",
+            title.spans
+        );
+        let all = words(&d);
+        assert!(
+            all.contains("friction points") && all.contains("answer."),
+            "open {open}: the whole intent is there: {all}"
+        );
+        let screen = text(&draw(&c, &n, &s, &mut u, 84, 30));
+        let first = screen
+            .lines()
+            .find(|line| line.contains("I'll check"))
+            .expect("the title on screen");
+        assert!(
+            first.contains("EXECUTED") || first.contains("RECORDED"),
+            "{first}"
+        );
+        assert!(
+            screen
+                .lines()
+                .any(|line| line.contains("answer.") && !line.contains("I'll check")),
+            "the intent goes on under its first line: {screen}"
+        );
+    }
+}
+
+/// Your turn wraps between words, as the composer showed it: a word is
+/// never split at the edge.
+#[test]
+fn your_turn_wraps_between_words() {
+    let (mut c, n, s) = fixture();
+    c.messages[0] = Message::text(
+        Role::User,
+        "add a retry with backoff to tools/calm.py for 429 and 503, and honour Retry-After when the server sends one",
+    );
+    let d = Document::build(&c, &n, &s, &Workbench::default(), 84);
+    let yours: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::You)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert!(yours.len() > 2, "{yours:?}");
+    assert!(
+        yours.iter().any(|line| line.contains("Retry-After")),
+        "a word was split: {yours:?}"
+    );
+    for line in &yours {
+        assert!(line.chars().count() <= 84 - 2 - 3, "{line}");
+    }
+}
+
+/// One empty row separates the conversation from the composer: text that
+/// scrolls never runs into the box that stays put. The sidebar keeps its
+/// height, and its rule still meets the box.
+#[test]
+fn an_empty_row_separates_the_conversation_from_the_composer() {
+    let (mut c, n, mut s) = fixture();
+    for i in 0..40 {
+        c.messages
+            .push(Message::text(Role::User, format!("request number {i}")));
+    }
+    // A notice ends the conversation: no blank row of its own follows it.
+    s.messages_seen = c.messages.len();
+    s.note("the last line of the conversation");
+    for (w, sidebar) in [(84u16, false), (140, true)] {
+        let mut u = Workbench::default();
+        let screen = text(&draw(&c, &n, &s, &mut u, w, 30));
+        let lines: Vec<&str> = screen.lines().collect();
+        let dock = lines
+            .iter()
+            .position(|line| line.starts_with("╭─"))
+            .expect("the composer's top edge");
+        let gap = lines[dock - 1];
+        let conversation: String = match gap.find('│') {
+            Some(at) if sidebar => gap[..at].to_string(),
+            _ => gap.to_string(),
+        };
+        assert!(conversation.trim().is_empty(), "{w} columns: {gap:?}");
+        assert!(
+            lines[dock - 2].contains("the last line of the conversation"),
+            "the conversation runs down to the gap: {screen}"
+        );
+        if sidebar {
+            assert!(
+                gap.contains('│'),
+                "the sidebar's rule meets the box: {gap:?}"
+            );
+        }
+    }
+}
+
+/// Paging through a sheet shows every row on the way: counting rows instead
+/// of lines once passed thirteen settings on Advanced that were never drawn
+/// on any page.
+#[test]
+fn page_down_never_passes_a_row_it_did_not_show() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    // Advanced: the long section.
+    for _ in 0..4 {
+        key(&mut u, &mut s, &n, KeyCode::Tab);
+    }
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let drawn = |u: &Workbench| -> Vec<usize> {
+        u.geometry
+            .hits
+            .iter()
+            .filter_map(|(_, action)| match action {
+                Action::Sheet(Hit::Item(i)) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    };
+    let start = u.top().unwrap().sheet.focus;
+    let mut seen: std::collections::BTreeSet<usize> = drawn(&u).into_iter().collect();
+    let mut presses = 0;
+    loop {
+        let before = u.top().unwrap().sheet.focus;
+        key(&mut u, &mut s, &n, KeyCode::PageDown);
+        if u.top().unwrap().sheet.focus == before {
+            break;
+        }
+        presses += 1;
+        draw(&c, &n, &s, &mut u, 110, 40);
+        seen.extend(drawn(&u));
+    }
+    let sheet = &u.top().unwrap().sheet;
+    for row in start..=sheet.focus {
+        if sheet.items[row].focusable() {
+            assert!(
+                seen.contains(&row),
+                "paging passed row {row} ({}) without drawing it",
+                sheet.items[row].id
+            );
+        }
+    }
+    assert!(presses > 1, "Advanced takes more than one page");
+}
+
+/// Enter on a field nobody typed in saves nothing: it once wrote the value
+/// the field opened with, which turned Sterna's own default into an
+/// override.
+#[test]
+fn enter_on_an_untouched_field_saves_nothing() {
+    let (t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    for ch in "ask decide".chars() {
+        key(&mut u, &mut s, &n, KeyCode::Char(ch));
+    }
+    draw(&c, &n, &s, &mut u, 110, 40);
+    click_item(&mut u, &mut s, &n, "setting:ask.decide_above");
+    draw(&c, &n, &s, &mut u, 110, 40);
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("Nothing changed"), "{screen}");
+    for file in [
+        t.0.join("user/config.toml"),
+        t.0.join(".sterna/config.toml"),
+    ] {
+        let saved = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(
+            !saved.contains("decide_above"),
+            "{}: {saved}",
+            file.display()
+        );
+    }
+}
+
+/// The proxy's lists have one editor, the Hosts sheet: the settings row
+/// opens it rather than a second field with a different timing.
+#[test]
+fn the_hosts_row_in_settings_opens_the_hosts_sheet() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    for ch in "allowed hosts".chars() {
+        key(&mut u, &mut s, &n, KeyCode::Char(ch));
+    }
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "setting:sandbox.hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
+}
+
+/// The rail names the fact it shows: Sterna's web tools, set up or not.
+/// Commands reach the network only through the proxy, which is another
+/// fact, and a set-up web posture is never "unknown".
+#[test]
+fn the_rail_says_whether_the_web_tools_are_on() {
+    let (c, n, mut s) = fixture();
+    for (posture, word) in [("web", "web tools on"), ("off", "web tools off")] {
+        s.network = Some(posture.into());
+        let screen = text(&draw(&c, &n, &s, &mut Workbench::default(), 140, 40));
+        assert!(screen.contains(word), "{posture}: {screen}");
+        assert!(!screen.contains("unknown"), "{posture}: {screen}");
+    }
+}
+
+/// The foot says what Enter does on the row it is on: "Enter cancel" on
+/// Cancel, never "Enter run" on a row that runs nothing.
+#[test]
+fn the_foot_names_what_enter_does_on_the_focused_row() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Confirm("full".into()));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 30));
+    assert!(screen.contains("Enter cancel"), "{screen}");
+    assert!(!screen.contains("Enter run"), "{screen}");
+}
+
+/// The Scout's report reads as an answer does: its headings drawn, never
+/// shown as "##", and its empty sections said once at the end.
+#[test]
+fn the_scouts_report_reads_as_markdown() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Make the greeting friendlier.".into(),
+        outcome: HelperOutcome {
+            text: "## Constraints\n- keep the exported name `greet`\n## Files\nsrc/greet.ts — the greeting\n## Tests\nnone found\n## Risks\nnone found\n".into(),
+            ok: true,
+            elapsed_ms: 900,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let mut u = Workbench::default();
+    u.scout = true;
+    let all = words(&doc(&c, &n, &s, &u));
+    assert!(all.contains("Constraints"), "{all}");
+    assert!(!all.contains("## "), "{all}");
+    assert!(!all.contains('`'), "{all}");
+    assert!(!all.contains("none found"), "{all}");
+    assert!(all.contains("No tests or risks found."), "{all}");
+}
+
+/// While helpers work -- the Scout before the first cell, a helper inside a
+/// running one -- the rail lists them; "none yet" is for a turn with none.
+#[test]
+fn the_rail_lists_the_helpers_that_are_working() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Make the greeting friendlier.".into(),
+        ..Default::default()
+    });
+    n.cells.iter_mut().for_each(|cell| cell.helpers.clear());
+    let screen = text(&draw(&c, &n, &s, &mut Workbench::default(), 140, 40));
+    assert!(screen.contains("Scout · working"), "{screen}");
+    assert!(!screen.contains("none yet"), "{screen}");
+}
+
+/// Code wraps between tokens, never inside a word or an escape: `\n` stays
+/// whole, and the rows after the first hang further in.
+#[test]
+fn code_wraps_between_tokens() {
+    let (c, mut n, s) = fixture();
+    let program = "await write({path: \"src/greet.ts\", content: 'export function greet(name: string): string {\\n  return \"Hello, \" + name + \"! Good to see you.\";\\n}\\n'});";
+    n.cells[0].executed_source = Some(program.into());
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    for width in [60, 84, 101] {
+        let d = Document::build(&c, &n, &s, &u, width);
+        // The line's first row, and the rows hanging under it.
+        let first = d
+            .rows
+            .iter()
+            .position(|r| r.text.contains("await write"))
+            .expect("the program is drawn");
+        let mut rows = vec![d.rows[first].text.as_str()];
+        rows.extend(
+            d.rows[first + 1..]
+                .iter()
+                .map(|r| r.text.as_str())
+                .take_while(|t| t.starts_with("    ")),
+        );
+        assert!(rows.len() > 1, "{width}: {rows:#?}");
+        // Every row but the last ends where a break is allowed.
+        for row in &rows[..rows.len() - 1] {
+            assert!(
+                row.ends_with([' ', ',', ';', '(', '{', '[']),
+                "{width}: a row ends inside a token: {rows:#?}"
+            );
+        }
+        for row in &rows {
+            assert!(
+                !row.trim_end().ends_with('\\'),
+                "{width}: an escape split: {rows:#?}"
+            );
+        }
+        let joined: String = rows
+            .iter()
+            .map(|row| row.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for token in [
+            "greet(name:",
+            "string):",
+            "\"Hello,",
+            "see",
+            "you.\";",
+            "'});",
+        ] {
+            assert!(
+                joined.contains(token),
+                "{width}: {token} was split: {rows:#?}"
+            );
+        }
+    }
+}
+
+/// A card's bottom edge says what the cell changed once it has ended: a
+/// running cell has nothing to report there yet, and never "no files
+/// changed" a moment before it writes one.
+#[test]
+fn a_running_cards_bottom_edge_waits_for_the_cell_to_end() {
+    let (mut c, mut n, mut s) = fixture();
+    c.messages.push(Message::text(Role::User, "and again"));
+    let mut m = Message::text(Role::Assistant, "Once more.");
+    m.content.push(Block::ToolUse {
+        id: "call-2".into(),
+        name: "execute_cell".into(),
+        input: serde_json::json!({"code": "await write({path: \"a.txt\", content: \"x\"});"}),
+    });
+    c.messages.push(m);
+    n.cells[0].changes = None;
+    n.cells.push(sterna::tui::CellView::default());
+    s.activity = Activity::Executing;
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    u.expanded.insert(2);
+    let d = Document::build(&c, &n, &s, &u, 100);
+    let bottoms: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::CardBottom)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(bottoms.len(), 2, "{bottoms:?}");
+    assert!(bottoms[0].contains("no files changed"), "{bottoms:?}");
+    assert!(bottoms[1].trim().is_empty(), "{bottoms:?}");
+}
+
+/// Main's effort sits under its model on the Models sheet: the current word
+/// is marked, and choosing another sends `/effort`.
+#[test]
+fn mains_effort_is_chosen_where_its_model_is() {
+    let (c, n, mut s) = fixture();
+    s.effort = sterna::wire::Effort::Auto;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(navigator())));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("Effort"), "{screen}");
+    assert!(screen.contains("auto lets the model choose"), "{screen}");
+    let item = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "main:effort")
+        .expect("the effort row");
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3))),
+        Effect::Command("/effort high".into())
+    );
+}
+
+/// **One line per row, and one card for the focused row.** A setting's row
+/// is its name and its choices; what it means, when a change applies and
+/// where the value comes from are on the card at the sheet's foot, for the
+/// row the focus is on.
+#[test]
+fn a_settings_row_is_one_line_and_the_card_explains_the_focused_one() {
+    let (_t, s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    u.top_mut()
+        .unwrap()
+        .sheet
+        .focus_id("setting:session.effort");
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    let sheet = sheet_rows(&screen, "SETTINGS");
+    let at = |needle: &str| sheet.iter().position(|row| row.contains(needle));
+    let effort = at("Reasoning effort").expect("the effort row");
+    let theme = at("Theme").expect("the theme row");
+    // The rows are one line each: nothing of a description between them.
+    assert!(
+        sheet[effort + 1..theme]
+            .iter()
+            .all(|row| !row.contains("How hard the model thinks")),
+        "{screen}"
+    );
+    let card = at("╭─ Reasoning effort").expect("the card names the focused row");
+    assert!(card > theme, "the card is below the rows: {screen}");
+    assert!(sheet[card].contains("applies now"), "{screen}");
+    assert!(
+        sheet[card + 1].contains("How hard the model thinks"),
+        "{screen}"
+    );
+    assert!(
+        sheet[card..]
+            .iter()
+            .any(|row| row.contains("╰─ auto · Sterna's own default")),
+        "{screen}"
+    );
+}
+
+/// A choice says what it does: the checker's chips read "after big work",
+/// "every change" and "off", while the file keeps `auto` and `always`.
+#[test]
+fn a_choice_says_what_it_does() {
+    let (_t, s, mut p) = prefs();
+    let (c, n, _) = fixture();
+    p.category = 2;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:helpers.completion_check")
+        .expect("the checker's row")
+        .clone();
+    let workbench::ItemKind::Value { values, .. } = &row.kind else {
+        panic!("{row:?}");
+    };
+    let words: Vec<&str> = values.iter().map(|(word, _)| word.as_str()).collect();
+    assert_eq!(words, ["after big work", "every change", "off"]);
+    assert_eq!(
+        values[0].1,
+        Action::Setting(
+            match values[0].1 {
+                Action::Setting(i, _) => i,
+                _ => unreachable!(),
+            },
+            Some("auto".into())
+        ),
+        "the saved word is still `auto`"
     );
 }

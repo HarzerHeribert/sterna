@@ -221,11 +221,6 @@ fn a_first_binding_equal_to_the_generated_id_cannot_be_renamed_by_an_alias() {
     assert_eq!(r.handlers()[0].name, "handler1");
     assert!(!r.off_handler("alias"));
     assert!(!r.off_handler("later"));
-    let panel = sterna::tui::handlers_panel(&r.handlers());
-    assert_eq!(
-        panel.rows[1].action,
-        Some(sterna::workbench::Action::HandlerOff("handler1".into()))
-    );
     assert!(r.off_handler("handler1"));
     assert!(!r.handlers()[0].active);
 }
@@ -396,27 +391,19 @@ fn caught_permission_refusal_disables_a_handler_without_widening_the_profile() {
     assert_eq!(r.batch_remaining(), 2);
 }
 
+/// A handler's reported lifecycle carries its state and its error's class,
+/// never its source or a payload.
 #[test]
-fn handler_panel_reports_real_lifecycle_without_source_or_payloads() {
+fn handler_lifecycle_is_reported_without_source_or_payloads() {
     let mut r = runtime(Duration::from_secs(2));
     register(&mut r, "{}", "throw new Error('private source');");
-    let panel = sterna::tui::handlers_panel(&r.handlers());
-    assert_eq!(
-        panel.rows.last().unwrap().action,
-        Some(sterna::workbench::Action::HandlerOff("noise".into()))
-    );
+    assert!(r.handlers().last().unwrap().active);
     batch(&mut r);
     r.run_handlers();
-    let panel = sterna::tui::handlers_panel(&r.handlers());
-    assert!(panel.rows.last().unwrap().text.contains("stale"));
-    assert!(panel.rows.last().unwrap().text.contains("Error"));
-    assert!(
-        panel
-            .rows
-            .iter()
-            .all(|r| !r.text.contains("private source"))
-    );
-    assert!(!sterna::tui::slash_matches("/handlers").is_empty());
+    let info = r.handlers().last().unwrap().clone();
+    assert!(!info.active);
+    assert!(info.error.as_deref().unwrap_or_default().contains("Error"));
+    assert!(!format!("{info:?}").contains("private source"), "{info:?}");
 }
 
 #[cfg(unix)]

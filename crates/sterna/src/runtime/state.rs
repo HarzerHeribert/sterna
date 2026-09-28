@@ -584,7 +584,7 @@ impl RuntimeState {
     /// The model helpers run on, or the sentence saying why there is none.
     ///
     /// The invariant: **a helper never runs unasked.** `[helpers] model`
-    /// unset is off, exactly as `[supervisor] model` unset is, because a
+    /// unset is off, because a
     /// helper spends money on the user's behalf and the fail-closed direction
     /// is *not configured, not run*.
     /// Resolves a delegated goal only inside the explicitly configured assignment.

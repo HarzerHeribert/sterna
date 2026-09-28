@@ -1043,142 +1043,6 @@ fn drift_block(confidence: f64, step: &str) -> String {
     )
 }
 
-// --- the supervisor's question (`docs/supervisor.md`) ------
-
-const SUPERVISION_KEY: &str = "supervision";
-
-/// The supervision criterion that means nothing is wrong. Every other
-/// criterion is a reason to nudge, which is why this one is named here and
-/// the rest are not: [`supervision_for`] tests against this single word.
-pub const MAKING_PROGRESS: &str = "making_progress";
-
-/// The most of a compressed trajectory the supervision question carries. Cut
-/// at a line boundary like [`bound_cell`], because `supervisor::compress`
-/// renders exactly one line per cell and half a line names half a call.
-pub const SUPERVISION_TRAJECTORY_BYTES: usize = 8 * 1024;
-
-/// The tail, not the head: the supervisor asks what the agent is doing *now*,
-/// and the newest cells are the ones that answer it.
-fn bound_trajectory(trajectory: &str) -> String {
-    if trajectory.len() <= SUPERVISION_TRAJECTORY_BYTES {
-        return trajectory.to_string();
-    }
-    let mut cut = trajectory.len() - SUPERVISION_TRAJECTORY_BYTES;
-    while cut < trajectory.len() && !trajectory.is_char_boundary(cut) {
-        cut += 1;
-    }
-    let tail = &trajectory[cut..];
-    match tail.find('\n') {
-        Some(newline) => tail[newline + 1..].to_string(),
-        None => tail.to_string(),
-    }
-}
-
-fn supervision_question() -> Question {
-    let mut criteria = BTreeMap::new();
-    criteria.insert(
-        MAKING_PROGRESS.to_string(),
-        "each cell moves the work on: it reads something it has not read, changes something, \
-         or checks something it just changed"
-            .to_string(),
-    );
-    criteria.insert(
-        "repeating_a_failing_call".to_string(),
-        "the same call fails the same way more than once and nothing about the approach changes"
-            .to_string(),
-    );
-    criteria.insert(
-        "looping_over_the_same_reads".to_string(),
-        "the same files or searches are read again and again without a change or a check \
-         following from them"
-            .to_string(),
-    );
-    criteria.insert(
-        "stopped_without_returning".to_string(),
-        "the cells do nothing that advances the task and nothing that ends it — waiting, \
-         polling, or restating what is already known"
-            .to_string(),
-    );
-    Question::Choice {
-        instructions: "What is this coding agent's recent trajectory doing?".to_string(),
-        criteria,
-    }
-}
-
-/// What the decision model answered about a trajectory.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Supervision {
-    pub choice: String,
-    pub confidence: f64,
-    pub latency_ms: u64,
-}
-
-/// Asks the supervision question about `trajectory` — one `Choice` question,
-/// synchronous, bounded to [`DECISION_TIMEOUT`] like every other call into
-/// [`decide`]. `cells_without_change` is the deterministic stall counter
-/// (`progress::Stall::since_progress`) handed over as evidence rather than as
-/// a gate: a model repeating a *failing* call while still writing files looks
-/// like progress to that counter, so gating the question on it would hide
-/// exactly the loop worth catching.
-///
-/// Never surfaced as a task failure — the caller records the error as a
-/// failed look and does not nudge.
-pub fn supervision(
-    model: &str,
-    trajectory: &str,
-    cells_without_change: u32,
-) -> Result<Supervision, DecideError> {
-    let state = serde_json::json!({
-        "trajectory": bound_trajectory(trajectory),
-        "cells_without_change": cells_without_change,
-    });
-    let questions = [(SUPERVISION_KEY.to_string(), supervision_question())];
-    let answers = decide(model, state, &questions)?;
-    let decision = answers
-        .decisions
-        .into_iter()
-        .next()
-        .ok_or_else(|| DecideError::Parse(format!("no answer for `{SUPERVISION_KEY}`")))?;
-    match decision.answer {
-        Answer::Choice {
-            choice, confidence, ..
-        } => Ok(Supervision {
-            choice,
-            confidence,
-            latency_ms: decision.latency_ms,
-        }),
-        Answer::Noul(_) => Err(DecideError::Parse(format!(
-            "the `{SUPERVISION_KEY}` question was answered as a noul, not a choice"
-        ))),
-    }
-}
-
-/// Whether one [`Supervision`] answer is a reason to nudge, and which
-/// criterion it is: `Some(choice)` at or above `supervision_above` for any
-/// criterion but [`MAKING_PROGRESS`], `None` otherwise.
-///
-/// **`mode` gates whether the question may be asked, not what its answer may
-/// do.** `shadow` exists so a decision cannot change what *runs* — a hold, a
-/// narrowing, a refused cell. A supervisor nudge runs nothing and blocks
-/// nothing: it is one sentence at the head of the next turn, which the
-/// supervisor could already add before this question existed. So `shadow`
-/// and `on` behave alike here and only `off` silences it.
-#[must_use]
-pub fn supervision_for(
-    mode: DecisionMode,
-    answer: Option<&Supervision>,
-    supervision_above: f64,
-) -> Option<String> {
-    if mode == DecisionMode::Off {
-        return None;
-    }
-    let answer = answer?;
-    if answer.choice == MAKING_PROGRESS || answer.confidence < supervision_above {
-        return None;
-    }
-    Some(answer.choice.clone())
-}
-
 // --- The model half of the `auto` permission rung -------------------------
 
 /// The key the command-permission question is asked under.
@@ -2149,51 +2013,6 @@ mod tests {
         assert_eq!(judge_key(3), "judge_3");
     }
 
-    fn supervision_answer(choice: &str, confidence: f64) -> Supervision {
-        Supervision {
-            choice: choice.to_string(),
-            confidence,
-            latency_ms: 700,
-        }
-    }
-
-    #[test]
-    fn a_progress_answer_is_never_a_reason_to_nudge() {
-        let answer = supervision_answer(MAKING_PROGRESS, 0.99);
-        assert_eq!(
-            supervision_for(DecisionMode::On, Some(&answer), 0.85),
-            None,
-            "the one criterion that means nothing is wrong"
-        );
-    }
-
-    #[test]
-    fn a_loop_below_the_threshold_is_not_decisive_and_above_it_is() {
-        let below = supervision_answer("looping_over_the_same_reads", 0.84);
-        assert_eq!(supervision_for(DecisionMode::On, Some(&below), 0.85), None);
-        let above = supervision_answer("looping_over_the_same_reads", 0.85);
-        assert_eq!(
-            supervision_for(DecisionMode::On, Some(&above), 0.85),
-            Some("looping_over_the_same_reads".to_string()),
-            "at the threshold is decisive, as every other `_above` here is"
-        );
-    }
-
-    #[test]
-    fn shadow_still_nudges_and_off_never_asks() {
-        let answer = supervision_answer("repeating_a_failing_call", 0.95);
-        assert_eq!(
-            supervision_for(DecisionMode::Shadow, Some(&answer), 0.85),
-            Some("repeating_a_failing_call".to_string()),
-            "a nudge runs nothing, so `shadow` does not silence it"
-        );
-        assert_eq!(
-            supervision_for(DecisionMode::Off, Some(&answer), 0.85),
-            None
-        );
-        assert_eq!(supervision_for(DecisionMode::On, None, 0.85), None);
-    }
-
     fn command_answer(choice: &str, confidence: f64) -> CommandJudgement {
         CommandJudgement {
             choice: choice.to_string(),
@@ -2230,7 +2049,7 @@ mod tests {
         );
     }
 
-    /// **Unlike the supervisor's nudge, this one changes what runs**, so
+    /// **This one changes what runs**, so
     /// `shadow` must not act on it — that is the whole difference between
     /// the two modes.
     #[test]
@@ -2265,29 +2084,6 @@ mod tests {
         assert!(
             criteria.values().all(|text| !text.trim().is_empty()),
             "every criterion says when it applies"
-        );
-    }
-
-    #[test]
-    fn a_bounded_trajectory_keeps_the_newest_cells_whole() {
-        let line = format!("cell 1 yielded · {} · calls: (none)\n", "x".repeat(400));
-        let mut trajectory = String::new();
-        let mut cells = 0;
-        while trajectory.len() <= SUPERVISION_TRAJECTORY_BYTES {
-            cells += 1;
-            trajectory.push_str(&line.replace("cell 1", &format!("cell {cells}")));
-        }
-        let last = format!("cell {cells} yielded");
-        let bounded = bound_trajectory(&trajectory);
-        assert!(bounded.len() <= SUPERVISION_TRAJECTORY_BYTES);
-        assert!(
-            bounded.contains(&last),
-            "the newest cell is what the question is about"
-        );
-        assert!(
-            bounded.starts_with("cell "),
-            "a kept line is never cut mid-way: {}",
-            &bounded[..40]
         );
     }
 

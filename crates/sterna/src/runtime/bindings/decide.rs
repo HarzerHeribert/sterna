@@ -7,7 +7,7 @@
 //! that reads like a judgement.
 //!
 //! What it adds over the harness's own gates (`decide.rs`'s intent,
-//! completion, hygiene, drift and supervision questions) is that the *program*
+//! completion, hygiene and drift questions) is that the *program*
 //! composes the question. That is the whole point: a cell that has just
 //! computed something — a diff, a command line, a build log — can ask for a
 //! judgement about it and branch on the answer without spending a turn asking

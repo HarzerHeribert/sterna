@@ -39,13 +39,12 @@ use crate::session::context::{
     context_cap, estimate_context, record_request, return_budget, send_task_turn_recovering,
     sweep_if_due,
 };
-use crate::supervisor::Supervisor;
 use crate::telemetry::RequestMeasurement;
 use crate::tools::invoke::{self, Args, ToolContext, ToolError};
 use crate::tools::registry;
 use crate::tui::{
     self, CellError, CellView, ContextTokens, Counted, HelperModelTokens, HelperTokens, Notebook,
-    SupervisorStatus, TaskTokens,
+    TaskTokens,
 };
 use crate::wire;
 
@@ -450,12 +449,6 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         .flatten();
     if let Some(model) = default_decisions {
         config.borrow_mut().decisions.model = Some(model.to_string());
-    }
-    if !terminal {
-        session_println!(
-            "{}",
-            startup::supervisor_line(&config.borrow().supervisor, &config.borrow().decisions)
-        );
     }
     if terminal {
         notices::at_start(&gateway);
@@ -966,19 +959,13 @@ fn is_session_control(name: &str) -> bool {
             | "effort"
             | "plan"
             | "sandbox"
-            | "handlers"
-            | "handles"
-            | "budget"
             | "context"
             | "status"
             | "config"
             | "permissions"
-            | "entitlements"
             | "login"
-            | "usage"
             | "pool"
             | "key"
-            | "supervisor"
             | "rollback"
             | "memory"
     )
@@ -1010,11 +997,10 @@ struct Step {
     /// **Nothing counts these any more.** Three prose turns in a row used to
     /// end the task, and a model reasoning its way toward a hard decision in
     /// prose is indistinguishable, to a counter, from a model stuck; the
-    /// supervisor judges that now, on the trajectory.
+    /// stall guard judges that on what the cells produced.
     prose: bool,
-    /// The cell this turn ran, for the supervisor's own buffer
-    /// (`supervisor.md` §2) -- `None` for prose and for two blocks, neither
-    /// of which ran a cell at all, so neither counts toward the cadence.
+    /// The cell this turn ran -- `None` for prose and for two blocks,
+    /// neither of which ran a cell at all.
     record: Option<CellRecord>,
     rollback: Option<(crate::changes::Snapshot, crate::changes::Snapshot)>,
     view: CellView,
@@ -1088,7 +1074,6 @@ fn run_task(
         notices::at_task_end();
     }
     if let Some(ui) = session.ui {
-        ui.handler_cancellations();
         ui.publish(transcript, &ServedBy::default(), activity);
     }
     result
@@ -1214,10 +1199,6 @@ fn run_task_inner(
     let mut terminal_failure = None;
     let mut incomplete;
     let mut stopped_by_request = None;
-    // The supervisor nudges and no longer ends: three consecutive model
-    // opinions used to end a task, and the criteria it matches on describe
-    // exactly what a careful re-read looks like (`ending.rs` carries the
-    // reasoning and the measurement behind it).
     // The deliberate sweep's two pieces of memory: where the conversation
     // stood when it was last swept, so a session that sits above the
     // fraction does not rewrite the provider's cached prefix every turn; and
@@ -1225,11 +1206,8 @@ fn run_task_inner(
     // whether this is a settled moment to take one.
     let mut swept_at_messages: Option<usize> = None;
     let mut last_cell_threw = false;
-    let supervisor = Supervisor::new();
-    let supervisor_active = crate::supervisor::active(&session.config());
-    let mut cells_since_look: Vec<CellRecord> = Vec::new();
     let mut task_state = TaskState::new(task, &request_profile, &session.config())
-        .with_acceptance(acceptance_items)
+        .with_acceptance(acceptance_items, acceptance_from)
         .with_decision(
             decision,
             decision_failures,
@@ -1371,15 +1349,6 @@ fn run_task_inner(
         // sees the events on the very next turn. **No event ever gets a turn
         // of its own** (line 2481): a turn is composed for a user message,
         // and a batch rides the one that was already going to happen.
-        if let Some(ui) = session.ui {
-            for name in ui.handler_cancellations() {
-                let found = runtime.off_handler(&name);
-                session_println!(
-                    "handler {name}: {}",
-                    if found { "off" } else { "not found" }
-                );
-            }
-        }
         if let Some(previous) = runtime.take_batch() {
             window.carry_forward(previous.roll());
         }
@@ -1537,17 +1506,10 @@ fn run_task_inner(
                 session.interrupt.consumed();
             }
             last_cell_threw = record.outcome == crate::runtime::outcome::CellOutcomeKind::Threw;
-            cells_since_look.push(record);
         } else if helper_delivered_interrupt {
             session.interrupt.consumed();
         }
 
-        // `supervisor.md` §3: one look every `every` cells, and only when
-        // there is a next user message left to head -- a task that just
-        // ended has nothing for a nudge to attach to, so no look is spent on
-        // one. §2: prose and two-blocks turns never reach `cells_since_look`
-        // at all (they push no record above), so they never count.
-        let mut nudge_reason: Option<String> = None;
         let poisoned = runtime.poisoned();
         if poisoned {
             let cause = step
@@ -1564,29 +1526,6 @@ fn run_task_inner(
             ));
             step.response = None;
         }
-        if !poisoned && step.answer.is_some() {
-            if !supervisor_active {
-                transcript.notebook.supervisor = Some(SupervisorStatus::Off);
-            } else if cells_since_look.len() as u32 >= session.config().supervisor.every {
-                let trajectory = crate::supervisor::compress(&cells_since_look);
-                cells_since_look.clear();
-                // The stall counter goes in as evidence, not as a gate: see
-                // `supervisor.rs`'s module doc for why a tree-watching counter
-                // cannot be trusted to decide when the question is worth
-                // asking.
-                let config = session.config();
-                let decision = supervisor.consider(
-                    &config.supervisor,
-                    &config.decisions,
-                    &trajectory,
-                    task_state.stall.since_progress(),
-                );
-                let (nudge, status) = crate::supervisor::outcome(decision);
-                nudge_reason = nudge;
-                transcript.notebook.supervisor = Some(status);
-            }
-        }
-
         // The flag is read before this turn decorates it, so the turn that
         // carries the exhausted preamble is sent, answered and only then
         // ends the task -- §6's required final string needs that turn to
@@ -1613,18 +1552,6 @@ fn run_task_inner(
                 step.native_result.as_mut(),
             );
             final_turn = true;
-        }
-
-        // `supervisor.md` §4: the nudge is the very head of the next user
-        // message -- applied last, so a look that coincides with the
-        // exhausted preamble puts the nudge first, ahead of it.
-        if let Some(reason) = nudge_reason {
-            use crate::supervisor::{head_tool_result, headed};
-            step.answer = step.answer.take().map(|answer| headed(&reason, &answer));
-            step.historical = step.historical.map(|history| headed(&reason, &history));
-            if let Some(result) = &mut step.native_result {
-                head_tool_result(result, &reason);
-            }
         }
 
         step.view.answered = step.answer.is_some();
@@ -2080,8 +2007,8 @@ fn act_on(
     let turn = outcome.turn();
     // The runtime records the program; only this layer saw the message the
     // program came in, so the descriptor is attached here and everything
-    // downstream — the rollout, the view, the result, the supervisor's
-    // trajectory — reads it from the one record.
+    // downstream — the rollout, the view, the result — reads it from the
+    // one record.
     let mut record = turn.record.clone();
     record.description = description.clone();
     let record = record;
@@ -2999,7 +2926,7 @@ mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &config,

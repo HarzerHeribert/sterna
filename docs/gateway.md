@@ -82,7 +82,7 @@ without echoing what was written.
 | `credentials remove <provider>` | remove a stored key |
 | `routing-cost [--hours N] [--json --since UNIX --session ID]` | what routing has consumed, as JSON Lines |
 
-Inside Sterna the same things are `/login`, `/key`, `/models` and `/usage`.
+Inside Sterna the same things are `/login`, `/key`, `/models` and `/status`.
 
 ## Subscriptions
 

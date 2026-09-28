@@ -119,7 +119,7 @@ fn child_receives_root_orientation_and_nested_policy_before_nested_write() {
             turns: Some(4),
             deadline: None,
             model: "test-model".into(),
-            effort: sterna::wire::Effort::Default,
+            effort: sterna::wire::Effort::Auto,
         },
     );
     let deadline = Instant::now() + Duration::from_secs(20);

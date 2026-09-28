@@ -76,7 +76,7 @@ pub enum Decision {
     AllowOnce,
     AllowForSession,
     /// Chosen on purpose: refused, and remembered for the session -- visibly,
-    /// with a way to forget it on the Ask sheet.
+    /// with a way to forget it on the Sandbox sheet.
     Deny,
     /// Esc: "not now". This call is refused and nothing is remembered.
     DenyOnce,
@@ -162,7 +162,7 @@ impl Hosts {
     }
 }
 
-/// One call a person answered for the whole session, as the Ask sheet lists
+/// One call a person answered for the whole session, as the Sandbox sheet lists
 /// it: allowed or denied, with a way to forget it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Remembered {

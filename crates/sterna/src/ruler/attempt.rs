@@ -203,7 +203,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -215,7 +215,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -229,7 +229,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -243,7 +243,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -258,7 +258,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -273,7 +273,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",
@@ -287,7 +287,7 @@ pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
         helpers: &[
             "preflight = false",
             "acceptance_list = false",
-            "completion_check = true",
+            "completion_check = \"always\"",
             "reduce_returns = true",
             "prefetch_returns = false",
             "learn = true",

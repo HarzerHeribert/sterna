@@ -1,5 +1,5 @@
 use super::{
-    Action, CellTab, Document, Geometry, Tone, Workbench, chrome,
+    Action, Document, Geometry, Tone, Workbench, chrome,
     document::{RowKind, clip},
     theme, voice,
 };
@@ -40,11 +40,14 @@ pub(super) fn label(f: &mut Frame<'_>, a: Rect, y: u16, text: &str, tone: Tone, 
     }
 }
 
+/// Whether Sterna's own web tools (fetch and search) are set up. Commands
+/// reach the network only through the sandbox's proxy, which the Sandbox
+/// sheet shows; this is the other fact, and says which one it is.
 fn network_word(s: &ScreenState) -> &'static str {
     match s.network.as_deref() {
-        Some("on") => "network on",
-        Some("off") => "network off",
-        _ => "network unknown",
+        Some("web") => "web tools on",
+        Some("off") => "web tools off",
+        _ => "web tools unknown",
     }
 }
 /// The level chip's tone: Full access is a warning, so it is never dropped
@@ -151,11 +154,21 @@ fn controls(
 /// them is the chip that changes it.
 fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &Workbench) {
     // A long project name must not cost you the session's controls: it gets
-    // a quarter of what the brand leaves of the row, and clips.
+    // a quarter of what the brand leaves of the row, and gives up more --
+    // down to eight columns -- before the model chip would fold away.
     let brand = " ⠿ STERNA /";
+    let model = clip(s.model.as_deref().unwrap_or("choose model"), 28);
+    let model_chip = format!("{model} · {} ▾", super::facts::effort_short(s));
+    let essential = chrome::width(&model_chip)
+        + chrome::width(&super::facts::level_word(s))
+        + chrome::width("⋯")
+        + 3 * 5;
+    let room = a.width.saturating_sub(chrome::width(brand) + 3);
     let project = clip(
         s.project.as_deref().unwrap_or("workspace"),
-        (a.width.saturating_sub(chrome::width(brand)) as usize / 4).max(8),
+        (room as usize / 4)
+            .min(room.saturating_sub(essential) as usize)
+            .max(8),
     );
     row(f, a, brand, Tone::Accent, s.theme);
     row(
@@ -165,23 +178,26 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         Tone::Strong,
         s.theme,
     );
-    let model = clip(s.model.as_deref().unwrap_or("choose model"), 18);
+    // **The model and its effort are one chip**: the effort is how that
+    // model works, so they are read and changed together, on the Models
+    // sheet's Main tab.
     controls(
         f,
         g,
         a,
         chrome::width(brand) + 1 + chrome::width(&project) + 2,
         &[
-            (format!("{model} ▾"), Action::Models, Tone::Normal, 3),
-            // The level outranks the model's name: at eighty columns a
-            // session must still say how much runs without asking.
+            (model_chip, Action::Models, Tone::Normal, 2),
+            // The level outranks the model: at eighty columns a session must
+            // still say how much runs without asking.
             (
                 super::facts::level_word(s),
                 Action::Sandbox,
                 level_tone(s),
                 1,
             ),
-            ("Settings".to_string(), Action::Settings, Tone::Normal, 0),
+            // Settings folds before the model does: F2 and ⋯ still reach it.
+            ("Settings".to_string(), Action::Settings, Tone::Normal, 4),
             ("?".to_string(), Action::Help, Tone::Normal, 5),
         ],
         ui.press,
@@ -256,6 +272,11 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     if sidebar.is_some() {
         transcript.width = transcript.width.saturating_sub(SIDEBAR_GUTTER);
     }
+    // **One empty row between the conversation and the composer**: the text
+    // that scrolls never runs into the box that stays put. The sidebar keeps
+    // its full height, and its rule still meets the box.
+    let gap = u16::from(body_height > 4);
+    transcript.height = body_height - gap;
     Layout {
         header,
         footer,
@@ -302,11 +323,14 @@ pub fn render(
         sidebar,
     } = layout(a, s);
     g.transcript = transcript;
+    // The rows the conversation shows: the body less the row kept empty
+    // above the composer.
+    let shown = transcript.height;
     let d = Document::build(c, n, s, ui, transcript.width as usize);
     g.rows = d.rows.len();
     g.start = g
         .rows
-        .saturating_sub(body_height as usize)
+        .saturating_sub(shown as usize)
         .saturating_sub(s.scrollback);
     ui.anchor = d.rows.get(g.start).map(|row| (row.key, row.text.clone()));
     ui.last_scrollback = s.scrollback;
@@ -323,19 +347,19 @@ pub fn render(
         );
     }
     if let Some(x) = gutter {
-        for y in transcript.y..transcript.bottom() {
+        for y in transcript.y..transcript.y + body_height {
             row(f, Rect::new(x, y, 1, 1), "│", Tone::Line, s.theme);
         }
     }
     // Scrolled back, the transcript's last row is the way back down: it
     // holds the `↓ latest` chip and nothing under it, so the chip never
     // covers a card's edge or a line of text.
-    let latest_row = usize::from(s.scrollback > 0 && body_height > 1);
+    let latest_row = usize::from(s.scrollback > 0 && shown > 1);
     for (j, r) in d
         .rows
         .iter()
         .skip(g.start)
-        .take((body_height as usize).saturating_sub(latest_row))
+        .take((shown as usize).saturating_sub(latest_row))
         .enumerate()
     {
         let area = Rect::new(
@@ -346,8 +370,8 @@ pub fn render(
         );
         draw_row(f, &mut g, area, r, s, ui);
     }
-    if s.scrolling && g.rows > body_height as usize && body_height > 0 && g.transcript.width > 0 {
-        let height = body_height as usize;
+    if s.scrolling && g.rows > shown as usize && shown > 0 && g.transcript.width > 0 {
+        let height = shown as usize;
         let thumb = (height * height / g.rows).max(1);
         let top = g.start.min(g.rows - height) * (height - thumb) / (g.rows - height);
         for offset in top..(top + thumb).min(height) {
@@ -392,7 +416,7 @@ pub fn render(
     if let Some(side) = sidebar {
         session_card(f, &mut g, side, n, s, ui);
     }
-    let mut y = g.transcript.bottom();
+    let mut y = transcript.y + body_height;
     for q in s.queued.iter().rev().take(queue_height as usize).rev() {
         row(
             f,
@@ -560,8 +584,6 @@ pub fn render(
         // around them does.
         g.hits.retain(|(r, _)| !r.intersects(area));
         crate::tui::telemetry::expanded(f, area, c, _served, n, s);
-        // Drawn with colours of its own: they are taken through the look.
-        super::look::adopt(f.buffer_mut(), area, super::look::get());
         let back = "Esc · Back";
         let w = chrome::width(back) + 4;
         if area.width > w + 2 && area.height > 0 {
@@ -582,7 +604,10 @@ pub fn render(
     }
     if ui.is_local() {
         super::sheets::build(ui, s, n);
-        surface(f, &mut g, a, s, ui);
+        // Between the session bar and the composer: a sheet sits above the
+        // composer, as tall as what it holds.
+        let room = Rect::new(a.x, a.y + header, a.width, body_height + queue_height);
+        surface(f, &mut g, a, room, s, ui);
     }
     g.screen = Some(f.buffer_mut().clone());
     if let Some(sel) = s.selection {
@@ -701,22 +726,7 @@ fn draw_row(
                     .iter()
                     .map(|(label, tab)| (label.clone(), Action::Tab(cell, *tab), current == *tab))
                     .collect();
-                let x = chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
-                // Whatever the strip left over -- the route to the whole diff.
-                let rest: String = r.spans.iter().map(|(t, _)| t.as_str()).collect();
-                let rest = rest.trim_start();
-                let w = chrome::width(rest);
-                if x + w < limit {
-                    button(
-                        f,
-                        g,
-                        Rect::new(limit - w, area.y, w, 1),
-                        rest,
-                        Action::Tab(cell, CellTab::Diff),
-                        false,
-                        t,
-                    );
-                }
+                chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
             } else if !r.chips.is_empty() {
                 chrome::chips(f, g, inner_x, area.y, limit, &r.chips, ui.press, t);
             } else {
@@ -863,17 +873,17 @@ fn session_card(
             Tone::Normal,
             Some(Action::Models),
         ),
-        // Two lines, two targets: the effort steps where it stands, and
-        // the helpers open the settings that turn them on.
+        // The effort opens where the model is chosen; the helpers open the
+        // settings that turn them on.
         (
             super::facts::effort_word(s),
             Tone::Muted,
-            Some(Action::Effort),
+            Some(Action::Models),
         ),
         (
             format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
             Tone::Muted,
-            Some(Action::SettingsAt(2)),
+            Some(Action::SettingsAt(super::settings::section::HELPERS)),
         ),
     ]);
     if let Some(word) = &s.subagents {
@@ -931,31 +941,34 @@ fn session_card(
     let helpers = with_helpers
         .and_then(|cell| n.cells.get(cell - 1))
         .map_or(&[][..], |c| c.helpers.as_slice());
-    if helpers.is_empty() {
-        lines.push((
+    let state = |record: &crate::helpers::HelperRecord| {
+        if record.outcome.ok {
+            ("returned", Tone::Muted)
+        } else if record.outcome.text.is_empty() {
+            ("working", Tone::Muted)
+        } else {
+            ("failed", Tone::Failure)
+        }
+    };
+    // The Scout is a helper too: while it reads the project before the
+    // first cell, the rail says so rather than "none yet".
+    match (helpers.is_empty(), n.preflight.as_ref()) {
+        (true, Some(scout)) => {
+            let (word, tone) = state(scout);
+            lines.push((format!("Scout · {word}"), tone, Some(Action::Scout)));
+        }
+        (true, None) => lines.push((
             if s.helpers_on { "none yet" } else { "off" }.into(),
             Tone::Muted,
-            Some(Action::SettingsAt(2)),
-        ));
+            Some(Action::SettingsAt(super::settings::section::HELPERS)),
+        )),
+        _ => {}
     }
     for (i, helper) in helpers.iter().enumerate() {
+        let (word, tone) = state(helper);
         lines.push((
-            format!(
-                "{} · {}",
-                helper.helper,
-                if helper.outcome.ok {
-                    "returned"
-                } else if helper.outcome.text.is_empty() {
-                    "waiting"
-                } else {
-                    "failed"
-                }
-            ),
-            if helper.outcome.ok || helper.outcome.text.is_empty() {
-                Tone::Muted
-            } else {
-                Tone::Failure
-            },
+            format!("{} · {word}", helper.helper),
+            tone,
             // The same lane the card shows, opened there.
             Some(Action::Helper(with_helpers.unwrap_or(0), i)),
         ));
@@ -1057,8 +1070,8 @@ fn dock_top(
     } else if s.mouse_off {
         Some("Mouse released · Ctrl-G captures again".to_string())
     } else if s.fullscreen {
-        // With the chrome gone, the way back stays in view.
-        Some("Fullscreen · Ctrl-F restores".to_string())
+        // With the bars gone, the way back stays in view.
+        Some("Fullscreen · Ctrl-F leaves it".to_string())
     } else {
         None
     }
@@ -1205,9 +1218,8 @@ fn dock_bottom(
     let limit = a.right().saturating_sub(rw + 3);
     let mut x = a.x + 3;
     if s.status_line != StatusLine::Hidden {
-        // **A chip says only what differs from Sterna's own default** --
-        // except the effort, which is a control stepped in place: a chip
-        // that vanished at `default` could not be stepped again.
+        // **A chip says only what differs from Sterna's own default.** The
+        // effort is not here: it rides with the model on the session bar.
         let items = [
             // A sign-in running beside the session, one click from its panel.
             (
@@ -1217,14 +1229,13 @@ fn dock_bottom(
                     .unwrap_or_default(),
                 Action::ReopenSignIn,
             ),
-            (super::facts::effort_word(s), Action::Effort),
             (
                 if s.helpers_on {
                     "◇ helpers on".to_string()
                 } else {
                     String::new()
                 },
-                Action::SettingsAt(2),
+                Action::SettingsAt(super::settings::section::HELPERS),
             ),
             (
                 s.subagents
@@ -1295,17 +1306,42 @@ fn dock_bottom(
 }
 /// A local surface: modal and framed, drawn by the one sheet component --
 /// the same head, the same foot and the same keys every time.
-fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &mut Workbench) {
+fn surface(
+    f: &mut Frame<'_>,
+    g: &mut Geometry,
+    a: Rect,
+    room: Rect,
+    s: &ScreenState,
+    ui: &mut Workbench,
+) {
     let t = s.theme;
-    let area = if a.width >= 100 && a.height >= 25 {
-        Rect::new(a.x + 2, a.y + 1, a.width - 4, a.height - 2)
-    } else {
-        a
+    // **A sheet is as tall as what it holds**, drawn above the composer so
+    // the draft and the session bar stay in view; a sheet with more than
+    // the room scrolls inside it. On a screen too short for that it takes
+    // the whole screen, as before.
+    let margin = u16::from(a.width >= 100) * 2;
+    let area = match ui.sheets.last() {
+        Some(layer) if room.height >= 12 && room.width >= 24 => {
+            let inner_width = room.width.saturating_sub(2 * margin + 4);
+            let wanted = super::sheet::wanted_height(&layer.sheet, inner_width) + 2;
+            let height = wanted.clamp(8, room.height);
+            Rect::new(
+                room.x + margin,
+                room.bottom() - height,
+                room.width.saturating_sub(2 * margin),
+                height,
+            )
+        }
+        _ if a.width >= 100 && a.height >= 25 => {
+            Rect::new(a.x + 2, a.y + 1, a.width - 4, a.height - 2)
+        }
+        _ => a,
     };
-    // A local surface is modal: the conversation behind it is not
-    // half-visible around its edges, which would read as damage.
-    f.render_widget(Clear, a);
-    f.buffer_mut().set_style(a, theme::style(Tone::Normal, t));
+    // A local surface is modal: what it covers is cleared, never
+    // half-visible through it, and nothing outside it takes a click.
+    f.render_widget(Clear, area);
+    f.buffer_mut()
+        .set_style(area, theme::style(Tone::Normal, t));
     g.hits.clear();
     g.local = Some(area);
     let framed = area.width >= 12 && area.height >= 6;
@@ -1336,6 +1372,69 @@ fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &m
             .unwrap_or(s.theme);
         super::sheets::draw_theme_preview(f, aside, chosen, s, t);
     }
+}
+
+/// Text laid into lines no wider than `width`, **keeping the spaces
+/// between words**: a column laid out with spaces stays a column, and
+/// indentation stays. A break drops the spaces it falls on; a word wider
+/// than a line is split.
+pub(super) fn wrap_spaced(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut runs: Vec<(String, bool)> = Vec::new();
+    for c in text.chars() {
+        let c = if c == '\t' { ' ' } else { c };
+        let space = c == ' ';
+        match runs.last_mut() {
+            Some((run, was)) if *was == space => run.push(c),
+            _ => runs.push((c.to_string(), space)),
+        }
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for (run, space) in runs {
+        let size = run.chars().count();
+        if space {
+            if used + size <= width {
+                line.push_str(&run);
+                used += size;
+            } else {
+                lines.push(std::mem::take(&mut line).trim_end().to_string());
+                used = 0;
+            }
+            continue;
+        }
+        if used > 0 && used + size > width {
+            lines.push(std::mem::take(&mut line).trim_end().to_string());
+            used = 0;
+        }
+        let mut rest: Vec<char> = run.chars().collect();
+        while used + rest.len() > width {
+            let take = width - used;
+            line.extend(rest.drain(..take));
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        used += rest.len();
+        line.extend(rest);
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Code laid into lines no wider than `width`: every character kept, the
+/// line cut where it reaches the edge.
+pub(super) fn wrap_exact(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.replace('\t', "    ").chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
 }
 
 /// Words laid into lines no wider than `width`.

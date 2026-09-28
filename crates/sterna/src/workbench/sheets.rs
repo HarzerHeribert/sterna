@@ -25,7 +25,6 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
             .cloned(),
         _ => None,
     };
-    let turning_off = ui.turning_off.clone();
     // The undo chip rides beside the notice the newest change produced.
     let undo = (ui.offer_undo && !ui.changes.is_empty()).then_some(Action::Undo);
     let Layer { sheet, source, .. } = &mut ui.sheets[depth - 1];
@@ -51,8 +50,8 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Acceptance => acceptance(sheet, n),
         Source::Themes { .. } => themes(sheet, s),
         Source::Settings(p) => super::settings::items(sheet, p, s),
-        Source::Models(m) => super::models::items(sheet, m),
-        Source::Panel(panel) => panel_items(sheet, panel, &turning_off),
+        Source::Models(m) => super::models::items(sheet, m, s.effort),
+        Source::Panel(panel) => panel_items(sheet, panel),
         Source::Fold(_) => fold_items(sheet, fold),
         Source::More(controls) => more_items(sheet, controls),
     };
@@ -84,6 +83,8 @@ fn between_turns(item: Item) -> Item {
 /// The sandbox: its level, how it is enforced, and what was answered for
 /// the session, on one sheet the level chip opens.
 fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    // Each level is one line; what it lets run is on the card.
+    sheet.card = true;
     sheet.title = "Sandbox".into();
     sheet.crumbs = vec!["how much runs without asking".into()];
     let now = s.level.level();
@@ -110,7 +111,12 @@ fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
     );
     items.push(Item::info(format!("Pre-approved      {}", unknown(&s.sandbox))).tone(Tone::Muted));
-    items.push(Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted));
+    let web = match s.network.as_deref() {
+        Some("web") => "on · fetch and search run in Sterna, outside the sandbox".to_string(),
+        Some("off") => "off".to_string(),
+        other => unknown(&other.map(str::to_string)),
+    };
+    items.push(Item::info(format!("Web tools         {web}")).tone(Tone::Muted));
     items.push(
         Item::open("sandbox:hosts", "Allowed hosts", Action::Hosts)
             .detail("the registries and hosts commands may reach"),
@@ -225,7 +231,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         (
             "F2",
-            "settings · choices save themselves; most apply now",
+            "settings · a choice saves itself; its card says when it applies",
             Some(Action::Settings),
         ),
         ("F3", "which model answers", Some(Action::Models)),
@@ -239,7 +245,11 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
             Some(Action::Telemetry),
         ),
         ("Ctrl-B", "show or hide the sidebar", None),
-        ("Ctrl-F", "hide or restore the chrome", None),
+        (
+            "Ctrl-F",
+            "fullscreen: the conversation and the composer only",
+            None,
+        ),
         (
             "Ctrl-G",
             "release the mouse to the terminal, and take it back",
@@ -256,11 +266,6 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
             None,
         ),
         ("Ctrl-A E", "start or end of the line", None),
-        (
-            "Ctrl-K U",
-            "delete to the end or the start of the line",
-            None,
-        ),
         ("/", "commands · /help lists every one", None),
         ("?", "this sheet, when the composer is empty", None),
         ("click", "any chip changes the thing it names", None),
@@ -270,13 +275,21 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
 fn keys(sheet: &mut Sheet) -> Vec<Item> {
     sheet.title = "Keys".into();
     sheet.crumbs = vec!["every key, and what it does".into()];
-    keymap()
-        .into_iter()
+    let keys = keymap();
+    let column = keys
+        .iter()
+        .map(|(key, _, _)| key.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    keys.into_iter()
         .map(|(key, what, action)| {
-            let text = format!("{key:<11}{what}");
+            let text = format!("{key:<column$}{what}");
             match action {
                 Some(action) => Item::open(format!("key:{key}"), text, action),
-                None => Item::info(text),
+                // A row that only says something starts where a row that
+                // opens something starts, after its focus mark.
+                None => Item::info(format!("  {text}")),
             }
         })
         .collect()
@@ -430,11 +443,7 @@ fn more_items(sheet: &mut Sheet, controls: &[(String, Action)]) -> Vec<Item> {
 
 /// The rows of a panel the session sent, and a search once it is longer
 /// than a screen is comfortable with.
-fn panel_items(
-    sheet: &mut Sheet,
-    panel: &crate::tui::Panel,
-    turning_off: &std::collections::BTreeSet<String>,
-) -> Vec<Item> {
+fn panel_items(sheet: &mut Sheet, panel: &crate::tui::Panel) -> Vec<Item> {
     let mut parts = panel.title.split(" › ");
     sheet.title = parts.next().unwrap_or_default().to_string();
     sheet.crumbs = parts.map(str::to_string).collect();
@@ -460,7 +469,7 @@ fn panel_items(
             Some((head, rest)) if row.acts() => (head.to_string(), rest.to_string()),
             _ => (row.text.clone(), String::new()),
         };
-        let mut item = match &row.kind {
+        let item = match &row.kind {
             Kind::Info => Item::info(row.text.clone()),
             Kind::Heading => Item::heading(row.text.clone()),
             kind => {
@@ -471,11 +480,6 @@ fn panel_items(
                 item.detail(detail)
             }
         };
-        if let Some(Action::HandlerOff(name)) = &row.action
-            && turning_off.contains(name)
-        {
-            item = item.disabled(Some("turning off…".into()));
-        }
         if i == panel.selected && row.acts() {
             focus = Some(item.id.clone());
         }

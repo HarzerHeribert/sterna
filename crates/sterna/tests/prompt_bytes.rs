@@ -517,10 +517,6 @@ fn task_spend_has_no_cap_warning_and_limit_preambles_are_one_sentence() {
     // observed, and ends in the one thing the model may still do.
     for reason in [
         ExhaustedReason::CellLimit { cap: 120 },
-        ExhaustedReason::Supervised {
-            reason: "these cells are not advancing the task".to_string(),
-            looks: 3,
-        },
         ExhaustedReason::Stalled {
             windows: 3,
             cells: 18,
@@ -533,13 +529,6 @@ fn task_spend_has_no_cap_warning_and_limit_preambles_are_one_sentence() {
         assert!(sentence.contains("return"), "{sentence}");
     }
     // The reason is the fact, not a number the model has to interpret.
-    assert!(
-        prompt::exhausted_preamble(&ExhaustedReason::Supervised {
-            reason: "the same call keeps failing the same way".to_string(),
-            looks: 3,
-        })
-        .starts_with("The supervisor has said 3 times that the same call keeps failing")
-    );
     assert!(
         prompt::exhausted_preamble(&ExhaustedReason::CellLimit { cap: 40 })
             .contains("this project set (40)")

@@ -250,6 +250,23 @@ impl Store {
             .retired
             .iter()
             .map(|retired| {
+                // A value saved in a setting's old kind is rewritten in
+                // place, in the file it was found in.
+                if let Some(now) = registry::migrated_value(&retired.key, &retired.word) {
+                    let written = self.read(retired.scope).and_then(|snapshot| {
+                        self.save(
+                            retired.scope,
+                            &snapshot,
+                            &[(retired.key.clone(), Some(now.to_string()))],
+                        )
+                    });
+                    return registry::migration_notice(
+                        &retired.key,
+                        &retired.word,
+                        now,
+                        written.is_ok(),
+                    );
+                }
                 // A retired permission word that chose a level is migrated,
                 // globally and only where no level is saved yet: the file
                 // keeps meaning what its owner chose. A project file's copy
@@ -393,7 +410,7 @@ impl Store {
             if profile.is_some() && !registry::is_runtime(key) {
                 return Err(format!(
                     "settings: `{key}` is not a runtime setting; a profile overlays only \
-                     [limits], [supervisor], [helpers], [agents], [model] and [web]"
+                     [limits], [helpers], [agents], [model], [web], [decisions] and [ask]"
                 ));
             }
             let typed = match value {
@@ -538,10 +555,17 @@ impl Store {
                 // This file is preserved, never rewritten, so a retired choice
                 // in it is said rather than removed.
                 for (key, word) in &parsed.retired {
-                    notices.push(format!(
-                        "`{key} = {word}` in `{}` is no longer a choice; Sterna uses its default.",
-                        path.display()
-                    ));
+                    notices.push(match registry::migrated_value(key, word) {
+                        Some(now) => format!(
+                            "{} (in `{}`, which is preserved as it is)",
+                            registry::migration_notice(key, word, now, false),
+                            path.display()
+                        ),
+                        None => format!(
+                            "`{key} = {word}` in `{}` is no longer a choice; Sterna uses its default.",
+                            path.display()
+                        ),
+                    });
                 }
                 let mut conflicts: Vec<String> = Vec::new();
                 for (key, value) in &parsed.flat {
@@ -1233,11 +1257,13 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
         .flat
         .iter()
         .filter_map(|(key, value)| {
-            if registry::retired_key(key).is_some() {
-                let word = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), str::to_string);
-                return Some((key.clone(), word));
+            let saved = value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_string);
+            if registry::retired_key(key).is_some()
+                || registry::migrated_value(key, &saved).is_some()
+            {
+                return Some((key.clone(), saved));
             }
             let spec = registry::spec(key)?;
             let word = value.as_str()?;
@@ -1245,8 +1271,18 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
                 .then(|| (key.clone(), word.to_string()))
         })
         .collect();
-    for (key, _) in &retired {
-        parsed.flat.remove(key);
+    for (key, word) in &retired {
+        match registry::migrated_value(key, word) {
+            // Read as what it means now, before any file is rewritten.
+            Some(now) => {
+                parsed
+                    .flat
+                    .insert(key.clone(), toml::Value::String(now.to_string()));
+            }
+            None => {
+                parsed.flat.remove(key);
+            }
+        }
     }
     parsed.retired = retired;
     for (key, value) in &parsed.flat {
@@ -1326,7 +1362,6 @@ fn nest<'a>(entries: impl Iterator<Item = (&'a String, &'a toml::Value)>) -> tom
 /// which is exactly what "unset means off" means for helpers and agents.
 fn defaults() -> Vec<(&'static str, toml::Value)> {
     let limits = crate::config::Limits::default();
-    let supervisor = crate::config::SupervisorConfig::default();
     let helpers = crate::config::HelpersConfig::default();
     let agents = crate::config::AgentsConfig::default();
     let web = crate::web::WebConfig::default();
@@ -1349,11 +1384,6 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         // `0` is this file's spelling for "no ceiling", the same as absent,
         // so the row round-trips through the parser unchanged.
         ("limits.cells", count(limits.cells.unwrap_or(0))),
-        (
-            "supervisor.enabled",
-            toml::Value::Boolean(supervisor.enabled),
-        ),
-        ("supervisor.every", count(u64::from(supervisor.every))),
         ("helpers.enabled", toml::Value::Boolean(helpers.enabled)),
         ("helpers.preflight", toml::Value::Boolean(helpers.preflight)),
         (

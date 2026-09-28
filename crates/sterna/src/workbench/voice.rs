@@ -129,11 +129,11 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
 pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
     const HINTS: [(&str, Needs); 8] = [
         (
-            "Shift-Tab changes how often Sterna asks before it acts",
+            "Click the sandbox level in the top bar: what Sterna may do, and what you allowed",
             Needs::Nothing,
         ),
         (
-            "F2 opens settings · choices save themselves; most apply now",
+            "F2 opens settings · F3 which model answers, and how hard",
             Needs::Nothing,
         ),
         ("Ctrl-T opens telemetry · Esc closes it", Needs::Nothing),
@@ -146,7 +146,7 @@ pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
             Needs::Turn,
         ),
         (
-            "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
+            "Ctrl-B shows or hides the sidebar · Ctrl-F shows only the conversation",
             Needs::Nothing,
         ),
         (

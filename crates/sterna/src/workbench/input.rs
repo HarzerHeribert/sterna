@@ -33,7 +33,6 @@ pub enum Effect {
     PasteCallback,
     CancelSignIn,
     ReopenSignIn,
-    HandlerOff(String),
 }
 /// A control that may change while a turn runs: a model or effort named in
 /// full applies from the turn's next request (decision 9). A bare one opens
@@ -55,6 +54,21 @@ impl Workbench {
     /// session with no project root is not an error here -- the choice
     /// still applies to the running screen, and the notice says which of
     /// the two happened.
+    /// Ctrl-B: shows or hides the sidebar, saved like any setting and one
+    /// undo away.
+    pub fn toggle_sidebar(&mut self, s: &mut ScreenState) {
+        let (word, visibility) = match s.sidebar {
+            crate::tui::SidebarVisibility::Hidden => ("show", crate::tui::SidebarVisibility::Shown),
+            _ => ("hide", crate::tui::SidebarVisibility::Hidden),
+        };
+        self.persist("ui.sidebar", word, s);
+        s.sidebar = visibility;
+        s.note(if word == "show" {
+            "Sidebar shown · Ctrl-B hides it"
+        } else {
+            "Sidebar hidden · Ctrl-B shows it"
+        });
+    }
     fn persist(&mut self, key: &str, value: &str, s: &mut ScreenState) -> bool {
         let Ok(mut p) = super::Preferences::open(s) else {
             return false;
@@ -186,7 +200,7 @@ impl Workbench {
                 true
             }
             ["/config"] => {
-                self.open_settings_at(s, 5, None);
+                self.open_settings_at(s, super::settings::section::ADVANCED, None);
                 true
             }
             // A word after /settings or /config is a setting to open on.
@@ -196,22 +210,18 @@ impl Workbench {
             }
             // Bare, each of these opens on its own row.
             ["/motion"] => {
-                self.open_settings_at(s, 1, Some("ui.motion"));
-                true
-            }
-            ["/sidebar"] => {
-                self.open_settings_at(s, 1, Some("ui.sidebar"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.motion"));
                 true
             }
             ["/stream"] => {
-                self.open_settings_at(s, 1, Some("ui.stream"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.stream"));
                 true
             }
             // A command that names one setting opens where that setting is.
             // Bare `/statusline` used to land on the everyday category with
             // the status line nowhere in sight.
             ["/statusline"] => {
-                self.open_settings_at(s, 1, Some("ui.statusline"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.statusline"));
                 true
             }
             ["/diff"] => {
@@ -257,11 +267,6 @@ impl Workbench {
             ["/chat"] => {
                 self.close_all();
                 s.telemetry_open = false;
-                true
-            }
-            ["/activity"] => {
-                s.telemetry_open = false;
-                self.open(Source::Activity);
                 true
             }
             ["/telemetry"] => {
@@ -324,27 +329,12 @@ impl Workbench {
                 s.note("Usage: /stream actions | code | raw");
                 true
             }
-            ["/sidebar", word @ ("auto" | "show" | "hide")] => {
-                self.persist("ui.sidebar", word, s);
-                s.sidebar = match *word {
-                    "show" => crate::tui::SidebarVisibility::Shown,
-                    "hide" => crate::tui::SidebarVisibility::Hidden,
-                    _ => crate::tui::SidebarVisibility::Auto,
-                };
-                // The line names the three words and the key, exactly as it
-                // always has: someone who just used one of them is the
-                // likeliest person to want another.
-                s.note(format!(
-                    "Sidebar: /sidebar auto|show|hide · Ctrl-B toggles · now {word}"
-                ));
-                true
-            }
             ["/fullscreen"] => {
                 s.fullscreen = !s.fullscreen;
                 s.note(if s.fullscreen {
-                    "Fullscreen. Ctrl-F or /fullscreen restores the chrome."
+                    "Fullscreen: the conversation and the composer only. Ctrl-F or /fullscreen leaves it."
                 } else {
-                    "Chrome restored."
+                    "Fullscreen off."
                 });
                 true
             }
@@ -364,10 +354,6 @@ impl Workbench {
                 } else {
                     s.note(format!("Status line: {word} · this session only"));
                 }
-                true
-            }
-            ["/sidebar", ..] => {
-                s.note("Usage: /sidebar auto | show | hide");
                 true
             }
             ["/statusline", ..] => {
@@ -925,6 +911,11 @@ impl Workbench {
                 };
             }
             Action::Scout => self.scout = !self.scout,
+            Action::Note(index) => {
+                if !self.notes_open.remove(&index) {
+                    self.notes_open.insert(index);
+                }
+            }
             Action::Acceptance => self.show(Source::Acceptance, from_sheet),
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),
@@ -939,19 +930,8 @@ impl Workbench {
             Action::SettingsAt(category) => {
                 self.open_settings_at(s, category, None);
             }
-            // **The whole point of the strip is that it acts where it
-            // stands.** Stepping the effort opens nothing: the word on the
-            // strip is the next word before the finger has left the mouse,
-            // because `/effort` was always a live control and this is it.
-            Action::Effort => {
-                // What it was goes on the undo list on its way out
-                // (`sent`), and is offered beside the notice the step
-                // produces: reversibility over confirmation.
-                let next = super::facts::next_effort(s.effort);
-                return Effect::Command(format!("/effort {}", next.name()));
-            }
             Action::Help => self.show(Source::Keys, from_sheet),
-            // The dock's fourth chip steps in place, like the effort one.
+            // The dock's stream chip steps in place.
             Action::Stream => {
                 let next = s.stream.next();
                 let word = next.name();
@@ -1277,12 +1257,6 @@ impl Workbench {
             Action::ReopenSignIn => return Effect::ReopenSignIn,
             Action::Copy(text) => return Effect::Copy(text),
             Action::PasteCallback => return Effect::PasteCallback,
-            Action::HandlerOff(name) => {
-                if self.turning_off.insert(name.clone()) {
-                    return Effect::HandlerOff(name);
-                }
-                self.say(format!("{name} is already turning off."));
-            }
             Action::Forget(id) => {
                 let label = s.memory.as_ref().and_then(|memory| {
                     let label = memory
@@ -1391,6 +1365,14 @@ impl Workbench {
         } else if let Some((key, buffer)) = p.editing.clone()
             && key == spec.key
         {
+            // **An untouched field saves nothing.** Enter on the word the
+            // field opened with wrote that word: a host named "none", or a
+            // default turned into a saved override.
+            if buffer == p.effective(&key) {
+                p.editing = None;
+                p.notice = "Nothing changed".into();
+                return Effect::Consumed;
+            }
             match p.save(&key, Some(buffer), s) {
                 Ok(()) => {
                     p.editing = None;

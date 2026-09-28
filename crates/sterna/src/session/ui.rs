@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::contract::{Conversation, ServedBy};
-use crate::tui::{self, Activity, Notebook, ScreenState, SidebarVisibility};
+use crate::tui::{self, Activity, Notebook, ScreenState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, MouseEventKind};
 use crossterm::execute;
@@ -220,7 +220,7 @@ pub(super) enum Update {
     /// A question a cell put to the person, waiting on the session thread.
     Ask(crate::ask::Request),
     /// The approval gate's memory, sent once when the gate is made, so the
-    /// Ask sheet can list and forget what was answered for the session.
+    /// Sandbox sheet can list and forget what was answered for the session.
     Memory(crate::approval::Memory),
     /// The network proxy's live allowed list, sent once when the session
     /// starts one, so the hosts sheet changes what commands reach now.
@@ -337,7 +337,6 @@ struct Answers<'a> {
 }
 
 pub(super) struct LiveUi {
-    handler_cancellations: Arc<Mutex<Vec<String>>>,
     steer: Arc<Steer>,
     updates: mpsc::Sender<Update>,
     inputs: mpsc::Receiver<Input>,
@@ -401,8 +400,6 @@ impl LiveUi {
         let (input_sender, inputs) = mpsc::channel();
         let (secret_sender, secrets) = mpsc::channel();
         let (ready_sender, ready) = mpsc::sync_channel(1);
-        let handler_cancellations = Arc::new(Mutex::new(Vec::new()));
-        let commands = handler_cancellations.clone();
         let steer = Arc::new(Steer::default());
         let levers = steer.clone();
         let thread = thread::spawn(move || {
@@ -416,7 +413,6 @@ impl LiveUi {
                     secrets: &secret_sender,
                 },
                 ready_sender,
-                commands,
                 levers,
             );
             if let Err(error) = result {
@@ -428,7 +424,6 @@ impl LiveUi {
             .map_err(|_| "terminal thread exited during setup".to_string())??;
         OUTPUT.with(|slot| *slot.borrow_mut() = Some(updates.clone()));
         Ok(Self {
-            handler_cancellations,
             steer,
             updates,
             inputs,
@@ -446,9 +441,6 @@ impl LiveUi {
         while self.secrets.try_recv().is_ok() {}
         self.updates.send(Update::Form(Box::new(form))).ok()?;
         self.secrets.recv().ok().flatten()
-    }
-    pub(super) fn handler_cancellations(&self) -> Vec<String> {
-        std::mem::take(&mut *super::lock(&self.handler_cancellations))
     }
     pub(super) fn steer(&self) -> &Steer {
         &self.steer
@@ -691,7 +683,6 @@ fn run(
     updates: mpsc::Receiver<Update>,
     answers: Answers<'_>,
     ready: mpsc::SyncSender<Result<(), String>>,
-    handler_cancellations: Arc<Mutex<Vec<String>>>,
     steer: Arc<Steer>,
 ) -> io::Result<()> {
     let setup = (|| {
@@ -808,14 +799,6 @@ fn run(
                     {
                         state.completion_tick = Some(0);
                     }
-                    refresh_handler_panel(
-                        workbench.panel_mut("Standing handlers"),
-                        &notebook.handlers,
-                        &n.handlers,
-                    );
-                    workbench
-                        .turning_off
-                        .retain(|name| n.handlers.iter().any(|h| h.name == *name && h.active));
                     conversation = c;
                     keep_sending(
                         &mut conversation,
@@ -1256,12 +1239,6 @@ fn run(
                     dirty = true;
                     continue;
                 }
-                crate::workbench::Effect::HandlerOff(name) => {
-                    super::lock(&handler_cancellations).push(name.clone());
-                    say(&mut workbench, format!("Turning off {name}…"));
-                    dirty = true;
-                    continue;
-                }
                 crate::workbench::Effect::Cursor(offset) => {
                     editor.cursor = editor
                         .text
@@ -1539,18 +1516,9 @@ fn run(
                             state.compact = !state.compact;
                             continue;
                         }
-                        // The same route as `/sidebar`: saved, noted, and
-                        // one undo away.
+                        // Saved, noted, and one undo away.
                         KeyCode::Char('b') => {
-                            let word = match state.sidebar {
-                                SidebarVisibility::Hidden => "show",
-                                _ => "hide",
-                            };
-                            workbench.local_command(
-                                &format!("/sidebar {word}"),
-                                &mut state,
-                                &notebook,
-                            );
+                            workbench.toggle_sidebar(&mut state);
                             continue;
                         }
                         // The same route as `/fullscreen`, and said the same way.
@@ -1648,8 +1616,8 @@ fn run(
                         state.notice = None;
                         continue;
                     }
-                    // Sits with the other argument-less presentation toggles
-                    // rather than with `/sidebar`, so it still works while a
+                    // Sits with the other argument-less presentation toggles,
+                    // so it still works while a
                     // task runs -- watching a long stream fill the screen is
                     // the case this command exists for.
                     if editor.text.trim() == "/mouse" {
@@ -1661,34 +1629,6 @@ fn run(
                     if editor.text.trim() == "/fullscreen" {
                         editor.take();
                         workbench.local_command("/fullscreen", &mut state, &notebook);
-                        continue;
-                    }
-                    if editor.text.split_whitespace().next() == Some("/handlers") {
-                        let text = editor.take();
-                        let parts: Vec<_> = text.split_whitespace().collect();
-                        match parts.as_slice() {
-                            ["/handlers"] => {
-                                state.panel = Some(tui::handlers_panel(&notebook.handlers));
-                            }
-                            ["/handlers", "off", name] => {
-                                if busy
-                                    && notebook
-                                        .handlers
-                                        .iter()
-                                        .any(|h| h.name == *name && h.active)
-                                {
-                                    super::lock(&handler_cancellations).push((*name).to_string());
-                                    state.note(format!(
-                                        "handler {name}: cancellation queued for the next cell boundary"
-                                    ));
-                                } else {
-                                    state.note(format!(
-                                        "handler {name}: no active handler with that name"
-                                    ));
-                                }
-                            }
-                            _ => state.note("Use /handlers or /handlers off <name>"),
-                        }
                         continue;
                     }
                     // /exit is honoured mid-turn: the turn is stopped and the
@@ -1883,20 +1823,6 @@ fn keep_sending(
     ));
 }
 
-/// The panel is an open view of task state, not a copy frozen at `/handlers`.
-///
-/// The rows carry the handler's name as their id, so the sheet keeps its
-/// focus on the same handler through counter and status changes.
-fn refresh_handler_panel(
-    panel: Option<&mut tui::Panel>,
-    before: &[crate::runtime::handlers::HandlerInfo],
-    after: &[crate::runtime::handlers::HandlerInfo],
-) {
-    let Some(held) = panel else { return };
-    let _ = before;
-    *held = tui::handlers_panel(after);
-}
-
 /// The top sheet's notice when one is open, else the dock's.
 fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
     let text = text.into();
@@ -2081,69 +2007,5 @@ mod tests {
             !clocks.contains_key(&(0, 1)),
             "a call that resolved no longer holds a clock"
         );
-    }
-
-    /// The open handler panel is the task's state, not a copy: runs, a
-    /// handler going stale and the list emptying all reach it, a stale one
-    /// can no longer be turned off, and every row keeps its handler's name
-    /// as its id so the sheet's focus stays on it.
-    #[test]
-    fn an_open_handler_panel_tracks_runs_disable_cancel_and_clear() {
-        use crate::runtime::handlers::HandlerInfo;
-        let mut before = vec![
-            HandlerInfo {
-                name: "first".into(),
-                runs: 0,
-                drained: 0,
-                error: None,
-                active: true,
-            },
-            HandlerInfo {
-                name: "second".into(),
-                runs: 0,
-                drained: 0,
-                error: None,
-                active: true,
-            },
-        ];
-        let mut panel = tui::handlers_panel(&before);
-        for phase in 0..4 {
-            let mut after = before.clone();
-            match phase {
-                0 => {
-                    after[1].runs = 1;
-                    after[1].drained = 1;
-                }
-                1 => {
-                    after[1].active = false;
-                    after[1].error = Some("RuntimeTimeout".into());
-                }
-                2 => {
-                    after[0].active = false;
-                }
-                _ => after.clear(),
-            }
-            refresh_handler_panel(Some(&mut panel), &before, &after);
-            if phase < 3 {
-                assert_eq!(panel.rows[2].id.as_deref(), Some("handler:second"));
-            }
-            if phase == 0 {
-                assert!(panel.rows[2].text.contains("1 runs · 1 drained"));
-            }
-            if phase == 1 {
-                assert!(panel.rows[2].text.contains("stale"));
-                assert!(panel.rows[2].text.contains("RuntimeTimeout"));
-                assert!(!panel.rows[2].acts());
-            }
-            if phase == 2 {
-                assert!(panel.rows[1].text.contains("stale"));
-                assert!(!panel.rows[1].acts());
-            }
-            if phase == 3 {
-                assert_eq!(panel.rows.len(), 1);
-                assert!(panel.rows[0].text.contains("No handlers in this task"));
-            }
-            before = after;
-        }
     }
 }

@@ -263,7 +263,7 @@ fn global_defaults_are_overridden_by_the_project_with_visible_origins() {
     assert_eq!(level(&loaded.values), None);
     assert_eq!(
         string(&loaded.values, "session.effort").as_deref(),
-        Some("default")
+        Some("auto")
     );
 }
 
@@ -358,6 +358,20 @@ fn runtime_defaults_are_shown_before_anything_is_saved() {
     assert_eq!(
         string(&loaded.values, "helpers.effort.check").as_deref(),
         Some(sterna::config::HelperEfforts::default().check.name())
+    );
+    // The chips mark what runs: Ask weighting, the decision mode and each
+    // favourite's effort are the runtime's own defaults, never a guess.
+    assert_eq!(
+        sterna::settings::registry::shown_default("ask.jev").as_deref(),
+        Some(sterna::config::AskConfig::default().jev.as_str())
+    );
+    assert_eq!(
+        sterna::settings::registry::shown_default("decisions.mode").as_deref(),
+        Some(sterna::config::DecisionsConfig::default().mode.as_str())
+    );
+    assert_eq!(
+        sterna::settings::registry::shown_default("agents.slots.deep.effort").as_deref(),
+        Some(sterna::config::slot_effort("deep").name())
     );
     assert_eq!(loaded.origins["helpers.enabled"], "built-in");
     assert_eq!(loaded.origins["limits.cells"], "built-in");
@@ -1146,6 +1160,48 @@ fn a_global_permission_rung_migrates_to_a_sandbox_level() {
     assert!(!read(&store.path(Scope::Global)).contains("mode"));
 }
 
+/// `helpers.completion_check` was on or off and is now when. A saved word of
+/// the old kind is read as what it means now, rewritten in its own file,
+/// and said once: `true` keeps the check where it pays, `false` stays off.
+#[test]
+fn a_saved_on_or_off_completion_check_becomes_auto_or_off() {
+    let temp = Temp::new("migrate-check");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[helpers]\ncompletion_check = true\n",
+    );
+    write(
+        &store.path(Scope::Local),
+        "[helpers]\ncompletion_check = false\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    assert_eq!(
+        loaded.values["helpers"]["completion_check"].as_str(),
+        Some("off"),
+        "the project's word wins, read as what it means now"
+    );
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices.contains(
+            &"`helpers.completion_check = true` is now `\"auto\"`: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
+                .to_string()
+        ),
+        "{notices:?}"
+    );
+    assert!(
+        notices.contains(
+            &"`helpers.completion_check = false` is now `\"off\"`; /settings changes it."
+                .to_string()
+        ),
+        "{notices:?}"
+    );
+    assert!(read(&store.path(Scope::Global)).contains("completion_check = \"auto\""));
+    assert!(read(&store.path(Scope::Local)).contains("completion_check = \"off\""));
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}
+
 /// `full_access = true` alone becomes `full`; beside a rung, the rung
 /// decided the old session's level, so it decides the new one.
 #[test]
@@ -1277,4 +1333,59 @@ fn scopes_parse_the_words_the_command_line_accepts() {
     assert!(error.contains("`global` or `local`"), "{error}");
     assert_eq!(Scope::Local.label(), "Project");
     assert_eq!(Scope::Global.name(), "global");
+}
+
+/// The supervisor is gone. A settings file that still configures it loads,
+/// the keys come out of the file they were in, and the notice says once
+/// where the job went.
+#[test]
+fn the_supervisors_settings_are_retired_with_one_notice() {
+    let temp = Temp::new("retire-supervisor");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[supervisor]\nenabled = true\nevery = 4\nmodel = \"watcher\"\n\n[decisions]\nsupervision_above = 0.9\n",
+    );
+    let loaded = store.load(None).expect("a retired key never stops a load");
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(notices.len(), 4, "{notices:?}");
+    assert!(
+        notices
+            .iter()
+            .all(|notice| notice.contains("the supervisor is gone")),
+        "{notices:?}"
+    );
+    let saved = read(&store.path(Scope::Global));
+    assert!(!saved.contains("supervis"), "{saved}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}
+
+/// The effort the model chooses for itself was saved as `default`; it is
+/// `auto` now. A saved word is read as `auto`, rewritten in its file, and
+/// said once.
+#[test]
+fn a_saved_default_effort_becomes_auto() {
+    let temp = Temp::new("migrate-effort");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[session]\neffort = \"default\"\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    assert_eq!(
+        string(&loaded.values, "session.effort").as_deref(),
+        Some("auto")
+    );
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(
+        notices,
+        [
+            "`session.effort = default` is now `\"auto\"`: the same setting under a clearer name. The model chooses its own effort."
+        ]
+    );
+    let saved = read(&store.path(Scope::Global));
+    assert!(!saved.contains("default"), "{saved}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
 }

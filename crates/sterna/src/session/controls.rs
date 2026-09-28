@@ -14,7 +14,7 @@ use crate::tui::{Panel, PanelRow, TierModels};
 fn cell_limit(limits: &crate::config::Limits) -> String {
     match limits.cells {
         Some(cap) => format!("{cap} cells"),
-        None => "none".to_string(),
+        None => "no limit".to_string(),
     }
 }
 
@@ -698,7 +698,7 @@ fn key_form(provider: &str) -> crate::tui::Form {
     let form = Form::new(
         format!("Sign in › API key · {provider}"),
         format!(
-            "Paste your {provider} key below. It goes straight to the gateway's key store and is never logged or written to a file."
+            "Paste your {provider} key below. The gateway keeps it in its credential file. Sterna never shows it, logs it or puts it in the conversation."
         ),
         vec![
             Field::new(
@@ -972,13 +972,14 @@ pub(super) fn key(session: &Session<'_>, provider: Option<&str>) {
     };
     let mut form = key_form(provider);
     loop {
-        let Some(value) = fill(session, form)
-            .and_then(|answers| answers.into_iter().next())
-            .filter(|value| !value.is_empty())
-        else {
-            session_println!("no key entered");
+        // A form closed without a key changed nothing, and says nothing.
+        let Some(value) = fill(session, form).and_then(|answers| answers.into_iter().next()) else {
             return;
         };
+        if value.is_empty() {
+            session_println!("No key was pasted, so nothing was stored for {provider}.");
+            return;
+        }
         if let Some(variable) = crate::gateway::store_credential(session.gateway, provider, &value)
         {
             session_println!("Stored the {variable} for {provider} in the gateway.");
@@ -1064,12 +1065,6 @@ pub(super) fn command(
             Ok(message) => session_println!("{message}"),
             Err(error) => session_println!("ERROR: {error}"),
         },
-        "handlers" => {
-            if argument.is_some() {
-                session_println!("No active task; handlers are released when its task ends.");
-            }
-            show(session, tui::handlers_panel(&transcript.notebook.handlers));
-        }
         "effort" => {
             if let Some(value) = argument {
                 if let Some(effort) = wire::Effort::parse(value) {
@@ -1079,10 +1074,10 @@ pub(super) fn command(
                     }
                     session_println!("{}", effort.now());
                 } else {
-                    session_println!("Use /effort default|low|medium|high|xhigh|max");
+                    session_println!("Use /effort auto|low|medium|high|xhigh|max");
                 }
             } else {
-                const LADDER: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+                const LADDER: [&str; 6] = ["auto", "low", "medium", "high", "xhigh", "max"];
                 let rows = LADDER
                     .iter()
                     .map(|value| PanelRow::command(value.to_string(), format!("/effort {value}")))
@@ -1122,54 +1117,7 @@ pub(super) fn command(
                 ),
             }
         }
-        "handles" => {
-            let table = transcript
-                .notebook
-                .cells
-                .last()
-                .and_then(|cell| cell.table.as_deref())
-                .unwrap_or("No handles recorded yet.");
-            show(session, Panel::text("Last handle preview", table));
-        }
-        "budget" => {
-            let used = transcript
-                .notebook
-                .tokens
-                .as_ref()
-                .map(|tokens| tokens.used)
-                .unwrap_or(0);
-            show(
-                session,
-                Panel::text(
-                    "Task spend",
-                    format!(
-                        "Last task: {used} cumulative tokens\nToken spend is telemetry and has no cap.\nCell limit: {}\nConfigure runtime limits in .sterna/config.toml for the next session.",
-                        cell_limit(&session.config().limits)
-                    ),
-                ),
-            );
-        }
-        "context" => {
-            let c = &transcript.conversation;
-            let estimated = estimate_request_tokens(c, &session.model.borrow());
-            let bytes: usize = c.messages.iter().map(|m| message_text(m).len()).sum();
-            let measured = measured_context(transcript.notebook.context);
-            show(
-                session,
-                Panel::text(
-                    "Context",
-                    format!(
-                        "{} messages · {} cells\n{}\nSystem: {} bytes\nMessages: {} bytes\nNext request: ~{} tokens (estimate)\nTask spend: cumulative telemetry, no cap\nContext is retained in the rollout; no model call was made.",
-                        c.messages.len(),
-                        transcript.notebook.cells.len(),
-                        measured,
-                        c.system.len(),
-                        bytes,
-                        estimated
-                    ),
-                ),
-            );
-        }
+        "context" => show(session, context_sheet(&context_parts(session, transcript))),
         "config" => {
             let args = argument
                 .unwrap_or("")
@@ -1203,107 +1151,19 @@ pub(super) fn command(
             super::resume::panel(&session.project.root, session.interrupt.session.as_str()),
         ),
         "status" => {
-            // The same facts the chips show, named the way they name them.
-            let config = session.config();
-            let (helpers_on, subagents) = tier_status(&config);
-            let model = session.model.borrow().clone();
-            let effort = session.effort.get();
-            let sent = effort.sent_for(&model);
-            let mut lines = vec![
-                format!("Model: {model}"),
-                match session
-                    .level
-                    .as_ref()
-                    .map(crate::permissions::LiveLevel::level)
-                {
-                    Some(level) => format!("Sandbox: {} · {}", level.label(), level.sentence()),
-                    None => "Sandbox: unknown".to_string(),
-                },
-                if sent == effort {
-                    format!("Effort: {}", effort.name())
-                } else {
-                    format!("Effort: {} (sent as {})", effort.name(), sent.name())
-                },
-                format!(
-                    "Helpers: {}",
-                    match (helpers_on, config.helpers.model.as_deref()) {
-                        (true, Some(helper)) => format!("on · {helper}"),
-                        _ if config.helpers.enabled => "on, but no helper model chosen".into(),
-                        _ => "off".into(),
-                    }
-                ),
-                format!("Subagents: {subagents}"),
-                format!("Project: {}", session.project.root.display()),
-                format!(
-                    "Rules: {} path rules · {} pre-approved commands · network {}",
-                    session.profile.rule_count(),
-                    session.profile.pre_approved().len(),
-                    if session.profile.grants_network() {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
-                format!("Web: {}", config.web.describe()),
-                format!(
-                    "Cell limit: {} · {} seconds each · response {} bytes",
-                    cell_limit(&config.limits),
-                    config.limits.cell_wall_clock_s,
-                    config.limits.response_bytes
-                ),
-                format!(
-                    "Supervisor: {}",
-                    config.supervisor.model.as_deref().unwrap_or("off")
-                ),
-                format!(
-                    "Helper effort: find {} · reduce {} · check {}",
-                    config.helpers.effort.find.name(),
-                    config.helpers.effort.reduce.name(),
-                    config.helpers.effort.check.name()
-                ),
-            ];
-            lines.push("Change any of these in Settings (F2).".into());
-            drop(config);
-            show(session, Panel::text("Session", lines.join("\n")));
-        }
-        "supervisor" => {
-            let latest = match transcript.notebook.supervisor.as_ref() {
-                Some(SupervisorStatus::Nudged(reason)) => format!("nudged: {reason}"),
-                Some(SupervisorStatus::LookedNoNudge) => "looked; no nudge".into(),
-                Some(SupervisorStatus::LookFailed(reason)) => format!("look failed: {reason}"),
-                Some(SupervisorStatus::Off) | None => "no look in this session".into(),
-            };
-            show(
-                session,
-                Panel::text(
-                    "Supervisor",
-                    format!(
-                        "State: {}\nModel: {}\nCadence: every {} cells\nLatest: {}\nConfigure [supervisor] in .sterna/config.toml for the next session.",
-                        if session.config().supervisor.enabled
-                            && session.config().supervisor.model.is_some()
-                        {
-                            "active"
-                        } else {
-                            "off"
-                        },
-                        session
-                            .config()
-                            .supervisor
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "not configured".to_string()),
-                        session.config().supervisor.every,
-                        latest
-                    ),
-                ),
-            );
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+            let latest = super::usage::latest();
+            super::usage::refresh_in_background(session.gateway);
+            show(session, session_sheet(session, latest.as_ref(), now));
         }
         "rollback" => rollback(session, argument, &mut transcript.notebook),
         "permissions" => match permissions(session, argument) {
             Ok(text) => show(session, Panel::text("Permissions", text)),
             Err(error) => session_println!("ERROR: {error}"),
         },
-        "models" | "entitlements" => {
+        "models" => {
             models(session);
         }
         // Each of these can finish a setup step, so the opening chip that
@@ -1312,20 +1172,11 @@ pub(super) fn command(
             login(session, argument);
             super::setup::offer(session);
         }
-        "wizard" | "setup" => {
+        "wizard" => {
             super::setup::command(session, argument);
             super::setup::offer(session);
         }
         "pool" => pool(session, argument),
-        "usage" => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-            show(
-                session,
-                super::usage::panel(super::usage::read(session).as_ref(), now),
-            );
-        }
         "key" => {
             key(session, argument);
             super::setup::offer(session);
@@ -1369,21 +1220,121 @@ fn pool(session: &Session<'_>, argument: Option<&str>) {
     }
 }
 
+/// `/status`: the Session sheet. The facts the chips show, each row a way to
+/// change what it names, then how much of each subscription's limits is
+/// used -- one sheet, so there is no separate `/usage`.
+fn session_sheet(
+    session: &Session<'_>,
+    usage: Option<&(super::usage::Usage, i64)>,
+    now: i64,
+) -> Panel {
+    use crate::workbench::Action;
+    let config = session.config();
+    let (helpers_on, subagents) = tier_status(&config);
+    let model = session.model.borrow().clone();
+    let effort = session.effort.get();
+    let sent = effort.sent_for(&model);
+    let row = |label: &str, value: String| format!("{label:<14}{value}");
+    let mut rows = vec![
+        PanelRow::heading("This session"),
+        PanelRow::open(
+            row(
+                "Model",
+                if sent == effort {
+                    format!("{model} · effort {}", effort.name())
+                } else {
+                    format!(
+                        "{model} · effort {} (sent as {})",
+                        effort.name(),
+                        sent.name()
+                    )
+                },
+            ),
+            Action::Models,
+        ),
+        PanelRow::open(
+            row(
+                "Sandbox",
+                match session
+                    .level
+                    .as_ref()
+                    .map(crate::permissions::LiveLevel::level)
+                {
+                    Some(level) => format!("{} · {}", level.label(), level.sentence()),
+                    None => "unknown".to_string(),
+                },
+            ),
+            Action::Sandbox,
+        ),
+        PanelRow::open(
+            row(
+                "Helpers",
+                match (helpers_on, config.helpers.model.as_deref()) {
+                    (true, Some(helper)) => format!("on · {helper}"),
+                    _ if config.helpers.enabled => "on, but no helper model chosen".into(),
+                    _ => "off".into(),
+                },
+            ),
+            Action::Settings,
+        ),
+        PanelRow::open(row("Subagents", subagents), Action::Settings),
+        PanelRow::info(row("Project", session.project.root.display().to_string())),
+        PanelRow::info(row(
+            "Rules",
+            format!(
+                "{} · {} · commands reach {}",
+                counted(session.profile.rule_count(), "path rule"),
+                counted(session.profile.pre_approved().len(), "pre-approved command"),
+                if session.profile.grants_network() {
+                    "any host"
+                } else {
+                    "allowed hosts only"
+                }
+            ),
+        )),
+        PanelRow::info(row("Web tools", config.web.describe())),
+        PanelRow::info(row(
+            "Cells",
+            format!(
+                "{} · {} seconds each · results up to {} bytes",
+                cell_limit(&config.limits),
+                config.limits.cell_wall_clock_s,
+                config.limits.response_bytes
+            ),
+        )),
+        PanelRow::heading("Subscription limits"),
+    ];
+    rows.extend(super::usage::rows(usage, super::usage::failed(), now));
+    Panel::rows("Session", rows)
+}
+
+/// "1 path rule" or "3 path rules".
+fn counted(count: usize, thing: &str) -> String {
+    format!("{count} {thing}{}", if count == 1 { "" } else { "s" })
+}
+
 /// The rollback preview: what the rollback would change, a danger row that
 /// confirms it, and Cancel -- where the sheet opens, and what Esc does.
-fn rollback_panel(preview: &str) -> Panel {
-    let mut panel = Panel::text(
-        "Rollback preview · confirmation required",
-        format!("The latest file-changing cell affected:\n{preview}"),
+fn rollback_panel(preview: &str, cell: Option<usize>) -> Panel {
+    let cell = cell.map_or_else(
+        || "the latest cell".to_string(),
+        |cell| format!("cell {cell:03}"),
     );
-    panel.rows.push(PanelRow::danger(
-        "Confirm rollback",
-        crate::workbench::Action::Command("/rollback confirm".into()),
-    ));
+    let mut panel = Panel::text(
+        format!("Rollback › {cell}"),
+        format!(
+            "These files go back to how they were before {cell}. This cannot be undone.\n{preview}"
+        ),
+    );
+    // Cancel comes first, where the sheet opens.
+    panel.selected = panel.rows.len();
     panel
         .rows
         .push(PanelRow::command("Cancel", "/rollback cancel"));
-    panel.selected = panel.rows.len() - 1;
+    panel.rows.push(PanelRow::danger(
+        format!("Roll back {cell}"),
+        crate::workbench::Action::Command("/rollback confirm".into()),
+    ));
     panel.back = Some(crate::workbench::Action::Command("/rollback cancel".into()));
     panel
 }
@@ -1410,7 +1361,8 @@ fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::N
     match argument.filter(|value| !value.is_empty()) {
         None => {
             session.rollback_pending.set(Some(count));
-            show(session, rollback_panel(&plan.preview()));
+            let cell = session.rollbacks.borrow().last().map(|last| last.cell);
+            show(session, rollback_panel(&plan.preview(), cell));
         }
         Some("cancel") => {
             session.rollback_pending.set(None);
@@ -1476,22 +1428,141 @@ fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, 
     ))
 }
 
+/// What fills the next request, by kind, in tokens.
+struct ContextParts {
+    /// Sterna's own instructions to the model, without the project's.
+    system: u64,
+    /// The project's instruction files (`AGENTS.md`, `CLAUDE.md`, …).
+    instructions: u64,
+    /// The tool definitions and the request's own framing.
+    tools: u64,
+    conversation: u64,
+    messages: usize,
+    /// The model's window, when it is known.
+    cap: Option<u64>,
+    last: Option<crate::tui::ContextTokens>,
+}
+
+/// The next request as it would be sent now, measured part by part: the
+/// whole body is estimated once, and what is not the system prompt or the
+/// conversation is the tools and the framing around them.
+fn context_parts(session: &Session<'_>, transcript: &Transcript) -> ContextParts {
+    use crate::runtime::preview::estimate_tokens;
+    let c = &transcript.conversation;
+    let total = estimate_request_tokens(c, &session.model.borrow());
+    let system_all = estimate_tokens(&c.system) as u64;
+    let instructions = if session.config().limits.instructions_outline {
+        crate::project::instructions::root_outlined(session.profile)
+    } else {
+        crate::project::instructions::root(session.profile)
+    };
+    let instructions = if !instructions.trim().is_empty() && c.system.contains(instructions.trim())
+    {
+        (estimate_tokens(&instructions) as u64).min(system_all)
+    } else {
+        0
+    };
+    let conversation = c
+        .messages
+        .iter()
+        .map(|message| estimate_tokens(&message_text(message)) as u64)
+        .sum();
+    ContextParts {
+        system: system_all - instructions,
+        instructions,
+        tools: total.saturating_sub(system_all + conversation),
+        conversation,
+        messages: c.messages.len(),
+        cap: transcript.notebook.context.and_then(|context| context.cap),
+        last: transcript.notebook.context,
+    }
+}
+
+/// `/context`: each kind of thing in the next request, with a bar of the
+/// window it takes and its share, then the free space -- the way Claude
+/// Code's `/context` reads.
+fn context_sheet(parts: &ContextParts) -> Panel {
+    use crate::tui::status::compact_tokens;
+    const BAR: usize = 20;
+    let used = parts.system + parts.instructions + parts.tools + parts.conversation;
+    let whole = parts.cap.unwrap_or(used).max(1);
+    let conversation = format!(
+        "Conversation · {} message{}",
+        parts.messages,
+        if parts.messages == 1 { "" } else { "s" }
+    );
+    let mut kinds = vec![
+        ("System prompt", parts.system),
+        ("Project instructions", parts.instructions),
+        ("Tools and framing", parts.tools),
+        (conversation.as_str(), parts.conversation),
+    ];
+    if let Some(cap) = parts.cap {
+        kinds.push(("Free space", cap.saturating_sub(used)));
+    }
+    // One column for the labels, as wide as the longest and two more.
+    let column = kinds
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let line = |label: &str, tokens: u64| {
+        let share = tokens.min(whole) as f64 / whole as f64;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a share of 0..=1 times the bar's width"
+        )]
+        let filled = (share * BAR as f64).round() as usize;
+        format!(
+            "{label:<column$}{}{} {:>7} {:>4.0}%",
+            "█".repeat(filled),
+            "░".repeat(BAR - filled),
+            compact_tokens(tokens),
+            share * 100.0
+        )
+    };
+    let title = match parts.cap {
+        Some(cap) => format!(
+            "{} of {} tokens in the next request",
+            compact_tokens(used),
+            compact_tokens(cap)
+        ),
+        None => format!(
+            "{} tokens in the next request · the model's window size is not known",
+            compact_tokens(used)
+        ),
+    };
+    let mut rows = vec![PanelRow::heading(title)];
+    rows.extend(
+        kinds
+            .iter()
+            .map(|(label, tokens)| PanelRow::info(line(label, *tokens))),
+    );
+    rows.push(PanelRow::info(format!(
+        "Estimated from the request as it would be sent now. {}",
+        measured_context(parts.last)
+    )));
+    Panel::rows("Context", rows)
+}
+
 /// `/context`'s line for the request just sent: its size, against the
 /// window when the window is known, and who counted it.
 fn measured_context(context: Option<crate::tui::ContextTokens>) -> String {
     let Some(context) = context else {
-        return "Current request context: no request yet".into();
+        return "No request has been sent yet.".into();
     };
     match context.cap {
         Some(cap) => format!(
-            "Current request context: {}/{} tokens ({}%), {}",
+            "The last request: {}/{} tokens ({}%), {}.",
             context.used,
             cap,
             context.used.min(cap).saturating_mul(100) / cap.max(1),
             context.counted.by()
         ),
         None => format!(
-            "Current request context: {} tokens, {}; the model's window size is not known",
+            "The last request: {} tokens, {}.",
             context.used,
             context.counted.by()
         ),
@@ -1500,6 +1571,58 @@ fn measured_context(context: Option<crate::tui::ContextTokens>) -> String {
 
 #[cfg(test)]
 pub(super) mod tests {
+
+    /// `/context` names each kind of thing in the next request with its
+    /// share of the window, and the free space the window still has.
+    #[test]
+    fn the_context_sheet_breaks_the_request_down_by_kind() {
+        let parts = super::ContextParts {
+            system: 3_000,
+            instructions: 1_000,
+            tools: 2_000,
+            conversation: 14_000,
+            messages: 9,
+            cap: Some(200_000),
+            last: None,
+        };
+        let panel = super::context_sheet(&parts);
+        let text: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(
+            text[0], "20.0k of 200.0k tokens in the next request",
+            "{text:#?}"
+        );
+        for (label, share) in [
+            ("System prompt", "2%"),
+            ("Project instructions", "0%"),
+            ("Tools and framing", "1%"),
+            ("Conversation · 9 messages", "7%"),
+            ("Free space", "90%"),
+        ] {
+            let row = text
+                .iter()
+                .find(|row| row.starts_with(label))
+                .unwrap_or_else(|| panic!("{label}: {text:#?}"));
+            assert!(row.ends_with(share), "{row}");
+        }
+        let unknown = super::context_sheet(&super::ContextParts { cap: None, ..parts });
+        assert!(
+            unknown.rows[0].text.contains("window size is not known"),
+            "{:?}",
+            unknown.rows[0].text
+        );
+        assert!(
+            !unknown
+                .rows
+                .iter()
+                .any(|row| row.text.starts_with("Free space"))
+        );
+        // The bars start in one column, whatever the labels' lengths.
+        let starts: std::collections::BTreeSet<usize> = text[1..6]
+            .iter()
+            .map(|row| row.chars().position(|c| c == '█' || c == '░').unwrap())
+            .collect();
+        assert_eq!(starts.len(), 1, "{text:#?}");
+    }
 
     #[test]
     fn the_context_line_says_who_counted_and_what_is_not_known() {
@@ -1512,7 +1635,7 @@ pub(super) mod tests {
         }));
         assert_eq!(
             line,
-            "Current request context: 12 tokens, counted by the provider; the model's window size is not known"
+            "The last request: 12 tokens, counted by the provider."
         );
         let line = super::measured_context(Some(ContextTokens {
             used: 50,
@@ -1520,10 +1643,7 @@ pub(super) mod tests {
             cap_source: crate::models::WindowSource::Unknown,
             counted: Counted::Estimated,
         }));
-        assert_eq!(
-            line,
-            "Current request context: 50/200 tokens (25%), estimated"
-        );
+        assert_eq!(line, "The last request: 50/200 tokens (25%), estimated.");
     }
 
     #[test]
@@ -1661,7 +1781,14 @@ pub(super) mod tests {
     /// Cancel, confirming is a danger row, and Esc cancels too.
     #[test]
     fn the_rollback_preview_starts_on_cancel() {
-        let panel = rollback_panel("a.txt: restored");
+        let panel = rollback_panel("a.txt: restored", Some(1));
+        assert_eq!(panel.title, "Rollback › cell 001");
+        let cancel = panel.rows.iter().position(|row| row.text == "Cancel");
+        let roll = panel
+            .rows
+            .iter()
+            .position(|row| row.text == "Roll back cell 001");
+        assert!(cancel < roll, "Cancel comes first");
         assert_eq!(
             panel.rows[panel.selected].command_line(),
             Some("/rollback cancel")
@@ -1669,7 +1796,7 @@ pub(super) mod tests {
         let confirm = panel
             .rows
             .iter()
-            .find(|row| row.text == "Confirm rollback")
+            .find(|row| row.text == "Roll back cell 001")
             .unwrap();
         assert_eq!(confirm.kind, crate::workbench::ItemKind::Danger);
         assert_eq!(
@@ -1763,7 +1890,7 @@ pub(super) mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &RefCell::new(config),
@@ -1836,7 +1963,7 @@ pub(super) mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &config,
@@ -2033,12 +2160,7 @@ pub(super) mod tests {
             );
             assert_eq!(SternaConfig::load(&root).unwrap(), base);
             let reloaded = SternaConfig::load_profile(&root, Some("review")).unwrap();
-            let mut live = session.config().clone();
-            // Supervisor fallback is resolved at startup, not silently changed
-            // by a different tier's live model choice.
-            assert_eq!(live.supervisor.model.as_deref(), Some("review-helper"));
-            assert_eq!(reloaded.supervisor.model.as_deref(), Some("base-helper"));
-            live.supervisor = reloaded.supervisor.clone();
+            let live = session.config().clone();
             assert_eq!(reloaded, live);
         });
         fs::remove_dir_all(root).unwrap();

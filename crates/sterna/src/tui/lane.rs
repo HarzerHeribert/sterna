@@ -43,9 +43,8 @@ pub(crate) fn helper_in_flight(record: &HelperRecord) -> bool {
 
 /// Whether one call is worth a lane of its own.
 ///
-/// **A failure always is, however short.** `supervisor.rs` shipped for weeks
-/// rendering a permanently failing look as a healthy one; a helper that is
-/// not working must never be quieter than one that is.
+/// **A failure always is, however short.** A helper that is not working must
+/// never be quieter than one that is.
 ///
 /// **A call still in flight always is too.** The floor is measured on a
 /// duration a running call does not have yet, and what it forbids is a lane

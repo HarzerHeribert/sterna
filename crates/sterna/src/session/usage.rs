@@ -1,25 +1,24 @@
 //! What each subscription has used of its limits, as the gateway reads it
 //! from the provider (`inference-gateway subscriptions usage --json`): the
-//! `/usage` panel, and one line at session start for a window that is
+//! Session sheet's limits (`/status`), and one line at session start for a window that is
 //! nearly spent. Figures are the provider's; a window it does not report is
 //! not shown, and an account it would not answer for says why.
 
 use serde::Deserialize;
 
-use super::Session;
-use crate::tui::{self, Panel};
+use crate::tui::{self, PanelRow};
 
 /// A window at or above this share used is said at session start.
 pub(super) const WARN_AT_PERCENT: f64 = 80.0;
 const BAR_WIDTH: usize = 20;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct Usage {
     #[serde(default)]
     pub accounts: Vec<AccountUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct AccountUsage {
     pub account: String,
     pub plan: Option<String>,
@@ -31,45 +30,69 @@ pub(super) struct AccountUsage {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct Window {
     pub name: String,
     pub used_percent: f64,
     pub resets_at: Option<String>,
 }
 
-/// The gateway's reading, or `None` when it could not be run.
-pub(super) fn read(session: &Session<'_>) -> Option<Usage> {
-    read_from(session.gateway)
-}
-
+/// The gateway's reading, or `None` when it could not be run. It is kept as
+/// the last reading, with the time it was taken.
 fn read_from(gateway: &crate::gateway::Gateway) -> Option<Usage> {
-    let bytes = gateway.run(&["subscriptions", "usage", "--json"], None)?;
-    let usage: Usage = serde_json::from_slice(&bytes).ok()?;
+    let usage = gateway
+        .run(&["subscriptions", "usage", "--json"], None)
+        .and_then(|bytes| serde_json::from_slice::<Usage>(&bytes).ok());
+    FAILED.store(usage.is_none(), std::sync::atomic::Ordering::Relaxed);
+    let usage = usage?;
     if let Ok(mut latest) = LATEST.lock() {
-        *latest = Some(
-            usage
-                .accounts
-                .iter()
-                .map(|a| (a.account.clone(), summary(a)))
-                .collect(),
-        );
+        *latest = Some((usage.clone(), now_unix()));
     }
     Some(usage)
 }
 
-/// The last reading's one-line summary per account, for the model picker:
-/// the picker never waits on the providers, it shows what was last read.
-static LATEST: std::sync::Mutex<Option<Vec<(String, String)>>> = std::sync::Mutex::new(None);
+/// Whether the last time the gateway was asked, it could not answer.
+static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the gateway could not answer the last time it was asked.
+pub(super) fn failed() -> bool {
+    FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// The last reading and when it was taken. **The Session sheet never waits
+/// on the providers**: it shows this, and asks again behind it.
+pub(super) fn latest() -> Option<(Usage, i64)> {
+    LATEST.lock().ok()?.clone()
+}
+
+/// Reads usage again on its own thread, so the next look is fresh.
+pub(super) fn refresh_in_background(gateway: &crate::gateway::Gateway) {
+    let gateway = gateway.clone();
+    std::thread::spawn(move || {
+        let _ = read_from(&gateway);
+    });
+}
+
+/// The last reading and the time it was taken: the model picker and the
+/// Session sheet never wait on the providers, they show what was last read.
+static LATEST: std::sync::Mutex<Option<(Usage, i64)>> = std::sync::Mutex::new(None);
 
 /// `Max 20x · 5h 4% · week 16%`, from the last reading, when there was one.
 pub(super) fn latest_summary(account: &str) -> Option<String> {
     let latest = LATEST.lock().ok()?;
-    let lines: Vec<&str> = latest
+    let lines: Vec<String> = latest
         .as_ref()?
+        .0
+        .accounts
         .iter()
-        .filter(|(name, _)| name == account)
-        .map(|(_, line)| line.as_str())
+        .filter(|a| a.account == account)
+        .map(summary)
         .collect();
     (!lines.is_empty()).then(|| lines.join(" | "))
 }
@@ -99,11 +122,8 @@ pub(super) fn check_in_background(gateway: &crate::gateway::Gateway) {
         let Some(usage) = read_from(&gateway) else {
             return;
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
         if let Ok(mut held) = WARNINGS.lock() {
-            held.extend(warnings(&usage, now));
+            held.extend(warnings(&usage, now_unix()));
         }
     });
 }
@@ -116,19 +136,21 @@ pub(super) fn take_warnings() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `/usage`: every subscription with a bar per window.
-pub(super) fn panel(usage: Option<&Usage>, now_unix: i64) -> Panel {
-    let Some(usage) = usage else {
-        return Panel::text(
-            "Usage",
-            "The gateway could not be asked for subscription usage.",
-        );
+/// The Session sheet's limits: every subscription with a bar per window,
+/// from the reading taken `read_at`.
+pub(super) fn rows(latest: Option<&(Usage, i64)>, failed: bool, now_unix: i64) -> Vec<PanelRow> {
+    let Some((usage, read_at)) = latest else {
+        return vec![PanelRow::info(if failed {
+            "The gateway could not be asked for subscription usage."
+        } else {
+            "Not read yet: the gateway is being asked now. Open this again in a moment."
+        })];
     };
     if usage.accounts.is_empty() {
-        return Panel::text(
-            "Usage",
-            "No subscription account is configured; /login connects one.",
-        );
+        return vec![PanelRow::opens(
+            "No subscription is signed in · sign in",
+            "/login",
+        )];
     }
     let mut rows = Vec::new();
     for account in &usage.accounts {
@@ -152,7 +174,11 @@ pub(super) fn panel(usage: Option<&Usage>, now_unix: i64) -> Panel {
             rows.push(tui::PanelRow::info("  a limit is reached now".to_string()));
         }
     }
-    Panel::rows("Usage", rows)
+    rows.push(PanelRow::info(format!(
+        "Read {} ago; this sheet asks again each time it opens.",
+        span(now_unix - read_at)
+    )));
+    rows
 }
 
 /// `  week   ████████████████░░░░  84%  resets in 2d 22h`
@@ -187,7 +213,7 @@ pub(super) fn warnings(usage: &Usage, now_unix: i64) -> Vec<String> {
                     .map(|at| format!(", resets in {}", span(at - now_unix)))
                     .unwrap_or_default();
                 lines.push(format!(
-                    "usage: {} {} is {:.0}% used{resets} — /usage shows every limit",
+                    "usage: {} {} is {:.0}% used{resets} — /status shows every limit",
                     account.account, window.name, window.used_percent
                 ));
             }
@@ -252,6 +278,43 @@ fn parse_rfc3339(text: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// The Session sheet never waits: before the first reading it says the
+    /// gateway is being asked, after a failed one it says so, and a reading
+    /// says how old it is.
+    #[test]
+    fn the_limits_say_what_is_known_and_how_old_it_is() {
+        let text = |rows: Vec<PanelRow>| rows.into_iter().map(|row| row.text).collect::<Vec<_>>();
+        assert_eq!(
+            text(rows(None, false, 0)),
+            ["Not read yet: the gateway is being asked now. Open this again in a moment."]
+        );
+        assert_eq!(
+            text(rows(None, true, 0)),
+            ["The gateway could not be asked for subscription usage."]
+        );
+        let usage = Usage {
+            accounts: vec![AccountUsage {
+                account: "claude".into(),
+                plan: Some("Max 20x".into()),
+                email: None,
+                windows: vec![Window {
+                    name: "week".into(),
+                    used_percent: 16.0,
+                    resets_at: None,
+                }],
+                limited: false,
+                error: None,
+            }],
+        };
+        let shown = text(rows(Some(&(usage, 1_000)), false, 1_000 + 180));
+        assert_eq!(shown[0], "claude — Max 20x");
+        assert!(shown[1].contains("16%"), "{shown:?}");
+        assert!(
+            shown.last().unwrap().starts_with("Read 3m ago"),
+            "{shown:?}"
+        );
+    }
+
     #[test]
     fn a_window_reads_as_a_bar_a_share_and_the_time_to_its_reset() {
         let now = parse_rfc3339("2026-09-23T07:16:00Z").unwrap();
@@ -288,7 +351,7 @@ mod tests {
         };
         assert_eq!(
             warnings(&usage, now),
-            vec!["usage: chatgpt week is 84% used, resets in 3d 2h — /usage shows every limit"]
+            vec!["usage: chatgpt week is 84% used, resets in 3d 2h — /status shows every limit"]
         );
     }
 }

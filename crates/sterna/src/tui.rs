@@ -180,7 +180,7 @@ pub struct ScreenState {
     /// sheet changes it from this thread while a task runs.
     pub level: crate::permissions::LiveLevel,
     /// The approval gate's memory: every call answered for the whole
-    /// session, which the Ask sheet lists and can forget.
+    /// session, which the Sandbox sheet lists and can forget.
     pub memory: Option<crate::approval::Memory>,
     /// The live list of hosts the session's network proxy lets through,
     /// shared with it: the hosts sheet changes it from this thread. `None`
@@ -524,14 +524,9 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 match command {
                     BuiltIn::Model => "set the parent, helper or subagent model",
                     BuiltIn::Models => "browse models by agent, provider or intelligence",
-                    BuiltIn::Entitlements => "inspect available entitlements",
                     BuiltIn::Login => "sign in: a subscription, an API key or your own endpoint",
                     BuiltIn::Setup => "set Sterna up: sign in, models for each workload, Jev",
-                    BuiltIn::Usage => "how much of each subscription's limits is used",
-                    BuiltIn::Handles => "inspect runtime handles",
-                    BuiltIn::Supervisor => "inspect supervisor settings",
-                    BuiltIn::Rollback => "roll back to a checkpoint",
-                    BuiltIn::Budget => "inspect cumulative task spend",
+                    BuiltIn::Rollback => "undo the files the newest cell changed",
                     BuiltIn::Memory => "read or save project memory",
                     BuiltIn::Exit => "end the session, printing its resume id",
                 },
@@ -544,22 +539,10 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect the last cell before/after diff",
                 ),
                 (
-                    "/activity".to_string(),
-                    "inspect local notices without sending to the model",
-                ),
-                (
                     "/subagents".to_string(),
                     "configure explicit favorite slots · on|off|SLOT MODEL [EFFORT]",
                 ),
-                (
-                    "/handlers".to_string(),
-                    "inspect standing handlers · /handlers off <name>",
-                ),
                 ("/help".to_string(), "show available commands"),
-                (
-                    "/sidebar".to_string(),
-                    "auto, show or hide the sidebar · Ctrl-B",
-                ),
                 ("/theme".to_string(), "choose a bird or a classic palette"),
                 (
                     "/telemetry".to_string(),
@@ -582,13 +565,16 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 (
                     "/effort".to_string(),
-                    "default, low, medium, high, xhigh or max",
+                    "auto, low, medium, high, xhigh or max",
                 ),
                 (
                     "/context".to_string(),
-                    "inspect current context and token usage",
+                    "what fills the context window, by kind",
                 ),
-                ("/status".to_string(), "inspect session status"),
+                (
+                    "/status".to_string(),
+                    "this session: models, sandbox, and each subscription's limits",
+                ),
                 (
                     "/resume".to_string(),
                     "go back to an earlier session in this folder",
@@ -836,27 +822,9 @@ pub struct ContextTokens {
     pub counted: Counted,
 }
 
-/// The supervisor's own sidebar line -- `docs/supervisor.md`
-/// and §5: a nudge's own reason, a look that ran and did not intervene, a look
-/// that produced no answer at all, or off because no model is configured or
-/// the switch is off.
-///
-/// [`SupervisorStatus::LookFailed`] is its own state because §3 records an
-/// unanswered look **as such**: it answers *not intervene* like a healthy
-/// look, so folding the two together makes a supervisor that fails every
-/// request -- and spends one every `every` cells -- indistinguishable from one
-/// that is watching.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SupervisorStatus {
-    Nudged(String),
-    LookedNoNudge,
-    LookFailed(String),
-    Off,
-}
-
 /// What the session knows about the conversation beyond the messages
-/// themselves: one view per assistant cell, in cell order, the task's token
-/// total, and the supervisor's latest status.
+/// themselves: one view per assistant cell, in cell order, and the task's
+/// token total.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Notebook {
     /// The pushed Scout running before the task model's first turn. This is
@@ -874,42 +842,10 @@ pub struct Notebook {
     pub cells: Vec<CellView>,
     pub tokens: Option<TaskTokens>,
     pub context: Option<ContextTokens>,
-    pub supervisor: Option<SupervisorStatus>,
     /// The decision model's summary line for this task
     /// (`decide::summary_line`), `None` only when no decision model is
     /// configured at all.
     pub decision: Option<String>,
-}
-
-pub fn handlers_panel(handlers: &[crate::runtime::handlers::HandlerInfo]) -> Panel {
-    let mut panel = Panel::text(
-        "Standing handlers",
-        if handlers.is_empty() {
-            "No handlers in this task."
-        } else {
-            "Task-scoped · turn one off here or with /handlers off <name>"
-        },
-    );
-    for h in handlers {
-        let text = format!(
-            "{} · {} · {} runs · {} drained{}",
-            h.name,
-            if h.active { "active" } else { "stale" },
-            h.runs,
-            h.drained,
-            h.error
-                .as_ref()
-                .map(|e| format!(" · {e}"))
-                .unwrap_or_default()
-        );
-        let row = if h.active {
-            PanelRow::run(text, crate::workbench::Action::HandlerOff(h.name.clone()))
-        } else {
-            PanelRow::info(text)
-        };
-        panel.rows.push(row.with_id(format!("handler:{}", h.name)));
-    }
-    panel
 }
 
 impl Notebook {
@@ -950,10 +886,11 @@ impl Notebook {
     /// The newest cell that called a helper: what F5 and the sidebar's
     /// helper rows show when no card is selected.
     pub fn last_with_helpers(&self) -> Option<usize> {
-        self.program_cells()
-            .rev()
-            .find(|(_, view)| !view.helpers.is_empty())
-            .map(|(cell, _)| cell)
+        // A running cell counts: its helpers are working now.
+        self.cells
+            .iter()
+            .rposition(|view| !view.helpers.is_empty())
+            .map(|index| index + 1)
     }
 
     /// The program cell before or after `from`; the newest one from none.
@@ -2189,15 +2126,4 @@ fn known_sidebar_lines(served_by: &ServedBy) -> Vec<Line<'static>> {
         (None, None) => {}
     }
     lines
-}
-
-/// §4 and §5's fixed lines, and nothing else -- the sidebar shows this one
-/// line under the task-spend line, whatever `served_by` says.
-fn supervisor_line(status: &SupervisorStatus) -> String {
-    match status {
-        SupervisorStatus::Nudged(reason) => format!("supervisor: {reason}"),
-        SupervisorStatus::LookedNoNudge => "supervisor: looked, no nudge".to_string(),
-        SupervisorStatus::LookFailed(reason) => format!("supervisor: FAILED {reason}"),
-        SupervisorStatus::Off => "supervisor: off (no model)".to_string(),
-    }
 }

@@ -6,15 +6,24 @@ use crate::tui::ScreenState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const CATEGORIES: [&str; 7] = [
+/// Five sections, in the order a person reaches for them.
+pub const CATEGORIES: [&str; 5] = [
     "Everyday",
-    "Display",
+    "Models",
     "Little helpers",
-    "Models & accounts",
-    "Subagents",
+    "Display",
     "Advanced",
-    "Tuning",
 ];
+
+/// Each section's place in [`CATEGORIES`], by name, for every route that
+/// opens the sheet on one.
+pub mod section {
+    pub const EVERYDAY: usize = 0;
+    pub const MODELS: usize = 1;
+    pub const HELPERS: usize = 2;
+    pub const DISPLAY: usize = 3;
+    pub const ADVANCED: usize = 4;
+}
 
 /// The first category, and the only one chosen by how often a person reaches
 /// for the thing rather than by which table it lives under.
@@ -33,6 +42,8 @@ const EVERYDAY: [&str; 6] = [
     "ui.theme",
     "ui.motion",
 ];
+/// What the little helpers do, and how hard each job works. Every other
+/// helper key is a number or a switch tuned rarely, in Advanced.
 const HELPERS: [&str; 8] = [
     "helpers.enabled",
     "helpers.completion",
@@ -43,7 +54,17 @@ const HELPERS: [&str; 8] = [
     "helpers.effort.reduce",
     "helpers.effort.check",
 ];
-const MODELS: [&str; 2] = ["model.parent", "helpers.model"];
+
+/// Which model does which job, and how hard Main works: the models, their
+/// effort, whether subagents run, and Jev.
+const MODELS: [&str; 6] = [
+    "model.parent",
+    "session.effort",
+    "helpers.model",
+    "agents.mode",
+    "decisions.model",
+    "decisions.mode",
+];
 
 /// The category a key is listed under. Everyday repeats keys on purpose;
 /// no other category repeats one, and Advanced holds only what no other
@@ -51,20 +72,15 @@ const MODELS: [&str; 2] = ["model.parent", "helpers.model"];
 pub(super) fn category_of(spec: &SettingSpec) -> usize {
     let k = spec.key;
     if k.starts_with("ui.") {
-        1
-    } else if HELPERS.contains(&k) {
-        2
+        section::DISPLAY
     } else if MODELS.contains(&k) {
-        3
-    } else if k.starts_with("agents.") && !k.ends_with(".effort") {
-        4
+        section::MODELS
+    } else if HELPERS.contains(&k) {
+        section::HELPERS
     } else if EVERYDAY.contains(&k) {
-        0
-    } else if spec.kind == Kind::Float {
-        // Confidence thresholds: numbers a person tunes, rarely, together.
-        6
+        section::EVERYDAY
     } else {
-        5
+        section::ADVANCED
     }
 }
 pub struct Preferences {
@@ -172,7 +188,7 @@ impl Preferences {
             // A key the parser still accepts so an existing project starts,
             // and that does nothing, is not offered; nor is Sterna's own
             // bookkeeping.
-            .filter(|spec| spec.key != "limits.task_tokens" && !crate::settings::hidden(spec.key))
+            .filter(|spec| !crate::settings::hidden(spec.key))
             .filter(|spec| {
                 if !self.query.is_empty() {
                     let q = self.query.to_lowercase();
@@ -181,23 +197,31 @@ impl Preferences {
                         .contains(&q);
                 }
                 match self.category {
-                    0 => EVERYDAY.contains(&spec.key),
-                    // The favourites and the pinned model are chosen in the
-                    // picker; here is only whether subagents run at all.
-                    4 => spec.key == "agents.mode",
+                    section::EVERYDAY => EVERYDAY.contains(&spec.key),
                     category => category_of(spec) == category,
                 }
             })
             .collect();
-        // The everyday list is in the order a person reaches for the things,
-        // which is not the order the registry happens to declare them in.
-        if self.query.is_empty() && self.category == 0 {
-            found.sort_by_key(|spec| {
-                EVERYDAY
-                    .iter()
-                    .position(|k| *k == spec.key)
-                    .unwrap_or(usize::MAX)
-            });
+        // Everyday and Models are in the order a person reaches for the
+        // things, which is not the order the registry declares them in.
+        // Advanced keeps the confidence thresholds together, last.
+        if self.query.is_empty() {
+            match self.category {
+                section::EVERYDAY => found.sort_by_key(|spec| {
+                    EVERYDAY
+                        .iter()
+                        .position(|k| *k == spec.key)
+                        .unwrap_or(usize::MAX)
+                }),
+                section::MODELS => found.sort_by_key(|spec| {
+                    MODELS
+                        .iter()
+                        .position(|k| *k == spec.key)
+                        .unwrap_or(usize::MAX)
+                }),
+                section::ADVANCED => found.sort_by_key(|spec| spec.kind == Kind::Float),
+                _ => {}
+            }
         }
         found
     }
@@ -386,7 +410,7 @@ pub fn restore(
 }
 
 /// Puts the saved presentation keys in force on the screen. Only the keys
-/// named: an unrelated save must not erase a live /motion or /sidebar.
+/// named: an unrelated save must not erase a live /motion or Ctrl-B.
 fn apply(s: &mut ScreenState, values: &toml::Value, keys: &[&str]) {
     let mut resolved = ScreenState::default();
     crate::settings_session::presentation(&mut resolved, values);
@@ -453,6 +477,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     p.category = sheet.section.min(CATEGORIES.len() - 1);
     p.query = sheet.query.clone().unwrap_or_default();
     sheet.title = "Settings".into();
+    sheet.card = true;
     sheet.crumbs = vec![CATEGORIES[p.category].to_string()];
     sheet.tools = vec![
         (
@@ -469,7 +494,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     sheet.total = Some(
         crate::settings::specs()
             .iter()
-            .filter(|spec| spec.key != "limits.task_tokens" && !crate::settings::hidden(spec.key))
+            .filter(|spec| !crate::settings::hidden(spec.key))
             .count(),
     );
     if sheet.notice.is_empty() && !p.notice.is_empty() {
@@ -482,20 +507,31 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     // the rows that wait for the next session say so themselves.
     let mut items = vec![
         Item::info(format!(
-            "{} · choices save themselves; most apply now",
+            "{} · choices save themselves",
             saved_in(&p.path, p.scope)
         ))
         .tone(super::Tone::Muted),
     ];
     for (i, spec) in rows.iter().enumerate() {
+        // Advanced ends with the confidence thresholds, together under
+        // their own heading: numbers a person tunes rarely, and together.
+        if p.category == section::ADVANCED
+            && p.query.is_empty()
+            && spec.kind == Kind::Float
+            && (i == 0 || rows[i - 1].kind != Kind::Float)
+        {
+            items.push(Item::heading("Confidence thresholds"));
+        }
         let id = format!("setting:{}", spec.key);
         let effective = p.effective(spec.key);
+        // The row is one line; the card says what it means, when a change
+        // applies and where the value comes from.
         let when = if crate::settings::applies_now(spec.key) {
-            ""
+            "applies now"
         } else {
-            " · next session"
+            "from the next session"
         };
-        let mut detail = format!("{}{when}", spec.description);
+        let mut detail = spec.description.to_string();
         // Editing Global under a project that sets the key changes nothing
         // here, and the row says so before the save rather than after.
         if p.scope == Scope::Global && p.origin(spec.key) == "project" {
@@ -505,10 +541,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             );
         }
         let is_focused = focused.as_deref() == Some(id.as_str());
-        if is_focused {
-            detail.push_str(" · ");
-            detail.push_str(&whose(p, spec.key, &effective));
-        }
+        let source = whose(p, spec.key, &effective);
         let options = Preferences::choices(spec);
         let editing = p
             .editing
@@ -528,7 +561,17 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             } else {
                 None
             };
-        let item = if let Some(value) = editing {
+        // **One editor for the proxy's lists**: the Hosts sheet, which says
+        // when a change applies. A second editor here said "next session"
+        // while the sheet said "next command" for the same list.
+        let item = if matches!(spec.key, "sandbox.hosts" | "sandbox.ecosystems") {
+            Item::open(
+                id,
+                format!("{} · {}", spec.label, word(spec.key, &effective)),
+                Action::Hosts,
+            )
+            .detail("Opens the Hosts sheet, which says when a change applies")
+        } else if let Some(value) = editing {
             Item::field(
                 id,
                 spec.label,
@@ -582,7 +625,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             }
             Item::value(id, spec.label, values, current).detail(detail)
         };
-        items.push(item.disabled(disabled));
+        items.push(item.card(when, source).disabled(disabled));
         if spec.key == "helpers.enabled"
             && effective == "true"
             && p.effective("helpers.model") == "unset"
@@ -591,7 +634,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                 Item::run(
                     "setting:helpers.enabled:choose",
                     "choose a helper model",
-                    Action::SettingsAt(3),
+                    Action::SettingsAt(section::MODELS),
                 )
                 .inline(),
             );
@@ -609,11 +652,18 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             );
         }
     }
-    if p.category == 4 && p.query.is_empty() {
+    // The Models section ends where the models come from, and where each
+    // subagent's model is chosen.
+    if p.category == section::MODELS && p.query.is_empty() {
         items.push(Item::open(
             "setting:agents:picker",
-            "Favourites and the pinned model",
+            "Subagent favourites and the pinned model",
             Action::Command("/subagents".into()),
+        ));
+        items.push(Item::open(
+            "setting:accounts",
+            "Accounts · sign in, or add an API key",
+            Action::Command("/login".into()),
         ));
     }
     if rows.is_empty() {

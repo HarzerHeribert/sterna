@@ -14,7 +14,7 @@ use crate::contract::ProjectConfig;
 /// in no list, so the `/` menu never offered it and it read as a command sterna
 /// did not have. Being absent from a menu is how a command that works comes
 /// to look broken.
-pub const BUILT_INS: [BuiltIn; 12] = [
+pub const BUILT_INS: [BuiltIn; 7] = [
     BuiltIn::Model,
     BuiltIn::Models,
     // `login` was the same defect as `exit` one line down, and outlasted its
@@ -23,12 +23,7 @@ pub const BUILT_INS: [BuiltIn; 12] = [
     BuiltIn::Login,
     // The first-start wizard: sign in, models per workload, Jev.
     BuiltIn::Setup,
-    BuiltIn::Usage,
-    BuiltIn::Entitlements,
-    BuiltIn::Handles,
-    BuiltIn::Supervisor,
     BuiltIn::Rollback,
-    BuiltIn::Budget,
     BuiltIn::Memory,
     BuiltIn::Exit,
 ];
@@ -40,13 +35,7 @@ pub enum BuiltIn {
     Login,
     /// Sign in, pick a model per workload and set up Jev (`session/setup.rs`).
     Setup,
-    /// What each subscription has used of its limits (`session/usage.rs`).
-    Usage,
-    Entitlements,
-    Handles,
-    Supervisor,
     Rollback,
-    Budget,
     Memory,
     /// End the session. It has always worked; it was not in this list, so the
     /// `/` menu did not offer it and it read as a command sterna did not have.
@@ -62,12 +51,7 @@ impl BuiltIn {
             BuiltIn::Models => "models",
             BuiltIn::Login => "login",
             BuiltIn::Setup => "wizard",
-            BuiltIn::Usage => "usage",
-            BuiltIn::Entitlements => "entitlements",
-            BuiltIn::Handles => "handles",
-            BuiltIn::Supervisor => "supervisor",
             BuiltIn::Rollback => "rollback",
-            BuiltIn::Budget => "budget",
             BuiltIn::Memory => "memory",
             BuiltIn::Exit => "exit",
         }
@@ -104,7 +88,7 @@ pub struct ResolvedCommand {
 ///
 /// **A built-in's name is reserved and always wins a collision.** A
 /// project's own commands and skills are the project's own untrusted text,
-/// and `/rollback` or `/budget` naming safety-relevant behaviour must not be
+/// and `/rollback` or `/memory` naming safety-relevant behaviour must not be
 /// silently replaced by a same-named file the project happens to ship. Where
 /// a project command and a skill share a name that no built-in claims, the
 /// command wins: `.claude/commands/<name>.md` is written to be a command,

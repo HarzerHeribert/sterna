@@ -93,11 +93,13 @@ enum Mover {
     Prose,
 }
 
-/// The widest a line of prose runs, indent included: yours, Sterna's answer,
-/// the words around a cell. At the width of a wide terminal a line runs
-/// 160 columns, too long to read. Code, tables, cards and output keep the
-/// whole width: cutting them costs more than it saves.
-pub const READING_WIDTH: usize = 100;
+/// The columns between a card's right corner and the conversation's right
+/// edge. **Every line of the conversation ends where the cards end** --
+/// your turn, the answers, the words around a cell, the notes -- so the text
+/// keeps the same padding on the right as on the left, at every width. A
+/// fixed reading width left a wide terminal's right third empty while the
+/// cards ran on.
+const EDGE: usize = 2;
 
 #[derive(Default)]
 pub struct Document {
@@ -176,10 +178,7 @@ impl Document {
                 Block::Verbatim(line) => self.wrapped(line, Tone::Code, None, width, id, indent),
                 Block::Prose { lead, pieces } => {
                     let hang = indent + span_width(&lead);
-                    let rows = flow(
-                        &pieces,
-                        width.min(READING_WIDTH).saturating_sub(hang).max(1),
-                    );
+                    let rows = flow(&pieces, width.saturating_sub(hang).max(1));
                     for (i, row) in rows.into_iter().enumerate() {
                         let first = if i == 0 {
                             format!("{pad}{lead}")
@@ -324,7 +323,8 @@ impl Document {
             ..Self::default()
         };
         let mut note = 0usize;
-        d.card(c, s, &mut note, width);
+        let room = width.saturating_sub(EDGE).max(1);
+        d.card(c, s, &mut note, room);
         // What the card drew is the session's own header, not conversation:
         // an empty conversation is still empty underneath it.
         let card_rows = d.rows.len();
@@ -335,7 +335,7 @@ impl Document {
             && s.streaming_tool_input.is_none()
             && s.streaming_reasoning.is_none()
         {
-            d.opening(s, width);
+            d.opening(s, room);
         }
         // A card's body sits inside two edges, a three-column indent and the
         // column kept clear before the gutter: nine columns in all.
@@ -354,21 +354,21 @@ impl Document {
             .and_then(|_| reads.iter().rposition(|r| *r == Reads::You));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
-            d.notes(s, &mut note, idx, width);
+            d.notes(s, ui, &mut note, idx, room);
             let cell = match reads[idx] {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
-                    d.turn_you(&m.as_written(), width, id);
+                    d.turn_you(&m.as_written(), room, id);
                     if scout_under == Some(idx)
                         && let Some(p) = &n.preflight
                     {
-                        d.scout(p, s, ui, width, id);
+                        d.scout(p, s, ui, room, id);
                         d.blank(id);
                     }
                     continue;
                 }
                 Reads::After => {
-                    d.prose(&prose(m), Tone::Normal, width, id, 2);
+                    d.prose(&prose(m), Tone::Normal, room, id, 2);
                     d.blank(id);
                     continue;
                 }
@@ -378,7 +378,7 @@ impl Document {
             let src = source(m);
             d.turn_sterna(id);
             if !has_cell(src.as_deref(), v) {
-                d.prose(&prose(m), Tone::Normal, width, id, 2);
+                d.prose(&prose(m), Tone::Normal, room, id, 2);
                 d.blank(id);
                 continue;
             }
@@ -390,7 +390,7 @@ impl Document {
                 .and_then(|v| v.description.as_deref())
                 .is_some_and(|d| d.trim() == explanation.trim());
             if !explanation.trim().is_empty() && !titled {
-                d.prose(&explanation, Tone::Normal, width, id, 2);
+                d.prose(&explanation, Tone::Normal, room, id, 2);
                 d.blank(id);
             }
             let running = cell >= n.cells.len()
@@ -439,6 +439,27 @@ impl Document {
             } else {
                 vec![("RECORDED".to_string(), Tone::Muted)]
             };
+            // A folded card counts its helpers on its own line; their rows
+            // are inside the card, one click away, never loose beside it.
+            let mut state = state;
+            if let Some(v) = v.filter(|v| !open && !v.helpers.is_empty()) {
+                let count = v.helpers.len();
+                let failed = v
+                    .helpers
+                    .iter()
+                    .filter(|h| !h.outcome.ok && !h.outcome.text.is_empty())
+                    .count();
+                let mut said = vec![(
+                    format!("{count} helper{} ", if count == 1 { "" } else { "s" }),
+                    Tone::Helper,
+                )];
+                if failed > 0 {
+                    said.push((format!("· {failed} failed "), Tone::Failure));
+                }
+                said.push(("· ".to_string(), Tone::Line));
+                said.append(&mut state);
+                state = said;
+            }
             let tone = if failed {
                 Tone::Failure
             } else if running || ui.selected_cell == Some(cell) {
@@ -463,22 +484,51 @@ impl Document {
             // The selected card says so in a glyph, which a failed card's
             // own colour cannot hide.
             let selected = ui.selected_cell == Some(cell);
+            let number = format!("{}{cell:03}", if selected { "› " } else { "" });
+            // **The intent is what the cell is for**: normal text, never cut.
+            // It wraps under its own first word, and the state word keeps
+            // the first line. The view sets the card three columns in, its
+            // lead ("╭─ " open, "▸ " folded) before the number, and the state
+            // word three columns in from the corner, two from the edge.
+            let lead = if open { 3 } else { 2 };
+            let start = 3 + lead + number.chars().count() + 3;
+            let state_width: usize = state.iter().map(|(word, _)| word.chars().count()).sum();
+            // Room for the first line: it stops five columns short of the
+            // state word, so an open card's edge shows a short rule there.
+            let intent_room = width.saturating_sub(start + state_width + 10).max(12);
+            let parts = super::view::wrap_words(description, intent_room);
+            let (first, rest) = parts
+                .split_first()
+                .map_or((String::new(), &[][..]), |(first, rest)| {
+                    (first.clone(), rest)
+                });
             d.kinded(
                 vec![
-                    (
-                        format!("{}{cell:03}", if selected { "› " } else { "" }),
-                        Tone::Strong,
-                    ),
+                    (number, Tone::Strong),
                     (" · ".to_string(), tone),
-                    (
-                        clip(description, width.saturating_sub(30)),
-                        if open { Tone::Normal } else { Tone::Muted },
-                    ),
+                    (first, Tone::Normal),
                 ],
                 Some(Action::Cell(cell)),
                 id,
                 RowKind::CardTop { open, right: state },
             );
+            for part in rest {
+                // An open card's body starts two columns inside its edge.
+                let (pad, kind) = if open {
+                    (start - 5, RowKind::CardBody)
+                } else {
+                    (start, d.container.clone())
+                };
+                d.kinded(
+                    vec![
+                        (" ".repeat(pad), Tone::Normal),
+                        (part.clone(), Tone::Normal),
+                    ],
+                    Some(Action::Cell(cell)),
+                    id,
+                    kind,
+                );
+            }
             if open {
                 d.container = RowKind::CardBody;
                 let tab = ui.tabs.get(&cell).copied().unwrap_or(CellTab::Code);
@@ -487,7 +537,6 @@ impl Document {
                     tab,
                     v.and_then(|v| v.changes.as_deref()),
                     v.is_some_and(|v| !v.helpers.is_empty()),
-                    inner,
                     id,
                 );
                 if v.is_some_and(|v| v.origin != crate::abi::Origin::AuthoredCell) {
@@ -504,7 +553,9 @@ impl Document {
                     .or(src.as_deref())
                     .unwrap_or("");
                 match tab {
-                    CellTab::Code => d.program(program, inner, id),
+                    CellTab::Code => {
+                        d.program(program, v.and_then(|v| v.returned.as_deref()), inner, id)
+                    }
                     CellTab::Diff => d.diff(v.and_then(|v| v.changes.as_deref()), inner, id),
                     CellTab::Output => {
                         if let Some(v) = v {
@@ -588,39 +639,40 @@ impl Document {
                     d.helpers(cell, v, s, ui, inner, id);
                 }
                 d.container = RowKind::Plain;
+                // The bottom edge says what the cell changed once it has
+                // ended; a running cell has not changed anything it can
+                // report yet.
                 d.kinded(
-                    v.map(Self::summary).unwrap_or_default(),
+                    v.filter(|_| !running)
+                        .map(Self::summary)
+                        .unwrap_or_default(),
                     None,
                     id,
                     RowKind::CardBottom,
                 );
             }
-            if let Some(v) = v {
-                // A folded card keeps its helper calls in view, under it.
-                if !open {
-                    d.helpers(cell, v, s, ui, width, id);
-                }
-                if let Some(answer) = v.returned.as_ref() {
-                    let answer =
-                        crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
-                    d.blank(id);
-                    d.answer(&answer, v, cell, s, last_assistant == Some(idx), width, id);
-                }
+            if let Some(v) = v
+                && let Some(answer) = v.returned.as_ref()
+            {
+                let answer =
+                    crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
+                d.blank(id);
+                d.answer(&answer, v, cell, s, last_assistant == Some(idx), room, id);
             }
             d.blank(id);
         }
-        d.notes(s, &mut note, usize::MAX, width);
-        d.behind(s, width);
+        d.notes(s, ui, &mut note, usize::MAX, room);
+        d.behind(s, room);
         // A Scout with no turn of the person's in view to sit under still
         // shows, where it always did.
         if scout_under.is_none()
             && let Some(p) = &n.preflight
         {
-            d.scout(p, s, ui, width, usize::MAX - 2);
+            d.scout(p, s, ui, room, usize::MAX - 2);
         }
         if let Some(reasoning) = &s.streaming_reasoning {
             d.turn_sterna(usize::MAX - 4);
-            d.reasoning(reasoning, s, width);
+            d.reasoning(reasoning, s, room);
         }
         if let Some(fragment) = &s.streaming_tool_input {
             d.turn_sterna(usize::MAX - 3);
@@ -631,7 +683,7 @@ impl Document {
             if d.rows.len() == card_rows {
                 d.turn_sterna(usize::MAX - 1);
             }
-            d.arriving(&text, s, width);
+            d.arriving(&text, s, room);
         }
         d
     }
@@ -676,14 +728,7 @@ impl Document {
     /// The rail marks it as live; the caret is its one moving cell.
     fn arriving(&mut self, text: &str, s: &ScreenState, width: usize) {
         let before = self.rows.len();
-        self.wrapped(
-            text,
-            Tone::Normal,
-            None,
-            width.min(READING_WIDTH),
-            usize::MAX - 1,
-            2,
-        );
+        self.wrapped(text, Tone::Normal, None, width, usize::MAX - 1, 2);
         let last = self.rows.len().saturating_sub(1);
         let mark = self.caret(s, Mover::Prose);
         for (i, row) in self.rows[before..].iter_mut().enumerate() {
@@ -704,17 +749,16 @@ impl Document {
             id,
             RowKind::You,
         );
-        let before = self.rows.len();
-        self.wrapped(
-            text,
-            Tone::Strong,
-            None,
-            width.saturating_sub(3).min(READING_WIDTH),
-            id,
-            0,
-        );
-        for row in &mut self.rows[before..] {
-            row.kind = RowKind::You;
+        // Between words, as the composer showed the draft: every character
+        // is kept, and a word is broken only when it is wider than the room.
+        let text = text.replace('\t', "    ");
+        for (_, line) in super::view::composer_lines(&text, width.saturating_sub(3).max(1)) {
+            self.kinded(
+                vec![(line.to_string(), Tone::Strong)],
+                None,
+                id,
+                RowKind::You,
+            );
         }
         self.blank(id);
     }
@@ -815,21 +859,17 @@ impl Document {
             let mut chips = Vec::new();
             if files > 0 {
                 chips.push((
-                    "show the diff".to_string(),
+                    "Show the diff".to_string(),
                     Action::Tab(cell, CellTab::Diff),
                     false,
                 ));
                 chips.push((
-                    "commit this".to_string(),
+                    "Commit this".to_string(),
                     Action::Insert("commit this".into()),
                     false,
                 ));
             }
-            chips.push((
-                "full output".to_string(),
-                Action::Tab(cell, CellTab::Output),
-                false,
-            ));
+            // The card's own Full output tab is the route to the output.
             if !chips.is_empty() {
                 self.chips(chips, id);
             }
@@ -894,7 +934,7 @@ impl Document {
     /// `edit`, `bash`, a helper, a check -- every `await`ed call and every
     /// call on one of the runtime's own objects -- so the chain of events a
     /// cell will cause is read off it at a glance.
-    fn program(&mut self, program: &str, width: usize, id: usize) {
+    fn program(&mut self, program: &str, answered: Option<&str>, width: usize, id: usize) {
         // `answer("…")` carries the whole answer as one string literal; the
         // block under the card shows it, so here the call is folded to its
         // opening words.
@@ -910,20 +950,26 @@ impl Document {
                 let one_line = line.trim_end().ends_with(");");
                 folded = !one_line;
                 let (head, cut) = answer_head(&line[start + 8..], 36);
-                self.spans_wrapped(
-                    vec![
-                        (line[..start].to_string(), Tone::Code),
-                        ("answer".to_string(), Tone::Accent),
-                        (
-                            format!("(\"{head}{}\")", if cut { "…" } else { "" }),
-                            Tone::Code,
-                        ),
-                        ("  · the answer is below".to_string(), Tone::Muted),
-                    ],
-                    width,
-                    2,
-                    id,
-                );
+                let mut spans = vec![
+                    (line[..start].to_string(), Tone::Code),
+                    ("answer".to_string(), Tone::Accent),
+                    (
+                        format!("(\"{head}{}\")", if cut { "…" } else { "" }),
+                        Tone::Code,
+                    ),
+                ];
+                // Only the call that gave the answer under the card points at
+                // it: a program that threw first, or answered from another
+                // branch, left this one unrun.
+                let opening: String = head.chars().take_while(|c| *c != '\\').take(24).collect();
+                if answered.is_some_and(|answer| {
+                    let answer = crate::prompt::completion_text(answer)
+                        .unwrap_or_else(|| answer.to_string());
+                    answer.trim_start().starts_with(opening.trim_end())
+                }) {
+                    spans.push(("  · the answer is below".to_string(), Tone::Muted));
+                }
+                self.spans_wrapped(spans, width, 2, id);
                 continue;
             }
             self.spans_wrapped(highlight_calls(line), width, 2, id);
@@ -938,12 +984,11 @@ impl Document {
         indent: usize,
         id: usize,
     ) {
-        let avail = width.saturating_sub(indent).max(1);
-        let pad = " ".repeat(indent);
-        let mut row: Vec<(String, Tone)> = vec![(pad.clone(), Tone::Code)];
-        let mut used = 0;
+        // **Code breaks between tokens**: after a space or after `,;({[`,
+        // never inside a word or an escape like `\n`. The rows after the
+        // first hang two columns further in, so a wrapped line reads as one.
+        let mut cells: Vec<(String, Tone, usize)> = Vec::new();
         for (text, tone) in spans {
-            let mut part = String::new();
             for c in text.chars() {
                 if c.is_control() && c != '\t' {
                     continue;
@@ -954,25 +999,56 @@ impl Document {
                     c.to_string()
                 };
                 let w = span_width(&s);
-                if used + w > avail && used > 0 {
-                    if !part.is_empty() {
-                        row.push((std::mem::take(&mut part), tone));
-                    }
-                    self.line(
-                        std::mem::replace(&mut row, vec![(pad.clone(), Tone::Code)]),
-                        None,
-                        id,
-                    );
-                    used = 0;
-                }
-                part.push_str(&s);
-                used += w;
-            }
-            if !part.is_empty() {
-                row.push((part, tone));
+                cells.push((s, tone, w));
             }
         }
-        self.line(row, None, id);
+        let breaks_after = |cell: &(String, Tone, usize)| {
+            matches!(cell.0.as_str(), " " | "    " | "," | ";" | "(" | "{" | "[")
+        };
+        let mut start = 0;
+        let mut first = true;
+        loop {
+            let hang = if first { indent } else { indent + 2 };
+            let avail = width.saturating_sub(hang).max(1);
+            // The farthest end that fits, and the farthest break point in it.
+            let mut used = 0;
+            let mut end = start;
+            let mut last_break = None;
+            while end < cells.len() && used + cells[end].2 <= avail {
+                used += cells[end].2;
+                end += 1;
+                if end < cells.len() && breaks_after(&cells[end - 1]) {
+                    last_break = Some(end);
+                }
+            }
+            if end < cells.len() {
+                end = match last_break {
+                    Some(at) if at > start => at,
+                    // One token wider than the row is cut, but never between
+                    // a backslash and the character it escapes.
+                    _ if end > start + 1 && cells[end - 1].0 == "\\" => end - 1,
+                    _ => end.max(start + 1),
+                };
+            }
+            let mut row: Vec<(String, Tone)> = vec![(" ".repeat(hang), Tone::Code)];
+            for (text, tone, _) in &cells[start..end] {
+                let joins = row.len() > 1 && row.last().is_some_and(|(_, last)| last == tone);
+                match row.last_mut() {
+                    Some((run, _)) if joins => run.push_str(text),
+                    _ => row.push((text.clone(), *tone)),
+                }
+            }
+            self.line(row, None, id);
+            start = end;
+            // A continuation row does not open on the spaces it broke at.
+            while start < cells.len() && cells[start].0.trim().is_empty() {
+                start += 1;
+            }
+            first = false;
+            if start >= cells.len() {
+                break;
+            }
+        }
     }
     /// The chain of calls a cell actually made, one per line: what ran, on
     /// what, and how it ended. Read off the cell's record, so a call the
@@ -1233,12 +1309,12 @@ impl Document {
             ),
             (
                 if startup.len() > 1 {
-                    format!("+{} more · /activity", startup.len() - 1)
+                    format!("+{} more ▸", startup.len() - 1)
                 } else {
                     String::new()
                 },
                 Tone::Line,
-                None,
+                (startup.len() > 1).then_some(Action::Activity),
             ),
         ];
         for (glyph, (text, tone, action)) in art.into_iter().zip(facts) {
@@ -1290,9 +1366,9 @@ impl Document {
         );
         if startup.len() > 2 {
             facts.push((
-                format!("+{} more · /activity", startup.len() - 2),
+                format!("+{} more ▸", startup.len() - 2),
                 Tone::Line,
-                None,
+                Some(Action::Activity),
             ));
         }
         let top = 4usize.min(bird.len().saturating_sub(facts.len()));
@@ -1352,9 +1428,17 @@ impl Document {
     /// **A notice is not a message and never pretends to be one.** It is
     /// quiet, it is marked, and it stays in the transcript where a person
     /// can scroll back to it -- the same notes the Activity surface lists.
-    fn notes(&mut self, s: &ScreenState, next: &mut usize, upto: usize, width: usize) {
+    fn notes(
+        &mut self,
+        s: &ScreenState,
+        ui: &Workbench,
+        next: &mut usize,
+        upto: usize,
+        width: usize,
+    ) {
         while let Some(note) = s.history.get(*next).filter(|n| n.after <= upto) {
-            let settling = super::motion::note_settling(s, *next);
+            let index = *next;
+            let settling = super::motion::note_settling(s, index);
             *next += 1;
             let kind = crate::tui::NoteKind::of(&note.text);
             let (mark_tone, first_tone) = match kind {
@@ -1366,8 +1450,21 @@ impl Document {
                 crate::tui::NoteKind::Learned => (Tone::Helper, Tone::Helper),
                 crate::tui::NoteKind::Plain => (Tone::Line, Tone::Muted),
             };
-            for (index, line) in note.text.lines().enumerate() {
-                let (mark, text_tone) = if index == 0 {
+            // **A check's reasons fold under its verdict.** The person reads
+            // the verdict first and opens the why when they want it; the
+            // reasons never push the next turn off the screen.
+            let folds = matches!(
+                kind,
+                crate::tui::NoteKind::Checked | crate::tui::NoteKind::Flagged
+            ) && note.text.lines().nth(1).is_some();
+            let open = ui.notes_open.contains(&index);
+            let fold = folds.then_some(Action::Note(index));
+            let room = width.saturating_sub(4).max(8);
+            for (line_no, line) in note.text.lines().enumerate() {
+                if folds && line_no > 0 && !open {
+                    break;
+                }
+                let (mark, text_tone) = if line_no == 0 {
                     (kind.mark(), first_tone)
                 } else {
                     (" ", Tone::Muted)
@@ -1376,7 +1473,6 @@ impl Document {
                 // and a click on any of them copies it.
                 let trimmed = line.trim();
                 if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-                    let room = width.saturating_sub(5).max(1);
                     let chars: Vec<char> = trimmed.chars().collect();
                     for (part, chunk) in chars.chunks(room).enumerate() {
                         self.kinded(
@@ -1394,15 +1490,32 @@ impl Document {
                     }
                     continue;
                 }
-                self.kinded(
-                    vec![
-                        (format!("  {mark} "), mark_tone),
-                        (clip(line, width.saturating_sub(5)), text_tone),
-                    ],
-                    None,
-                    usize::MAX - 4,
-                    RowKind::Note,
-                );
+                // What the check used is said quietly at the verdict's end.
+                let (said, cost) = match line
+                    .rfind(crate::tui::history::COST)
+                    .filter(|_| line_no == 0 && folds && line.ends_with(" tokens"))
+                {
+                    Some(at) => (&line[..at], Some(&line[at..])),
+                    None => (line, None),
+                };
+                let parts = super::view::wrap_words(said, room);
+                let last = parts.len().saturating_sub(1);
+                for (part_no, part) in parts.into_iter().enumerate() {
+                    let mut spans = vec![(
+                        format!("  {} ", if part_no == 0 { mark } else { " " }),
+                        mark_tone,
+                    )];
+                    spans.push((part, text_tone));
+                    if part_no == last && line_no == 0 {
+                        if let Some(cost) = cost {
+                            spans.push((cost.to_string(), Tone::Muted));
+                        }
+                        if folds {
+                            spans.push(((if open { " ▾" } else { " ▸" }).to_string(), Tone::Line));
+                        }
+                    }
+                    self.kinded(spans, fold.clone(), usize::MAX - 4, RowKind::Note);
+                }
             }
         }
     }
@@ -1441,7 +1554,6 @@ impl Document {
         current: CellTab,
         changes: Option<&str>,
         helpers: bool,
-        width: usize,
         id: usize,
     ) {
         // A tab is offered only when it has something behind it: a cell
@@ -1458,22 +1570,17 @@ impl Document {
         if helpers {
             tabs.push(("Helpers".to_string(), CellTab::Helpers));
         }
-        let open_diff = if changed { OPEN_DIFF } else { "" };
+        // The Changes tab is the route to the diff; a second link beside
+        // it opened the same thing.
         let text = tabs
             .iter()
             .map(|(label, _)| format!("⟨ {label} ⟩ "))
             .collect::<String>();
-        let pad = width
-            .saturating_sub(span_width(&text))
-            .saturating_sub(open_diff.chars().count() + 1);
         self.emit(
             Row {
-                text: format!("{text}{}{open_diff}", " ".repeat(pad)),
+                text: text.trim_end().to_string(),
                 tone: Tone::Normal,
-                spans: vec![
-                    (" ".repeat(pad), Tone::Normal),
-                    (open_diff.into(), Tone::Muted),
-                ],
+                spans: Vec::new(),
                 links: Vec::new(),
                 tabs,
                 chips: Vec::new(),
@@ -1605,7 +1712,7 @@ impl Document {
         }
         let files = match changed_files(v) {
             _ if v.rolled_back => "its changes were rolled back".to_string(),
-            0 => "no captured file changes".to_string(),
+            0 => "no files changed".to_string(),
             1 => "1 file changed".to_string(),
             n => format!("{n} files changed"),
         };
@@ -1685,15 +1792,12 @@ impl Document {
                 id,
                 5,
             );
+        } else if ui.scout && failed {
+            self.wrapped(p.outcome.text.clone(), Tone::Failure, None, width, id, 5);
         } else if ui.scout {
-            self.wrapped(
-                p.outcome.text.clone(),
-                if failed { Tone::Failure } else { Tone::Normal },
-                None,
-                width,
-                id,
-                5,
-            );
+            // The report reads as the answers do: its Markdown drawn, never
+            // shown as hashes and backticks.
+            self.prose(&scout_report(&p.outcome.text), Tone::Normal, width, id, 5);
         }
     }
     fn helpers(
@@ -1837,8 +1941,6 @@ impl Document {
         }
     }
 }
-const OPEN_DIFF: &str = "open diff ↗";
-
 /// How many files a Scout's report names: its `path:line` spans, and the
 /// paths a dissection's `## Files` names without a line.
 fn named_files(report: &str) -> usize {
@@ -1871,6 +1973,50 @@ fn helper_account(text: &str) -> (&str, Vec<String>, &str) {
 
 /// The start of an `answer("…")` literal, up to its closing quote: whole
 /// when it fits in `room` characters, else cut at a word and marked cut.
+/// The Scout's report with its empty sections folded into one closing
+/// line: "## Tests / none found" and "## Risks / none found" become "No
+/// tests or risks found."
+fn scout_report(text: &str) -> String {
+    let mut kept: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut lead: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("## ") {
+            kept.push((name.trim().to_string(), Vec::new()));
+        } else if let Some((_, body)) = kept.last_mut() {
+            body.push(line);
+        } else {
+            lead.push(line);
+        }
+    }
+    let empty = |body: &[&str]| {
+        body.iter()
+            .map(|line| line.trim().trim_end_matches('.').to_lowercase())
+            .filter(|line| !line.is_empty())
+            .all(|line| matches!(line.as_str(), "none" | "none found" | "- none" | "n/a"))
+    };
+    let mut none = Vec::new();
+    let mut out: Vec<String> = lead.iter().map(|line| (*line).to_string()).collect();
+    for (name, body) in &kept {
+        if empty(body) {
+            none.push(name.to_lowercase());
+            continue;
+        }
+        out.push(format!("## {name}"));
+        out.extend(body.iter().map(|line| (*line).to_string()));
+    }
+    if !none.is_empty() {
+        let last = none.pop().unwrap_or_default();
+        let named = if none.is_empty() {
+            last
+        } else {
+            format!("{} or {last}", none.join(", "))
+        };
+        out.push(String::new());
+        out.push(format!("No {named} found."));
+    }
+    out.join("\n")
+}
+
 fn answer_head(literal: &str, room: usize) -> (String, bool) {
     let mut text = String::new();
     let mut escaped = false;

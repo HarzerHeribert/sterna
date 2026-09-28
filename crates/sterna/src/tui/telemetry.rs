@@ -1,13 +1,33 @@
 //! Local instruments. Measurements and decorative motion have separate inputs.
-use super::{ACCENT, ContextTokens, MUTED, Notebook, ScreenState};
+//!
+//! **Drawn in the workbench's roles**: accent, helper, failure, muted, rule
+//! and the one filled chip, in the chosen theme and on the terminal's own
+//! ground. Named ANSI colours made this the one screen that ignored the
+//! theme, and grey text all but vanished on a light terminal.
+use super::{ContextTokens, Notebook, ScreenState, Theme};
 use crate::contract::{Conversation, Role, ServedBy};
+use crate::workbench::Tone;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use std::cell::Cell;
+
+thread_local! {
+    /// The theme of the frame being drawn, set where a draw starts.
+    static INK: Cell<Theme> = Cell::new(Theme::default());
+}
+
+fn ink(tone: Tone) -> Style {
+    crate::workbench::tone_style(tone, INK.with(Cell::get))
+}
+
+fn chip() -> Style {
+    crate::workbench::chip_style(INK.with(Cell::get))
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Pulse {
@@ -28,15 +48,10 @@ impl Pulse {
     }
 }
 fn label(text: impl Into<String>) -> Line<'static> {
-    Line::styled(
-        text.into(),
-        Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD),
-    )
+    Line::styled(text.into(), ink(Tone::Accent))
 }
 fn muted(text: impl Into<String>) -> Line<'static> {
-    Line::styled(text.into(), Style::default().fg(MUTED))
+    Line::styled(text.into(), ink(Tone::Muted))
 }
 fn metric(value: Option<u64>) -> String {
     value
@@ -64,20 +79,18 @@ fn graph(samples: &[usize], width: usize, height: usize) -> Vec<Line<'static>> {
         .map(|row| {
             let mut spans = vec![Span::styled(
                 if row + 1 == height { "·" } else { " " }.repeat(padding),
-                Style::default().fg(Color::DarkGray),
+                ink(Tone::Line),
             )];
             for (i, n) in tail.iter().enumerate() {
                 let units = ((*n as u128 * (height * 8) as u128) / peak as u128) as usize;
                 let fill = units.saturating_sub((height - row - 1) * 8).min(8);
                 spans.push(Span::styled(
                     glyphs[fill].to_string(),
-                    Style::default().fg(if i + 1 == tail.len() {
-                        ACCENT
-                    } else if row + 1 == height {
-                        Color::Cyan
+                    if i + 1 == tail.len() {
+                        ink(Tone::Accent)
                     } else {
-                        Color::LightCyan
-                    }),
+                        ink(Tone::Helper)
+                    },
                 ));
             }
             Line::from(spans)
@@ -111,7 +124,7 @@ fn task_spend(notebook: &Notebook, _width: usize) -> Vec<Line<'static>> {
             super::compact_tokens(tokens.used),
             if partial { "+" } else { "" }
         ),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ink(Tone::Accent),
     )];
     if tokens.helpers.calls > 0 {
         // One helper model is the ordinary case, and then its name belongs on
@@ -239,7 +252,7 @@ fn context_window(
                 ),
             );
             vec![
-                Line::styled(format!("{bar} {percent}%"), Style::default().fg(ACCENT)),
+                Line::styled(format!("{bar} {percent}%"), ink(Tone::Accent)),
                 muted(format!(
                     "{} / {} · {provenance}",
                     super::compact_tokens(tokens.used),
@@ -250,7 +263,7 @@ fn context_window(
         None => vec![
             Line::styled(
                 format!("context {} tokens", super::compact_tokens(tokens.used)),
-                Style::default().fg(ACCENT),
+                ink(Tone::Accent),
             ),
             muted(tokens.counted.by()),
             muted("window size not known"),
@@ -265,10 +278,11 @@ pub(super) fn rail(
     notebook: &Notebook,
     state: &ScreenState,
 ) {
+    INK.with(|ink| ink.set(state.theme));
     let border = Block::default()
         .borders(Borders::LEFT)
         .title("   telemetry ")
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(ink(Tone::Line));
     let mut inner = border.inner(area);
     let padding = inner.width.min(2);
     inner.x += padding;
@@ -285,10 +299,7 @@ pub(super) fn rail(
             }),
             state.activity.label().to_uppercase()
         ),
-        Style::default()
-            .fg(ACCENT)
-            .bg(state.theme.dock())
-            .add_modifier(Modifier::BOLD),
+        chip(),
     )];
     if state.pulse.elapsed_ms > 0 {
         lines.push(muted(format!(
@@ -378,9 +389,6 @@ pub(super) fn rail(
     if !metric_line.is_empty() {
         lines.push(muted(metric_line));
     }
-    if let Some(status) = &notebook.supervisor {
-        lines.push(muted(super::supervisor_line(status)));
-    }
     if inner.height >= 24
         && let Some(cell) = notebook.cells.iter().rfind(|cell| cell.execution.is_some())
     {
@@ -401,7 +409,7 @@ pub(super) fn rail(
     }
     lines.push(Line::default());
     lines.push(muted("Ctrl-T  open instruments"));
-    frame.render_widget(Paragraph::new(super::wrap_lines(lines, inner.width)), inner);
+    frame.render_widget(Paragraph::new(wrap(lines, inner.width)), inner);
 }
 
 fn selected_cell_source(
@@ -444,27 +452,29 @@ fn execution(conversation: &Conversation, notebook: &Notebook, cell: usize) -> V
         .unwrap_or_default();
     if !possible.is_empty() {
         lines.push(muted("◇ proposed in generated code"));
-        lines.extend(possible.iter().map(|name| {
-            Line::styled(format!("  ┄┄ {name}"), Style::default().fg(Color::DarkGray))
-        }));
+        lines.extend(
+            possible
+                .iter()
+                .map(|name| Line::styled(format!("  ┄┄ {name}"), ink(Tone::Line))),
+        );
     }
     lines.push(Line::default());
     if let Some(actual) = view.and_then(|v| v.execution.as_deref()) {
         lines.push(label("◆ observed"));
         for row in actual.lines() {
-            let color = if row.contains(" · failed") || row.contains(" · denied") {
-                Color::LightRed
+            let tone = if row.contains(" · failed") || row.contains(" · denied") {
+                Tone::Failure
             } else {
-                Color::LightCyan
+                Tone::Helper
             };
-            lines.push(Line::styled(row.to_owned(), Style::default().fg(color)));
+            lines.push(Line::styled(row.to_owned(), ink(tone)));
         }
         let count = actual.lines().filter(|row| row.contains(" · ")).count();
         if count > 1 {
             lines.push(Line::default());
             lines.push(Line::styled(
                 format!(" ◆ {count} tool calls · one response "),
-                Style::default().fg(Color::Black).bg(ACCENT),
+                chip(),
             ));
         }
         if !possible.is_empty() && possible.len() > count {
@@ -476,21 +486,98 @@ fn execution(conversation: &Conversation, notebook: &Notebook, cell: usize) -> V
     if let Some(error) = view.and_then(|v| v.error.as_ref()) {
         lines.push(Line::styled(
             format!("× {}: {}", error.class, error.message),
-            Style::default().fg(Color::LightRed),
+            ink(Tone::Failure),
         ));
     }
     if let Some(changes) = view.and_then(|v| v.changes.as_deref()) {
         lines.push(Line::default());
         lines.push(label("FILES CHANGED"));
-        for path in changes
-            .lines()
-            .filter_map(|line| line.strip_prefix("+++ "))
-            .take(8)
-        {
+        for path in changed_paths(changes).into_iter().take(8) {
             lines.push(muted(path));
         }
     }
     lines
+}
+
+/// Lines laid into `width` columns **between words**: a model name or a
+/// path is never broken in its middle unless it is wider than the whole
+/// column. Each piece keeps its own style.
+fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in lines {
+        let cells: Vec<(String, Style, usize)> = line
+            .spans
+            .iter()
+            .flat_map(|span| span.styled_graphemes(line.style))
+            .map(|glyph| {
+                let size = Span::raw(glyph.symbol).width();
+                (glyph.symbol.to_string(), glyph.style, size)
+            })
+            .filter(|(_, _, size)| *size <= width)
+            .collect();
+        let mut start = 0;
+        loop {
+            let mut used = 0;
+            let mut end = start;
+            let mut last_space = None;
+            while end < cells.len() && used + cells[end].2 <= width {
+                if cells[end].0 == " " {
+                    last_space = Some(end);
+                }
+                used += cells[end].2;
+                end += 1;
+            }
+            if end < cells.len()
+                && let Some(space) = last_space.filter(|space| *space > start)
+            {
+                end = space;
+            }
+            let row: Vec<Span<'static>> = cells[start..end]
+                .iter()
+                .map(|(symbol, style, _)| Span::styled(symbol.clone(), *style))
+                .collect();
+            out.push(Line::from(row).style(line.style));
+            start = end;
+            while start < cells.len() && cells[start].0 == " " {
+                start += 1;
+            }
+            if start >= cells.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// The files a unified diff touches, by their real paths: git's `a/` and
+/// `b/` taken off, and a new or deleted file said so rather than shown as
+/// `/dev/null`.
+fn changed_paths(diff: &str) -> Vec<String> {
+    let strip = |side: &str, prefix: &str| {
+        let side = side.split('\t').next().unwrap_or(side).trim();
+        side.strip_prefix(prefix).unwrap_or(side).to_string()
+    };
+    let mut before: Option<String> = None;
+    let mut paths = Vec::new();
+    for line in diff.lines() {
+        if let Some(old) = line.strip_prefix("--- ") {
+            before = Some(old.to_string());
+        } else if let Some(new) = line.strip_prefix("+++ ") {
+            let old = before.take().unwrap_or_default();
+            paths.push(
+                match (old.trim() == "/dev/null", new.trim() == "/dev/null") {
+                    (true, _) => format!("{} · new", strip(new, "b/")),
+                    (_, true) => format!("{} · deleted", strip(&old, "a/")),
+                    _ => strip(new, "b/"),
+                },
+            );
+        }
+    }
+    paths
 }
 
 pub(crate) fn expanded(
@@ -504,15 +591,10 @@ pub(crate) fn expanded(
     if area.width < 4 || area.height < 4 {
         return;
     }
+    INK.with(|ink| ink.set(state.theme));
     let heading = Line::from(vec![
-        Span::styled(
-            " TELEMETRY ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ↑↓ request · Esc returns", Style::default().fg(MUTED)),
+        Span::styled(" TELEMETRY ", chip()),
+        Span::styled("  ↑↓ request · Esc returns", ink(Tone::Muted)),
     ]);
     frame.render_widget(
         Paragraph::new(heading),
@@ -580,7 +662,7 @@ pub(crate) fn expanded(
     instruments.push(Line::from(vec![
         Span::styled(
             format!("{:.1}s", state.pulse.elapsed_ms as f64 / 1000.),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ink(Tone::Accent),
         ),
         Span::raw(format!(
             "  {} bytes / {} deliveries",
@@ -616,19 +698,14 @@ pub(crate) fn expanded(
                     request.elapsed_ms,
                     metric(request.output_tokens)
                 ),
-                Style::default()
-                    .fg(if i == index { Color::Black } else { MUTED })
-                    .bg(if i == index { ACCENT } else { Color::Reset }),
+                if i == index { chip() } else { ink(Tone::Muted) },
             ));
         }
         if notebook.requests.is_empty() {
             instruments.push(muted("No live response measurements yet."));
         }
     }
-    frame.render_widget(
-        Paragraph::new(super::wrap_lines(instruments, left.width)),
-        left,
-    );
+    frame.render_widget(Paragraph::new(wrap(instruments, left.width)), left);
     let mut detail = Vec::new();
     if let Some(request) = selected {
         detail.push(label(format!(
@@ -665,7 +742,7 @@ pub(crate) fn expanded(
             detail.extend(execution(conversation, notebook, notebook.cells.len()));
         }
     }
-    let detail = super::wrap_lines(detail, right.width);
+    let detail = wrap(detail, right.width);
     let used = (detail.len() as u16).min(right.height);
     frame.render_widget(Paragraph::new(detail), right);
     let remaining = right.height.saturating_sub(used + 2);
@@ -689,6 +766,34 @@ pub(crate) fn expanded(
 
 #[cfg(test)]
 mod tests {
+    use super::{changed_paths, wrap};
+    use ratatui::text::Line;
+
+    /// A name is never broken in its middle: the column breaks at the space
+    /// before it.
+    #[test]
+    fn telemetry_wraps_between_words() {
+        let rows = wrap(
+            vec![Line::from("parent 2.1k · helpers 6.2k · helper-tier")],
+            38,
+        );
+        let text: Vec<String> = rows.iter().map(ToString::to_string).collect();
+        assert_eq!(text, ["parent 2.1k · helpers 6.2k ·", "helper-tier"]);
+    }
+
+    /// A changed file is named by its real path, and a new or deleted one
+    /// says so instead of showing git's `b/` or `/dev/null`.
+    #[test]
+    fn changed_files_are_named_by_their_real_paths() {
+        let diff = "--- a/src/greet.ts\n+++ b/src/greet.ts\n@@ -1 +1 @@\n\
+                    --- /dev/null\n+++ b/notes/new.md\n@@ -0,0 +1 @@\n\
+                    --- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n";
+        assert_eq!(
+            changed_paths(diff),
+            ["src/greet.ts", "notes/new.md · new", "old.txt · deleted"]
+        );
+    }
+
     use super::*;
 
     #[test]
