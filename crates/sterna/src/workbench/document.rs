@@ -439,6 +439,27 @@ impl Document {
             } else {
                 vec![("RECORDED".to_string(), Tone::Muted)]
             };
+            // A folded card counts its helpers on its own line; their rows
+            // are inside the card, one click away, never loose beside it.
+            let mut state = state;
+            if let Some(v) = v.filter(|v| !open && !v.helpers.is_empty()) {
+                let count = v.helpers.len();
+                let failed = v
+                    .helpers
+                    .iter()
+                    .filter(|h| !h.outcome.ok && !h.outcome.text.is_empty())
+                    .count();
+                let mut said = vec![(
+                    format!("{count} helper{} ", if count == 1 { "" } else { "s" }),
+                    Tone::Helper,
+                )];
+                if failed > 0 {
+                    said.push((format!("· {failed} failed "), Tone::Failure));
+                }
+                said.push(("· ".to_string(), Tone::Line));
+                said.append(&mut state);
+                state = said;
+            }
             let tone = if failed {
                 Tone::Failure
             } else if running || ui.selected_cell == Some(cell) {
@@ -516,7 +537,6 @@ impl Document {
                     tab,
                     v.and_then(|v| v.changes.as_deref()),
                     v.is_some_and(|v| !v.helpers.is_empty()),
-                    inner,
                     id,
                 );
                 if v.is_some_and(|v| v.origin != crate::abi::Origin::AuthoredCell) {
@@ -631,17 +651,13 @@ impl Document {
                     RowKind::CardBottom,
                 );
             }
-            if let Some(v) = v {
-                // A folded card keeps its helper calls in view, under it.
-                if !open {
-                    d.helpers(cell, v, s, ui, width, id);
-                }
-                if let Some(answer) = v.returned.as_ref() {
-                    let answer =
-                        crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
-                    d.blank(id);
-                    d.answer(&answer, v, cell, s, last_assistant == Some(idx), room, id);
-                }
+            if let Some(v) = v
+                && let Some(answer) = v.returned.as_ref()
+            {
+                let answer =
+                    crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
+                d.blank(id);
+                d.answer(&answer, v, cell, s, last_assistant == Some(idx), room, id);
             }
             d.blank(id);
         }
@@ -843,21 +859,17 @@ impl Document {
             let mut chips = Vec::new();
             if files > 0 {
                 chips.push((
-                    "show the diff".to_string(),
+                    "Show the diff".to_string(),
                     Action::Tab(cell, CellTab::Diff),
                     false,
                 ));
                 chips.push((
-                    "commit this".to_string(),
+                    "Commit this".to_string(),
                     Action::Insert("commit this".into()),
                     false,
                 ));
             }
-            chips.push((
-                "full output".to_string(),
-                Action::Tab(cell, CellTab::Output),
-                false,
-            ));
+            // The card's own Full output tab is the route to the output.
             if !chips.is_empty() {
                 self.chips(chips, id);
             }
@@ -1542,7 +1554,6 @@ impl Document {
         current: CellTab,
         changes: Option<&str>,
         helpers: bool,
-        width: usize,
         id: usize,
     ) {
         // A tab is offered only when it has something behind it: a cell
@@ -1559,22 +1570,17 @@ impl Document {
         if helpers {
             tabs.push(("Helpers".to_string(), CellTab::Helpers));
         }
-        let open_diff = if changed { OPEN_DIFF } else { "" };
+        // The Changes tab is the route to the diff; a second link beside
+        // it opened the same thing.
         let text = tabs
             .iter()
             .map(|(label, _)| format!("⟨ {label} ⟩ "))
             .collect::<String>();
-        let pad = width
-            .saturating_sub(span_width(&text))
-            .saturating_sub(open_diff.chars().count() + 1);
         self.emit(
             Row {
-                text: format!("{text}{}{open_diff}", " ".repeat(pad)),
+                text: text.trim_end().to_string(),
                 tone: Tone::Normal,
-                spans: vec![
-                    (" ".repeat(pad), Tone::Normal),
-                    (open_diff.into(), Tone::Muted),
-                ],
+                spans: Vec::new(),
                 links: Vec::new(),
                 tabs,
                 chips: Vec::new(),
@@ -1935,8 +1941,6 @@ impl Document {
         }
     }
 }
-const OPEN_DIFF: &str = "open diff ↗";
-
 /// How many files a Scout's report names: its `path:line` spans, and the
 /// paths a dissection's `## Files` names without a line.
 fn named_files(report: &str) -> usize {

@@ -1,5 +1,5 @@
 use super::{
-    Action, CellTab, Document, Geometry, Tone, Workbench, chrome,
+    Action, Document, Geometry, Tone, Workbench, chrome,
     document::{RowKind, clip},
     theme, voice,
 };
@@ -571,8 +571,6 @@ pub fn render(
         // around them does.
         g.hits.retain(|(r, _)| !r.intersects(area));
         crate::tui::telemetry::expanded(f, area, c, _served, n, s);
-        // Drawn with colours of its own: they are taken through the look.
-        super::look::adopt(f.buffer_mut(), area, super::look::get());
         let back = "Esc · Back";
         let w = chrome::width(back) + 4;
         if area.width > w + 2 && area.height > 0 {
@@ -712,22 +710,7 @@ fn draw_row(
                     .iter()
                     .map(|(label, tab)| (label.clone(), Action::Tab(cell, *tab), current == *tab))
                     .collect();
-                let x = chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
-                // Whatever the strip left over -- the route to the whole diff.
-                let rest: String = r.spans.iter().map(|(t, _)| t.as_str()).collect();
-                let rest = rest.trim_start();
-                let w = chrome::width(rest);
-                if x + w < limit {
-                    button(
-                        f,
-                        g,
-                        Rect::new(limit - w, area.y, w, 1),
-                        rest,
-                        Action::Tab(cell, CellTab::Diff),
-                        false,
-                        t,
-                    );
-                }
+                chrome::chips(f, g, inner_x, area.y, limit, &tabs, ui.press, t);
             } else if !r.chips.is_empty() {
                 chrome::chips(f, g, inner_x, area.y, limit, &r.chips, ui.press, t);
             } else {

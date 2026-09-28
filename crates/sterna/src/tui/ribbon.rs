@@ -199,7 +199,10 @@ pub(super) fn lines(width: usize, height: usize, state: &ScreenState) -> Vec<Lin
     } else {
         state.animation_frame.wrapping_mul(SPEED)
     };
-    let ink = Style::default().fg(state.theme.accent());
+    // The workbench's accent on this ground, without its weight: the
+    // first row adds the weight below.
+    let ink = crate::workbench::tone_style(crate::workbench::Tone::Accent, state.theme)
+        .remove_modifier(Modifier::BOLD);
     (0..height)
         .map(|index| {
             let offset = index * 2;
@@ -443,14 +446,17 @@ mod tests {
         }
     }
 
+    /// The band is inked in the workbench's accent for the theme -- the
+    /// one that reads on this terminal's ground -- and never fills a slab.
     #[test]
     fn every_theme_inks_the_band_with_its_own_accent_and_no_background() {
         for theme in Theme::ALL {
+            let accent = crate::workbench::tone_style(crate::workbench::Tone::Accent, theme).fg;
             for line in lines(48, 2, &theme_state(theme, 5, false, vec![])) {
                 for span in &line.spans {
-                    assert_eq!(span.style.fg, Some(theme.accent()), "{theme:?} off-theme");
-                    assert_eq!(
-                        span.style.bg, None,
+                    assert_eq!(span.style.fg, accent, "{theme:?} off-theme");
+                    assert!(
+                        matches!(span.style.bg, None | Some(ratatui::style::Color::Reset)),
                         "{theme:?} filled a slab; Mono would be a searchlight"
                     );
                 }

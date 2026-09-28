@@ -199,6 +199,18 @@ impl Geometry {
             .map(|(r, _)| *r)
     }
 }
+/// A tone as the workbench paints it in `theme`, for a surface drawn
+/// outside the workbench (telemetry) that must keep the same roles.
+pub(crate) fn tone_style(tone: Tone, theme: crate::tui::Theme) -> ratatui::style::Style {
+    theme::style(tone, theme)
+}
+
+/// The workbench's one filled style: a chosen chip, readable ink on the
+/// accent.
+pub(crate) fn chip_style(theme: crate::tui::Theme) -> ratatui::style::Style {
+    theme::chip_on(theme)
+}
+
 pub(crate) fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
 }

@@ -247,14 +247,38 @@ fn code_public_explanation_and_results_remain_readable() {
                 .any(|(t, tone)| t.contains("99 / 99") && *tone == Tone::Normal)
     }));
 }
+/// A folded card counts its helpers on its own line and keeps their rows
+/// inside it: a helper row left under a folded card sat outside the card's
+/// edge, beside work it no longer showed. Opening the card shows them.
 #[test]
-fn collapsed_cell_keeps_helper_contributions() {
+fn a_folded_card_counts_its_helpers_and_keeps_them_inside() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     u.collapsed.insert(1);
-    let t = words(&doc(&c, &n, &s, &u));
+    let d = doc(&c, &n, &s, &u);
+    let t = words(&d);
     assert!(!t.contains("const result"));
-    assert!(t.contains("No failing tests"));
+    assert!(!t.contains("No failing tests"), "{t}");
+    let title = d
+        .rows
+        .iter()
+        .find(|r| {
+            matches!(
+                r.kind,
+                sterna::workbench::RowKind::CardTop { open: false, .. }
+            )
+        })
+        .expect("the folded card");
+    let sterna::workbench::RowKind::CardTop { right, .. } = &title.kind else {
+        unreachable!()
+    };
+    assert!(
+        right.iter().any(|(word, _)| word.contains("1 helper")),
+        "{right:?}"
+    );
+    u.collapsed.clear();
+    u.expanded.insert(1);
+    assert!(words(&doc(&c, &n, &s, &u)).contains("No failing tests"));
 }
 #[test]
 fn local_notices_are_not_model_conversation() {
@@ -3796,7 +3820,7 @@ fn the_diff_chip_is_a_view_of_its_own_cell() {
     s.activity = Activity::Complete;
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
-    assert!(screen.contains("show the diff"), "{screen}");
+    assert!(screen.contains("Show the diff"), "{screen}");
     let actions: Vec<Action> = u.geometry.hits.iter().map(|(_, a)| a.clone()).collect();
     assert!(
         !actions.contains(&Action::Command("/diff".into())),
@@ -4825,9 +4849,9 @@ fn a_light_terminal_gets_colours_that_read_on_it() {
     }
 }
 
-/// The instruments are drawn by older code with colours of their own; they
-/// read on a light terminal like everything else, and a terminal without
-/// true colour is sent none of theirs either.
+/// The instruments are drawn in the workbench's roles: they read on a
+/// light terminal like everything else, use no named colour of their own,
+/// and a terminal without true colour is sent no 24-bit colour.
 #[test]
 fn the_instruments_read_on_a_light_terminal_and_send_no_rgb_without_it() {
     use sterna::workbench::look::{LIGHT_GROUND, contrast};
@@ -5289,8 +5313,9 @@ fn page_down_never_passes_a_row_it_did_not_show() {
     assert!(presses > 1, "Advanced takes more than one page");
 }
 
-/// Enter on a field nobody typed in saves nothing: it once wrote the word
-/// the field opened with, which made a host named "none".
+/// Enter on a field nobody typed in saves nothing: it once wrote the value
+/// the field opened with, which turned Sterna's own default into an
+/// override.
 #[test]
 fn enter_on_an_untouched_field_saves_nothing() {
     let (t, mut s, p) = prefs();
@@ -5298,11 +5323,11 @@ fn enter_on_an_untouched_field_saves_nothing() {
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     draw(&c, &n, &s, &mut u, 110, 40);
-    for ch in "allowed hosts".chars() {
+    for ch in "ask decide".chars() {
         key(&mut u, &mut s, &n, KeyCode::Char(ch));
     }
     draw(&c, &n, &s, &mut u, 110, 40);
-    click_item(&mut u, &mut s, &n, "setting:sandbox.hosts");
+    click_item(&mut u, &mut s, &n, "setting:ask.decide_above");
     draw(&c, &n, &s, &mut u, 110, 40);
     key(&mut u, &mut s, &n, KeyCode::Enter);
     let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
@@ -5312,8 +5337,30 @@ fn enter_on_an_untouched_field_saves_nothing() {
         t.0.join(".sterna/config.toml"),
     ] {
         let saved = std::fs::read_to_string(&file).unwrap_or_default();
-        assert!(!saved.contains("hosts"), "{}: {saved}", file.display());
+        assert!(
+            !saved.contains("decide_above"),
+            "{}: {saved}",
+            file.display()
+        );
     }
+}
+
+/// The proxy's lists have one editor, the Hosts sheet: the settings row
+/// opens it rather than a second field with a different timing.
+#[test]
+fn the_hosts_row_in_settings_opens_the_hosts_sheet() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 120, 60);
+    for ch in "allowed hosts".chars() {
+        key(&mut u, &mut s, &n, KeyCode::Char(ch));
+    }
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "setting:sandbox.hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
 }
 
 /// The rail names the fact it shows: Sterna's web tools, set up or not.
