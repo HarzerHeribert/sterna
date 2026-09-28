@@ -2737,7 +2737,7 @@ fn motion_provider() -> (String, mpsc::Sender<()>) {
                         ("the check is cheap, so I will run it ", 500),
                         ("and report what it says.\n\n", 500),
                         (
-                            "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
+                            "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nawait write({path:'guard.txt',content:'3 of 3'});\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
                             0,
                         ),
                     ]
@@ -2793,7 +2793,18 @@ fn walk_a_turn(bird: bool) {
     } else {
         &[]
     };
-    let mut app = App::start_in(&base, false, Some("helper-tier"), &[], &|_| {}, colours);
+    // The check reads work: the turn writes a file, and every answer that
+    // changed something is checked.
+    let seed = |root: &std::path::Path| {
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        std::fs::write(
+            root.join(".sterna/config.toml"),
+            "[helpers]\nacceptance_list = false\nmodel = \"helper-tier\"\npreflight = true\n\
+             preflight_scope = \"always\"\ncompletion_check = \"always\"\n",
+        )
+        .unwrap();
+    };
+    let mut app = App::start_in(&base, false, None, &[], &seed, colours);
     app.ready();
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
