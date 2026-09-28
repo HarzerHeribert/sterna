@@ -604,7 +604,10 @@ pub fn render(
     }
     if ui.is_local() {
         super::sheets::build(ui, s, n);
-        surface(f, &mut g, a, s, ui);
+        // Between the session bar and the composer: a sheet sits above the
+        // composer, as tall as what it holds.
+        let room = Rect::new(a.x, a.y + header, a.width, body_height + queue_height);
+        surface(f, &mut g, a, room, s, ui);
     }
     g.screen = Some(f.buffer_mut().clone());
     if let Some(sel) = s.selection {
@@ -1303,17 +1306,42 @@ fn dock_bottom(
 }
 /// A local surface: modal and framed, drawn by the one sheet component --
 /// the same head, the same foot and the same keys every time.
-fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &mut Workbench) {
+fn surface(
+    f: &mut Frame<'_>,
+    g: &mut Geometry,
+    a: Rect,
+    room: Rect,
+    s: &ScreenState,
+    ui: &mut Workbench,
+) {
     let t = s.theme;
-    let area = if a.width >= 100 && a.height >= 25 {
-        Rect::new(a.x + 2, a.y + 1, a.width - 4, a.height - 2)
-    } else {
-        a
+    // **A sheet is as tall as what it holds**, drawn above the composer so
+    // the draft and the session bar stay in view; a sheet with more than
+    // the room scrolls inside it. On a screen too short for that it takes
+    // the whole screen, as before.
+    let margin = u16::from(a.width >= 100) * 2;
+    let area = match ui.sheets.last() {
+        Some(layer) if room.height >= 12 && room.width >= 24 => {
+            let inner_width = room.width.saturating_sub(2 * margin + 4);
+            let wanted = super::sheet::wanted_height(&layer.sheet, inner_width) + 2;
+            let height = wanted.clamp(8, room.height);
+            Rect::new(
+                room.x + margin,
+                room.bottom() - height,
+                room.width.saturating_sub(2 * margin),
+                height,
+            )
+        }
+        _ if a.width >= 100 && a.height >= 25 => {
+            Rect::new(a.x + 2, a.y + 1, a.width - 4, a.height - 2)
+        }
+        _ => a,
     };
-    // A local surface is modal: the conversation behind it is not
-    // half-visible around its edges, which would read as damage.
-    f.render_widget(Clear, a);
-    f.buffer_mut().set_style(a, theme::style(Tone::Normal, t));
+    // A local surface is modal: what it covers is cleared, never
+    // half-visible through it, and nothing outside it takes a click.
+    f.render_widget(Clear, area);
+    f.buffer_mut()
+        .set_style(area, theme::style(Tone::Normal, t));
     g.hits.clear();
     g.local = Some(area);
     let framed = area.width >= 12 && area.height >= 6;

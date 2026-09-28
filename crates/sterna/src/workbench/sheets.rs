@@ -83,6 +83,8 @@ fn between_turns(item: Item) -> Item {
 /// The sandbox: its level, how it is enforced, and what was answered for
 /// the session, on one sheet the level chip opens.
 fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
+    // Each level is one line; what it lets run is on the card.
+    sheet.card = true;
     sheet.title = "Sandbox".into();
     sheet.crumbs = vec!["how much runs without asking".into()];
     let now = s.level.level();
@@ -229,7 +231,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         (
             "F2",
-            "settings · choices save themselves; most apply now",
+            "settings · a choice saves itself; its card says when it applies",
             Some(Action::Settings),
         ),
         ("F3", "which model answers", Some(Action::Models)),

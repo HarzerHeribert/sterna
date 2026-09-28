@@ -121,6 +121,13 @@ the turn and ends the session.
 
 ## Sheets
 
+A sheet opens above the composer and is as tall as what it holds, up to
+the room there is; the draft and the session bar stay in view, and what it
+covers does not show through. On Settings and the Sandbox sheet each row
+is one line -- a name and its choices -- and the focused row is explained
+in a card at the foot: what it means, when a change applies (top edge) and
+where its value comes from (bottom edge).
+
 Setup is a designed sheet, never a one-line prompt: `/login` (a
 subscription, an API key or your own endpoint, each with its warnings),
 `/key`, `/models` (the model navigator: main, helpers and subagents kept

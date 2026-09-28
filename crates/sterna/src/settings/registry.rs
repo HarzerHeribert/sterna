@@ -223,7 +223,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "session.effort",
         label: "Reasoning effort",
-        description: "How hard the model thinks before answering. Higher is slower and costs more. `default` asks GPT models for low effort (measured faster at equal results) and leaves every other provider's own setting alone, which is not the same as clearing an override you saved.",
+        description: "How hard the model thinks before answering. Higher is slower and costs more. `auto` lets the model choose: GPT models are asked for low effort (measured faster at equal results), and every other provider keeps its own setting.",
         kind: Kind::Choice,
         choices: EFFORT,
         basic: true,

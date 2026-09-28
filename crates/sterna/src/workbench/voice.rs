@@ -133,7 +133,7 @@ pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
             Needs::Nothing,
         ),
         (
-            "F2 opens settings · choices save themselves; most apply now",
+            "F2 opens settings · F3 which model answers, and how hard",
             Needs::Nothing,
         ),
         ("Ctrl-T opens telemetry · Esc closes it", Needs::Nothing),

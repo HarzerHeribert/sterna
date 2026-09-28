@@ -88,6 +88,18 @@ pub struct Item {
     /// accent, or the terminal's own ink for one with none (mono), so every
     /// name in the list starts in one column.
     pub swatch: Option<Tone>,
+    /// What the card says on its edges when this row has the focus, on a
+    /// sheet that draws one ([`Sheet::card`]).
+    pub card: Option<Card>,
+}
+
+/// The edges of the card a focused row is explained in: when a change
+/// applies on the top edge, where the value comes from on the bottom one.
+/// The card's body is the row's detail.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Card {
+    pub when: String,
+    pub source: String,
 }
 
 impl Item {
@@ -103,6 +115,7 @@ impl Item {
             inline: false,
             tone: Tone::Normal,
             swatch: None,
+            card: None,
         }
     }
     /// Text that is read, never chosen.
@@ -153,6 +166,16 @@ impl Item {
     #[must_use]
     pub fn act(mut self, action: Action) -> Self {
         self.action = Some(action);
+        self
+    }
+    /// The card's edges for this row: when a change applies, and where the
+    /// value comes from.
+    #[must_use]
+    pub fn card(mut self, when: impl Into<String>, source: impl Into<String>) -> Self {
+        self.card = Some(Card {
+            when: when.into(),
+            source: source.into(),
+        });
         self
     }
     #[must_use]
@@ -258,6 +281,11 @@ pub struct Sheet {
     /// Columns kept free on the right for the owner to draw into (the
     /// theme preview).
     pub aside: u16,
+    /// **One line per row, and one card for the row the focus is on.** The
+    /// rows keep no detail lines; the focused row's meaning, when a change
+    /// applies and where its value comes from are in a card above the foot,
+    /// so a long list reads as a list and nothing is said twice.
+    pub card: bool,
     /// Body lines shown at the last draw; PgUp and PgDn move this far.
     pub page: usize,
     /// Body lines in all at the last draw, which bounds the wheel.
@@ -1107,7 +1135,21 @@ pub fn draw(
     // The foot takes the last two lines when there is room for them.
     let foot = bottom.saturating_sub(2);
     let has_foot = foot > y + 1;
-    let body_bottom = if has_foot { foot } else { bottom };
+    let mut body_bottom = if has_foot { foot } else { bottom };
+    // The card keeps one height whichever row is focused, so the list never
+    // jumps as the focus moves; it gives way to the list on a short screen.
+    let card_h = card_height(sheet, area.width).min(body_bottom.saturating_sub(y + 3));
+    if card_h >= 3 {
+        body_bottom -= card_h;
+        if let Some(item) = sheet.focused() {
+            draw_card(
+                f,
+                Rect::new(area.x, body_bottom, area.width, card_h),
+                item,
+                t,
+            );
+        }
+    }
     let list_width = area.width.saturating_sub(sheet.aside);
     let body = Rect::new(area.x, y, list_width, body_bottom.saturating_sub(y));
     let aside = (sheet.aside > 0 && area.width > sheet.aside + 10).then(|| {
@@ -1182,6 +1224,114 @@ pub fn draw(
     Drawn { body, aside }
 }
 
+/// The rows a sheet needs to show everything without scrolling, `width`
+/// wide inside its frame: the head, its sections and tools, every body line,
+/// the card and the foot. The surface is made no taller than this.
+#[must_use]
+pub fn wanted_height(sheet: &Sheet, width: u16) -> u16 {
+    let head = 1
+        + u16::from(!sheet.sections.is_empty() || sheet.query.is_some())
+        + u16::from(!sheet.tools.is_empty())
+        + 1;
+    let list_width = width.saturating_sub(sheet.aside);
+    let body = layout_lines(sheet, list_width as usize).len() as u16;
+    head + body.max(1) + card_height(sheet, width) + 2
+}
+
+/// The card's body: the focused row's detail, then why it cannot be used.
+fn card_lines(item: &Item, width: u16) -> Vec<String> {
+    let room = (width as usize).saturating_sub(4).max(8);
+    let mut lines = super::view::wrap_words(&item.detail, room);
+    lines.retain(|line| !line.is_empty());
+    if let Some(reason) = &item.disabled {
+        lines.extend(super::view::wrap_words(reason, room));
+    }
+    lines
+}
+
+/// The card's height on this sheet: the most any focusable row needs, up to
+/// five lines of text between its edges; nothing when no row says anything.
+fn card_height(sheet: &Sheet, width: u16) -> u16 {
+    if !sheet.card {
+        return 0;
+    }
+    let most = sheet
+        .items
+        .iter()
+        .filter(|item| item.focusable())
+        .map(|item| card_lines(item, width).len())
+        .max()
+        .unwrap_or(0);
+    if most == 0 { 0 } else { most.min(5) as u16 + 2 }
+}
+
+/// The focused row's card: its name and when a change applies on the top
+/// edge, what it means inside, and where its value comes from on the bottom
+/// edge.
+fn draw_card(f: &mut Frame<'_>, r: Rect, item: &Item, t: Theme) {
+    let width = r.width as usize;
+    if width < 12 || r.height < 3 {
+        return;
+    }
+    let edges = item.card.clone().unwrap_or_default();
+    let edge = |f: &mut Frame<'_>, y: u16, left: &str, words: &str, right: &str, tone: Tone| {
+        let words = clip(words, width.saturating_sub(8));
+        let said = if words.is_empty() {
+            String::new()
+        } else {
+            format!(" {words} ")
+        };
+        let fill = width.saturating_sub(2 + chrome::width(&said) as usize + 1);
+        chrome::text(f, Rect::new(r.x, y, 2, 1), left, Tone::Line, t);
+        let x = r.x + 2;
+        chrome::text(f, Rect::new(x, y, chrome::width(&said), 1), &said, tone, t);
+        let x = x + chrome::width(&said);
+        chrome::text(
+            f,
+            Rect::new(x, y, fill as u16, 1),
+            &"─".repeat(fill),
+            Tone::Line,
+            t,
+        );
+        chrome::text(f, Rect::new(r.right() - 1, y, 1, 1), right, Tone::Line, t);
+    };
+    // The name on the left of the top edge; when it applies on the right.
+    edge(f, r.y, "╭─", &item.title, "╮", Tone::Strong);
+    if !edges.when.is_empty() {
+        let when = format!(" {} ", clip(&edges.when, width / 3));
+        let w = chrome::width(&when);
+        chrome::text(
+            f,
+            Rect::new(r.right().saturating_sub(w + 2), r.y, w, 1),
+            &when,
+            Tone::Muted,
+            t,
+        );
+    }
+    let body: Vec<String> = card_lines(item, r.width);
+    let inside = r.height.saturating_sub(2) as usize;
+    for row in 0..inside {
+        let y = r.y + 1 + row as u16;
+        chrome::text(f, Rect::new(r.x, y, 1, 1), "│", Tone::Line, t);
+        chrome::text(f, Rect::new(r.right() - 1, y, 1, 1), "│", Tone::Line, t);
+        if let Some(line) = body.get(row) {
+            let tone = if item.disabled.is_some() && row + 1 == body.len() {
+                Tone::Warning
+            } else {
+                Tone::Normal
+            };
+            chrome::text(
+                f,
+                Rect::new(r.x + 2, y, r.width.saturating_sub(4), 1),
+                line,
+                tone,
+                t,
+            );
+        }
+    }
+    edge(f, r.bottom() - 1, "╰─", &edges.source, "╯", Tone::Muted);
+}
+
 /// One drawn line of the body: which item it belongs to, and whether it is
 /// the item's title line or one of its detail lines.
 enum Line {
@@ -1243,6 +1393,7 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
                     lines.push(Line::Text(i, line));
                 }
             }
+            _ if sheet.card => lines.push(Line::Title(i)),
             _ => {
                 lines.push(Line::Title(i));
                 // A reason shared by a run of rows -- a locked account's
@@ -1334,6 +1485,10 @@ fn draw_body(
     sheet.scroll = sheet
         .scroll
         .min(lines.len().saturating_sub(page.saturating_sub(1)));
+    // Everything fits: nothing scrolls, and no cue takes a line.
+    if lines.len() <= page {
+        sheet.scroll = 0;
+    }
     let above = sheet.scroll;
     let mut room = height;
     let mut y = body.y;

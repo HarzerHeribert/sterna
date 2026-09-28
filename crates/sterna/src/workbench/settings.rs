@@ -477,6 +477,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     p.category = sheet.section.min(CATEGORIES.len() - 1);
     p.query = sheet.query.clone().unwrap_or_default();
     sheet.title = "Settings".into();
+    sheet.card = true;
     sheet.crumbs = vec![CATEGORIES[p.category].to_string()];
     sheet.tools = vec![
         (
@@ -506,7 +507,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     // the rows that wait for the next session say so themselves.
     let mut items = vec![
         Item::info(format!(
-            "{} · choices save themselves; most apply now",
+            "{} · choices save themselves",
             saved_in(&p.path, p.scope)
         ))
         .tone(super::Tone::Muted),
@@ -523,12 +524,14 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
         }
         let id = format!("setting:{}", spec.key);
         let effective = p.effective(spec.key);
+        // The row is one line; the card says what it means, when a change
+        // applies and where the value comes from.
         let when = if crate::settings::applies_now(spec.key) {
-            ""
+            "applies now"
         } else {
-            " · next session"
+            "from the next session"
         };
-        let mut detail = format!("{}{when}", spec.description);
+        let mut detail = spec.description.to_string();
         // Editing Global under a project that sets the key changes nothing
         // here, and the row says so before the save rather than after.
         if p.scope == Scope::Global && p.origin(spec.key) == "project" {
@@ -538,10 +541,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             );
         }
         let is_focused = focused.as_deref() == Some(id.as_str());
-        if is_focused {
-            detail.push_str(" · ");
-            detail.push_str(&whose(p, spec.key, &effective));
-        }
+        let source = whose(p, spec.key, &effective);
         let options = Preferences::choices(spec);
         let editing = p
             .editing
@@ -625,7 +625,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             }
             Item::value(id, spec.label, values, current).detail(detail)
         };
-        items.push(item.disabled(disabled));
+        items.push(item.card(when, source).disabled(disabled));
         if spec.key == "helpers.enabled"
             && effective == "true"
             && p.effective("helpers.model") == "unset"

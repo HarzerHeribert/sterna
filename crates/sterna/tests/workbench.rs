@@ -1393,11 +1393,11 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
     let b = draw(&c, &n, &s, &mut u, 80, 30);
     let screen = text(&b);
     assert!(screen.contains("fixture-helper"), "{screen}");
-    // The tab row still names the session's main model; the *list* holds
-    // one row, and the model the query excluded is not among them.
-    // `fixture-main` is on the sheet once, in the line saying what Main
-    // runs on now, and nowhere in the list.
-    assert_eq!(screen.matches("fixture-main").count(), 1, "{screen}");
+    // The *list* holds one row, and the model the query excluded is not
+    // among them: `fixture-main` is on the sheet once, in the line saying
+    // what Main runs on now. (The session bar above the sheet names it too.)
+    let sheet: String = sheet_rows(&screen, "MODELS").join("\n");
+    assert_eq!(sheet.matches("fixture-main").count(), 1, "{screen}");
     assert!(!screen.contains("unavailable-model"), "{screen}");
 }
 
@@ -2662,19 +2662,49 @@ fn every_sheet_speaks_one_grammar() {
     assert!(u.sheets.is_empty(), "Esc at the root closes");
 }
 
-/// A panel the session sends opens as a sheet over the conversation, and
-/// nothing of the transcript behind it shows through.
+/// A panel the session sends opens as a sheet above the composer, as tall
+/// as what it holds, and nothing of the conversation it covers shows
+/// through it.
 #[test]
-fn a_session_panel_opens_as_a_sheet_that_erases_the_transcript() {
+fn a_session_panel_opens_as_a_sheet_that_erases_what_it_covers() {
     let (mut c, n, mut s) = fixture();
     c.messages
-        .push(Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(60)));
+        .push(Message::text(Role::User, "STALE_TRANSCRIPT ".repeat(200)));
     s.panel = Some(Panel::text("Models", "one\ntwo"));
     let mut u = Workbench::default();
     u.absorb_panel(&mut s);
     let shown = text(&draw(&c, &n, &s, &mut u, 200, 40));
-    assert!(shown.contains("MODELS"), "{shown}");
-    assert!(!shown.contains("STALE_TRANSCRIPT"), "{shown}");
+    let sheet = sheet_rows(&shown, "MODELS");
+    assert!(sheet[1].contains("MODELS"), "{shown}");
+    assert!(sheet.len() < 15, "as tall as what it holds: {shown}");
+    assert!(
+        sheet.iter().all(|row| !row.contains("STALE_TRANSCRIPT")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("❯ Describe the next step"),
+        "the composer stays: {shown}"
+    );
+}
+
+/// The rows of the open sheet's frame, from its top edge to its bottom one:
+/// the edge is the line above the sheet's `TITLE`.
+fn sheet_rows(screen: &str, title: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains(&format!("│ {title}")))
+        .expect("the sheet's title")
+        - 1;
+    let bottom = top
+        + lines[top..]
+            .iter()
+            .position(|l| l.trim_start().starts_with("╰"))
+            .expect("the sheet's bottom edge");
+    lines[top..=bottom]
+        .iter()
+        .map(|l| (*l).to_string())
+        .collect()
 }
 
 /// A panel the session sends again under the same title -- a sign-in that
@@ -3111,7 +3141,9 @@ fn settings_show_what_the_session_is_using_now() {
         .find(|item| item.id == "setting:session.effort")
         .unwrap()
         .clone();
-    assert!(row.detail.contains("not saved"), "{}", row.detail);
+    // Where the value comes from is on the card's bottom edge.
+    let source = row.card.map(|card| card.source).unwrap_or_default();
+    assert!(source.contains("not saved"), "{source}");
 }
 
 /// The sandbox level is global only: in Project scope its row says why it
@@ -5566,5 +5598,47 @@ fn mains_effort_is_chosen_where_its_model_is() {
     assert_eq!(
         click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3))),
         Effect::Command("/effort high".into())
+    );
+}
+
+/// **One line per row, and one card for the focused row.** A setting's row
+/// is its name and its choices; what it means, when a change applies and
+/// where the value comes from are on the card at the sheet's foot, for the
+/// row the focus is on.
+#[test]
+fn a_settings_row_is_one_line_and_the_card_explains_the_focused_one() {
+    let (_t, s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    u.top_mut()
+        .unwrap()
+        .sheet
+        .focus_id("setting:session.effort");
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    let sheet = sheet_rows(&screen, "SETTINGS");
+    let at = |needle: &str| sheet.iter().position(|row| row.contains(needle));
+    let effort = at("Reasoning effort").expect("the effort row");
+    let theme = at("Theme").expect("the theme row");
+    // The rows are one line each: nothing of a description between them.
+    assert!(
+        sheet[effort + 1..theme]
+            .iter()
+            .all(|row| !row.contains("How hard the model thinks")),
+        "{screen}"
+    );
+    let card = at("╭─ Reasoning effort").expect("the card names the focused row");
+    assert!(card > theme, "the card is below the rows: {screen}");
+    assert!(sheet[card].contains("applies now"), "{screen}");
+    assert!(
+        sheet[card + 1].contains("How hard the model thinks"),
+        "{screen}"
+    );
+    assert!(
+        sheet[card..]
+            .iter()
+            .any(|row| row.contains("╰─ auto · Sterna's own default")),
+        "{screen}"
     );
 }
