@@ -332,9 +332,9 @@ impl Workbench {
             ["/fullscreen"] => {
                 s.fullscreen = !s.fullscreen;
                 s.note(if s.fullscreen {
-                    "Fullscreen. Ctrl-F or /fullscreen restores the chrome."
+                    "Fullscreen: the conversation and the composer only. Ctrl-F or /fullscreen leaves it."
                 } else {
-                    "Chrome restored."
+                    "Fullscreen off."
                 });
                 true
             }

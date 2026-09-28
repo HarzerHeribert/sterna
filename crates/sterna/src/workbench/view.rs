@@ -1070,8 +1070,8 @@ fn dock_top(
     } else if s.mouse_off {
         Some("Mouse released · Ctrl-G captures again".to_string())
     } else if s.fullscreen {
-        // With the chrome gone, the way back stays in view.
-        Some("Fullscreen · Ctrl-F restores".to_string())
+        // With the bars gone, the way back stays in view.
+        Some("Fullscreen · Ctrl-F leaves it".to_string())
     } else {
         None
     }

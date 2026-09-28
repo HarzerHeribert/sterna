@@ -146,7 +146,7 @@ pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
             Needs::Turn,
         ),
         (
-            "Ctrl-B shows or hides the sidebar · Ctrl-F hides the chrome",
+            "Ctrl-B shows or hides the sidebar · Ctrl-F shows only the conversation",
             Needs::Nothing,
         ),
         (

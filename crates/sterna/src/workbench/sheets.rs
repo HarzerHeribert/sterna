@@ -245,7 +245,11 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
             Some(Action::Telemetry),
         ),
         ("Ctrl-B", "show or hide the sidebar", None),
-        ("Ctrl-F", "hide or restore the chrome", None),
+        (
+            "Ctrl-F",
+            "fullscreen: the conversation and the composer only",
+            None,
+        ),
         (
             "Ctrl-G",
             "release the mouse to the terminal, and take it back",

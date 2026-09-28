@@ -1519,11 +1519,11 @@ fn fullscreen_says_the_way_back_and_escape_takes_it() {
         !screen.contents().contains("STERNA /")
     });
     // Ctrl-F says what it did, as /fullscreen does, and the way back stays.
-    app.contains("Fullscreen. Ctrl-F or /fullscreen restores the chrome.");
-    app.contains("Ctrl-F restores");
+    app.contains("Fullscreen: the conversation and the composer only.");
+    app.contains("Ctrl-F leaves it");
     app.send(b"\x1b");
     app.contains("STERNA /");
-    app.contains("Chrome restored.");
+    app.contains("Fullscreen off.");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
