@@ -1476,6 +1476,250 @@ fn turns_are_labelled_and_the_persons_words_stand_under_a_bar() {
     assert!(screen.contains("⠿ sterna"), "{screen}");
 }
 
+/// Your turn shows what you wrote. The task's context -- the Scout's brief,
+/// the acceptance list, the mode -- rides in the same message for the model,
+/// and drawn under your name it read as if you had written it.
+#[test]
+fn your_turn_shows_only_what_you_wrote() {
+    let (mut c, n, s) = fixture();
+    c.messages[0].content.push(Block::Text(
+        "## Request (verbatim, authoritative)\nRespect reduced motion.\n\n## Scouting record\nscout (dissection) · 3 of 5 sections answered".into(),
+    ));
+    c.messages[0].content.push(Block::Image {
+        media_type: "image/png".into(),
+        data: String::new(),
+    });
+    let d = doc(&c, &n, &s, &Workbench::default());
+    let yours: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::You)
+        .map(|r| r.text.as_str())
+        .collect();
+    let yours = yours.join("\n");
+    assert!(
+        yours.contains("Respect reduced motion and the terminal background."),
+        "{yours}"
+    );
+    assert!(yours.contains("[image attachment]"), "{yours}");
+    assert!(!words(&d).contains("Scouting record"), "{}", words(&d));
+    assert!(!words(&d).contains("## Request"), "{}", words(&d));
+}
+
+/// The Scout reads the request before the first turn, so it sits under that
+/// request, above the work, as one line; its report opens on a click. Drawn
+/// in full after the cells, it sat under the running work for the whole task.
+#[test]
+fn the_scout_folds_under_the_request_it_read() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Respect reduced motion and the terminal background.".into(),
+        outcome: HelperOutcome {
+            text: "## Tasks\n1. guard — the motion guard reads the setting\n## Files\nsrc/motion.rs:12 — task 1, the guard\nsrc/look.rs — task 1, the ground\n".into(),
+            ok: true,
+            elapsed_ms: 2100,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let mut u = Workbench::default();
+    let d = doc(&c, &n, &s, &u);
+    let scout = d
+        .rows
+        .iter()
+        .position(|r| r.text.contains("PREFLIGHT · SCOUT"))
+        .expect("the Scout is drawn");
+    let card = d
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, sterna::workbench::RowKind::CardTop { .. }))
+        .expect("the cell is drawn");
+    assert!(scout < card, "the Scout sits above the work: {}", words(&d));
+    assert!(
+        d.rows[scout].text.contains("named 2 files"),
+        "{}",
+        d.rows[scout].text
+    );
+    assert!(
+        !words(&d).contains("the motion guard reads"),
+        "{}",
+        words(&d)
+    );
+    assert_eq!(d.rows[scout].action, Some(Action::Scout));
+
+    let mut s = s;
+    let _ = draw(&c, &n, &s, &mut u, 100, 40);
+    click(&mut u, &mut s, &n, Action::Scout);
+    assert!(u.scout);
+    let d = doc(&c, &n, &s, &u);
+    assert!(
+        words(&d).contains("the motion guard reads"),
+        "{}",
+        words(&d)
+    );
+}
+
+/// Prose wraps at a reading width on a wide terminal, where a line of 160
+/// columns is too long to read; a table keeps the whole width, because a cut
+/// row stops being a row.
+#[test]
+fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
+    let sentence = "The generator already tells missing data from a clean result. ";
+    let table = format!("| check | {} |", "x".repeat(120));
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, sentence.repeat(4)),
+            Message::text(
+                Role::Assistant,
+                format!("{}\n\n{table}", sentence.repeat(6)),
+            ),
+        ],
+    };
+    let (_, n, s) = fixture();
+    let n = Notebook {
+        cells: Vec::new(),
+        ..n
+    };
+    let d = Document::build(&c, &n, &s, &Workbench::default(), 160);
+    let prose: Vec<&str> = d
+        .rows
+        .iter()
+        .map(|r| r.text.as_str())
+        .filter(|t| t.contains("generator"))
+        .collect();
+    assert!(prose.len() > 2, "{}", words(&d));
+    for line in &prose {
+        assert!(
+            line.chars().count() <= workbench::READING_WIDTH,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+    }
+    assert!(words(&d).contains(&table), "{}", words(&d));
+}
+
+/// Nothing in the transcript touches the sidebar's rule: the two columns
+/// before it stay empty on every row, even under a table that fills the
+/// transcript's whole width.
+#[test]
+fn the_transcript_keeps_a_gutter_before_the_sidebar() {
+    let (mut c, n, s) = fixture();
+    c.messages
+        .push(Message::text(Role::User, "Show the checks as a table."));
+    c.messages.push(Message::text(
+        Role::Assistant,
+        format!("| check | {} |", "x".repeat(300)),
+    ));
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let rule = lines[1]
+        .iter()
+        .position(|ch| *ch == '┬')
+        .expect("the sidebar's rule meets the header");
+    let body: Vec<&Vec<char>> = lines
+        .iter()
+        .skip(2)
+        .take_while(|l| l.get(rule) == Some(&'│'))
+        .collect();
+    assert!(body.len() > 10, "{screen}");
+    assert!(
+        body.iter()
+            .any(|l| l[..rule].iter().filter(|ch| **ch == 'x').count() > 50),
+        "the table fills the transcript: {screen}"
+    );
+    for line in body {
+        assert_eq!(
+            (line[rule - 2], line[rule - 1]),
+            (' ', ' '),
+            "{}",
+            line.iter().collect::<String>()
+        );
+    }
+}
+
+/// The task's acceptance list is one line of progress: in the sidebar, or
+/// without it as one chip on the dock. Its items cut to the sidebar's width
+/// could not be read, so they live in a panel either one opens, grouped by
+/// what needs attention first. A failure a check found turns the line red.
+#[test]
+fn the_acceptance_list_is_one_line_that_opens_a_grouped_panel() {
+    use sterna::acceptance::{Item, Origin, Status, Verdict};
+    let (c, mut n, mut s) = fixture();
+    n.acceptance = vec![
+        Verdict {
+            item: Item::FileExists {
+                path: "src/motion.rs".into(),
+            },
+            status: Status::Met,
+            evidence: "present, 12 bytes".into(),
+        },
+        Verdict {
+            item: Item::RunExitsZero {
+                command: "cargo test".into(),
+            },
+            status: Status::Open,
+            evidence: String::new(),
+        },
+        Verdict {
+            item: Item::Judge {
+                text: "the guard reads the setting".into(),
+            },
+            status: Status::Open,
+            evidence: String::new(),
+        },
+    ];
+    let mut u = Workbench::default();
+    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(wide.contains("≡ 1 of 3 met ▸"), "{wide}");
+    assert_eq!(
+        wide.matches("≡ 1 of 3 met").count(),
+        1,
+        "one line on screen: {wide}"
+    );
+    assert!(
+        !wide.contains("cargo test"),
+        "the items stay in the panel: {wide}"
+    );
+
+    let narrow = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    assert!(narrow.contains("⟨ ≡ 1 of 3 met ⟩"), "{narrow}");
+    click(&mut u, &mut s, &n, Action::Acceptance);
+    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    for line in [
+        "ACCEPTANCE › 1 of 3 met · from your request only",
+        "OPEN · 2",
+        "○ cargo test exits 0",
+        "↳ checked when the task finishes",
+        "MET · 1",
+        "↳ present, 12 bytes",
+    ] {
+        assert!(panel.contains(line), "{line}: {panel}");
+    }
+    assert!(!panel.contains("NOT MET"), "{panel}");
+    assert!(panel.find("OPEN · 2") < panel.find("MET · 1"), "{panel}");
+
+    // After a check found `cargo test` failing: the line says so, and the
+    // failure heads the panel.
+    n.acceptance[1].status = Status::Unmet;
+    n.acceptance[1].evidence = "exit 101: 2 failed".into();
+    n.acceptance_from = Origin::Scout;
+    let mut u = Workbench::default();
+    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(wide.contains("≡ 1 of 3 met · 1 failed ▸"), "{wide}");
+    click(&mut u, &mut s, &n, Action::Acceptance);
+    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    assert!(panel.contains("from the Scout's look"), "{panel}");
+    assert!(panel.contains("↳ exit 101: 2 failed"), "{panel}");
+    let failed = panel
+        .find("NOT MET · 1")
+        .expect("the failure has its group");
+    assert!(failed < panel.find("OPEN · 1").unwrap(), "{panel}");
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]

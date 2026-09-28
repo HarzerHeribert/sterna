@@ -27,7 +27,7 @@ pub mod voice;
 
 use crate::tui::{Panel, ScreenState};
 pub(crate) use chrome::frame;
-pub use document::{Document, Row, RowKind, Tone};
+pub use document::{Document, READING_WIDTH, Row, RowKind, Tone};
 pub use hosts::HostsSheet;
 pub use input::{Effect, mid_turn};
 pub use models::Navigator;
@@ -62,6 +62,11 @@ pub enum Action {
     /// A helper call's raw record -- its preparation steps and the excerpt
     /// block written for the model -- shown or put away.
     HelperRaw(usize, usize),
+    /// The Scout's whole report, under the request it read, shown or put
+    /// away.
+    Scout,
+    /// The task's acceptance list, whole, on its own sheet.
+    Acceptance,
     Latest,
     Settings,
     Models,
@@ -227,6 +232,8 @@ pub enum Source {
     Keys,
     /// Local notices, newest last.
     Activity,
+    /// The task's acceptance list: each item and what the last check found.
+    Acceptance,
     /// Every theme; `before` is what Esc and Undo go back to.
     Themes {
         before: crate::tui::Theme,
@@ -269,6 +276,8 @@ pub struct Workbench {
     pub helper: Option<(usize, usize)>,
     /// The helper call whose raw record is open.
     pub helper_raw: Option<(usize, usize)>,
+    /// Whether the Scout's report is open under its request.
+    pub scout: bool,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
     pub sheets: Vec<Layer>,

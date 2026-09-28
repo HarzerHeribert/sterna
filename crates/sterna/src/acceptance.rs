@@ -43,6 +43,13 @@ impl Item {
             Self::Judge { text } => format!("judge: {text}"),
         }
     }
+
+    /// [`Self::render`] as the screen shows it, without the backticks
+    /// written for the model.
+    #[must_use]
+    pub fn plain(&self) -> String {
+        self.render().replace('`', "")
+    }
 }
 
 /// The lister helper's whole instruction: the five line forms and nothing
@@ -134,6 +141,28 @@ fn relative(path: &str) -> Option<String> {
     Some(path)
 }
 
+/// Where a task's acceptance list came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// The lister, which reads only the request's words.
+    #[default]
+    Request,
+    /// The Scout's dissection (`preflight::ACCEPT_HEADING`), written after
+    /// a look at the project.
+    Scout,
+}
+
+impl Origin {
+    /// Where the list came from, in the person's words.
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Request => "from your request only",
+            Self::Scout => "from the Scout's look",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -144,6 +173,23 @@ pub enum Status {
     Unknown,
     /// Decided by the fresh checker, not here.
     Judge,
+    /// Not checked yet: every item before the task's first completion
+    /// check that the tree does not already meet. Only [`standing`] holds
+    /// it; [`evaluate`] never does.
+    Open,
+}
+
+impl Status {
+    /// The mark the screen draws beside an item.
+    #[must_use]
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Met => "✓",
+            Self::Unmet => "✕",
+            Self::Unknown => "?",
+            Self::Judge | Self::Open => "○",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -251,6 +297,73 @@ pub fn evaluate(items: &[Item], root: &Path, run: &mut Runner<'_>) -> Vec<Verdic
             }
         })
         .collect()
+}
+
+/// The list as it stands between completion checks, for the screen.
+///
+/// A file item is decided against the tree now: a read, cheap enough after
+/// every cell. Before the first check an item the tree does not meet yet is
+/// [`Status::Open`], not unmet: the work has not claimed it. Every other
+/// item is as the last check left it, or open before the first -- a command
+/// is never run here, because running a test suite after every cell would
+/// cost more than the task.
+#[must_use]
+pub fn standing(items: &[Item], checked: &[Verdict], root: &Path) -> Vec<Verdict> {
+    let mut never = |_: &str| -> Result<(Option<i32>, String), String> {
+        Err("commands run only at the completion check".to_string())
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            Item::FileExists { .. } | Item::FileContains { .. } => {
+                let mut verdict = evaluate(std::slice::from_ref(item), root, &mut never).remove(0);
+                if verdict.status == Status::Unmet && checked.is_empty() {
+                    verdict.status = Status::Open;
+                }
+                verdict
+            }
+            _ => checked
+                .get(index)
+                .filter(|verdict| verdict.item == *item)
+                .cloned()
+                .unwrap_or_else(|| Verdict {
+                    item: item.clone(),
+                    status: Status::Open,
+                    evidence: String::new(),
+                }),
+        })
+        .collect()
+}
+
+/// How many items stand met, of how many.
+#[must_use]
+pub fn tally(verdicts: &[Verdict]) -> (usize, usize) {
+    let met = verdicts
+        .iter()
+        .filter(|verdict| verdict.status == Status::Met)
+        .count();
+    (met, verdicts.len())
+}
+
+/// How many items a check found not met.
+#[must_use]
+pub fn failed(verdicts: &[Verdict]) -> usize {
+    verdicts
+        .iter()
+        .filter(|verdict| verdict.status == Status::Unmet)
+        .count()
+}
+
+/// The whole list in one line, where the screen has room for one:
+/// `≡ 4 of 7 met`, and `· 1 failed` once a check has found one.
+#[must_use]
+pub fn glance(verdicts: &[Verdict]) -> String {
+    let (met, total) = tally(verdicts);
+    match failed(verdicts) {
+        0 => format!("≡ {met} of {total} met"),
+        failed => format!("≡ {met} of {total} met · {failed} failed"),
+    }
 }
 
 fn read_bounded(path: &Path) -> Result<String, String> {
@@ -448,6 +561,59 @@ mod tests {
         let summary = summary(&items, &verdicts);
         assert_eq!(summary["met"], 4);
         assert_eq!(summary["unmet"], 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Between checks the screen's list reads files now and never runs a
+    /// command: an item not met yet is open before the first check, and
+    /// after one, every item is what the tree or that check says.
+    #[test]
+    fn the_standing_list_reads_files_now_and_leaves_commands_to_the_check() {
+        let root =
+            std::env::temp_dir().join(format!("sterna-acceptance-standing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "hello\n").unwrap();
+        let items = vec![
+            Item::FileExists {
+                path: "a.txt".into(),
+            },
+            Item::FileExists {
+                path: "b.txt".into(),
+            },
+            Item::RunExitsZero {
+                command: "make test".into(),
+            },
+            Item::Judge {
+                text: "the greeting is friendly".into(),
+            },
+        ];
+        let statuses = |verdicts: &[Verdict]| verdicts.iter().map(|v| v.status).collect::<Vec<_>>();
+        let before = standing(&items, &[], &root);
+        assert_eq!(
+            statuses(&before),
+            vec![Status::Met, Status::Open, Status::Open, Status::Open]
+        );
+        assert_eq!(tally(&before), (1, 4));
+        assert_eq!(glance(&before), "≡ 1 of 4 met");
+
+        let mut runner =
+            |_: &str| -> Result<(Option<i32>, String), String> { Ok((Some(1), "1 failed".into())) };
+        let checked = evaluate(&items, &root, &mut runner);
+        std::fs::write(root.join("b.txt"), "later\n").unwrap();
+        let after = standing(&items, &checked, &root);
+        assert_eq!(
+            statuses(&after),
+            vec![Status::Met, Status::Met, Status::Unmet, Status::Judge]
+        );
+        assert!(
+            after[2].evidence.contains("exit 1"),
+            "{}",
+            after[2].evidence
+        );
+        assert_eq!(glance(&after), "≡ 2 of 4 met · 1 failed");
+        std::fs::remove_file(root.join("a.txt")).unwrap();
+        assert_eq!(standing(&items, &checked, &root)[0].status, Status::Unmet);
         let _ = std::fs::remove_dir_all(root);
     }
 

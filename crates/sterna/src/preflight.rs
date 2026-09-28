@@ -60,8 +60,8 @@ pub const DO_NOT_PERFORM: &str = "You are scouting for the model that will act. 
 
 /// The Scout's two briefs (2026-09-23): the span brief, which asks where
 /// things are, and the dissection brief, which asks what the request takes
-/// -- tasks, the files each needs first, how to verify each, and what the
-/// acting model must have before it starts. The decision model's `explore`
+/// -- tasks, the files each needs first, what the finished work must show,
+/// and what the acting model must have before it starts. The decision model's `explore`
 /// answer picks the second (`decision-model.md` §12); measured on luna, the
 /// dissection is right at ~300 words and ten seconds, and longer answers
 /// were both slower and worse.
@@ -102,8 +102,8 @@ const DISSECTION_SECTIONS: [(&str, &str); 5] = [
         "for each task the files to read first, at most three, as `path/to/file.rs — task N, what is there`; add `:120` only for a line you opened, never one you inferred",
     ),
     (
-        "## Verify",
-        "the commands that would show each task done, one per line, only ones this environment can run",
+        ACCEPT_HEADING,
+        "what the finished work must show, at most six items, one per line in exactly one of these forms: `file: <path> exists`, `file: <path> contains <text>`, `run: <command> exits 0`, `output: <command> prints <text>`, `judge: <one sentence a reviewer decides by reading the files>`; only paths you saw and commands this environment can run",
     ),
     (
         "## Needs",
@@ -117,6 +117,28 @@ const DISSECTION_SECTIONS: [(&str, &str); 5] = [
 
 /// The heading whose lines go to the Ask step.
 const NEEDS_HEADING: &str = "## Needs";
+
+/// The dissection's acceptance items, in the lister's five line forms
+/// (`acceptance.rs`). A dissection is written after a look at the project,
+/// so with `[helpers] acceptance_list` on it stands in for the lister,
+/// which reads only the request's words.
+pub const ACCEPT_HEADING: &str = "## Accept";
+
+/// What stands under [`ACCEPT_HEADING`] in the rendered block when its
+/// items are carried as the task's acceptance list instead.
+pub const ACCEPT_CARRIED: &str = "(carried as the acceptance list below)";
+
+/// The acceptance items a dissection's `## Accept` section names, parsed as
+/// the lister's answer is: a line in no known form is dropped.
+#[must_use]
+pub fn accept_items(report: &str) -> Vec<crate::acceptance::Item> {
+    let lines = sections_of(Brief::Dissection, report)
+        .into_iter()
+        .find(|(heading, _)| *heading == ACCEPT_HEADING)
+        .map(|(_, lines)| lines)
+        .unwrap_or_default();
+    crate::acceptance::parse(&lines.join("\n"))
+}
 
 /// How the acting model uses a dissection: the tasks are the checklist its
 /// answer is held to, and the files above are already read for it.
@@ -383,11 +405,13 @@ pub fn render_serving(
     unserved: &[(String, String)],
     ranking: Option<&str>,
 ) -> String {
-    render_brief(Brief::Spans, task, report, served, unserved, ranking)
+    render_brief(Brief::Spans, task, report, served, unserved, ranking, false)
 }
 
 /// [`render_serving`] for either brief: the report is read by that brief's
-/// own headings and the record names which brief it was.
+/// own headings and the record names which brief it was. With
+/// `accept_carried`, the `## Accept` section's items are the task's
+/// acceptance list, which follows this block, and are not repeated here.
 #[must_use]
 pub fn render_brief(
     kind: Brief,
@@ -396,6 +420,7 @@ pub fn render_brief(
     served: &[(String, String)],
     unserved: &[(String, String)],
     ranking: Option<&str>,
+    accept_carried: bool,
 ) -> String {
     let sections = sections_of(kind, report);
     let mut block = String::from("\n\n");
@@ -420,6 +445,9 @@ pub fn render_brief(
         };
         let lines: Vec<&str> = if unanswered {
             vec!["(none found)"]
+        } else if accept_carried && *heading == ACCEPT_HEADING {
+            answered += 1;
+            vec![ACCEPT_CARRIED]
         } else {
             answered += 1;
             lines.iter().map(String::as_str).collect()
@@ -734,7 +762,7 @@ mod tests {
     #[test]
     fn a_dissection_names_files_with_or_without_a_line() {
         let report = "## Tasks\n1. read it\n## Files\nscripts/setup.sh — task 1, the setup\n\
-            - `src/main.rs:12` — task 1, the entry\nsee the docs for more\nscripts/setup.sh — again\n## Verify\nbash -n scripts/setup.sh\n";
+            - `src/main.rs:12` — task 1, the entry\nsee the docs for more\nscripts/setup.sh — again\n## Accept\nrun: bash -n scripts/setup.sh exits 0\n";
         assert_eq!(
             dissection_files(report),
             vec![
@@ -754,7 +782,15 @@ mod tests {
     fn a_dissection_with_needs_carries_the_ask_step() {
         let with_needs =
             "## Tasks\n1. read — know it\n## Needs\n- which backend does the person run?\n";
-        let block = render_brief(Brief::Dissection, "explore", with_needs, &[], &[], None);
+        let block = render_brief(
+            Brief::Dissection,
+            "explore",
+            with_needs,
+            &[],
+            &[],
+            None,
+            false,
+        );
         assert!(block.contains(DISSECTION_USE), "{block}");
         assert!(block.contains(NEEDS_USE), "{block}");
         assert!(
@@ -763,15 +799,49 @@ mod tests {
         );
 
         let without = "## Tasks\n1. read — know it\n## Needs\n(none)\n";
-        let block = render_brief(Brief::Dissection, "explore", without, &[], &[], None);
+        let block = render_brief(Brief::Dissection, "explore", without, &[], &[], None, false);
         assert!(block.contains(DISSECTION_USE), "{block}");
         assert!(!block.contains(NEEDS_USE), "{block}");
 
-        let block = render_brief(Brief::Spans, "fix it", with_needs, &[], &[], None);
+        let block = render_brief(Brief::Spans, "fix it", with_needs, &[], &[], None, false);
         assert!(
             !block.contains(DISSECTION_USE) && !block.contains(NEEDS_USE),
             "{block}"
         );
+    }
+
+    /// A dissection's `## Accept` lines parse as the lister's do, and when
+    /// they are carried as the acceptance list the brief points there
+    /// instead of saying them twice.
+    #[test]
+    fn a_dissection_accept_section_is_the_acceptance_list_said_once() {
+        let report = "## Tasks\n1. read — know it\n## Accept\n- file: scripts/setup.sh exists\n\
+            run: bash -n scripts/setup.sh exits 0\nread the setup first\n## Needs\n(none)\n";
+        assert_eq!(
+            accept_items(report),
+            vec![
+                crate::acceptance::Item::FileExists {
+                    path: "scripts/setup.sh".into()
+                },
+                crate::acceptance::Item::RunExitsZero {
+                    command: "bash -n scripts/setup.sh".into()
+                },
+            ]
+        );
+        assert!(accept_items("## Tasks\n1. read — know it\n").is_empty());
+
+        let said = render_brief(Brief::Dissection, "explore", report, &[], &[], None, false);
+        assert!(
+            said.contains("run: bash -n scripts/setup.sh exits 0"),
+            "{said}"
+        );
+        assert!(!said.contains(ACCEPT_CARRIED), "{said}");
+        let carried = render_brief(Brief::Dissection, "explore", report, &[], &[], None, true);
+        assert!(
+            carried.contains(&format!("{ACCEPT_HEADING}\n{ACCEPT_CARRIED}\n")),
+            "{carried}"
+        );
+        assert!(!carried.contains("bash -n"), "{carried}");
     }
 
     #[test]

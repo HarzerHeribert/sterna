@@ -188,6 +188,9 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         s.theme,
     );
 }
+/// The empty columns kept between the transcript and the sidebar's rule.
+const SIDEBAR_GUTTER: u16 = 2;
+
 pub struct Layout {
     pub transcript: Rect,
     sidebar: Option<Rect>,
@@ -240,6 +243,19 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     };
     let mut transcript = transcript;
     transcript.width = transcript.width.saturating_sub(side_width);
+    let sidebar = (side_width > 0).then(|| {
+        Rect::new(
+            transcript.right() + 2,
+            transcript.y,
+            side_width - 2,
+            body_height,
+        )
+    });
+    // Empty columns between the transcript and the sidebar's rule: a line
+    // that ran to the transcript's last column touched the rule.
+    if sidebar.is_some() {
+        transcript.width = transcript.width.saturating_sub(SIDEBAR_GUTTER);
+    }
     Layout {
         header,
         footer,
@@ -248,14 +264,7 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
         queue_height,
         body_height,
         transcript,
-        sidebar: (side_width > 0).then(|| {
-            Rect::new(
-                transcript.right() + 2,
-                transcript.y,
-                side_width - 2,
-                body_height,
-            )
-        }),
+        sidebar,
     }
 }
 
@@ -423,6 +432,11 @@ pub fn render(
             gutter,
             running_cell,
             boxed,
+            if sidebar.is_none() {
+                &n.acceptance
+            } else {
+                &[]
+            },
         );
         y += 1;
     }
@@ -899,6 +913,16 @@ fn session_card(
             lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
         }
     }
+    // The task's acceptance list, when it has one, is one line of progress:
+    // its items cut to the card's width could not be read, and the whole
+    // list is one click away.
+    if !n.acceptance.is_empty() {
+        lines.push((
+            format!("{} ▸", crate::acceptance::glance(&n.acceptance)),
+            acceptance_tone(&n.acceptance, Tone::Accent),
+            Some(Action::Acceptance),
+        ));
+    }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
     // The newest cell that called a helper: the turn ending does not make
@@ -995,6 +1019,7 @@ fn dock_top(
     gutter: Option<u16>,
     cell: Option<usize>,
     boxed: bool,
+    acceptance: &[crate::acceptance::Verdict],
 ) {
     let t = s.theme;
     let running = s.activity.working();
@@ -1089,21 +1114,48 @@ fn dock_top(
         if boxed {
             row(f, Rect::new(a.right() - 1, a.y, 1, 1), "╮", Tone::Line, t);
         }
+        // What stands at the far end, right to left.
+        let mut right = a.right().saturating_sub(2);
         // Rows of the draft above the composer's window say so here, on
         // its top edge.
         if ui.composer_hidden.0 > 0 {
             let above = format!(" ↑ {} more ", ui.composer_hidden.0);
             let w = chrome::width(&above);
             if used + w + 4 < a.width {
-                row(
+                right = right.saturating_sub(w);
+                row(f, Rect::new(right, a.y, w, 1), &above, Tone::Muted, t);
+            }
+        }
+        // The acceptance list's one line, where the sidebar that carries it
+        // is not on screen: beside the turn's status, one click from the list.
+        if !acceptance.is_empty() {
+            let label = crate::acceptance::glance(acceptance);
+            let w = chrome::width(&label) + 4;
+            if right > a.x + used + w + 2 {
+                chrome::chip(
                     f,
-                    Rect::new(a.right().saturating_sub(w + 2), a.y, w, 1),
-                    &above,
-                    Tone::Muted,
+                    g,
+                    right - w - 1,
+                    a.y,
+                    right,
+                    &label,
+                    Action::Acceptance,
+                    false,
+                    acceptance_tone(acceptance, Tone::Normal),
+                    ui.press,
                     t,
                 );
             }
         }
+    }
+}
+/// The acceptance list's one line in the failure colour once a check has
+/// found an item not met, and in `calm` until then.
+fn acceptance_tone(acceptance: &[crate::acceptance::Verdict], calm: Tone) -> Tone {
+    if crate::acceptance::failed(acceptance) > 0 {
+        Tone::Failure
+    } else {
+        calm
     }
 }
 /// The dock's bottom edge: the three everyday chips, one whispered hint,

@@ -492,21 +492,39 @@ impl PendingDecision {
     }
 }
 
-/// The acceptance list in the task's system block: derived once from the
-/// request, shown beside the preflight, paid for as one helper call, and
-/// returned for the task state to check when the model claims completion.
+/// The acceptance list in the task's system block, returned for the task
+/// state to check when the model claims completion, with where it came
+/// from. A dissection's `## Accept` items are the list when it named any;
+/// otherwise the lister's answer is -- and when the lister was held back
+/// for a dissection that named none, the lister runs now, after it.
 pub(super) fn append_acceptance(
+    task: &str,
     session: &Session<'_>,
-    record: Option<crate::helpers::HelperRecord>,
+    scouted: Vec<crate::acceptance::Item>,
+    (record, held_back): (Option<crate::helpers::HelperRecord>, bool),
     task_context: &mut String,
     budget: &mut TaskSpend,
-) -> Vec<crate::acceptance::Item> {
+) -> (Vec<crate::acceptance::Item>, crate::acceptance::Origin) {
+    use crate::acceptance::Origin;
+    if !scouted.is_empty() {
+        session_println!(
+            "acceptance: {} item(s) from the Scout's dissection",
+            scouted.len()
+        );
+        task_context.push_str(&crate::acceptance::render_list(&scouted));
+        return (scouted, Origin::Scout);
+    }
+    let record = if held_back {
+        start_acceptance(task, session).and_then(PendingAcceptance::call)
+    } else {
+        record
+    };
     let Some((block, items, record)) = finish_acceptance(session, record) else {
-        return Vec::new();
+        return (Vec::new(), Origin::Request);
     };
     task_context.push_str(&block);
     budget.add_helpers(std::slice::from_ref(&record));
-    items
+    (items, Origin::Request)
 }
 
 /// The stand-in gate: a request of fewer words than this gets no preflight.
@@ -614,6 +632,10 @@ pub(super) struct PreflightOutcome {
     /// Whether the complexity answer would have added that signal had
     /// `mode` been `on` (`mode = shadow` only; recorded, changes nothing).
     pub(super) would_scout: bool,
+    /// The dissection's `## Accept` items, when `[helpers] acceptance_list`
+    /// is on: the task's acceptance list, written after a look at the
+    /// project. Empty otherwise.
+    pub(super) acceptance: Vec<crate::acceptance::Item>,
 }
 
 impl PreflightOutcome {
@@ -623,7 +645,22 @@ impl PreflightOutcome {
         would_dissect: false,
         scout_signal: false,
         would_scout: false,
+        acceptance: Vec::new(),
     };
+}
+
+/// Whether this task's Scout dissects the request: the decision model read
+/// it as `explore`, confidently, with `[decisions] mode = "on"`. A dissection
+/// that runs with `[helpers] acceptance_list` on writes the task's
+/// acceptance list, so the lister does not run beside it.
+pub(super) fn dissects(
+    session: &Session<'_>,
+    decision: Option<&crate::decide::TaskDecision>,
+) -> bool {
+    decision
+        .and_then(crate::decide::TaskDecision::confident_kind)
+        .is_some_and(|kind| kind == crate::decide::KIND_EXPLORE)
+        && session.config().decisions.mode == crate::config::DecisionMode::On
 }
 
 /// One preflight block to append to this task's system prompt, or `None` when
@@ -655,7 +692,7 @@ pub(super) fn preflight_block(
     let explore = decision
         .and_then(crate::decide::TaskDecision::confident_kind)
         .is_some_and(|kind| kind == crate::decide::KIND_EXPLORE);
-    let dissect = explore && decisions.mode == crate::config::DecisionMode::On;
+    let dissect = dissects(session, decision);
     if !helpers.enabled || !(helpers.preflight || dissect) || !request_may_need_the_repository(task)
     {
         return PreflightOutcome::NONE;
@@ -707,22 +744,17 @@ pub(super) fn preflight_block(
         "preflight: {}",
         crate::preflight::signals_summary(&scouting_decision)
     );
-    if matches!(scouting_decision, crate::preflight::Decision::Skip(_)) {
-        return PreflightOutcome {
-            block: None,
-            brief: None,
-            would_dissect,
-            scout_signal,
-            would_scout,
-        };
-    }
     let none = PreflightOutcome {
         block: None,
         brief: None,
         would_dissect,
         scout_signal,
         would_scout,
+        acceptance: Vec::new(),
     };
+    if matches!(scouting_decision, crate::preflight::Decision::Skip(_)) {
+        return none;
+    }
     let Some(model) = helpers.model.as_deref() else {
         return none;
     };
@@ -842,6 +874,14 @@ pub(super) fn preflight_block(
     // Keep the resolved Scout beside this request for every later task-frame.
     // The next task clears it before deciding whether another preflight runs.
     transcript.notebook.preflight = Some(record.clone());
+    let acceptance = if helpers.acceptance_list
+        && record.outcome.ok
+        && brief_kind == crate::preflight::Brief::Dissection
+    {
+        crate::preflight::accept_items(&record.outcome.text)
+    } else {
+        Vec::new()
+    };
     let block = record.outcome.ok.then(|| {
         let mut named = crate::preflight::spans(&record.outcome.text);
         if brief_kind == crate::preflight::Brief::Dissection {
@@ -863,6 +903,7 @@ pub(super) fn preflight_block(
             &served,
             &unserved,
             ranking_note.as_deref(),
+            !acceptance.is_empty(),
         )
     });
     PreflightOutcome {
@@ -871,6 +912,7 @@ pub(super) fn preflight_block(
         would_dissect,
         scout_signal,
         would_scout,
+        acceptance,
     }
 }
 

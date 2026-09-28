@@ -2944,3 +2944,89 @@ fn a_terminal_that_answers_light_gets_the_light_colours() {
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
+
+/// Answers the acceptance lister with a two-item list and every task turn
+/// with one cell that writes the file the list names and answers.
+fn acceptance_provider() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(mut stream) = incoming else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    len = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; len];
+            if reader.read_exact(&mut body).is_err() {
+                continue;
+            }
+            let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else {
+                continue;
+            };
+            let text = if request.to_string().contains("acceptance items") {
+                "file: done.txt exists\njudge: the note says hello"
+            } else {
+                "```sterna\nawait write({path: \"done.txt\", content: \"hello\\n\"});\nanswer(\"WROTE THE NOTE\");\n```"
+            };
+            let reply = if request["stream"] == true {
+                let events = [
+                    serde_json::json!({"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":10}}}),
+                    serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":text}}),
+                    serde_json::json!({"type":"message_delta","usage":{"output_tokens":5}}),
+                    serde_json::json!({"type":"message_stop"}),
+                ];
+                let body = events
+                    .iter()
+                    .map(|e| format!("data: {e}\n\n"))
+                    .collect::<String>();
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                let body = serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"usage":{"input_tokens":10,"output_tokens":5}}).to_string();
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    base
+}
+
+/// The acceptance list reaches the screen from a real session: the lister's
+/// items stand open before the work, and the file item turns met once the
+/// cell has written it -- counted on the one line an eighty-column
+/// terminal shows on the dock in place of the sidebar.
+#[test]
+fn live_acceptance_list_counts_the_file_the_cell_wrote() {
+    let base = acceptance_provider();
+    let mut app = App::start_seeded(&base, false, None, &[], &|root| {
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        std::fs::write(
+            root.join(".sterna/config.toml"),
+            "[helpers]\nmodel = \"helper-tier\"\npreflight = false\nacceptance_list = true\n\
+             completion_check = false\nlearn = false\n",
+        )
+        .unwrap();
+    });
+    app.ready();
+    app.send(b"write done.txt with a greeting\r");
+    app.wait_for_file("done.txt");
+    app.contains_line("WROTE THE NOTE");
+    app.contains("≡ 1 of 2 met");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}

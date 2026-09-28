@@ -465,6 +465,16 @@ impl TaskState {
         self
     }
 
+    /// The acceptance list as the screen shows it now: files read against
+    /// the tree, everything else as the last completion check left it.
+    pub(super) fn standing(&self, session: &Session<'_>) -> Vec<crate::acceptance::Verdict> {
+        crate::acceptance::standing(
+            &self.acceptance,
+            &self.acceptance_verdicts,
+            session.profile.root(),
+        )
+    }
+
     /// The decision model's answer to this task's one request -- both the
     /// intent and complexity questions, asked before `TaskState` existed.
     /// `None` and `decision_failures` is `1` when the request was attempted

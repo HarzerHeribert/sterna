@@ -1044,6 +1044,7 @@ fn run_task(
     }
     transcript.notebook.handlers.clear();
     transcript.notebook.preflight = None;
+    transcript.notebook.acceptance.clear();
     // Moves made while the last task ran reach the file here, at the boundary:
     // the UI thread that made them writes nothing itself.
     rollout.record_moves(session.level.as_ref());
@@ -1121,9 +1122,13 @@ fn run_task_inner(
     let (decision, decision_failures, pending_decision) = task_decision(task, session, has_history);
     let effort_lease = system::EffortLease::for_kind(session, decision.as_ref());
     // The acceptance lister runs beside the Scout: two independent reads of
-    // the same request, and in series the person waited for both.
+    // the same request, and in series the person waited for both. A
+    // dissection writes the list itself, so the lister waits for it.
+    let dissecting = system::dissects(session, decision.as_ref());
     let (preflight_outcome, acceptance_record) = std::thread::scope(|scope| {
-        let lister = system::start_acceptance(task, session)
+        let lister = (!dissecting)
+            .then(|| system::start_acceptance(task, session))
+            .flatten()
             .map(|pending| scope.spawn(move || pending.call()));
         let preflight = preflight_block(task, session, transcript, decision.as_ref());
         (
@@ -1137,8 +1142,15 @@ fn run_task_inner(
     if let Some(preflight) = transcript.notebook.preflight.as_ref() {
         budget.add_helpers(std::slice::from_ref(preflight));
     }
-    let acceptance_items =
-        append_acceptance(session, acceptance_record, &mut task_context, &mut budget);
+    let (acceptance_items, acceptance_from) = append_acceptance(
+        task,
+        session,
+        preflight_outcome.acceptance.clone(),
+        (acceptance_record, dissecting),
+        &mut task_context,
+        &mut budget,
+    );
+    transcript.notebook.acceptance_from = acceptance_from;
     {
         let _line = session.interrupt.writing();
         rollout
@@ -1231,6 +1243,7 @@ fn run_task_inner(
         );
     task_state.pending_decision = pending_decision;
     output::decisions(task_state.decisions_telemetry(&session.config().decisions));
+    transcript.notebook.acceptance = task_state.standing(session);
 
     loop {
         // **The cell boundary, which is where a requested stop is honoured.**
@@ -1617,6 +1630,7 @@ fn run_task_inner(
         step.view.answered = step.answer.is_some();
         transcript.notebook.tokens = budget.tokens();
         transcript.notebook.set(ordinal, step.view.clone());
+        transcript.notebook.acceptance = task_state.standing(session);
         {
             let _line = session.interrupt.writing();
             rollout

@@ -862,6 +862,11 @@ pub struct Notebook {
     /// The pushed Scout running before the task model's first turn. This is
     /// presentation-only and is never persisted as a model-authored cell.
     pub preflight: Option<HelperRecord>,
+    /// The task's acceptance list as it stands (`acceptance::standing`),
+    /// empty when no list was derived. Presentation only, like `preflight`.
+    pub acceptance: Vec<crate::acceptance::Verdict>,
+    /// Where that list came from: the request's words, or the Scout's look.
+    pub acceptance_from: crate::acceptance::Origin,
     pub inbox_depth: usize,
     pub batches_delivered: u64,
     pub handlers: Vec<crate::runtime::handlers::HandlerInfo>,
@@ -1692,7 +1697,7 @@ fn notebook_lines(
     history::push_notes(&mut lines, notes, &mut next_note, 0);
     if let Some(task) = messages.next() {
         turn_header(&mut lines, "USER".into(), ACCENT);
-        push_text_region(&mut lines, &message_text(task));
+        push_text_region(&mut lines, &task.as_written());
     }
     let total_cells = cell_ordinal(conversation, notebook);
 
@@ -2135,7 +2140,7 @@ fn notebook_lines(
                     continue;
                 }
                 turn_header(&mut lines, "USER".into(), ACCENT);
-                push_text_region(&mut lines, &format!("you: {}", message_text(message)));
+                push_text_region(&mut lines, &format!("you: {}", message.as_written()));
             }
         }
     }

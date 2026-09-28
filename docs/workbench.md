@@ -11,11 +11,28 @@ Four regions, drawn with lines, never with fills: the **top bar**, the
 terminal is wide enough; `/sidebar`), and the **composer dock** at the
 bottom.
 
-- **The conversation is turns.** Your message under a bar labelled `you`;
-  Sterna's under its mark. A cell is a card whose top edge carries its state
-  and whose bottom edge says how it ended; helpers hang under the card;
-  notices are tagged rows; a finished turn ends in an answer block with a
-  stats line and, on the latest turn, chips for what to do next.
+- **The conversation is turns.** Your message under a bar labelled `you`,
+  exactly as you wrote it: the context Sterna sends with it (the Scout's
+  brief, the acceptance list) is the model's, not yours. Sterna's turn under
+  its mark. A cell is a card whose top edge carries its state and whose
+  bottom edge says how it ended; helpers hang under the card; notices are
+  tagged rows; a finished turn ends in an answer block with a stats line
+  and, on the latest turn, chips for what to do next.
+- **The Scout sits under the request it read**, above the work, as one
+  line once it has answered (`◇ PREFLIGHT · SCOUT  named 2 files  2.1s ▸`);
+  a click opens its report.
+- **Prose reads at 100 columns.** Your turn, the answers and the words
+  around a cell wrap at `READING_WIDTH`; code, tables, cards and output keep
+  the whole width. Two empty columns keep the conversation off the
+  sidebar's rule.
+- **The acceptance list** (`helpers.acceptance_list`) is one line of
+  progress, `≡ 4 of 7 met · 1 failed ▸`: under SO FAR in the session card,
+  or without the card as one chip at the far end of the dock's top edge.
+  Either opens the list in a panel, grouped by what needs attention first
+  (not met, could not check, open, met), each item with what its check
+  found and where the list came from. Files are read after every cell;
+  commands and judged items are decided when the model says it is done,
+  and only that check marks an item met.
 - **A cell shows what really happened.** The program the model wrote (a
   frame Sterna lowered from a direct tool call is marked as such), the calls
   it actually made and how each ended, its output, its before/after diff

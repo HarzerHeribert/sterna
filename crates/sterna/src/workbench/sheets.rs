@@ -48,6 +48,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Confirm(what) => confirm(sheet, what),
         Source::Keys => keys(sheet),
         Source::Activity => activity(sheet, s),
+        Source::Acceptance => acceptance(sheet, n),
         Source::Themes { .. } => themes(sheet, s),
         Source::Settings(p) => super::settings::items(sheet, p, s),
         Source::Models(m) => super::models::items(sheet, m),
@@ -55,7 +56,6 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Fold(_) => fold_items(sheet, fold),
         Source::More(controls) => more_items(sheet, controls),
     };
-    let _ = n;
     // While a turn runs, a row that waits for it to end says so before it
     // is clicked, in the one sentence every such refusal uses.
     let items = if s.activity.working() {
@@ -301,6 +301,74 @@ fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         vec![Item::info("Nothing has happened yet.").tone(Tone::Muted)]
     } else {
         lines
+    }
+}
+
+/// The task's acceptance list, whole: grouped by what needs attention first
+/// -- not met, not checkable, open, met -- each item under its mark, and
+/// under it what the last check found or when it will be checked.
+fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
+    use crate::acceptance::Status;
+    let (met, total) = crate::acceptance::tally(&n.acceptance);
+    sheet.title = "Acceptance".into();
+    sheet.crumbs = vec![format!(
+        "{met} of {total} met · {}",
+        n.acceptance_from.words()
+    )];
+    if n.acceptance.is_empty() {
+        return vec![Item::info("This task has no acceptance list.").tone(Tone::Muted)];
+    }
+    let mut items = Vec::new();
+    for (heading, wanted) in [
+        ("Not met", &[Status::Unmet][..]),
+        ("Could not check", &[Status::Unknown][..]),
+        ("Open", &[Status::Open, Status::Judge][..]),
+        ("Met", &[Status::Met][..]),
+    ] {
+        let group: Vec<_> = n
+            .acceptance
+            .iter()
+            .filter(|verdict| wanted.contains(&verdict.status))
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        items.push(Item::heading(format!("{heading} · {}", group.len())));
+        for verdict in group {
+            items.push(
+                Item::info(format!(
+                    "{} {}",
+                    verdict.status.mark(),
+                    verdict.item.plain()
+                ))
+                .tone(status_tone(verdict.status)),
+            );
+            let found = match verdict.status {
+                _ if !verdict.evidence.is_empty() => verdict.evidence.as_str(),
+                Status::Judge => "left to the checker",
+                _ => "checked when the task finishes",
+            };
+            items.push(Item::info(format!("↳ {found}")).tone(Tone::Muted));
+        }
+    }
+    items.push(
+        Item::info(
+            "Files are read after every cell. Commands and judged items are checked \
+             when the model says it is done; only that check marks an item met.",
+        )
+        .tone(Tone::Muted),
+    );
+    items
+}
+
+/// The colour of an acceptance item's mark and words.
+fn status_tone(status: crate::acceptance::Status) -> Tone {
+    use crate::acceptance::Status;
+    match status {
+        Status::Met => Tone::Success,
+        Status::Unmet => Tone::Failure,
+        Status::Unknown => Tone::Warning,
+        Status::Judge | Status::Open => Tone::Muted,
     }
 }
 
