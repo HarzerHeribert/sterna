@@ -5642,3 +5642,40 @@ fn a_settings_row_is_one_line_and_the_card_explains_the_focused_one() {
         "{screen}"
     );
 }
+
+/// A choice says what it does: the checker's chips read "after big work",
+/// "every change" and "off", while the file keeps `auto` and `always`.
+#[test]
+fn a_choice_says_what_it_does() {
+    let (_t, s, mut p) = prefs();
+    let (c, n, _) = fixture();
+    p.category = 2;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let row = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "setting:helpers.completion_check")
+        .expect("the checker's row")
+        .clone();
+    let workbench::ItemKind::Value { values, .. } = &row.kind else {
+        panic!("{row:?}");
+    };
+    let words: Vec<&str> = values.iter().map(|(word, _)| word.as_str()).collect();
+    assert_eq!(words, ["after big work", "every change", "off"]);
+    assert_eq!(
+        values[0].1,
+        Action::Setting(
+            match values[0].1 {
+                Action::Setting(i, _) => i,
+                _ => unreachable!(),
+            },
+            Some("auto".into())
+        ),
+        "the saved word is still `auto`"
+    );
+}

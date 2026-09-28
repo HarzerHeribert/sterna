@@ -139,6 +139,34 @@ pub fn shown(key: &str, value: &str) -> String {
             Level::parse(value).map_or_else(|| value.to_string(), |l| l.label().to_string())
         }
         "agents.mode" if value == "roster" => "favourites".to_string(),
+        // **A choice says what it does.** The files keep their words; the
+        // screen shows what each one means.
+        "decisions.mode" if value == "shadow" => "watch only".to_string(),
+        "ask.jev" => match value {
+            "off" => "ask me",
+            "weight" => "show Jev's guess",
+            "decide" => "Jev answers when sure",
+            other => other,
+        }
+        .to_string(),
+        "helpers.completion" => match value {
+            "silent" => "say nothing",
+            "recap" => "a short recap",
+            other => other,
+        }
+        .to_string(),
+        "helpers.preflight_scope" => match value {
+            "auto" => "when it helps",
+            "always" => "every request",
+            other => other,
+        }
+        .to_string(),
+        "helpers.completion_check" => match value {
+            "auto" => "after big work",
+            "always" => "every change",
+            other => other,
+        }
+        .to_string(),
         _ => value.to_string(),
     }
 }
