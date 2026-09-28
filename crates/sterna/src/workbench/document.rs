@@ -93,6 +93,12 @@ enum Mover {
     Prose,
 }
 
+/// The widest a line of prose runs, indent included: yours, Sterna's answer,
+/// the words around a cell. At the width of a wide terminal a line runs
+/// 160 columns, too long to read. Code, tables, cards and output keep the
+/// whole width: cutting them costs more than it saves.
+pub const READING_WIDTH: usize = 100;
+
 #[derive(Default)]
 pub struct Document {
     pub rows: Vec<Row>,
@@ -170,7 +176,10 @@ impl Document {
                 Block::Verbatim(line) => self.wrapped(line, Tone::Code, None, width, id, indent),
                 Block::Prose { lead, pieces } => {
                     let hang = indent + span_width(&lead);
-                    let rows = flow(&pieces, width.saturating_sub(hang).max(1));
+                    let rows = flow(
+                        &pieces,
+                        width.min(READING_WIDTH).saturating_sub(hang).max(1),
+                    );
                     for (i, row) in rows.into_iter().enumerate() {
                         let first = if i == 0 {
                             format!("{pad}{lead}")
@@ -667,7 +676,14 @@ impl Document {
     /// The rail marks it as live; the caret is its one moving cell.
     fn arriving(&mut self, text: &str, s: &ScreenState, width: usize) {
         let before = self.rows.len();
-        self.wrapped(text, Tone::Normal, None, width, usize::MAX - 1, 2);
+        self.wrapped(
+            text,
+            Tone::Normal,
+            None,
+            width.min(READING_WIDTH),
+            usize::MAX - 1,
+            2,
+        );
         let last = self.rows.len().saturating_sub(1);
         let mark = self.caret(s, Mover::Prose);
         for (i, row) in self.rows[before..].iter_mut().enumerate() {
@@ -689,7 +705,14 @@ impl Document {
             RowKind::You,
         );
         let before = self.rows.len();
-        self.wrapped(text, Tone::Strong, None, width.saturating_sub(3), id, 0);
+        self.wrapped(
+            text,
+            Tone::Strong,
+            None,
+            width.saturating_sub(3).min(READING_WIDTH),
+            id,
+            0,
+        );
         for row in &mut self.rows[before..] {
             row.kind = RowKind::You;
         }

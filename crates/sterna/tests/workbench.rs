@@ -1561,6 +1561,46 @@ fn the_scout_folds_under_the_request_it_read() {
     );
 }
 
+/// Prose wraps at a reading width on a wide terminal, where a line of 160
+/// columns is too long to read; a table keeps the whole width, because a cut
+/// row stops being a row.
+#[test]
+fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
+    let sentence = "The generator already tells missing data from a clean result. ";
+    let table = format!("| check | {} |", "x".repeat(120));
+    let c = Conversation {
+        system: String::new(),
+        messages: vec![
+            Message::text(Role::User, sentence.repeat(4)),
+            Message::text(
+                Role::Assistant,
+                format!("{}\n\n{table}", sentence.repeat(6)),
+            ),
+        ],
+    };
+    let (_, n, s) = fixture();
+    let n = Notebook {
+        cells: Vec::new(),
+        ..n
+    };
+    let d = Document::build(&c, &n, &s, &Workbench::default(), 160);
+    let prose: Vec<&str> = d
+        .rows
+        .iter()
+        .map(|r| r.text.as_str())
+        .filter(|t| t.contains("generator"))
+        .collect();
+    assert!(prose.len() > 2, "{}", words(&d));
+    for line in &prose {
+        assert!(
+            line.chars().count() <= workbench::READING_WIDTH,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+    }
+    assert!(words(&d).contains(&table), "{}", words(&d));
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]

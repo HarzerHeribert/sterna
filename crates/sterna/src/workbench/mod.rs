@@ -27,7 +27,7 @@ pub mod voice;
 
 use crate::tui::{Panel, ScreenState};
 pub(crate) use chrome::frame;
-pub use document::{Document, Row, RowKind, Tone};
+pub use document::{Document, READING_WIDTH, Row, RowKind, Tone};
 pub use hosts::HostsSheet;
 pub use input::{Effect, mid_turn};
 pub use models::Navigator;
