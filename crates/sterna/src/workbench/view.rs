@@ -256,6 +256,11 @@ pub fn layout(a: Rect, s: &ScreenState) -> Layout {
     if sidebar.is_some() {
         transcript.width = transcript.width.saturating_sub(SIDEBAR_GUTTER);
     }
+    // **One empty row between the conversation and the composer**: the text
+    // that scrolls never runs into the box that stays put. The sidebar keeps
+    // its full height, and its rule still meets the box.
+    let gap = u16::from(body_height > 4);
+    transcript.height = body_height - gap;
     Layout {
         header,
         footer,
@@ -302,11 +307,14 @@ pub fn render(
         sidebar,
     } = layout(a, s);
     g.transcript = transcript;
+    // The rows the conversation shows: the body less the row kept empty
+    // above the composer.
+    let shown = transcript.height;
     let d = Document::build(c, n, s, ui, transcript.width as usize);
     g.rows = d.rows.len();
     g.start = g
         .rows
-        .saturating_sub(body_height as usize)
+        .saturating_sub(shown as usize)
         .saturating_sub(s.scrollback);
     ui.anchor = d.rows.get(g.start).map(|row| (row.key, row.text.clone()));
     ui.last_scrollback = s.scrollback;
@@ -323,19 +331,19 @@ pub fn render(
         );
     }
     if let Some(x) = gutter {
-        for y in transcript.y..transcript.bottom() {
+        for y in transcript.y..transcript.y + body_height {
             row(f, Rect::new(x, y, 1, 1), "│", Tone::Line, s.theme);
         }
     }
     // Scrolled back, the transcript's last row is the way back down: it
     // holds the `↓ latest` chip and nothing under it, so the chip never
     // covers a card's edge or a line of text.
-    let latest_row = usize::from(s.scrollback > 0 && body_height > 1);
+    let latest_row = usize::from(s.scrollback > 0 && shown > 1);
     for (j, r) in d
         .rows
         .iter()
         .skip(g.start)
-        .take((body_height as usize).saturating_sub(latest_row))
+        .take((shown as usize).saturating_sub(latest_row))
         .enumerate()
     {
         let area = Rect::new(
@@ -346,8 +354,8 @@ pub fn render(
         );
         draw_row(f, &mut g, area, r, s, ui);
     }
-    if s.scrolling && g.rows > body_height as usize && body_height > 0 && g.transcript.width > 0 {
-        let height = body_height as usize;
+    if s.scrolling && g.rows > shown as usize && shown > 0 && g.transcript.width > 0 {
+        let height = shown as usize;
         let thumb = (height * height / g.rows).max(1);
         let top = g.start.min(g.rows - height) * (height - thumb) / (g.rows - height);
         for offset in top..(top + thumb).min(height) {
@@ -392,7 +400,7 @@ pub fn render(
     if let Some(side) = sidebar {
         session_card(f, &mut g, side, n, s, ui);
     }
-    let mut y = g.transcript.bottom();
+    let mut y = transcript.y + body_height;
     for q in s.queued.iter().rev().take(queue_height as usize).rev() {
         row(
             f,

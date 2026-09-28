@@ -5177,3 +5177,43 @@ fn your_turn_wraps_between_words() {
         assert!(line.chars().count() <= 84 - 2 - 3, "{line}");
     }
 }
+
+/// One empty row separates the conversation from the composer: text that
+/// scrolls never runs into the box that stays put. The sidebar keeps its
+/// height, and its rule still meets the box.
+#[test]
+fn an_empty_row_separates_the_conversation_from_the_composer() {
+    let (mut c, n, mut s) = fixture();
+    for i in 0..40 {
+        c.messages
+            .push(Message::text(Role::User, format!("request number {i}")));
+    }
+    // A notice ends the conversation: no blank row of its own follows it.
+    s.messages_seen = c.messages.len();
+    s.note("the last line of the conversation");
+    for (w, sidebar) in [(84u16, false), (140, true)] {
+        let mut u = Workbench::default();
+        let screen = text(&draw(&c, &n, &s, &mut u, w, 30));
+        let lines: Vec<&str> = screen.lines().collect();
+        let dock = lines
+            .iter()
+            .position(|line| line.starts_with("╭─"))
+            .expect("the composer's top edge");
+        let gap = lines[dock - 1];
+        let conversation: String = match gap.find('│') {
+            Some(at) if sidebar => gap[..at].to_string(),
+            _ => gap.to_string(),
+        };
+        assert!(conversation.trim().is_empty(), "{w} columns: {gap:?}");
+        assert!(
+            lines[dock - 2].contains("the last line of the conversation"),
+            "the conversation runs down to the gap: {screen}"
+        );
+        if sidebar {
+            assert!(
+                gap.contains('│'),
+                "the sidebar's rule meets the box: {gap:?}"
+            );
+        }
+    }
+}
