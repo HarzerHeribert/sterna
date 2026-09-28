@@ -46,7 +46,7 @@ h2{font:600 clamp(48px,6.7vw,104px)/.92 var(--display);letter-spacing:-.02em}
 [data-panel="flock"]{background-position:100% 50%}
 .hero-bottom{position:absolute;bottom:37px;left:4%;right:4%;display:flex;justify-content:space-between;align-items:end;z-index:3}
 .hero-bottom p{font-size:19px;line-height:1.55;max-width:410px}
-.hero-lede .install{margin-top:22px;width:min(680px,100%);font-size:13px}
+.hero-lede .install{width:min(680px,100%);font-size:13px}
 .text-link{display:inline-flex;gap:40px;align-items:center;padding:12px 0;border-bottom:1px solid var(--ink)}
 .text-link:hover{background:var(--ink);color:var(--paper)}
 .text-link span{font:22px Arial}
@@ -98,6 +98,12 @@ p code{font:.9em var(--mono);background:#e1e5e9;padding:1px 5px}
 .install code::-webkit-scrollbar{display:none}
 .install-wide{width:min(780px,100%);margin:0 0 64px;padding:12px 12px 12px 24px;font-size:15px}
 .install-prompt{color:var(--mantle)}
+.os-switch{display:flex;width:max-content;max-width:100%}
+.os{background:none;border:1px solid var(--ink);border-bottom:0;padding:7px 14px;font:12px var(--mono);color:var(--ink);cursor:pointer}
+.os+.os{border-left:0}
+.os:hover{background:var(--line)}
+.os[aria-pressed="true"]{background:var(--ink);color:var(--paper);cursor:default}
+.hero-lede .os-switch{margin-top:22px}
 .copy{background:var(--bill);color:var(--paper);border:0;padding:10px 16px;font:13px var(--mono);cursor:pointer;flex-shrink:0}
 .copy:hover{background:var(--paper)}
 .button{display:inline-flex;align-items:center;gap:40px;justify-content:space-between;background:var(--bill);color:var(--paper);padding:18px 23px;font-size:14px;font-family:var(--mono);margin-top:56px;border:1px solid var(--ink);transition:background .15s,transform .15s}
@@ -131,7 +137,7 @@ footer>a:last-child{font:11px var(--mono)}
   h1{font-size:17vw;line-height:.9;margin-top:45px;max-width:100%}
   .hero .optics{width:115%;right:-10%;top:215px;height:380px}
   .hero-motion-toggle{right:6%;top:58px;font-size:11px;padding:7px}
-  .hero-bottom{left:6%;right:6%;bottom:24px;display:block}.hero-bottom p{font-size:16px;max-width:310px}.hero-lede .install{margin-top:14px;font-size:12px}.hero-bottom>.text-link{margin-top:10px;gap:25px}
+  .hero-bottom{left:6%;right:6%;bottom:24px;display:block}.hero-bottom p{font-size:16px;max-width:310px}.hero-lede .os-switch{margin-top:14px}.hero-lede .install{font-size:12px}.hero-bottom>.text-link{margin-top:10px;gap:25px}
   .install-wide{font-size:13px;padding:10px 10px 10px 16px;margin-bottom:44px}
   .section{margin:0 6%;padding-bottom:55px}
   .name-story{display:block;padding:45px 0 60px}.name-story h2{font-size:49px}.name-story p{margin-top:25px;font-size:17px}
