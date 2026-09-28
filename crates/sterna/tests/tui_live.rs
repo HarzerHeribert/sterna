@@ -1213,6 +1213,11 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     // row asks first.
     app.settle(200);
     app.send(b"\x1b");
+    // The dock's chip shows while the sheet is still open, so the sheet
+    // going is what proves the Escape was read on its own.
+    app.wait("the sign-in sheet closes", |screen| {
+        !screen.contents().contains("SIGN IN · GROK")
+    });
     app.contains("signing in to Grok ▸");
     // The session is free: a command answers while the sign-in waits.
     app.send(b"/status\r");
@@ -1449,6 +1454,9 @@ fn telemetry_and_motion_are_local_controls_with_real_response_usage() {
         app.contains("next draft");
     }
     app.send(b"\x1b");
+    app.wait("telemetry closes", |screen| {
+        !screen.contents().contains("Esc returns")
+    });
     app.contains_line("LIVE RESULT INTACT");
     app.contains("next draft");
     app.send(b"\x15/exit\r");
@@ -2476,6 +2484,9 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("amber"), "{saved}");
     app.send(b"\x1b");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
     app.contains("keep this draft");
     app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
@@ -2507,6 +2518,9 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     app.send(b"\x1b[C");
     app.contains("Effort is now low");
     app.send(b"\x1b");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
     // The model chip reads the running session. If the choice had only
     // reached the file, this would still say `auto`.
     app.contains("· low ▾");
@@ -2621,8 +2635,13 @@ fn workbench_pointer_opens_settings_only_on_release_and_wheel_stays_local() {
     app.send(b"\x1b[<65;30;12M");
     app.settle(120);
     assert!(app.screen.screen().contents().contains("SETTINGS"));
+    // The top bar stays in view while a sheet is open, so what proves the
+    // Escape landed is the sheet going; an Escape still unread when the
+    // next keys arrive is read with them as one Alt chord.
     app.send(b"\x1b");
-    app.contains("⠿ STERNA");
+    app.wait("the settings sheet closes", |screen| {
+        !screen.contents().contains("SETTINGS")
+    });
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
