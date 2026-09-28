@@ -21,6 +21,25 @@ for (const copy of document.querySelectorAll('.copy')) {
   });
 }
 
+// The install line for the reader's system: Windows gets the PowerShell
+// installer, everything else install.sh. Both switches move together, and
+// a Windows browser starts on Windows.
+const commands = document.querySelectorAll('code[data-windows]');
+function showOs(os) {
+  for (const code of commands) {
+    code.textContent = code.dataset[os];
+    code.parentElement.querySelector('.install-prompt').textContent = os === 'windows' ? 'PS>' : '$';
+  }
+  for (const button of document.querySelectorAll('.os')) {
+    button.setAttribute('aria-pressed', String(button.dataset.os === os));
+  }
+}
+for (const button of document.querySelectorAll('.os')) {
+  button.addEventListener('click', () => showOs(button.dataset.os));
+}
+const platform = navigator.userAgentData?.platform || navigator.platform || '';
+if (/^win/i.test(platform)) showOs('windows');
+
 const toggle = document.querySelector('.motion-toggle');
 import('./optics.js')
   .then(({ startOptics }) => startOptics([...document.querySelectorAll('.optics')], toggle))

@@ -12,8 +12,7 @@ it works the task in turns, the way Claude Code or Codex does. It is named
 for *Sterna paradisaea*, the Arctic tern, which makes the longest migration
 of any animal.
 
-Sterna is a public pre-release for macOS and Linux. Windows builds are
-published; a Windows installer is not written yet.
+Sterna is a public pre-release for macOS, Linux and Windows.
 
 ## What it is
 
@@ -72,8 +71,20 @@ points `~/.local/lib/sterna/current` at it, and links `sterna` and
 broker (CLIProxyAPI) the release pins, after checking its SHA-256. It
 installs nothing else, touches no credential and edits no shell profile.
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://harzerheribert.github.io/sterna/install.ps1 | iex
+```
+
+It does the same with the release's `.zip`: verified against `SHA256SUMS`,
+unpacked into `%LOCALAPPDATA%\Programs\sterna\versions\<tag>`, with a
+`current` junction pointing at it and `…\sterna\current\bin` added to your
+user PATH (no administrator rights). Set `STERNA_VERSION` first to install a
+particular release.
+
 Builds: macOS on Apple silicon, Linux on x86_64 and arm64, and Windows on
-x64 and arm64 as `.zip` archives on the
+x64 and arm64, all on the
 [releases page](https://github.com/HarzerHeribert/sterna/releases).
 
 **Updates.** A release install checks for a newer release when a session

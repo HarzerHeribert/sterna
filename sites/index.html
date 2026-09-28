@@ -31,7 +31,7 @@
     <div class="hero-bottom">
       <div class="hero-lede">
         <p>One program per turn.<br>The same work on fewer tokens.</p>
-        <div class="install"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-hero">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-hero">Copy</button></div>
+        <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-hero" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-hero">Copy</button></div>
       </div>
       <a class="text-link" href="#why">Why Sterna <span aria-hidden="true">↓</span></a>
     </div>
@@ -96,9 +96,9 @@
 
   <section id="start" class="section start">
     <h2>START IN<br>A <span class="outline">MINUTE.</span></h2>
-    <div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-start">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-start">Copy</button></div>
+    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-start" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-start">Copy</button></div>
     <div class="steps">
-      <article><span class="step-number">01</span><h3>Install</h3><p>One line, on macOS or Linux. It checks the release against its checksums and edits no shell profile.</p></article>
+      <article><span class="step-number">01</span><h3>Install</h3><p>One line, on macOS, Linux or Windows. It checks the release against its checksums before it installs anything.</p></article>
       <article><span class="step-number">02</span><h3>Sign in</h3><p>Start <code>sterna</code> in a project and type <code>/login</code>: a ChatGPT or Claude subscription, or an API key.</p></article>
       <article><span class="step-number">03</span><h3>Say what you need</h3><p>“Fix the failing test.” Sterna reads, edits, checks, and tells you what it did.</p></article>
     </div>
@@ -108,7 +108,7 @@
 
 <footer>
   <a class="wordmark" href="./">STERNA</a>
-  <span class="credit">Arctic terns after photographs by Charles J. Sharp (in flight, Mýrar; with eel, Blönduós) and Buiobuione (a flock, Svalbard), <a class="inline-link" href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Pre-release · Windows archives on the <a class="inline-link" href="https://github.com/HarzerHeribert/sterna/releases">releases page</a>.</span>
+  <span class="credit">Arctic terns after photographs by Charles J. Sharp (in flight, Mýrar; with eel, Blönduós) and Buiobuione (a flock, Svalbard), <a class="inline-link" href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Pre-release · every archive is on the <a class="inline-link" href="https://github.com/HarzerHeribert/sterna/releases">releases page</a>.</span>
   <button class="motion-toggle" type="button" aria-pressed="false">Pause motion</button>
   <a href="https://github.com/HarzerHeribert/sterna">GitHub <span aria-hidden="true">↗</span></a>
 </footer>
