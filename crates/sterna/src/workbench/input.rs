@@ -924,6 +924,7 @@ impl Workbench {
                     Some((cell, h))
                 };
             }
+            Action::Scout => self.scout = !self.scout,
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),
             Action::Resume(id) => {

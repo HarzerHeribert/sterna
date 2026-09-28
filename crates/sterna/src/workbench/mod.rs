@@ -62,6 +62,9 @@ pub enum Action {
     /// A helper call's raw record -- its preparation steps and the excerpt
     /// block written for the model -- shown or put away.
     HelperRaw(usize, usize),
+    /// The Scout's whole report, under the request it read, shown or put
+    /// away.
+    Scout,
     Latest,
     Settings,
     Models,
@@ -269,6 +272,8 @@ pub struct Workbench {
     pub helper: Option<(usize, usize)>,
     /// The helper call whose raw record is open.
     pub helper_raw: Option<(usize, usize)>,
+    /// Whether the Scout's report is open under its request.
+    pub scout: bool,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
     pub sheets: Vec<Layer>,

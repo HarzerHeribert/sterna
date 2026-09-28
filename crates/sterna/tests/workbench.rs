@@ -1506,6 +1506,61 @@ fn your_turn_shows_only_what_you_wrote() {
     assert!(!words(&d).contains("## Request"), "{}", words(&d));
 }
 
+/// The Scout reads the request before the first turn, so it sits under that
+/// request, above the work, as one line; its report opens on a click. Drawn
+/// in full after the cells, it sat under the running work for the whole task.
+#[test]
+fn the_scout_folds_under_the_request_it_read() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Respect reduced motion and the terminal background.".into(),
+        outcome: HelperOutcome {
+            text: "## Tasks\n1. guard — the motion guard reads the setting\n## Files\nsrc/motion.rs:12 — task 1, the guard\nsrc/look.rs — task 1, the ground\n".into(),
+            ok: true,
+            elapsed_ms: 2100,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let mut u = Workbench::default();
+    let d = doc(&c, &n, &s, &u);
+    let scout = d
+        .rows
+        .iter()
+        .position(|r| r.text.contains("PREFLIGHT · SCOUT"))
+        .expect("the Scout is drawn");
+    let card = d
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, sterna::workbench::RowKind::CardTop { .. }))
+        .expect("the cell is drawn");
+    assert!(scout < card, "the Scout sits above the work: {}", words(&d));
+    assert!(
+        d.rows[scout].text.contains("named 2 files"),
+        "{}",
+        d.rows[scout].text
+    );
+    assert!(
+        !words(&d).contains("the motion guard reads"),
+        "{}",
+        words(&d)
+    );
+    assert_eq!(d.rows[scout].action, Some(Action::Scout));
+
+    let mut s = s;
+    let _ = draw(&c, &n, &s, &mut u, 100, 40);
+    click(&mut u, &mut s, &n, Action::Scout);
+    assert!(u.scout);
+    let d = doc(&c, &n, &s, &u);
+    assert!(
+        words(&d).contains("the motion guard reads"),
+        "{}",
+        words(&d)
+    );
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]

@@ -337,6 +337,12 @@ impl Document {
         let last_assistant = reads
             .iter()
             .rposition(|r| matches!(r, Reads::Turn(_) | Reads::After));
+        // The Scout reads the newest request before its first turn, so it
+        // sits under that request, above the work.
+        let scout_under = n
+            .preflight
+            .as_ref()
+            .and_then(|_| reads.iter().rposition(|r| *r == Reads::You));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
             d.notes(s, &mut note, idx, width);
@@ -344,6 +350,12 @@ impl Document {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
                     d.turn_you(&m.as_written(), width, id);
+                    if scout_under == Some(idx)
+                        && let Some(p) = &n.preflight
+                    {
+                        d.scout(p, s, ui, width, id);
+                        d.blank(id);
+                    }
                     continue;
                 }
                 Reads::After => {
@@ -590,50 +602,12 @@ impl Document {
         }
         d.notes(s, &mut note, usize::MAX, width);
         d.behind(s, width);
-        if let Some(p) = &n.preflight {
-            d.kinded(
-                vec![
-                    (
-                        format!(
-                            "{} PREFLIGHT · SCOUT  ",
-                            if !p.outcome.ok && p.outcome.text.is_empty() {
-                                d.busy(s, Mover::Preflight)
-                            } else {
-                                "◇"
-                            }
-                        ),
-                        Tone::Helper,
-                    ),
-                    (
-                        clip(&format!("{} {}", p.verb, p.asked), width.saturating_sub(24)),
-                        Tone::Muted,
-                    ),
-                ],
-                None,
-                usize::MAX - 2,
-                RowKind::Helper,
-            );
-            d.wrapped(
-                if p.outcome.ok {
-                    p.outcome.text.clone()
-                } else if p.outcome.text.is_empty() {
-                    format!(
-                        "Waiting on helper · {:.1}s · estimate unknown",
-                        p.outcome.elapsed_ms as f64 / 1000.
-                    )
-                } else {
-                    p.outcome.text.clone()
-                },
-                if !p.outcome.ok && !p.outcome.text.is_empty() {
-                    Tone::Failure
-                } else {
-                    Tone::Normal
-                },
-                None,
-                width,
-                usize::MAX - 2,
-                5,
-            );
+        // A Scout with no turn of the person's in view to sit under still
+        // shows, where it always did.
+        if scout_under.is_none()
+            && let Some(p) = &n.preflight
+        {
+            d.scout(p, s, ui, width, usize::MAX - 2);
         }
         if let Some(reasoning) = &s.streaming_reasoning {
             d.turn_sterna(usize::MAX - 4);
@@ -1618,6 +1592,87 @@ impl Document {
         out.push((files, Tone::Muted));
         out
     }
+    /// The Scout that ran before the request's first turn: one line once it
+    /// has answered, its whole report a click away. Drawn in full after the
+    /// cells, the report sat under the work for the whole task.
+    fn scout(
+        &mut self,
+        p: &crate::helpers::HelperRecord,
+        s: &ScreenState,
+        ui: &Workbench,
+        width: usize,
+        id: usize,
+    ) {
+        let waiting = !p.outcome.ok && p.outcome.text.is_empty();
+        let failed = !p.outcome.ok && !waiting;
+        let said = if waiting {
+            format!("{} {}", p.verb, p.asked)
+        } else if failed {
+            p.outcome.text.lines().next().unwrap_or("").to_string()
+        } else {
+            match named_files(&p.outcome.text) {
+                0 => "named no files".to_string(),
+                1 => "named 1 file".to_string(),
+                files => format!("named {files} files"),
+            }
+        };
+        let right = if waiting {
+            String::new()
+        } else if p.outcome.elapsed_ms == 0 {
+            (if ui.scout { "▾" } else { "▸" }).to_string()
+        } else {
+            format!(
+                "{:.1}s {}",
+                p.outcome.elapsed_ms as f64 / 1000.,
+                if ui.scout { "▾" } else { "▸" }
+            )
+        };
+        let left = vec![
+            (
+                format!(
+                    "{} PREFLIGHT · SCOUT  ",
+                    if waiting {
+                        self.busy(s, Mover::Preflight)
+                    } else {
+                        "◇"
+                    }
+                ),
+                Tone::Helper,
+            ),
+            (
+                clip(&said, width.saturating_sub(34)),
+                if failed { Tone::Failure } else { Tone::Muted },
+            ),
+        ];
+        self.kinded(
+            justify(left, vec![(right, Tone::Muted)], width),
+            (!waiting).then_some(Action::Scout),
+            id,
+            RowKind::Helper,
+        );
+        if waiting {
+            self.wrapped(
+                format!(
+                    "Waiting on helper · {:.1}s · estimate unknown",
+                    p.outcome.elapsed_ms as f64 / 1000.
+                ),
+                Tone::Normal,
+                None,
+                width,
+                id,
+                5,
+            );
+        } else if ui.scout {
+            self.wrapped(
+                p.outcome.text.clone(),
+                if failed { Tone::Failure } else { Tone::Normal },
+                None,
+                width,
+                id,
+                5,
+            );
+        }
+    }
     fn helpers(
         &mut self,
         cell: usize,
@@ -1760,6 +1815,21 @@ impl Document {
     }
 }
 const OPEN_DIFF: &str = "open diff ↗";
+
+/// How many files a Scout's report names: its `path:line` spans, and the
+/// paths a dissection's `## Files` names without a line.
+fn named_files(report: &str) -> usize {
+    let mut paths: Vec<String> = crate::preflight::spans(report)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    for (path, _) in crate::preflight::dissection_files(report) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths.len()
+}
 
 /// A helper's returned text as a person reads it: the answer, the
 /// `path:lines` spans it cites, and the excerpt block written for the model.
