@@ -352,17 +352,6 @@ const GATEWAY_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_se
 
 /// Attaches to a gateway that is already serving, or starts one.
 ///
-/// Returns `Ok(None)` when `ANTHROPIC_BASE_URL` is already set: sterna is hosted
-/// and the URL it was handed is the answer. Otherwise it starts one, points
-/// [`crate::wire::base_url`] and [`crate::wire`]'s credential header at it via
-/// the environment, and returns the handle whose lifetime is the gateway's.
-///
-/// # Safety of the environment write
-///
-/// `std::env::set_var` is unsound beside another thread reading the
-/// environment. The only caller is `session::run`, before it spawns the
-/// interrupt watcher or starts the live UI, and [`Gateway::serve`] itself
-/// starts no thread -- so this process is single-threaded at the write.
 /// Whether the environment hands this session a gateway to attach to: a
 /// base URL, and with it either the bearer the gateway minted or a loopback
 /// host. A base URL alone is not enough — Claude Code exports one into every
@@ -415,8 +404,9 @@ pub fn select(named: Option<&Path>) -> Gateway {
 }
 
 /// `Ok(None)` is an attached session or a direct one; `Ok(Some)` owns the
-/// gateway it started. `named` says whether the user asked for this gateway
-/// by path, which is what turns "not installed" from a notice into a refusal.
+/// gateway it started, which [`point_environment_at`] then hands to
+/// [`crate::wire`]. `named` says whether the user asked for this gateway by
+/// path, which is what turns "not installed" from a notice into a refusal.
 pub fn start_or_attach(
     gateway: &Gateway,
     named: bool,
@@ -441,6 +431,20 @@ pub fn start_or_attach(
         }
         Err(error) => return Err(error.to_string()),
     };
+    Ok(Some(serving))
+}
+
+/// Points [`crate::wire::base_url`] and [`crate::wire`]'s credential header at
+/// the gateway sterna started, through the environment.
+///
+/// # Safety of the environment write
+///
+/// `std::env::set_var` is unsound beside another thread reading the
+/// environment. The only caller is `session::run`, after the start's splash
+/// thread has been joined and before it spawns the interrupt watcher or
+/// starts the live UI, and [`Gateway::serve`] itself starts no thread -- so
+/// this process is single-threaded at the write.
+pub fn point_environment_at(serving: &Serving) {
     // SAFETY: single-threaded at this point -- see the doc comment above.
     unsafe {
         std::env::set_var("ANTHROPIC_BASE_URL", serving.base_url());
@@ -448,7 +452,6 @@ pub fn start_or_attach(
             std::env::set_var("ANTHROPIC_AUTH_TOKEN", token);
         }
     }
-    Ok(Some(serving))
 }
 
 // ---------------------------------------------------------------------

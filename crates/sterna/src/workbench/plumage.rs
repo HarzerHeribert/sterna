@@ -481,9 +481,13 @@ pub fn head(bird: Bird, mood: Mood, light: bool) -> Vec<Vec<Cell>> {
 }
 
 /// The flying tern as lines of text in true colour, for `sterna --version`
-/// on a terminal: `light` draws it with its light-terminal colours.
-pub fn mark(light: bool) -> Vec<String> {
+/// and the start's splash: `light` draws it with its light-terminal colours,
+/// and `lowered` sets it that many pixels lower -- a glide's rise and fall
+/// moves the traced drawing, it never redraws it.
+pub fn mark(light: bool, lowered: usize) -> Vec<String> {
     let mut grid = mark_art().pixels(Mood::Idle, light);
+    let width = grid.first().map_or(0, Vec::len);
+    grid.splice(0..0, std::iter::repeat_n(vec![None; width], lowered));
     if grid.len() % 2 == 1 {
         grid.push(vec![None; grid[0].len()]);
     }
@@ -684,10 +688,10 @@ mod tests {
 
     #[test]
     fn the_mark_is_the_flying_tern_in_its_colours() {
-        let dark = mark(false);
+        let dark = mark(false, 0);
         assert_eq!(dark.len(), 16);
         // The bill's red.
         assert!(dark.concat().contains("38;2;207;43;43"));
-        assert!(mark(true).concat().contains("38;2;196;38;42"));
+        assert!(mark(true, 0).concat().contains("38;2;196;38;42"));
     }
 }

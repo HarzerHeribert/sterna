@@ -6,6 +6,7 @@
 //! gateway's catalogue does not list is read as a family word and becomes
 //! that family's newest served model, and the chat says so.
 use super::*;
+use crate::runtime::handles::HandleTable;
 
 /// One account `inference-gateway entitlements --json` lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -435,6 +436,14 @@ pub(crate) fn advice(
         });
     }
     None
+}
+
+/// **Nothing in the notebook is a live object.** The runtime hands out a
+/// rendered handle table and a rendered preview and never its table or its
+/// value, so `tui` receives strings; the empty [`HandleTable`] below is the
+/// argument for a caller that holds one, which the session never does.
+fn empty_handles() -> HandleTable {
+    HandleTable::new()
 }
 
 /// Every acceptance test below, and any real pipe, takes this path. Draws

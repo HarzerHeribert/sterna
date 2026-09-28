@@ -37,6 +37,14 @@ impl Motion {
             Self::Off => "off",
         }
     }
+    /// How long one frame lasts while something works at this level.
+    pub fn period(self) -> Duration {
+        match self {
+            Self::Full => FULL_FRAME,
+            Self::Calm => CALM_FRAME,
+            Self::Off => STILL_FRAME,
+        }
+    }
 }
 
 /// One frame while something works, at full motion: about eight a second,
@@ -74,11 +82,10 @@ impl ScreenState {
     /// How long one frame lasts while something is working.
     #[must_use]
     pub fn frame_period(&self) -> Duration {
-        match self.motion {
-            _ if self.reduced_motion => STILL_FRAME,
-            Motion::Full => FULL_FRAME,
-            Motion::Calm => CALM_FRAME,
-            Motion::Off => STILL_FRAME,
+        if self.reduced_motion {
+            STILL_FRAME
+        } else {
+            self.motion.period()
         }
     }
     /// When an idle screen draws next: at full motion a beat -- the mark

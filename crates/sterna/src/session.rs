@@ -29,7 +29,6 @@ use crate::memory::LocalMemory;
 use crate::project;
 use crate::prompt::{self, Budget, CellResult, ErrorSection, Extracted};
 use crate::rollout::{self, Rollout};
-use crate::runtime::handles::HandleTable;
 use crate::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use crate::runtime::outcome::{CellOutcome, CellRecord, Ended};
 use crate::runtime::preview;
@@ -69,6 +68,7 @@ mod notices;
 mod resume;
 mod returned;
 mod setup;
+mod splash;
 mod startup;
 mod system;
 use system::{estimate_request_tokens, estimate_task_request_tokens};
@@ -314,14 +314,6 @@ struct Transcript {
     provider_start: usize,
 }
 
-/// **Nothing in the notebook is a live object.** The runtime hands out a
-/// rendered handle table and a rendered preview and never its table or its
-/// value, so `tui` receives strings; the empty [`HandleTable`] below is the
-/// argument for a caller that holds one, which the session never does.
-fn empty_handles() -> HandleTable {
-    HandleTable::new()
-}
-
 /// Pipe output is static; the interactive terminal is owned by `ui::LiveUi`.
 fn render(
     transcript: &Transcript,
@@ -484,8 +476,10 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     // Held for the whole session: dropping it kills the gateway sterna started.
     // `None` means sterna attached to one already serving, or runs direct.
     // Before the interrupt thread and the live UI on purpose -- it writes the
-    // process environment, which is only sound while single-threaded.
-    let _serving = gateway::start_or_attach(
+    // process environment, which is only sound while single-threaded. A slow
+    // start flies the tern until the live UI takes the screen (`splash.rs`).
+    let (_serving, splash_frame) = splash::start_gateway(
+        terminal.then_some(&loaded_settings.values),
         &gateway,
         args.gateway.is_some(),
         &rollout_path.with_extension("gateway.log"),
@@ -578,6 +572,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     let interrupt = Arc::new(Interrupter::new(session_id.clone()));
     install_interrupt_handler();
 
+    drop(splash_frame);
     let interactive =
         if args.task.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal() {
             Some(ui::LiveUi::start(

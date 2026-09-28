@@ -2995,3 +2995,66 @@ fn live_acceptance_list_counts_the_file_the_cell_wrote() {
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
+
+/// A gateway at `root/no-gateway` that takes `seconds` to say it is ready,
+/// then serves `base`; every other subcommand fails, so the catalogue is
+/// empty. The base URL is set empty so the session starts it rather than
+/// attaching.
+#[cfg(unix)]
+fn slow_gateway(base: &str, seconds: u32) -> impl Fn(&std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  serve) sleep {seconds}; printf '{{\"listening\":\"{base}\",\"token\":\"fixture\"}}\\n'; cat >/dev/null ;;\n  *) exit 1 ;;\nesac\n"
+    );
+    move |root: &std::path::Path| {
+        let path = root.join("no-gateway");
+        std::fs::write(&path, &script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// **A slow start flies the tern** over the sea with the status line under
+/// it, then hands the screen to the live UI, and the shell's screen comes
+/// back at the end.
+#[cfg(unix)]
+#[test]
+fn a_slow_gateway_start_flies_the_tern_until_the_session_is_ready() {
+    let (base, _requests) = provider();
+    let seed = slow_gateway(&base, 2);
+    let colours = [("COLORTERM", "truecolor")];
+    let mut app = App::start_in("", false, None, &[], &seed, &colours);
+    app.wait(
+        "the tern and the status line while the gateway starts",
+        |screen| {
+            let text = screen.contents();
+            text.contains("Starting the model gateway") && text.contains('▀') && text.contains('▁')
+        },
+    );
+    app.ready();
+    app.refute("the splash is gone", "Starting the model gateway");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+    assert!(!app.screen.screen().alternate_screen());
+}
+
+/// **Ctrl-C during the splash still stops sterna**, and the terminal comes
+/// back whole: input mode (checked by `exited`), the main screen and the
+/// cursor.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_the_splash_stops_sterna_and_puts_the_terminal_back() {
+    let (base, _requests) = provider();
+    let seed = slow_gateway(&base, 30);
+    let mut app = App::start_in("", false, None, &[], &seed, &[]);
+    app.contains("Starting the model gateway");
+    app.send(b"\x03");
+    app.exited();
+    assert!(
+        !app.screen.screen().alternate_screen(),
+        "left on the alternate screen"
+    );
+    assert!(
+        !app.screen.screen().hide_cursor(),
+        "the cursor was left hidden"
+    );
+}

@@ -100,11 +100,14 @@ pub fn from_osc11(reply: &str) -> Option<bool> {
     Some(0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5)
 }
 
-/// Asks the terminal, once per process. Call it with raw mode on and before
-/// anything else reads the input: the replies are read here and never
-/// reach the key reader.
+/// Asks the terminal, once per process: the start's splash may have asked
+/// already. Call it with echo and line mode off and before anything else
+/// reads the input: the replies are read here and never reach the key
+/// reader.
 pub fn ask() {
-    let _ = ANSWER.set(query());
+    if ANSWER.get().is_none() {
+        let _ = ANSWER.set(query());
+    }
 }
 
 #[cfg(unix)]
