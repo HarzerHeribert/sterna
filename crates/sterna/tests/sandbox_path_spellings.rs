@@ -154,16 +154,17 @@ fn a_path_no_rule_names_is_still_granted_in_every_spelling() {
         "cutting a component at its first colon would have hidden this file from its own deny"
     );
 
-    // An `allow` outside the root is exact, on every host.
+    // An `allow` outside the root is exact, on every host. It is a `Write`
+    // grant because reading is granted everywhere nothing refuses.
     let elsewhere = Profile::compile(
         Path::new(ROOT),
-        Some(r#"{"permissions":{"allow":["Read(C:/sterna-fixture/other/notes/**)"]}}"#),
+        Some(r#"{"permissions":{"allow":["Write(C:/sterna-fixture/other/notes/**)"]}}"#),
     );
     assert!(
         elsewhere
             .check(
-                "Read",
-                Access::Read,
+                "Write",
+                Access::Write,
                 Path::new(r"C:\sterna-fixture\other\notes\a.md")
             )
             .is_ok()
@@ -171,8 +172,8 @@ fn a_path_no_rule_names_is_still_granted_in_every_spelling() {
     assert!(
         elsewhere
             .check(
-                "Read",
-                Access::Read,
+                "Write",
+                Access::Write,
                 Path::new(r"C:\sterna-fixture\other\NOTES\a.md")
             )
             .is_err(),

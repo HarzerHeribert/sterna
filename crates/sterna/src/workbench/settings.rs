@@ -25,11 +25,10 @@ pub const CATEGORIES: [&str; 7] = [
 /// at all sat under another. Someone opening settings wants the five things
 /// they change; every one of those five is on this list, and everything else
 /// is still exactly one Tab away.
-const EVERYDAY: [&str; 7] = [
+const EVERYDAY: [&str; 6] = [
     "model.parent",
     "session.effort",
-    "session.mode",
-    "permissions.mode",
+    "sandbox.level",
     "helpers.enabled",
     "ui.theme",
     "ui.motion",
@@ -84,7 +83,7 @@ pub struct Preferences {
     /// Drained by [`Self::take_change`].
     change: Option<super::Change>,
     /// What the running session is using now, read from the screen before
-    /// every build: a value a chip, Shift-Tab or a command set shows here at
+    /// every build: a value a chip or a command set shows here at
     /// once, whatever the files say.
     observed: BTreeMap<&'static str, String>,
     pub snapshot: Snapshot,
@@ -139,8 +138,7 @@ impl Preferences {
         use crate::tui::{SidebarVisibility, StatusLine};
         let mut observed = BTreeMap::new();
         observed.insert("session.effort", s.effort.name().to_string());
-        observed.insert("session.mode", s.mode.setting().to_string());
-        observed.insert("permissions.mode", s.permissions.rung().name().to_string());
+        observed.insert("sandbox.level", s.level.level().name().to_string());
         observed.insert("ui.theme", s.theme.name().to_string());
         observed.insert("ui.motion", s.motion.name().to_string());
         observed.insert("ui.background", s.background.name().to_string());
@@ -336,7 +334,7 @@ impl Preferences {
         Ok(())
     }
     /// Reads the files again after something outside this sheet saved to
-    /// them -- a chip, Shift-Tab, a typed command, an undo.
+    /// them -- a chip, a typed command, an undo.
     pub fn refresh(&mut self) {
         if let Err(error) = self.reload() {
             self.notice = error;
@@ -375,15 +373,15 @@ pub fn restore(
         Some(value) => show(Some(value)),
         None => crate::settings::shown_default(key).unwrap_or_default(),
     };
-    // The rung is this screen's to set; everything else the session owns.
-    if names.contains(&"permissions.mode")
-        && let Some(rung) = crate::permissions::Rung::parse(&now("permissions.mode"))
+    // The level is this screen's to set; everything else the session owns.
+    if names.contains(&"sandbox.level")
+        && let Some(level) = crate::permissions::Level::parse(&now("sandbox.level"))
     {
-        s.permissions.set(rung);
+        s.level.set(level);
     }
     Ok(names
         .iter()
-        .filter(|key| **key != "permissions.mode")
+        .filter(|key| **key != "sandbox.level")
         .find_map(|key| crate::settings::live_command(key, Some(&now(key)))))
 }
 

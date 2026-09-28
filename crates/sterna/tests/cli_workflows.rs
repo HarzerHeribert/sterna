@@ -185,7 +185,7 @@ fn doctor_settings_check_is_ok_when_every_feature_has_what_it_needs() {
 /// **`sterna doctor` answers for the configuration in hand, not for the
 /// build.** It said "Seatbelt backend compiled" until 2026-09-19 -- true on
 /// every machine whatever anyone had configured -- and a person who had set
-/// the rung and the grant read it as confirmation that they had full access.
+/// the sandbox level read it as confirmation that they had full access.
 #[test]
 fn doctor_names_the_confinement_this_configuration_would_apply() {
     let root = std::env::temp_dir().join(format!(
@@ -234,14 +234,14 @@ fn doctor_names_the_confinement_this_configuration_would_apply() {
         "the confined case answers for the configuration: {confined}"
     );
 
-    let (status, open) = detail("[permissions]\nfull_access = true\n");
+    let (status, open) = detail("[sandbox]\nlevel = \"full\"\n");
     assert_eq!(status, "warning", "{open}");
     assert!(
         open.contains("no OS confinement"),
         "the unconfined case says so plainly: {open}"
     );
     assert!(
-        open.contains("full_access"),
+        open.contains("sandbox.level"),
         "and names the setting that chose it: {open}"
     );
     assert!(

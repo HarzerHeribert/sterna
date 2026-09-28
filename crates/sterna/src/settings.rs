@@ -250,9 +250,39 @@ impl Store {
             .retired
             .iter()
             .map(|retired| {
-                let removed = self.read(retired.scope).and_then(|snapshot| {
-                    self.save(retired.scope, &snapshot, &[(retired.key.clone(), None)])
-                });
+                // A retired permission word that chose a level is migrated,
+                // globally and only where no level is saved yet: the file
+                // keeps meaning what its owner chose. A project file's copy
+                // is only removed, because the level is global only.
+                let migrated = (retired.scope == Scope::Global)
+                    .then(|| registry::migrated_level(&retired.key, &retired.word))
+                    .flatten()
+                    .filter(|_| {
+                        crate::settings_session::value(&loaded.values, "sandbox.level").is_none()
+                    })
+                    // A saved rung beside `full_access` decided the old
+                    // session's level (the rung won), so it decides this one.
+                    .filter(|_| {
+                        retired.key != "permissions.full_access"
+                            || !loaded.retired.iter().any(|other| {
+                                other.scope == Scope::Global
+                                    && registry::migrated_level(&other.key, &other.word).is_some()
+                                    && other.key == "permissions.mode"
+                            })
+                    });
+                let mut changes = vec![(retired.key.clone(), None)];
+                if let Some(level) = migrated {
+                    changes.push(("sandbox.level".to_string(), Some(level.to_string())));
+                }
+                let removed = self
+                    .read(retired.scope)
+                    .and_then(|snapshot| self.save(retired.scope, &snapshot, &changes));
+                if let Some(level) = migrated.filter(|_| removed.is_ok()) {
+                    return format!(
+                        "`{} = {}` is now `sandbox.level = \"{level}\"`; /sandbox changes it.",
+                        retired.key, retired.word,
+                    );
+                }
                 if let Some(instead) = registry::retired_key(&retired.key) {
                     return format!(
                         "`{} = {}` is no longer a setting{}; {instead}.",
@@ -1310,7 +1340,6 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ("ui.background", word("auto")),
         ("ui.motion", word(crate::tui::Motion::default().name())),
         ("ui.stream", word(crate::tui::Stream::default().name())),
-        ("session.mode", word("build")),
         (
             "session.effort",
             word(crate::wire::Effort::default().name()),

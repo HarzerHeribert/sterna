@@ -65,7 +65,9 @@ impl Fixture {
         let root = std::env::temp_dir().join(&stem);
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::create_dir_all(root.join("secrets")).unwrap();
-        let outside = std::env::temp_dir().join(format!("{stem}-outside"));
+        // Beside the build rather than in `%TEMP%`: the temp folders are a
+        // writable place of every profile, and "outside" means outside those.
+        let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{stem}-outside"));
         std::fs::create_dir_all(&outside).unwrap();
         Self { root, outside }
     }

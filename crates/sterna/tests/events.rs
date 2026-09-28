@@ -682,11 +682,13 @@ impl JobFixture {
 
     /// `Bash(...)` patterns are argv admission and grant no file access at
     /// all (`sandbox-grants.md` §2), which is why they are safe in a fixture.
+    /// Every command line is admitted unless a deny pattern refuses it;
+    /// `curl` is the one this fixture refuses.
     fn profile(&self) -> Profile {
         Profile::compile(
             &self.root,
             Some(
-                r#"{"permissions":{"allow":["Bash(echo*)","Bash(while*)","Bash(do*)","Bash(trap*)"]}}"#,
+                r#"{"permissions":{"allow":["Bash(echo*)","Bash(while*)","Bash(do*)","Bash(trap*)"],"deny":["Bash(curl*)"]}}"#,
             ),
         )
     }
@@ -794,7 +796,7 @@ fn a_command_outside_the_grant_is_refused_before_any_handle_exists() {
         "curl https://example.com",
         &RunOptions::default(),
     )
-    .expect_err("`curl` is admitted by no rule in this fixture's profile");
+    .expect_err("`curl` is refused by this fixture's deny pattern");
     assert!(!denied.rule.is_empty(), "a refusal names its deciding rule");
     assert_eq!(
         bg::live(&fixture.session),

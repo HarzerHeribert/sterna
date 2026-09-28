@@ -222,6 +222,9 @@ pub(super) enum Update {
     /// The approval gate's memory, sent once when the gate is made, so the
     /// Ask sheet can list and forget what was answered for the session.
     Memory(crate::approval::Memory),
+    /// The network proxy's live allowed list, sent once when the session
+    /// starts one, so the hosts sheet changes what commands reach now.
+    Hosts(crate::sandbox::proxy::Allowed),
     /// The transcript and how the turn stands; `None` when a control has
     /// been answered, which leaves the turn's ending and its clock alone.
     Snapshot(Box<(Conversation, Notebook, ServedBy, Option<Activity>)>),
@@ -243,7 +246,6 @@ pub(super) enum Update {
     ToolDelta(String),
     /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
     Reasoning(String),
-    Mode(tui::Mode, bool),
     Effort(crate::wire::Effort),
     Panel(Box<tui::Panel>),
     Notice(String),
@@ -349,9 +351,9 @@ impl LiveUi {
     /// terminal drops pending requests and denies their waiting callbacks.
     pub(super) fn approval_gate(
         &self,
-        ladder: crate::permissions::Ladder,
+        level: crate::permissions::LiveLevel,
     ) -> crate::approval::Gate {
-        let (gate, receiver) = crate::approval::Gate::channel(ladder);
+        let (gate, receiver) = crate::approval::Gate::channel(level);
         let updates = self.updates.clone();
         let _ = updates.send(Update::Memory(gate.memory()));
         thread::spawn(move || {
@@ -362,6 +364,10 @@ impl LiveUi {
             }
         });
         gate
+    }
+    /// Shares the proxy's live allowed list with the screen.
+    pub(super) fn share_hosts(&self, allowed: crate::sandbox::proxy::Allowed) {
+        let _ = self.updates.send(Update::Hosts(allowed));
     }
     /// Forwards questions a cell asked to the terminal owner. Closing the
     /// terminal drops the pending question, which the session reads as
@@ -496,9 +502,6 @@ impl LiveUi {
     }
     pub(super) fn effort(&self, effort: crate::wire::Effort) {
         let _ = self.updates.send(Update::Effort(effort));
-    }
-    pub(super) fn mode(&self, mode: tui::Mode, pinned: bool) {
-        let _ = self.updates.send(Update::Mode(mode, pinned));
     }
     pub(super) fn panel(&self, panel: tui::Panel) {
         let _ = self.updates.send(Update::Panel(Box::new(panel)));
@@ -647,37 +650,6 @@ fn tick_helper_clocks(notebook: &mut Notebook, since: &mut HashMap<(usize, usize
     }
 }
 
-/// Shift-Tab: one rung along the permission ladder, and the line that says
-/// where it landed.
-///
-/// **It takes effect at once, task or no task.** The ladder is an atomic the
-/// approval gate reads on the session thread, so a person who moves *down*
-/// mid-task is asked about the very next call; moving *up* is their own act
-/// and the ladder records it for the rollout.
-fn rung_change(state: &mut ScreenState, scope: crate::settings::Scope) -> String {
-    let mut to = state.permissions.rung().next();
-    // **The key walks the rungs that ask; it cannot walk into the one that
-    // does not.** Shift-Tab is one keystroke with no confirmation step, and
-    // `full` is the rung where nothing is confirmed ever again -- reachable
-    // in one press from `auto`, which is the default. A serious choice is
-    // prevented structurally rather than apologised for afterwards, so this
-    // key steps over it and `full` keeps the two routes that explain
-    // themselves first: the Ask surface, which confirms, and
-    // `/permissions full`, which is typed in full.
-    //
-    // A session *started* on `full` still leaves it here, because stepping
-    // over a rung is not the same as being unable to leave one.
-    if to == crate::permissions::Rung::Full {
-        to = to.next();
-    }
-    // The new state, then what it means, then the way on: the notice every
-    // route that moves the rung prints, and one more sentence.
-    format!(
-        "{} Shift-Tab again for the next.",
-        crate::workbench::facts::set_rung(state, to, scope)
-    )
-}
-
 /// Turns mouse reporting on or off, sets the state the status line draws
 /// from, and says what just happened.
 ///
@@ -808,6 +780,7 @@ fn run(
                     prompts.ask(request);
                 }
                 Update::Memory(memory) => state.memory = Some(memory),
+                Update::Hosts(allowed) => state.allowed = Some(allowed),
                 Update::Snapshot(snapshot) => {
                     let (c, n, s, activity) = *snapshot;
                     let completed = n
@@ -961,10 +934,6 @@ fn run(
                 Update::Tiers(helpers_on, subagents) => {
                     state.helpers_on = helpers_on;
                     state.subagents = Some(subagents);
-                }
-                Update::Mode(mode, pinned) => {
-                    state.mode = mode;
-                    state.mode_pinned = pinned;
                 }
                 Update::Effort(effort) => state.effort = effort,
                 // The screen's inbox: the workbench opens it as a sheet on the
@@ -1152,6 +1121,11 @@ fn run(
             match done {
                 decision::Done::Nothing => {}
                 decision::Done::Redraw => dirty = true,
+                decision::Done::KeepHosts(hosts) => {
+                    let notice = crate::workbench::facts::keep_hosts(&state, &hosts);
+                    state.note(notice);
+                    dirty = true;
+                }
                 // The same Ctrl-C as over a running turn: it stops the
                 // turn, and says so.
                 decision::Done::Interrupt => {
@@ -1469,26 +1443,6 @@ fn run(
                         }
                         _ => {}
                     }
-                }
-                if key.code == KeyCode::BackTab {
-                    // The permission rung, not the request mode: this is the
-                    // one a person reaches for constantly, and — unlike a
-                    // request mode, which is a new request — it must move
-                    // *while* a task runs, because that is when someone
-                    // notices they are on the wrong rung. The request mode
-                    // keeps `/mode` and its own sidebar field.
-                    // Offered back like every other route that moves it.
-                    let before = state.permissions.rung();
-                    let notice = rung_change(&mut state, workbench.scope());
-                    workbench.offer_back(
-                        notice,
-                        crate::workbench::Change {
-                            was: format!("Ask {}", before.label()),
-                            back: crate::workbench::Action::Rung(before.name().into()),
-                        },
-                    );
-                    dirty = true;
-                    continue;
                 }
                 // **Escape, and only while a task runs.** Every panel,
                 // modal and sheet above this point takes its own
@@ -2191,46 +2145,5 @@ mod tests {
             }
             before = after;
         }
-    }
-
-    /// Shift-Tab walks the permission ladder and wraps, and it does not
-    /// touch the request mode.
-    #[test]
-    fn shift_tab_moves_the_rung_and_leaves_the_request_mode_alone() {
-        let mut state = ScreenState {
-            permissions: crate::permissions::Ladder::new(crate::permissions::Rung::Manual),
-            ..ScreenState::default()
-        };
-        let mode_before = state.mode;
-        let mut seen = Vec::new();
-        for _ in 0..3 {
-            let line = rung_change(&mut state, crate::settings::Scope::Global);
-            // Where it landed, and what that does -- the notice every route
-            // prints, so this one and the Ask surface cannot drift.
-            let rung = state.permissions.rung();
-            assert!(
-                line.starts_with(&rung.now()),
-                "it says where it landed and what that means: {line}"
-            );
-            seen.push(state.permissions.rung());
-        }
-        assert_eq!(
-            seen,
-            vec![
-                crate::permissions::Rung::AcceptEdits,
-                crate::permissions::Rung::Auto,
-                // Not `Full`: the key steps over the rung that stops asking.
-                crate::permissions::Rung::Manual,
-            ],
-            "one rung per press, wrapping to where it started"
-        );
-        assert_eq!(state.mode, mode_before, "the request mode is untouched");
-        // Three moves, not four: the step over Never asks is one move, so
-        // the gate never reads that rung, not even for an instant.
-        assert_eq!(
-            state.permissions.drain_moves().len(),
-            3,
-            "every move is recorded for the rollout"
-        );
     }
 }

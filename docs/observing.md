@@ -48,7 +48,7 @@ once. A reader takes a duration by pairing, never by parsing prose.
 | `ask.raise` | the question put to you |
 | `approval.raise` | what is being confirmed |
 | `supervisor.look` | the verdict |
-| `ladder.move` | the permission rung, from and to |
+| `sandbox.move` | the sandbox level, from and to |
 | `reduction.made` | what was reduced and by how much |
 
 `cell.submit`'s `cell` is the rollout's own cell number, so the two files
@@ -59,7 +59,7 @@ a command line built from a variable is not knowable until it runs.
 
 Seven kinds are marked as ones a future hook could refuse (`cell.submit`,
 `cell.repair`, `command.judge`, `agent.begin`, `answer.propose`,
-`ask.raise`, `ladder.move`). Nothing waits for a verdict today; the stream
+`ask.raise`, `sandbox.move`). Nothing waits for a verdict today; the stream
 only reports.
 
 ## Redaction

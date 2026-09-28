@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use super::output;
-use crate::tui;
 
 /// `sterna session`'s whole flag set. A project root and a way to identify the
 /// rollout file are the only things every run needs; `--task` is the
@@ -86,77 +85,18 @@ pub struct SessionArgs {
     #[arg(long)]
     pub gateway: Option<PathBuf>,
 
-    /// Grant the whole project root and every command line, retaining native
-    /// permission denials and the never-grantable set.
-    ///
-    /// **This is the person widening their own grant at session start, which
-    /// is the only widening `sandbox-grants.md` §1.1 permits** — it is a flag
-    /// on the command that starts the session, never something a cell can
-    /// reach, ask for or set. It compiles a synthesised settings document
-    /// rather than adding a second way to build a profile, so §4's
-    /// never-grantable set still applies: a debugger is refused under
-    /// `--yolo` exactly as it is without it.
-    #[arg(long)]
-    pub yolo: bool,
+    /// How much runs without asking, for this session: `ask` (every edit and
+    /// command is confirmed), `sandboxed` (everything in the project runs;
+    /// leaving the sandbox asks) or `full` (no sandbox, nothing asks). The
+    /// saved `sandbox.level` otherwise; `sandboxed` when nothing is saved.
+    #[arg(long, value_parser = |w: &str| crate::permissions::Level::parse(w)
+        .ok_or("ask, sandboxed or full"))]
+    pub sandbox: Option<crate::permissions::Level>,
 
-    /// Skip Sterna's native OS child-process confinement after an explicit
-    /// acknowledgement. Intended for disposable benchmark/CI containers
-    /// whose outer runtime is the security boundary; requires --yolo.
-    ///
-    /// The long-standing spelling of one half of [`SessionArgs::full_access`],
-    /// kept because benchmark harnesses and CI files already name it.
-    #[arg(long)]
-    pub dangerously_bypass_os_sandbox: bool,
-
-    /// **Full access: the widest session Sterna has, under one name.**
-    ///
-    /// Three separate choices had three separate flags, and a person who
-    /// wanted all three had to know all three and pair them correctly
-    /// (the user, 2026-09-18: *"voller Zugriff ist das einzige was Sinn macht
-    /// in modernen Zeiten"*, and *"ich will nicht wie ein Affe dasitzen und
-    /// 'y' tippen"*). This is the one word for it: the project root and
-    /// every command line are admitted (`--yolo`), no question is put to the
-    /// person (`--permissions full`), and Sterna applies no OS confinement of
-    /// its own to the children it spawns
-    /// (`--dangerously-bypass-os-sandbox`).
-    ///
-    /// **It is still not unrestricted, and this is not a slogan.** Every one
-    /// of those three is a *removal of a question*, never a widening of a
-    /// grant. `Profile::check` runs unchanged on every path, before the
-    /// container-mode reading grant and before anything is spawned, so §4's
-    /// never-grantable set is exactly as refusing here as it is in a session
-    /// started with no flags at all: no network, no `~/.ssh`, `~/.aws`,
-    /// `~/.claude`, `~/.codex` or `~/.config`, no registry credential inside
-    /// the toolchain, no sandbox launcher. What changes is that the outer
-    /// machine — a container, a VM, or the person's own trusted workstation
-    /// — becomes the boundary underneath all of that instead of the seatbelt
-    /// or Landlock layer.
-    #[arg(long)]
-    pub full_access: bool,
-
-    /// Ask before admitted foreground file/shell tools. O allows once, S
-    /// remembers this exact call, D denies. Web, MCP, background and agents
-    /// are excluded; this never grants additional permissions.
-    ///
-    /// The alias for `--permissions manual`, kept because it shipped first.
-    #[arg(long)]
-    pub ask_approval: bool,
-
-    /// How often you are asked: `manual`, `accept-edits`, `auto` (default)
-    /// or `full`. Shift-Tab cycles it in a live session and `/permissions`
-    /// sets one. A rung never widens a grant.
-    #[arg(long, value_parser = |w: &str| crate::permissions::Rung::parse(w)
-        .ok_or("manual, accept-edits, auto or full"))]
-    pub permissions: Option<crate::permissions::Rung>,
-
-    /// Start in planning mode: reads run, no change executes. Same as `--mode plan`.
-    #[arg(long)]
-    pub plan: bool,
-
-    /// Start in `execute`, `explore` (read-only shell, writes only to scratch
-    /// and documentation globs) or `plan`.
-    #[arg(long, value_parser = |w: &str| tui::Mode::parse(w).ok_or("execute, explore or plan"))]
-    pub mode: Option<tui::Mode>,
+    /// A host commands may reach for this session, beside the allowed hosts
+    /// in settings (`--allow-host api.example.com`). Repeatable.
+    #[arg(long = "allow-host", value_name = "HOST")]
+    pub allow_hosts: Vec<String>,
 
     /// Select [profiles.NAME] in .sterna/config.toml over the base configuration.
     #[arg(long)]

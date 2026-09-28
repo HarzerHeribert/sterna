@@ -69,8 +69,8 @@ inputs = ["src", "tests", "README.md"]
 reuse = true
 ```
 
-A cell runs them with `checks.run("tests")`; they still need the command
-admitted. With `reuse`, an unchanged successful result (same inputs, same
+A cell runs them with `checks.run("tests")`, inside the sandbox like any
+command. With `reuse`, an unchanged successful result (same inputs, same
 environment) is returned marked `reused` instead of run again.
 
 ### The completion gate

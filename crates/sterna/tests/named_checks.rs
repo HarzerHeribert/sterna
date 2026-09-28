@@ -25,10 +25,13 @@ impl Fixture {
         std::fs::create_dir_all(root.join(".sterna")).unwrap();
         std::fs::write(root.join("input.txt"), "first\n").unwrap();
         std::fs::write(root.join(".sterna/checks.toml"), "checker = [\"tests\"]\n[checks.tests]\ncommand = \"/bin/cat input.txt\"\ninputs = [\"input.txt\"]\nreuse = true\n").unwrap();
+        // Every command line is admitted unless a deny pattern refuses it;
+        // `touch` is the one this fixture's settings refuse, so a
+        // `checks.toml` naming it proves configuration grants nothing.
         let profile = Profile::compile(
             &root,
             Some(
-                r#"{"permissions":{"allow":["Read(**)","Bash(/bin/cat*)","Bash(/usr/bin/false)"]}}"#,
+                r#"{"permissions":{"allow":["Read(**)","Bash(/bin/cat*)","Bash(/usr/bin/false)"],"deny":["Bash(touch*)"]}}"#,
             ),
         );
         Self { root, profile }

@@ -40,25 +40,6 @@ pub(super) fn label(f: &mut Frame<'_>, a: Rect, y: u16, text: &str, tone: Tone, 
     }
 }
 
-/// One word for the work mode, as the footer and the session bar both name it.
-/// Explore and Plan change what a request may do, so while one of them is
-/// in force its chip is drawn as a warning and never dropped.
-fn work_tone(s: &ScreenState) -> Tone {
-    if s.mode == crate::tui::Mode::Execute {
-        Tone::Normal
-    } else {
-        Tone::Warning
-    }
-}
-/// The access profile, named by what it does to your work. The counts and the
-/// applier are under the sentence, on the Access surface.
-fn access_word(s: &ScreenState) -> &'static str {
-    if s.full_access {
-        "FULL ACCESS"
-    } else {
-        "This project"
-    }
-}
 fn network_word(s: &ScreenState) -> &'static str {
     match s.network.as_deref() {
         Some("on") => "network on",
@@ -66,18 +47,10 @@ fn network_word(s: &ScreenState) -> &'static str {
         _ => "network unknown",
     }
 }
-fn ask_word(s: &ScreenState) -> &'static str {
-    s.permissions.rung().label()
-}
-fn access_tone(s: &ScreenState) -> Tone {
-    if s.full_access {
-        Tone::Warning
-    } else {
-        Tone::Normal
-    }
-}
-fn ask_tone(s: &ScreenState) -> Tone {
-    if s.permissions.rung() == crate::permissions::Rung::Full {
+/// The level chip's tone: Full access is a warning, so it is never dropped
+/// and never forgotten.
+fn level_tone(s: &ScreenState) -> Tone {
+    if s.full_access() {
         Tone::Warning
     } else {
         Tone::Normal
@@ -200,21 +173,13 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         chrome::width(brand) + 1 + chrome::width(&project) + 2,
         &[
             (format!("{model} ▾"), Action::Models, Tone::Normal, 3),
-            // How often it asks outranks which mode it is in, and both
-            // outrank the model's name: at eighty columns a session must
-            // still say whether it will ask before running anything, and
-            // whether it may change anything at all.
-            (ask_word(s).to_string(), Action::Approvals, ask_tone(s), 1),
-            (super::facts::mode_word(s), Action::Work, work_tone(s), 2),
+            // The level outranks the model's name: at eighty columns a
+            // session must still say how much runs without asking.
             (
-                if s.full_access {
-                    "▲ FULL ACCESS".to_string()
-                } else {
-                    access_word(s).to_string()
-                },
-                Action::Access,
-                access_tone(s),
-                4,
+                super::facts::level_word(s),
+                Action::Sandbox,
+                level_tone(s),
+                1,
             ),
             ("Settings".to_string(), Action::Settings, Tone::Normal, 0),
             ("?".to_string(), Action::Help, Tone::Normal, 5),
@@ -867,25 +832,16 @@ fn session_card(
     lines.extend([
         ("GUARDRAILS".into(), Tone::Accent, None),
         (
-            if s.full_access {
-                "▲ full access".into()
-            } else {
-                "this project only".into()
-            },
-            access_tone(s),
-            Some(Action::Access),
-        ),
-        (network_word(s).into(), Tone::Muted, Some(Action::Access)),
-        (
-            s.permissions.rung().asks().to_string(),
-            ask_tone(s),
-            Some(Action::Approvals),
+            super::facts::level_word(s),
+            level_tone(s),
+            Some(Action::Sandbox),
         ),
         (
-            format!("mode {}", super::facts::mode_word(s)),
-            work_tone(s),
-            Some(Action::Work),
+            s.level.level().asks().to_string(),
+            Tone::Muted,
+            Some(Action::Sandbox),
         ),
+        (network_word(s).into(), Tone::Muted, Some(Action::Sandbox)),
         (String::new(), Tone::Normal, None),
         ("MODEL".into(), Tone::Accent, None),
         (

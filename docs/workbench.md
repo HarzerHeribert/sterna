@@ -67,7 +67,6 @@ surface behaves like every other.
 | Ctrl-T | live telemetry and activity |
 | Ctrl-F | fullscreen: transcript and composer only |
 | Ctrl-G | release or recapture the mouse |
-| Shift-Tab | cycle how often you are asked ([sandbox](sandbox.md#how-often-you-are-asked)) |
 | `?` on an empty composer | every key |
 | Home / End on an empty composer | the conversation's first and last rows |
 
@@ -104,7 +103,10 @@ subscription, an API key or your own endpoint, each with its warnings),
 apart; connected subscriptions first; search; measured intelligence from
 the gateway where it exists, unknown where it does not), `/theme`,
 `/wizard` and `/settings`. A choice saves at once and Undo reverses it; see
-[configuration](configuration.md). Choosing a model in the navigator
+[configuration](configuration.md). The Sandbox sheet (the level chip) holds
+the level, how it is enforced, the calls answered for the session, and the
+Allowed hosts sheet: a switch per package ecosystem and your own hosts,
+added in a field and removed with a click ([sandbox](sandbox.md#allowed-hosts)). Choosing a model in the navigator
 assigns the model; the gateway still chooses the account that serves it.
 
 A subscription sign-in runs beside the session: its sheet offers the link

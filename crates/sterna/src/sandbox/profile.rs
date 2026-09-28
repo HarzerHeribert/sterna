@@ -18,7 +18,7 @@
 //! and [`Profile::check`] asks what any process may touch. A `Bash` pattern
 //! answers the first and contributes nothing to the second.
 
-use super::modes::{ModeOverlay, Narrowing, RequestMode};
+use super::modes::{Narrowing, RequestMode};
 use crate::contract::ProjectConfig;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -41,23 +41,13 @@ impl Access {
         }
     }
 
-    /// The refusal sentence for a path no grant covers, §5.
-    ///
-    /// In container mode a read outside every root is granted before this
-    /// sentence is reached, so a container-mode read refusal always carries
-    /// the never-grantable rule or the `deny` entry that decided it; the
-    /// container-mode write sentence names the asymmetry instead of claiming
-    /// a root is the only readable one.
-    fn only_root_sentence(self, container_mode: bool) -> &'static str {
-        match (self, container_mode) {
-            (Access::Read, _) => {
-                "no grant covers this path; the project root is the only readable root"
-            }
-            (Access::Write, false) => {
-                "no grant covers this path; the project root is the only writable root"
-            }
-            (Access::Write, true) => {
-                "no grant covers this path; container mode widens reads only, and the project root and the additional roots are the only writable roots"
+    /// The refusal sentence for a write no grant covers, §5. A read that
+    /// nothing refused is always granted, so only a write reaches this.
+    fn only_root_sentence(self) -> &'static str {
+        match self {
+            Access::Read => "no grant covers this path",
+            Access::Write => {
+                "no grant covers this path; the project, the added directories, the tool caches and the temporary folders are the writable places"
             }
         }
     }
@@ -105,6 +95,8 @@ struct PathRule {
 /// One entry of §4's never-grantable set, expressed as a resolved subtree.
 #[derive(Debug, Clone)]
 struct NeverRule {
+    /// The subtree as a path, for an applier that hides it at the OS layer.
+    path: PathBuf,
     /// The subtree this rule refuses, in [`spelling`] — the one form every
     /// comparison in this module is made in, never a `Path`, because
     /// `Path::starts_with` compares a `\\?\C:` prefix and a `C:` prefix as
@@ -143,6 +135,9 @@ pub struct Profile {
     /// confinement is bypassed. Admission checks and credential stripping
     /// still run; only the OS sandbox layer is skipped.
     bypass_os_sandbox: bool,
+    /// Where confined commands reach the network: Sterna's proxy, when the
+    /// session started one ([`super::proxy`]). `None` is no network at all.
+    proxy: Option<ProxyRoute>,
     /// Explicit host-selected directories, fixed before session start.
     additional_roots: Vec<PathBuf>,
     /// Present when the supplied project root had no unambiguous absolute
@@ -162,6 +157,8 @@ pub struct Profile {
     /// recomputing one per question. Never writable, and derived from the
     /// environment rather than listed: see [`toolchain_roots`].
     toolchain: Vec<(PathBuf, Vec<String>)>,
+    /// The machine's temporary folders, read and write ([`temp_dirs`]).
+    temp: Vec<(PathBuf, Vec<String>)>,
     /// Single files in `$HOME` a build's tools read, resolved
     /// ([`TOOLCHAIN_READ_FILES`]). Read-only, and compared exactly rather
     /// than as a prefix: this grants one file, never its directory.
@@ -169,7 +166,11 @@ pub struct Profile {
     /// The real git directory of a worktree root, and the repository's common
     /// directory, read **and** write — see [`repository_dirs`].
     repository: Vec<(PathBuf, Vec<String>)>,
-    command_allow: Vec<String>,
+    /// The person's own `Bash(...)` patterns in `permissions.allow`: command
+    /// lines that run without asking on the `Ask` level. They admit nothing
+    /// -- every command line is admitted unless a deny or a never-grantable
+    /// name refuses it.
+    pre_approved: Vec<String>,
     command_deny: Vec<String>,
     mcp_allow: BTreeSet<String>,
     mcp_deny: BTreeSet<String>,
@@ -179,29 +180,28 @@ pub struct Profile {
 }
 
 /// The process names a shell may attempt after one complete command line has
-/// passed [`Profile::admits_command`].  These are evidence for the OS sandbox,
+/// passed [`Profile::admits_command`]. These are evidence for the OS sandbox,
 /// not a second admission decision: every name comes from the first word of a
-/// segment that the existing deny-before-allow check already accepted.
+/// segment the deny check already accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandGrant {
     executables: Vec<String>,
-    /// The segments no `Bash(...)` pattern in `permissions.allow` names.
-    /// Empty for a line the allow list admits outright.
-    unlisted: Vec<String>,
 }
 
 impl CommandGrant {
     pub fn executables(&self) -> &[String] {
         &self.executables
     }
+}
 
-    /// Whether every segment of the line is named by an allow pattern. An
-    /// unlisted line is admissible only where a rung judges the call and a
-    /// person can be asked about it ([`Profile::weigh_command`]).
-    #[must_use]
-    pub fn listed(&self) -> bool {
-        self.unlisted.is_empty()
-    }
+/// Where a confined command reaches the network: the proxy's port on this
+/// machine, its Unix socket (for a command in its own network namespace),
+/// and the environment that points a command's tools at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRoute {
+    pub port: u16,
+    pub unix: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
 }
 
 /// The five `$HOME` directories §4.3 names, refusable by no pattern at all.
@@ -289,6 +289,7 @@ impl Profile {
         let mut profile = Self {
             invalid_root: None,
             bypass_os_sandbox: false,
+            proxy: None,
             never: never_rules(&root, home.as_deref()),
             root_spelling: spelling(&root),
             root,
@@ -297,9 +298,10 @@ impl Profile {
             allow: Vec::new(),
             deny: Vec::new(),
             toolchain: Vec::new(),
+            temp: Vec::new(),
             toolchain_files: Vec::new(),
             repository: Vec::new(),
-            command_allow: Vec::new(),
+            pre_approved: Vec::new(),
             command_deny: Vec::new(),
             mcp_allow: BTreeSet::new(),
             mcp_deny: BTreeSet::new(),
@@ -329,6 +331,7 @@ impl Profile {
         for home in toolchain_credential_files(&profile.toolchain) {
             let prefix = spelling(&home);
             profile.never.push(NeverRule {
+                path: home.clone(),
                 glob: subtree_glob(&prefix),
                 prefix,
                 except: None,
@@ -340,6 +343,13 @@ impl Profile {
                 ),
             });
         }
+        profile.temp = temp_dirs()
+            .into_iter()
+            .map(|path| {
+                let spelling = spelling(&path);
+                (path, spelling)
+            })
+            .collect();
         profile.toolchain_files = toolchain_files(profile.home.as_deref())
             .into_iter()
             .map(|path| {
@@ -488,27 +498,14 @@ fn register(profile: &mut Profile, pattern: &str, denying: bool) {
         "Write" => (false, true),
         "Edit" => (true, true),
         "Bash" => {
-            // Argv admission, and nothing in the filesystem profile. A
-            // bare `Bash` admits every command line; the profile is
-            // unchanged either way.
-            let admitted = argument.unwrap_or("*").to_string();
+            // A deny refuses the command lines it names; an allow
+            // pre-approves them on the `Ask` level. Neither touches the
+            // filesystem profile. A bare `Bash` names every command line.
+            let named = argument.unwrap_or("*").to_string();
             if denying {
-                profile.command_deny.push(admitted);
+                profile.command_deny.push(named);
             } else {
-                if profile.command_allow.is_empty() {
-                    // Said once, where a person can read it, rather than
-                    // implied: what admits a command line here is a word scan
-                    // and a segment match, and neither is a shell. A
-                    // diagnostic is the mechanism this module uses everywhere
-                    // else for "I did not act on that", and it is a compile-
-                    // time value because a built profile can be told nothing
-                    // afterwards (§1.1).
-                    profile.diagnostics.push(
-                        "argv admission is a word scan over each part of a command line, not a shell: a line that assembles a name through a variable, a substitution or a script file is admitted here, and the OS layer is what refuses it (docs/sandbox.md, never grantable 5)"
-                            .to_string(),
-                    );
-                }
-                profile.command_allow.push(admitted);
+                profile.pre_approved.push(named);
             }
             return;
         }
@@ -588,22 +585,97 @@ impl Profile {
         self
     }
 
-    /// This profile narrowed to `mode` for one request (ruling *Request
-    /// modes*). Consuming, and it only narrows: every refusal the profile
-    /// makes still comes first, `execute` returns the profile unchanged, and a
-    /// profile already narrowed keeps its first narrowing.
+    /// Records the proxy confined commands reach the network through, before
+    /// the session profile is shared. Host-only, like the bypass: no pattern
+    /// can spell it.
     #[must_use]
-    pub fn narrowed_to(mut self, mode: RequestMode, overlay: &ModeOverlay) -> Self {
+    pub fn with_proxy(mut self, route: ProxyRoute) -> Self {
+        self.proxy = Some(route);
+        self
+    }
+
+    /// The proxy confined commands reach the network through, when there is
+    /// one and Sterna's own confinement applies.
+    pub fn proxy(&self) -> Option<&ProxyRoute> {
+        self.proxy.as_ref().filter(|_| !self.bypass_os_sandbox)
+    }
+
+    /// The paths never readable by any pattern, for an applier to hide at
+    /// the OS layer: secrets, keyrings, credential files, the gateway's
+    /// state. A rule whose subtree contains the project root is left out --
+    /// the project must stay readable -- and so is every write-only rule.
+    pub fn secret_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .never
+            .iter()
+            .filter(|rule| !rule.write_only && rule.except.is_none())
+            .map(|rule| rule.path.clone())
+            .collect();
+        // A registry token inside a toolchain home the sandbox writes.
+        paths.extend(self.toolchain_credentials());
+        paths
+    }
+
+    /// Every place a confined command may write, as subtrees: the project
+    /// (when the profile agrees it is writable), the added directories, a
+    /// worktree's repository, the tool caches and the temporary folders.
+    pub fn writable_places(&self) -> Vec<PathBuf> {
+        let mut places = Vec::new();
+        if self
+            .check(
+                "write",
+                Access::Write,
+                &self.root.join(".sterna-sandbox-write-probe"),
+            )
+            .is_ok()
+        {
+            places.push(self.root.clone());
+        }
+        places.extend(self.additional_roots.iter().cloned());
+        places.extend(self.repository.iter().map(|(path, _)| path.clone()));
+        places.extend(self.toolchain.iter().map(|(path, _)| path.clone()));
+        places.extend(self.temp.iter().map(|(path, _)| path.clone()));
+        places
+    }
+
+    /// Paths inside the writable places that stay read-only for a command
+    /// (`.git`'s only once the repository exists):
+    /// code written there runs later outside the sandbox (a git hook, a git
+    /// config alias) or widens the next session (Sterna's own settings). A
+    /// worktree's repository keeps its hooks and config at the top of the
+    /// common directory rather than under `.git`.
+    pub fn protected_paths(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for root in std::iter::once(&self.root).chain(self.additional_roots.iter()) {
+            // The repository's hooks and config once it exists: asked per
+            // spawn, so a command may still `git init` a new project, and
+            // every command after it finds them protected.
+            if root.join(".git").exists() {
+                out.push(root.join(".git/hooks"));
+                out.push(root.join(".git/config"));
+            }
+            out.push(root.join(".sterna"));
+            out.push(root.join(".claude"));
+        }
+        for (dir, _) in &self.repository {
+            if dir.join("HEAD").is_file() {
+                out.push(dir.join("hooks"));
+                out.push(dir.join("config"));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// This profile narrowed to `mode` for one request. Consuming, and it
+    /// only narrows: every refusal the profile makes still comes first,
+    /// `Work` returns the profile unchanged, and a profile already narrowed
+    /// keeps its first narrowing.
+    #[must_use]
+    pub fn narrowed_to(mut self, mode: RequestMode) -> Self {
         if self.narrowing.is_none() {
-            let (narrowing, dropped) = Narrowing::compile(
-                mode,
-                overlay,
-                &self.root,
-                self.home.as_deref(),
-                &self.root_spelling,
-            );
-            self.narrowing = narrowing;
-            self.diagnostics.extend(dropped);
+            self.narrowing = Narrowing::compile(mode, &self.root, self.home.as_deref());
         }
         self
     }
@@ -612,7 +684,7 @@ impl Profile {
     pub fn request_mode(&self) -> RequestMode {
         self.narrowing
             .as_ref()
-            .map_or(RequestMode::Execute, Narrowing::mode)
+            .map_or(RequestMode::Work, Narrowing::mode)
     }
 
     /// Whether this session explicitly acknowledged running children without
@@ -663,6 +735,11 @@ impl Profile {
     /// are the same subtrees it answers from.
     pub fn toolchain_roots(&self) -> impl Iterator<Item = &Path> {
         self.toolchain.iter().map(|(path, _)| path.as_path())
+    }
+
+    /// The machine's temporary folders this profile makes writable.
+    pub fn temp_dirs(&self) -> impl Iterator<Item = &Path> {
+        self.temp.iter().map(|(path, _)| path.as_path())
     }
 
     /// Single files in `$HOME` a build's tools read before they will run,
@@ -738,6 +815,7 @@ impl Profile {
         ] {
             let protected = spelling(&root.join(name));
             self.never.push(NeverRule {
+                path: root.join(name),
                 glob: subtree_glob(&protected),
                 prefix: protected,
                 except: None,
@@ -815,16 +893,16 @@ impl Profile {
         self.allow.len() + self.deny.len()
     }
 
-    /// How many command-line patterns were admitted.
-    pub fn command_pattern_count(&self) -> usize {
-        self.command_allow.len()
+    /// The person's pre-approved command patterns, as segment patterns.
+    pub fn pre_approved(&self) -> &[String] {
+        &self.pre_approved
     }
 
-    /// Every admitted command-line pattern in its written `Bash(...)` form,
+    /// Every pre-approved command pattern in its written `Bash(...)` form,
     /// in document order. A bare `Bash` is stored as `*` and renders as
-    /// `Bash(*)`, which names the same grant.
-    pub fn command_patterns(&self) -> Vec<String> {
-        self.command_allow
+    /// `Bash(*)`, which names every command line.
+    pub fn pre_approved_patterns(&self) -> Vec<String> {
+        self.pre_approved
             .iter()
             .map(|pattern| format!("Bash({pattern})"))
             .collect()
@@ -842,12 +920,11 @@ impl Profile {
         self.mcp_allow.len()
     }
 
-    /// Whether this profile grants any network reach. Always `false`: no
-    /// `permissions` pattern names a host, a port or a protocol, so a network
-    /// grant would have to be invented, and an invented capability is the one
-    /// thing an allow-list must never produce (§4.1).
+    /// Whether confined commands reach any network: only through Sterna's
+    /// proxy, when the session started one. No `permissions` pattern names a
+    /// host, so none can grant one (§4.1).
     pub fn grants_network(&self) -> bool {
-        false
+        self.proxy().is_some()
     }
 
     /// Whether an MCP tool is registered. A tool matched by `deny` is not,
@@ -897,33 +974,12 @@ impl Profile {
 
     /// The first question of §2: may this command line be attempted at all?
     ///
-    /// Answering `Ok` grants no file access whatsoever — the process it
-    /// spawns gets exactly the grants the `Read`/`Write`/`Edit` patterns
-    /// produced, which [`Profile::check`] is what answers.
+    /// **Every command line is, unless something refuses it**: a
+    /// `permissions.deny` match, a sandbox launcher or debugger, or the plan
+    /// request's read-only rule. What the command can then touch is the OS
+    /// sandbox's answer, and whether a person sees it first is the level's.
+    /// Answering `Ok` grants no file access whatsoever.
     pub fn admits_command(&self, command_line: &str) -> Result<CommandGrant, PermissionDenied> {
-        let grant = self.weigh_command(command_line)?;
-        match grant.unlisted.first() {
-            Some(segment) => Err(PermissionDenied {
-                tool: "Bash".to_string(),
-                path: command_line.to_string(),
-                rule: format!("no `Bash` pattern in permissions.allow admits `{segment}`"),
-            }),
-            None => Ok(grant),
-        }
-    }
-
-    /// [`Self::admits_command`] without its last question: a segment no
-    /// allow pattern names is recorded as unlisted instead of refused.
-    ///
-    /// **Call-level judgement, not an OS cage** (the ruling of 2026-09-19).
-    /// The foreground command tool calls this when the permission ladder
-    /// judges the call and a person can answer it: there a read-only line
-    /// runs on Auto, anything else asks, and nothing is refused only for
-    /// being absent from a list nobody wrote. Every absolute refusal still
-    /// holds here -- a `permissions.deny` match, a launcher or debugger, the
-    /// request mode's narrowing. Background runs, verification and a session
-    /// nobody can be asked in keep [`Self::admits_command`].
-    pub fn weigh_command(&self, command_line: &str) -> Result<CommandGrant, PermissionDenied> {
         let denied = |rule: String| -> Result<CommandGrant, PermissionDenied> {
             Err(PermissionDenied {
                 tool: "Bash".to_string(),
@@ -946,12 +1002,9 @@ impl Profile {
         // separately, and one refused part refuses the line.
         let segments = command_segments(command_line);
         if segments.is_empty() {
-            return denied(
-                "no `Bash` pattern in permissions.allow admits this command line".to_string(),
-            );
+            return denied("the command line is empty".to_string());
         }
         let mut executables = Vec::with_capacity(segments.len());
-        let mut unlisted = Vec::new();
         for segment in &segments {
             // A leading redirect is not the command: `2>&1 cargo test` is
             // matched on `cargo test`, never on the operand that happens to
@@ -964,13 +1017,6 @@ impl Profile {
                     ));
                 }
             }
-            if !self
-                .command_allow
-                .iter()
-                .any(|pattern| match_segment(pattern, command_word, false))
-            {
-                unlisted.push(segment.clone());
-            }
             if let Some(executable) = literal_executable(command_word) {
                 executables.push(executable.to_string());
             }
@@ -982,59 +1028,7 @@ impl Profile {
         {
             return denied(rule);
         }
-        Ok(CommandGrant {
-            executables,
-            unlisted,
-        })
-    }
-
-    /// Whether an executable already admitted by a `Bash(...)` command is
-    /// outside §4's never-grantable read roots. The command grant supplies
-    /// the positive authority; this method preserves the absolute refusals
-    /// when the OS layer turns that authority into a literal exec rule.
-    pub fn executable_is_refused(&self, path: &Path) -> bool {
-        if self.invalid_root.is_some() {
-            return true;
-        }
-        let resolved = resolve(path, Some(&self.root), self.home.as_deref());
-        let candidate = spelling(&resolved);
-        if device_refusal(&resolved).is_some() {
-            return true;
-        }
-        let never = self.never.iter().any(|never| {
-            !never.write_only
-                && contains_refusing(&never.prefix, &candidate)
-                && !never
-                    .except_spelling
-                    .as_ref()
-                    .is_some_and(|except| contains(except, &candidate))
-                && !(self
-                    .home
-                    .as_ref()
-                    .is_some_and(|home| spelling(home) == never.prefix)
-                    && self
-                        .additional_roots
-                        .iter()
-                        .any(|root| contains(&spelling(root), &candidate)))
-        });
-        let denied = self
-            .deny
-            .iter()
-            .any(|rule| rule.read && covers(&rule.glob, &candidate, true));
-        never || denied
-    }
-
-    /// Whether a bare `Bash` grant admits every command line.
-    ///
-    /// **Derived from the compiled profile, never from the caller's
-    /// intention.** A session tells the model what its sandbox permits, and a
-    /// flag asking for a grant is not the same fact as a profile holding one:
-    /// a settings document that failed to parse, or a `--yolo` that never
-    /// reached the compiler, would otherwise be described to the model as an
-    /// open grant it does not have. Bare `Bash` is stored as the pattern `*`
-    /// (see the `"Bash"` arm above), which is the whole of this answer.
-    pub fn admits_every_command(&self) -> bool {
-        self.command_allow.iter().any(|pattern| pattern == "*")
+        Ok(CommandGrant { executables })
     }
 
     /// [`Profile::check`], then the request mode: the question a tool call
@@ -1165,15 +1159,20 @@ impl Profile {
                         .repository
                         .iter()
                         .any(|(_, prefix)| contains(prefix, &candidate))
+                    || self
+                        .toolchain
+                        .iter()
+                        .any(|(_, prefix)| contains(prefix, &candidate))
+                    // Windows keeps `%TEMP%` under the profile folder.
+                    || self
+                        .temp
+                        .iter()
+                        .any(|(_, prefix)| contains(prefix, &candidate))
                     || (access == Access::Read
-                        && (self
-                            .toolchain
+                        && self
+                            .toolchain_files
                             .iter()
-                            .any(|(_, prefix)| contains(prefix, &candidate))
-                            || self
-                                .toolchain_files
-                                .iter()
-                                .any(|(_, file)| file == &candidate))))
+                            .any(|(_, file)| file == &candidate)))
             {
                 continue;
             }
@@ -1210,18 +1209,15 @@ impl Profile {
         {
             return grant(resolved);
         }
-        // The toolchain, read only, and after every refusing rule — so the
-        // credential carve-out above has already had its turn on a path
-        // inside one of these ([`toolchain_roots`]).
-        if access == Access::Read
-            && (self
-                .toolchain
-                .iter()
-                .any(|(_, prefix)| contains(prefix, &candidate))
-                || self
-                    .toolchain_files
-                    .iter()
-                    .any(|(_, file)| file == &candidate))
+        // Tool caches and toolchains, read and write, and after every
+        // refusing rule -- so the credential carve-out above has already had
+        // its turn on a path inside one of these ([`toolchain_roots`]) --
+        // and the machine's temporary folders.
+        if self
+            .toolchain
+            .iter()
+            .chain(self.temp.iter())
+            .any(|(_, prefix)| contains(prefix, &candidate))
         {
             return grant(resolved);
         }
@@ -1235,15 +1231,15 @@ impl Profile {
         if granted {
             return grant(resolved);
         }
-        // Container mode, reads only: the container is the boundary, and
-        // every refusing rule — never-grantable, `deny` — has already had its
-        // turn above, so a read that reaches here is one nothing refused.
-        // Writes keep the roots, which is why this is the last step and not
-        // an early grant.
-        if access == Access::Read && self.container_mode() {
+        // **The sandbox is wide for reading.** Every refusing rule --
+        // never-grantable secrets, `deny` -- has had its turn above, so a
+        // read that reaches here is one nothing refused. Writes keep the
+        // roots, the caches and the temporary folders, which is why this is
+        // the last step and not an early grant.
+        if access == Access::Read {
             return grant(resolved);
         }
-        denied(access.only_root_sentence(self.container_mode()).to_string())
+        denied(access.only_root_sentence().to_string())
     }
 }
 
@@ -1305,6 +1301,7 @@ fn never_rules(root: &Path, home: Option<&Path>) -> Vec<NeverRule> {
     let root_spelling = spelling(root);
     let dot_claude = spelling(&root.join(".claude"));
     let mut rules = vec![NeverRule {
+        path: root.join(".claude"),
         glob: subtree_glob(&dot_claude),
         prefix: dot_claude,
         except: None,
@@ -1315,6 +1312,7 @@ fn never_rules(root: &Path, home: Option<&Path>) -> Vec<NeverRule> {
     let dot_sterna = spelling(&root.join(".sterna"));
     let scratch = root.join(SCRATCH_DIR);
     rules.push(NeverRule {
+        path: root.join(".sterna"),
         glob: subtree_glob(&dot_sterna),
         prefix: dot_sterna,
         except_spelling: Some(spelling(&scratch)),
@@ -1329,12 +1327,13 @@ fn never_rules(root: &Path, home: Option<&Path>) -> Vec<NeverRule> {
     // candidate at all, and `Write(/**)` reached the file. On macOS and Linux
     // every prefix here is already absolute, so the argument is never used.
     let mut push = |prefix: PathBuf, write_only: bool, rule: String| {
-        let prefix = resolve(&prefix, Some(root), None);
-        let prefix = spelling(&prefix);
+        let path = resolve(&prefix, Some(root), None);
+        let prefix = spelling(&path);
         let except = contains(&prefix, &root_spelling).then(|| root.to_path_buf());
         let mut glob = prefix.clone();
         glob.push("**".to_string());
         rules.push(NeverRule {
+            path,
             except_spelling: except.as_ref().map(|_| root_spelling.clone()),
             prefix,
             glob,
@@ -1385,8 +1384,8 @@ fn never_rules(root: &Path, home: Option<&Path>) -> Vec<NeverRule> {
         // boundary. Last, so the named entries above keep their own sections.
         push(
             home.to_path_buf(),
-            false,
-            "`$HOME` outside the project is never grantable by any pattern (docs/sandbox.md, never grantable 3)"
+            true,
+            "`$HOME` outside the project, the tool caches and the added directories is never writable (docs/sandbox.md, never grantable 3)"
                 .to_string(),
         );
     }
@@ -1529,13 +1528,24 @@ fn escaping_command(command_line: &str, container_mode: bool) -> Option<&'static
 /// passwords. A store whose ordinary contents include a secret is not a
 /// toolchain read, and admitting it here would make this list the thing §4.2
 /// exists to prevent.
-const TOOLCHAIN_HOMES: [(&str, &str); 6] = [
+const TOOLCHAIN_HOMES: [(&str, &str); 17] = [
     ("CARGO_HOME", ".cargo"),
     ("RUSTUP_HOME", ".rustup"),
     ("npm_config_cache", ".npm"),
     ("NVM_DIR", ".nvm"),
     ("PYENV_ROOT", ".pyenv"),
-    ("UV_CACHE_DIR", ".cache/uv"),
+    ("XDG_CACHE_HOME", ".cache"),
+    ("BUN_INSTALL", ".bun"),
+    ("PNPM_HOME", ".local/share/pnpm"),
+    ("PNPM_STORE_DIR", ".pnpm-store"),
+    ("YARN_CACHE_FOLDER", ".yarn"),
+    ("MAVEN_REPO", ".m2"),
+    ("GRADLE_USER_HOME", ".gradle"),
+    ("GOPATH", "go"),
+    ("NUGET_PACKAGES", ".nuget"),
+    ("DENO_DIR", ".deno"),
+    ("GEM_HOME", ".gem"),
+    ("SBT_CACHE", "Library/Caches"),
 ];
 
 /// Single files in `$HOME` a build's tools read before they will run at all.
@@ -1554,6 +1564,26 @@ const TOOLCHAIN_READ_FILES: [&str; 1] = [".gitconfig"];
 /// a cache. `cargo login` writes the first; the second is its pre-1.78
 /// spelling, and both are still read.
 const TOOLCHAIN_CREDENTIAL_FILES: [&str; 2] = ["credentials.toml", "credentials"];
+
+/// The machine's temporary folders that exist, resolved: the process's own
+/// temporary directory and, on Unix, `/tmp` and `/var/tmp`.
+fn temp_dirs() -> Vec<PathBuf> {
+    let mut candidates = vec![std::env::temp_dir()];
+    if cfg!(unix) {
+        candidates.push(PathBuf::from("/tmp"));
+        candidates.push(PathBuf::from("/var/tmp"));
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        if let Ok(resolved) = std::fs::canonicalize(&candidate)
+            && resolved.is_dir()
+            && !dirs.contains(&resolved)
+        {
+            dirs.push(resolved);
+        }
+    }
+    dirs
+}
 
 /// The toolchain homes that exist on this machine, resolved.
 ///
@@ -1810,6 +1840,20 @@ fn expand_tilde(path: &Path, home: Option<&Path>) -> PathBuf {
     } else {
         home.join(rest)
     }
+}
+
+/// Whether every segment a shell would run from `command_line` is named by
+/// one of `patterns` (`Bash(...)` segment patterns, `*` for any). The person's
+/// own pre-approved commands on the `Ask` level; an empty line is not named.
+pub(crate) fn names_every_segment(command_line: &str, patterns: &[String]) -> bool {
+    let segments = command_segments(command_line);
+    !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let word = skip_leading_redirects(segment);
+            patterns
+                .iter()
+                .any(|pattern| pattern == "*" || match_segment(pattern, word, false))
+        })
 }
 
 /// Every part of a command line a shell would run as a command of its own:

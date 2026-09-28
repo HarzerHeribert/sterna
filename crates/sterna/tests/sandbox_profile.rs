@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use sterna::project;
-use sterna::sandbox::modes::{ModeOverlay, RequestMode};
+use sterna::sandbox::modes::RequestMode;
 use sterna::sandbox::profile::{Access, Effect, PermissionDenied, Profile};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -63,7 +63,7 @@ impl Drop for Fixture {
 /// "somewhere else in the filesystem". On Windows `%TEMP%` is
 /// `%USERPROFILE%\AppData\Local\Temp` — *inside* `$HOME`, which §4.3 makes
 /// never grantable by any pattern. So a grant a macOS run observed there
-/// could not happen, and a refusal it attributed to "the only writable root"
+/// could not happen, and a refusal it attributed to the default sentence
 /// was §4.3's. The root of the filesystem the project sits on is outside both
 /// on all three platforms: `/` on macOS and Linux, `C:\` on Windows.
 ///
@@ -167,14 +167,15 @@ fn a_deny_beats_a_more_specific_allow() {
     // §2's "realpath closure of the glob": a pattern naming a bare directory
     // covers its subtree, on both sides. Neither half was exercised by any
     // test in this file -- every other pattern here ends in `**` or names an
-    // exact file.
+    // exact file. The allow half is a write, because every read nothing
+    // refuses is granted without one.
     let elsewhere = Elsewhere::new("deny-beats-allow");
     let outside = elsewhere.pattern_root();
     let subtree = Profile::compile(
         &fixture.root,
         Some(&format!(
             r#"{{"permissions":{{
-                "allow":["Read({outside}/notes)"],
+                "allow":["Edit({outside}/notes)"],
                 "deny":["Read({root}/secrets)"]
             }}}}"#
         )),
@@ -191,17 +192,19 @@ fn a_deny_beats_a_more_specific_allow() {
     );
     subtree
         .check(
-            "Read",
-            Access::Read,
+            "Edit",
+            Access::Write,
             &elsewhere.root.join("notes/chapter/one.md"),
         )
         .expect("an allow naming a directory covers its subtree");
+    refusal(subtree.check("Edit", Access::Write, &elsewhere.root.join("elsewhere.md")));
 }
 
-/// §1.3. The project root is the only writable root by default -- not the
-/// home directory, not a temp directory, not the project's parent.
+/// §1.3. By default a write lands only in the writable places: the project,
+/// the added directories, the tool caches and the temporary folders -- not
+/// the home directory, not the rest of the filesystem.
 #[test]
-fn nothing_outside_the_project_root_is_writable_by_default() {
+fn nothing_outside_the_writable_places_is_writable_by_default() {
     let fixture = Fixture::new("writable-root");
     let profile = Profile::compile(&fixture.root, Some(r#"{"permissions":{}}"#));
 
@@ -210,8 +213,7 @@ fn nothing_outside_the_project_root_is_writable_by_default() {
         .expect("the project root is writable");
 
     // Outside the project **and** outside `$HOME`, so the rule that applies
-    // is the default one and not §4.3 — see [`Elsewhere`], which is what the
-    // project's own parent directory could not be relied on to be.
+    // is the default one and not §4.3 — see [`Elsewhere`].
     let elsewhere = Elsewhere::new("writable-root");
     let outside = [
         elsewhere.root.join("escaped.txt"),
@@ -220,47 +222,96 @@ fn nothing_outside_the_project_root_is_writable_by_default() {
     ];
     for path in outside {
         let denied = refusal(profile.check("Write", Access::Write, &path));
-        assert!(
-            denied
-                .rule
-                .contains("the project root is the only writable root"),
-            "{path:?} refused with the wrong rule: {:?}",
-            denied.rule
+        assert_eq!(
+            denied.rule,
+            "no grant covers this path; the project, the added directories, the tool caches and the temporary folders are the writable places",
+            "{path:?} refused with the wrong rule"
         );
     }
 
-    // §1.3 names the project's parent, and it is refused too. Which sentence
-    // decides it depends on where the host puts its temp directory, and both
-    // are correct: on Windows the parent is inside `%USERPROFILE%` and §4.3 —
-    // which no document can undo — answers before the default does.
-    let parent = refusal(profile.check(
-        "Write",
-        Access::Write,
-        &fixture.root.parent().unwrap().join("escaped.txt"),
-    ));
-    assert!(
-        parent
-            .rule
-            .contains("the project root is the only writable root")
-            || parent.rule.contains("never grantable by any pattern"),
-        "the project's parent must not be writable: {:?}",
-        parent.rule
-    );
-
     // A path in `$HOME` is refused too, and by the stronger rule: §4.3 makes
-    // `$HOME` outside the project never grantable, so it never reaches the
-    // "only writable root" sentence at all. Both are refusals; this one
-    // cannot be widened by a settings document and that one can.
+    // `$HOME` outside the project never writable, so it never reaches the
+    // default sentence at all. Both are refusals; this one cannot be widened
+    // by a settings document and that one can.
     let in_home = refusal(profile.check(
         "Write",
         Access::Write,
         &home().join("scratch-that-is-not-the-project.txt"),
     ));
     assert!(
-        in_home.rule.contains("never grantable by any pattern"),
+        in_home.rule.contains("`$HOME`") && in_home.rule.contains("never writable"),
         "a $HOME path must be refused by §4.3, got {:?}",
         in_home.rule
     );
+}
+
+/// The temporary folders are writable places: the process's own temporary
+/// directory and, on Unix, `/tmp` and `/var/tmp` where they exist. The
+/// project's parent is one here, because every fixture lives in it.
+#[test]
+fn the_temporary_folders_are_writable() {
+    let fixture = Fixture::new("temp-writable");
+    let profile = Profile::compile(&fixture.root, Some(r#"{"permissions":{}}"#));
+    let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let listed: Vec<PathBuf> = profile.temp_dirs().map(Path::to_path_buf).collect();
+    assert!(listed.contains(&temp), "{temp:?} is not in {listed:?}");
+    let mut candidates = vec![
+        std::env::temp_dir().join("sterna-sandbox-temp-probe.txt"),
+        fixture
+            .root
+            .parent()
+            .unwrap()
+            .join("beside-the-project.txt"),
+    ];
+    if cfg!(unix) {
+        for dir in ["/tmp", "/var/tmp"] {
+            if Path::new(dir).is_dir() {
+                candidates.push(Path::new(dir).join("sterna-sandbox-temp-probe/x.txt"));
+            }
+        }
+    }
+    for path in candidates {
+        profile
+            .check("Write", Access::Write, &path)
+            .unwrap_or_else(|denied| panic!("{path:?} is in a temporary folder: {denied}"));
+    }
+}
+
+/// Every read nothing refuses is granted: the system's files, the rest of
+/// `$HOME`, a sibling of the project. What stays refused is the
+/// never-grantable set and every `deny`.
+#[test]
+fn reads_are_wide_and_secrets_stay_refused() {
+    let fixture = Fixture::new("wide-reads");
+    let home = home();
+    let home_pattern = home.to_string_lossy().replace('\\', "/");
+    let settings =
+        format!(r#"{{"permissions":{{"deny":["Read({home_pattern}/private-notes/**)"]}}}}"#);
+    let profile = Profile::compile(&fixture.root, Some(&settings));
+    let elsewhere = Elsewhere::new("wide-reads");
+    for path in [
+        PathBuf::from("/etc/hosts"),
+        home.join(".bashrc"),
+        home.join("Documents/notes.txt"),
+        elsewhere.root.join("x.txt"),
+        fixture.root.parent().unwrap().join("sibling/x.txt"),
+    ] {
+        profile
+            .check("Read", Access::Read, &path)
+            .unwrap_or_else(|denied| panic!("{path:?} must be readable: {denied}"));
+    }
+    for (path, rule) in [
+        (home.join(".ssh/id_ed25519"), "never grantable 3"),
+        (home.join(".aws/credentials"), "never grantable 3"),
+        (home.join(".config/gh/hosts.yml"), "never grantable 3"),
+        (home.join(".gnupg/secring.gpg"), "never grantable 2"),
+        (home.join("private-notes/a.md"), "permissions.deny"),
+    ] {
+        let denied = refusal(profile.check("Read", Access::Read, &path));
+        assert!(denied.rule.contains(rule), "{path:?}: {:?}", denied.rule);
+    }
+    // Reading wide writes nothing new: `$HOME` stays never writable.
+    refusal(profile.check("Write", Access::Write, &home.join(".bashrc")));
 }
 
 /// §4. Every entry is refusable by no pattern at all -- not merely absent
@@ -402,7 +453,7 @@ fn a_settings_document_cannot_grant_the_never_grantable_set() {
     }
     escapes
         .admits_command("cargo test -p sterna")
-        .expect("a bare Bash still admits an ordinary command line");
+        .expect("an ordinary command line is admitted beside them");
 }
 
 /// §1.1 and §1.5. The profile is built once and there is no expression that
@@ -452,12 +503,12 @@ fn the_profile_cannot_be_widened_after_it_is_built() {
     .unwrap();
 
     let profile = Profile::from_project(&project::load(&fixture.root));
-    refusal(profile.check("Read", Access::Read, &elsewhere));
+    refusal(profile.check("Write", Access::Write, &elsewhere));
 
     // The document is rewritten to grant it -- the one thing a program with
     // write access to the project root could do.
     let widened = format!(
-        r#"{{"permissions":{{"allow":["Read({}/**)"]}}}}"#,
+        r#"{{"permissions":{{"allow":["Write({}/**)"]}}}}"#,
         elsewhere
             .parent()
             .unwrap()
@@ -466,13 +517,13 @@ fn the_profile_cannot_be_widened_after_it_is_built() {
     );
     std::fs::write(fixture.root.join(".claude/settings.json"), &widened).unwrap();
 
-    refusal(profile.check("Read", Access::Read, &elsewhere));
+    refusal(profile.check("Write", Access::Write, &elsewhere));
 
     // And the rewrite was real: a profile compiled afresh does grant it, so
     // the assertion above is about the profile's immutability rather than
     // about a document that never took effect.
     Profile::compile(&fixture.root, Some(&widened))
-        .check("Read", Access::Read, &elsewhere)
+        .check("Write", Access::Write, &elsewhere)
         .expect("a freshly compiled profile honours the rewritten document");
 }
 
@@ -502,14 +553,15 @@ fn dot_claude_is_not_writable_even_though_it_is_inside_the_project() {
 }
 
 /// §2. `Bash(cargo test*)` grants `cargo test` no file access whatsoever. It
-/// admits a command line; the process it spawns gets exactly the grants the
-/// `Read`/`Write`/`Edit` patterns produced.
+/// pre-approves a command line on the `Ask` level and admits nothing: every
+/// command line is admitted without it, and the process it spawns gets
+/// exactly the grants the `Read`/`Write`/`Edit` patterns produced.
 #[test]
-fn a_bash_pattern_grants_no_file_access() {
+fn a_bash_pattern_pre_approves_and_grants_no_file_access() {
     let fixture = Fixture::new("bash-argv");
     let profile = Profile::compile(
         &fixture.root,
-        Some(r#"{"permissions":{"allow":["Bash(cargo test*)"]}}"#),
+        Some(r#"{"permissions":{"allow":["Bash(cargo test*)","Bash"]}}"#),
     );
 
     assert_eq!(
@@ -517,30 +569,66 @@ fn a_bash_pattern_grants_no_file_access() {
         0,
         "a Bash pattern contributes nothing to the filesystem profile"
     );
-    assert_eq!(profile.command_pattern_count(), 1);
-
-    // Item 6: the limit of argv admission is said out loud rather than
-    // implied. A word scan and a segment match are not a shell, and only the
-    // OS layer refuses a name the shell assembles.
-    assert!(
-        profile
-            .diagnostics()
-            .iter()
-            .any(|line| line.contains("never grantable 5") && line.contains("not a shell")),
-        "an argv allow must state what it cannot enforce: {:?}",
-        profile.diagnostics()
+    assert_eq!(profile.pre_approved(), ["cargo test*", "*"]);
+    assert_eq!(
+        profile.pre_approved_patterns(),
+        ["Bash(cargo test*)", "Bash(*)"]
     );
 
     profile
         .admits_command("cargo test -p sterna")
         .expect("the command line is admitted");
-    refusal(profile.admits_command("cargo build"));
+    Profile::compile(&fixture.root, Some(r#"{"permissions":{}}"#))
+        .admits_command("cargo build")
+        .expect("a command no pattern names is admitted all the same");
 
-    // Admitting the command line grants no path outside the project root.
+    // Admitting the command line grants no write outside the writable
+    // places.
     let elsewhere = Elsewhere::new("bash-argv");
     for path in [elsewhere.root.join("x.txt"), PathBuf::from("/etc/hosts")] {
-        let denied = refusal(profile.check("Read", Access::Read, &path));
+        let denied = refusal(profile.check("Write", Access::Write, &path));
         assert!(denied.rule.contains("no grant covers this path"));
+    }
+}
+
+/// Every command line is admitted unless something refuses it: a `deny`, a
+/// sandbox launcher or debugger, or an empty line.
+#[test]
+fn an_unlisted_command_is_admitted_and_only_a_refusing_rule_refuses() {
+    let fixture = Fixture::new("admission");
+    let profile = Profile::compile(
+        &fixture.root,
+        Some(r#"{"permissions":{"deny":["Bash(git push*)"]}}"#),
+    );
+    for admitted in [
+        "make install",
+        "python3 -m http.server 8000",
+        "cargo build && ./target/debug/app --flag",
+        "curl -s https://example.com | head",
+    ] {
+        profile
+            .admits_command(admitted)
+            .unwrap_or_else(|denied| panic!("{admitted:?} should be admitted: {denied}"));
+    }
+    let denied = refusal(profile.admits_command("git status && git push origin main"));
+    assert_eq!(
+        denied.rule,
+        "`Bash(git push*)` in permissions.deny matches `git push origin main`"
+    );
+    for launcher in ["bwrap --dev-bind / / sh", "gdb ./a.out"] {
+        let denied = refusal(profile.admits_command(launcher));
+        assert!(
+            denied.rule.contains("never grantable 5"),
+            "{launcher}: {:?}",
+            denied.rule
+        );
+    }
+    for empty in ["", "   ", "\n"] {
+        assert_eq!(
+            refusal(profile.admits_command(empty)).rule,
+            "the command line is empty",
+            "{empty:?}"
+        );
     }
 }
 
@@ -558,10 +646,7 @@ fn a_webfetch_pattern_registers_nothing() {
     );
 
     assert_eq!(with.rule_count(), without.rule_count());
-    assert_eq!(
-        with.command_pattern_count(),
-        without.command_pattern_count()
-    );
+    assert_eq!(with.pre_approved(), without.pre_approved());
     assert_eq!(with.mcp_tool_count(), 0);
     assert!(
         with.diagnostics().is_empty(),
@@ -609,26 +694,26 @@ fn a_refusal_names_the_deciding_rule_and_never_prompts() {
         denied.rule
     );
 
-    let absent = refusal(profile.check("read", Access::Read, Path::new("/etc/shadow")));
+    let elsewhere = Elsewhere::new("refusal").root.join("shadow");
+    let absent = refusal(profile.check("write", Access::Write, &elsewhere));
     assert_eq!(
         absent.rule,
-        "no grant covers this path; the project root is the only readable root"
+        "no grant covers this path; the project, the added directories, the tool caches and the temporary folders are the writable places"
     );
 
-    // The path is reported as it was resolved, which on a host where `/etc`
-    // is a symlink is `/private/etc/shadow` -- the spelling the decision was
-    // actually made on, so a person can reproduce it.
-    assert!(absent.path.ends_with("etc/shadow"), "{:?}", absent.path);
+    // The path is reported as it was resolved -- the spelling the decision
+    // was actually made on, so a person can reproduce it.
+    assert!(absent.path.ends_with("shadow"), "{:?}", absent.path);
     let rendered = absent.to_string();
     assert_eq!(
         rendered,
         format!(
-            "PermissionDenied: read(\"{}\")\n  rule: {}\n  tool: read",
+            "PermissionDenied: write(\"{}\")\n  rule: {}\n  tool: write",
             absent.path, absent.rule
         )
     );
     assert!(rendered.contains("\n  rule: no grant covers this path"));
-    assert!(rendered.ends_with("\n  tool: read"));
+    assert!(rendered.ends_with("\n  tool: write"));
 }
 
 /// §2. Two spellings of one path are how a containment check comes to
@@ -695,7 +780,7 @@ fn two_spellings_of_one_path_decide_the_same_way() {
 #[test]
 fn a_malformed_settings_document_grants_nothing() {
     let fixture = Fixture::new("malformed");
-    let outside = std::env::temp_dir().join("sterna-sandbox-malformed-target.txt");
+    let outside = Elsewhere::new("malformed").root.join("target.txt");
 
     for document in [
         "{ this is not json",
@@ -711,10 +796,10 @@ fn a_malformed_settings_document_grants_nothing() {
             0,
             "{document:?} produced a filesystem rule"
         );
-        assert_eq!(profile.command_pattern_count(), 0);
+        assert!(profile.pre_approved().is_empty());
         assert_eq!(profile.mcp_tool_count(), 0);
         assert!(!profile.grants_network());
-        refusal(profile.check("Read", Access::Read, &outside));
+        refusal(profile.check("Write", Access::Write, &outside));
 
         // The defaults are not the document's to remove either: the project
         // root stays readable and writable.
@@ -758,7 +843,7 @@ fn an_unknown_pattern_kind_grants_nothing() {
         0,
         "no unknown pattern produced a file rule"
     );
-    assert_eq!(profile.command_pattern_count(), 0);
+    assert!(profile.pre_approved().is_empty());
     assert_eq!(
         profile.mcp_tool_count(),
         1,
@@ -783,9 +868,9 @@ fn an_unknown_pattern_kind_grants_nothing() {
     }
 
     refusal(profile.check(
-        "Read",
-        Access::Read,
-        &std::env::temp_dir().join("sterna-sandbox-unknown-target.txt"),
+        "Write",
+        Access::Write,
+        &Elsewhere::new("unknown-kind").root.join("target.txt"),
     ));
 }
 
@@ -815,7 +900,10 @@ fn the_repositorys_own_settings_document_compiles_to_its_written_grants() {
         "every entry mapped to a rule: {:?}",
         profile.diagnostics()
     );
-    assert_eq!(profile.command_pattern_count(), 0, "`hooks` is not a grant");
+    assert!(
+        profile.pre_approved().is_empty(),
+        "`hooks` is not a pre-approval"
+    );
 
     let runtime = root.join(".agent-runtime");
     profile
@@ -856,7 +944,8 @@ fn the_repositorys_own_settings_document_compiles_to_its_written_grants() {
 /// The two properties the fixture test can no longer observe, kept where they
 /// still hold: an `allow` grants the verb it names and no other, and matches
 /// case-sensitively, while a `deny` folds case. Both are decided outside the
-/// project root, because inside it the project-root default answers first.
+/// project root, because inside it the project-root default answers first,
+/// and on writes, because every read nothing refuses is granted anyway.
 #[test]
 fn an_allow_outside_the_root_honours_its_verb_and_its_case() {
     let fixture = Fixture::new("allow-verb-and-case");
@@ -864,20 +953,20 @@ fn an_allow_outside_the_root_honours_its_verb_and_its_case() {
     let outside = elsewhere.pattern_root();
     let settings = format!(
         r#"{{"permissions":{{
-            "allow":["Read({outside}/report-*.md)"],
+            "allow":["Read({outside}/notes-*.md)","Write({outside}/report-*.md)"],
             "deny":["Read({outside}/*.env)"]
         }}}}"#
     );
     let profile = Profile::compile(&fixture.root, Some(&settings));
 
     profile
-        .check("Read", Access::Read, &elsewhere.root.join("report-x.md"))
-        .expect("Read is granted by the allow entry");
+        .check("Write", Access::Write, &elsewhere.root.join("report-x.md"))
+        .expect("Write is granted by the allow entry");
 
     let wrong_verb =
-        refusal(profile.check("Write", Access::Write, &elsewhere.root.join("report-x.md")));
+        refusal(profile.check("Write", Access::Write, &elsewhere.root.join("notes-x.md")));
     assert!(
-        wrong_verb.rule.contains("only writable root"),
+        wrong_verb.rule.contains("are the writable places"),
         "a Read allow grants no write: {:?}",
         wrong_verb.rule
     );
@@ -885,7 +974,7 @@ fn an_allow_outside_the_root_honours_its_verb_and_its_case() {
     // An `allow` matches case-sensitively on every platform, so a
     // case-insensitive filesystem cannot reach a path its author never
     // spelled.
-    refusal(profile.check("Read", Access::Read, &elsewhere.root.join("REPORT-X.MD")));
+    refusal(profile.check("Write", Access::Write, &elsewhere.root.join("REPORT-X.MD")));
 
     // A `deny` folds on every platform, so `SECRET.ENV` cannot walk past
     // `*.env`.
@@ -930,9 +1019,17 @@ fn a_symlink_inside_the_root_pointing_out_of_it_is_refused_for_write() {
     let canonical_root = std::fs::canonicalize(&fixture.root).unwrap();
     let root = canonical_root.to_string_lossy().replace('\\', "/");
 
-    // Somewhere genuinely outside the project, with a real file in it.
-    let outside = Fixture::new("symlink-escape-target");
-    std::fs::write(outside.root.join("stolen.txt"), b"outside the project").unwrap();
+    // Somewhere genuinely outside the project with a real file in it, and
+    // outside every writable place: the build's own scratch folder is not a
+    // temporary folder, and where it is under `$HOME` the `$HOME` rule
+    // refuses it too.
+    let outside_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "sterna-sandbox-symlink-escape-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("stolen.txt"), b"outside the project").unwrap();
 
     // The project grants itself everything it possibly can.
     let settings = format!(
@@ -942,7 +1039,7 @@ fn a_symlink_inside_the_root_pointing_out_of_it_is_refused_for_write() {
 
     // A path inside the root, spelled canonically, that resolves outside it.
     let link = canonical_root.join("escape");
-    std::os::unix::fs::symlink(&outside.root, &link).unwrap();
+    std::os::unix::fs::symlink(&outside_dir, &link).unwrap();
     let through_link = link.join("stolen.txt");
 
     // Sanity: the link really does leave the project.
@@ -956,17 +1053,30 @@ fn a_symlink_inside_the_root_pointing_out_of_it_is_refused_for_write() {
         "fixture is wrong: {canonical:?} did not escape the root"
     );
 
-    for access in [Access::Read, Access::Write] {
-        let denied = refusal(profile.check("Write", access, &through_link));
-        assert!(
-            !denied.rule.is_empty(),
-            "a refusal must name the deciding rule"
-        );
-    }
+    let denied = refusal(profile.check("Write", Access::Write, &through_link));
+    assert!(
+        !denied.rule.is_empty(),
+        "a refusal must name the deciding rule"
+    );
+    assert_eq!(
+        denied.path,
+        canonical.to_string_lossy(),
+        "the decision was made on the link's own spelling"
+    );
 
     // And the same path spelled canonically decides the same way, so the
     // grant cannot be recovered by choosing a spelling.
     refusal(profile.check("Write", Access::Write, &canonical));
+
+    // A read through the link is granted -- reads are wide -- and it is
+    // granted on the path the kernel would open, not on the link's name.
+    assert_eq!(
+        profile
+            .check("Read", Access::Read, &through_link)
+            .expect("a read nothing refuses is granted"),
+        canonical
+    );
+    let _ = std::fs::remove_dir_all(&outside_dir);
 }
 
 /// Item 1, the blocker: a `..` **after a symlinked component** must be applied
@@ -1198,7 +1308,7 @@ fn every_granted_path_is_absolute_and_inside_the_root_it_was_decided_in() {
 fn the_drive_letter_fold_stops_at_the_colon() {
     let profile = Profile::compile(
         Path::new("C:/sterna-fixture/proj"),
-        Some(r#"{"permissions":{"allow":["Read(C:foo/bar)"]}}"#),
+        Some(r#"{"permissions":{"allow":["Write(C:foo/bar)"]}}"#),
     );
     assert_eq!(
         profile.rule_count(),
@@ -1207,19 +1317,18 @@ fn the_drive_letter_fold_stops_at_the_colon() {
         profile.diagnostics()
     );
 
+    // Writes, because every read nothing refuses is granted anyway.
     for granted in ["C:foo/bar", "c:foo/bar"] {
         profile
-            .check("Read", Access::Read, Path::new(granted))
+            .check("Write", Access::Write, Path::new(granted))
             .unwrap_or_else(|denied| {
                 panic!("`{granted}` is the drive the pattern names: {denied:?}")
             });
     }
     for other in ["C:FOO/bar", "C:Foo/bar", "C:foo/BAR"] {
-        let denied = refusal(profile.check("Read", Access::Read, Path::new(other)));
+        let denied = refusal(profile.check("Write", Access::Write, Path::new(other)));
         assert!(
-            denied
-                .rule
-                .contains("the project root is the only readable root"),
+            denied.rule.contains("are the writable places"),
             "`{other}` is a different file and no `allow` names it: {:?}",
             denied.rule
         );
@@ -1303,11 +1412,12 @@ fn a_project_inside_a_never_grantable_directory_keeps_its_own_subtree_and_nothin
     }
 }
 
-/// Item 3, the lead's ruling: §4 is titled "what is never grantable, by any
-/// pattern", and §4.3 is `$HOME` outside the project. The five names in that
-/// sentence are the examples, not the rule.
+/// Item 3, the lead's ruling: §4.3 is `$HOME` outside the project, and it is
+/// a rule about writing. No pattern makes a file there writable; reading one
+/// is granted like any other read nothing refuses, and the named credential
+/// stores keep their own rules for both.
 #[test]
-fn home_outside_the_project_is_never_grantable_by_any_pattern() {
+fn home_outside_the_project_is_never_writable_by_any_pattern() {
     let fixture = Fixture::new("home-outside-the-project");
     let home = home();
 
@@ -1326,46 +1436,25 @@ fn home_outside_the_project_is_never_grantable_by_any_pattern() {
             ".npmrc",
             ".docker/config.json",
             ".zsh_history",
+            ".gitconfig",
             "Documents/taxes-2025.pdf",
             "Desktop/passwords.txt",
         ] {
-            for access in [Access::Read, Access::Write] {
-                let denied = refusal(profile.check("Read", access, &home.join(relative)));
-                assert!(
-                    denied.rule.contains("never grantable by any pattern"),
-                    "{pattern} granted {access:?} to ~/{relative}: {:?}",
-                    denied.rule
-                );
-            }
+            let denied = refusal(profile.check("Write", Access::Write, &home.join(relative)));
+            assert!(
+                denied.rule.contains("`$HOME`") && denied.rule.contains("never writable"),
+                "{pattern} granted a write to ~/{relative}: {:?}",
+                denied.rule
+            );
         }
-
-        // `~/.gitconfig` is the one file in this list a derived host grant
-        // now reads, because `git` will not start without it. The invariant
-        // this test exists for is unchanged and is asserted twice over: the
-        // *write* is still refused by the rule no pattern can reach, and the
-        // read is granted with **no settings document at all** — so it is
-        // the derivation that grants it and never the pattern.
-        let denied = refusal(profile.check("Write", Access::Write, &home.join(".gitconfig")));
+        profile
+            .check("Read", Access::Read, &home.join("Documents/taxes-2025.pdf"))
+            .expect("a read in $HOME is granted");
+        let denied = refusal(profile.check("Read", Access::Read, &home.join(".ssh/id_ed25519")));
         assert!(
             denied.rule.contains("never grantable by any pattern"),
-            "{pattern} granted a write to ~/.gitconfig: {:?}",
+            "{pattern} granted a read of ~/.ssh: {:?}",
             denied.rule
-        );
-    }
-
-    let derived = Profile::compile(&fixture.root, None);
-    let gitconfig = home.join(".gitconfig");
-    if gitconfig.is_file() {
-        assert!(
-            derived.check("read", Access::Read, &gitconfig).is_ok(),
-            "a derived grant, not a pattern, is what reads ~/.gitconfig"
-        );
-        // And it is the file, never the directory around it.
-        assert!(
-            derived
-                .check("read", Access::Read, &home.join(".gitconfig.bak"))
-                .is_err(),
-            "the derived grant reached a neighbour of ~/.gitconfig"
         );
     }
 
@@ -1392,9 +1481,9 @@ fn home_outside_the_project_is_never_grantable_by_any_pattern() {
 }
 
 /// Item 4: §1.2 is a rule about both of §2's questions. `allow` must not beat
-/// `deny` by concatenation.
+/// `deny` by concatenation: one denied segment refuses the whole line.
 #[test]
-fn a_chained_command_line_is_admitted_only_if_every_segment_is() {
+fn a_chained_command_line_is_refused_if_any_segment_is_denied() {
     let fixture = Fixture::new("chained-command");
     let profile = Profile::compile(
         &fixture.root,
@@ -1406,7 +1495,7 @@ fn a_chained_command_line_is_admitted_only_if_every_segment_is() {
         ),
     );
 
-    // Every segment admitted, none denied.
+    // No segment denied: admitted, whether or not an allow names it.
     for admitted in [
         "cargo test -p sterna",
         "cargo test -q | git status",
@@ -1436,15 +1525,12 @@ fn a_chained_command_line_is_admitted_only_if_every_segment_is() {
         );
     }
 
-    // And a segment no allow admits refuses the line too, which is the other
-    // half of "every segment".
-    for refused in ["cargo test -q | wc -l", "cargo test -q; make install"] {
-        let denied = refusal(profile.admits_command(refused));
-        assert!(
-            denied.rule.contains("permissions.allow"),
-            "{refused:?} was not refused for want of an allow: {:?}",
-            denied.rule
-        );
+    // A segment no allow names is admitted: an allow pre-approves, it does
+    // not gate.
+    for admitted in ["cargo test -q | wc -l", "cargo test -q; make install"] {
+        profile
+            .admits_command(admitted)
+            .unwrap_or_else(|denied| panic!("{admitted:?} should be admitted: {denied}"));
     }
 }
 
@@ -1476,74 +1562,47 @@ fn an_admitted_command_carries_only_literal_executable_words() {
 
     let denied = refusal(profile.admits_command("/usr/bin/python3 -m forbidden.case"));
     assert!(denied.rule.contains("permissions.deny"), "{denied:?}");
-
-    let read_denied = Profile::compile(
-        &fixture.root,
-        Some(
-            r#"{"permissions":{
-                "allow":["Bash(/usr/bin/python3 -m unittest*)"],
-                "deny":["Read(/usr/bin/python3)"]
-            }}"#,
-        ),
-    );
-    assert!(
-        read_denied.executable_is_refused(Path::new("/usr/bin/python3")),
-        "an explicit read deny was lost while deriving an exec literal"
-    );
 }
 
 /// A redirect operand — `>&2`, `2>&1`, `<&0`, `&>file` — is part of the
 /// command's own segment, not a separator that starts a new one, and not a
-/// nonsense segment (`1`, `2`, `0`, `file`) of its own.
+/// nonsense segment (`1`, `2`, `0`, `file`) of its own. A `deny` naming each
+/// of those nonsense segments is what would catch one.
 #[test]
 fn a_redirect_operand_is_not_a_command_segment() {
     let fixture = Fixture::new("redirect-operand");
-    let admitting = Profile::compile(
+    let profile = Profile::compile(
         &fixture.root,
         Some(
             r#"{"permissions":{
-                "allow":["Bash(cargo test*)","Bash(echo*)","Bash(cargo build*)","Bash(tail*)"]
+                "deny":["Bash(0*)","Bash(1*)","Bash(2*)","Bash(build.log*)","Bash(>*)"]
             }}"#,
         ),
     );
     for admitted in [
         "cargo test 2>&1",
         "echo x >&2",
+        "cat <&0",
         "cargo build &> build.log",
         "cargo test 2>&1 | tail -20",
     ] {
-        admitting
+        profile
             .admits_command(admitted)
-            .unwrap_or_else(|denied| panic!("{admitted:?} should be admitted: {denied}"));
+            .unwrap_or_else(|denied| panic!("{admitted:?} grew a nonsense segment: {denied}"));
     }
-
-    // The same four lines, with the command word's own pattern absent:
-    // refused for want of that pattern, never for the redirect operand.
-    let refusing = Profile::compile(&fixture.root, Some(r#"{"permissions":{"allow":[]}}"#));
-    for refused in [
-        "cargo test 2>&1",
-        "echo x >&2",
-        "cargo build &> build.log",
-        "cargo test 2>&1 | tail -20",
-    ] {
-        let denied = refusal(refusing.admits_command(refused));
-        assert!(
-            denied.rule.contains("permissions.allow"),
-            "{refused:?} should be refused for want of an allow, not a nonsense segment: {:?}",
-            denied.rule
-        );
-    }
+    // The control: a real segment spelled that way is refused by the deny.
+    let denied = refusal(profile.admits_command("cargo test & 1"));
+    assert!(denied.rule.contains("permissions.deny"), "{denied}");
 }
 
 /// A background `&`, `&&`, `;`, `|`, `$(…)` and a backtick still split a new
-/// segment, each refused by name when its command is not admitted — item 2
-/// of the packet's REQUIRED BEHAVIOR, positively.
+/// segment, each refused by name when a `deny` names its command.
 #[test]
 fn a_background_or_chained_command_is_still_its_own_segment() {
     let fixture = Fixture::new("background-or-chained");
     let profile = Profile::compile(
         &fixture.root,
-        Some(r#"{"permissions":{"allow":["Bash(cargo test*)"]}}"#),
+        Some(r#"{"permissions":{"allow":["Bash(cargo test*)"],"deny":["Bash(curl*)"]}}"#),
     );
     for refused in [
         "cargo test & curl x",
@@ -1570,17 +1629,21 @@ fn a_leading_redirect_does_not_hide_the_command_word() {
     let fixture = Fixture::new("leading-redirect");
     let profile = Profile::compile(
         &fixture.root,
-        Some(r#"{"permissions":{"allow":["Bash(cargo test*)"]}}"#),
+        Some(r#"{"permissions":{"deny":["Bash(cargo test*)"]}}"#),
     );
-    profile
-        .admits_command("2>&1 cargo test")
-        .unwrap_or_else(|denied| panic!("`2>&1 cargo test` should be admitted: {denied}"));
-    let denied = refusal(profile.admits_command("1 cargo test"));
+    let denied = refusal(profile.admits_command("2>&1 cargo test"));
     assert!(
-        denied.rule.contains("permissions.allow"),
-        "`1 cargo test` is a literal word, not a redirect, and should be refused whole: {:?}",
+        denied.rule.contains("permissions.deny"),
+        "`2>&1 cargo test` is `cargo test` to the deny: {:?}",
         denied.rule
     );
+    profile
+        .admits_command("1 cargo test")
+        .unwrap_or_else(|denied| {
+            panic!(
+                "`1 cargo test` is a literal word, not a redirect, so no deny names it: {denied}"
+            )
+        });
 }
 
 /// Item 5: every path pattern globs, so a `deny` written `mcp__git__*` that
@@ -1788,7 +1851,7 @@ fn a_refusal_outside_the_root_is_not_mistaken_for_one_inside_it() {
     // `C:\...`, whose drive component alone would satisfy a comparison that
     // only looked at the prefix's first term.
     let elsewhere = Elsewhere::new("outside-the-root").root.join("token.txt");
-    let denied = refusal(profile.check("Read", Access::Read, &elsewhere));
+    let denied = refusal(profile.check("Write", Access::Write, &elsewhere));
     assert!(
         !spelling_components(Path::new(&denied.path)).starts_with(&root_components),
         "{:?} is outside {:?} and the comparison must say so",
@@ -1847,7 +1910,8 @@ fn a_verbatim_and_a_plain_spelling_of_one_path_decide_identically() {
     );
 
     // Three paths that must decide three *different* ways, so an agreement
-    // between spellings cannot be an agreement on one uniform answer.
+    // between spellings cannot be an agreement on one uniform answer. Asked
+    // as writes, because every read nothing refuses is granted.
     let cases = [
         (
             r"\\?\C:\sterna-fixture\proj\notes\one.md",
@@ -1862,12 +1926,12 @@ fn a_verbatim_and_a_plain_spelling_of_one_path_decide_identically() {
         (
             r"\\?\C:\sterna-fixture\elsewhere\x.md",
             r"C:\sterna-fixture\elsewhere\x.md",
-            Some("the project root is the only readable root"),
+            Some("are the writable places"),
         ),
     ];
     for (verbatim, plain, expected) in cases {
-        let from_verbatim = profile.check("Read", Access::Read, Path::new(verbatim));
-        let from_plain = profile.check("Read", Access::Read, Path::new(plain));
+        let from_verbatim = profile.check("Write", Access::Write, Path::new(verbatim));
+        let from_plain = profile.check("Write", Access::Write, Path::new(plain));
         match expected {
             None => {
                 from_verbatim
@@ -1945,8 +2009,8 @@ fn a_verbatim_and_a_plain_spelling_of_one_path_decide_identically() {
     // is not a verbatim prefix, so it stays outside this project rather than
     // becoming the relative `proj`.
     let unix_shaped = refusal(profile.check(
-        "Read",
-        Access::Read,
+        "Write",
+        Access::Write,
         Path::new("//?/sterna-fixture/proj/notes/one.md"),
     ));
     // Refused for being outside, rather than reduced to `proj` and let in.
@@ -1960,9 +2024,7 @@ fn a_verbatim_and_a_plain_spelling_of_one_path_decide_identically() {
     // `crates/sterna/tests/sandbox_path_spellings.rs` is where that answer is
     // asserted in its own right.
     assert!(
-        unix_shaped
-            .rule
-            .contains("the project root is the only readable root")
+        unix_shaped.rule.contains("are the writable places")
             || unix_shaped
                 .rule
                 .contains("device-namespace path is refused"),
@@ -2054,20 +2116,26 @@ fn a_project_root_inside_home_grants_its_own_subtree() {
         }
     }
 
-    // And nothing else in `$HOME`: the rule is narrowed to the project's own
-    // subtree, never dropped.
+    // And nothing else in `$HOME` is writable: the rule is narrowed to the
+    // project's own subtree, never dropped.
     for path in [
         home.join(".ssh/id_ed25519"),
         home.join("another-project/src/main.rs"),
         home.join("taxes-2025.pdf"),
     ] {
-        let denied = refusal(profile.check("Read", Access::Read, &path));
+        let denied = refusal(profile.check("Write", Access::Write, &path));
         assert!(
-            denied.rule.contains("never grantable by any pattern"),
-            "{path:?} was granted because the project sits inside $HOME: {:?}",
+            denied.rule.contains("never"),
+            "{path:?} was writable because the project sits inside $HOME: {:?}",
             denied.rule
         );
     }
+    let denied = refusal(profile.check("Read", Access::Read, &home.join(".ssh/id_ed25519")));
+    assert!(
+        denied.rule.contains("never grantable by any pattern"),
+        "{:?}",
+        denied.rule
+    );
 }
 
 /// §5: the `rule` names the *deciding* rule, so a person can fix the settings
@@ -2084,9 +2152,7 @@ fn a_path_outside_the_project_is_refused_by_the_rule_that_applies() {
     // could widen.
     let plain = refusal(profile.check("Write", Access::Write, &elsewhere.root.join("out.txt")));
     assert!(
-        plain
-            .rule
-            .contains("the project root is the only writable root"),
+        plain.rule.contains("are the writable places"),
         "a path outside both must cite the default: {:?}",
         plain.rule
     );
@@ -2147,7 +2213,7 @@ fn a_path_outside_the_project_is_refused_by_the_rule_that_applies() {
 fn a_unix_path_under_a_double_slash_question_mark_is_not_a_verbatim_prefix() {
     let profile = Profile::compile(
         Path::new("/sterna-fixture-not-created/proj"),
-        Some(r#"{"permissions":{"allow":["Read(//?/sterna-elsewhere-not-created/**)"]}}"#),
+        Some(r#"{"permissions":{"allow":["Write(//?/sterna-elsewhere-not-created/**)"]}}"#),
     );
     assert_eq!(profile.rule_count(), 1, "{:?}", profile.diagnostics());
     let globs: Vec<Vec<String>> = profile
@@ -2169,76 +2235,48 @@ fn a_unix_path_under_a_double_slash_question_mark_is_not_a_verbatim_prefix() {
         "//?/sterna-elsewhere-not-created/a.md",
     ] {
         profile
-            .check("Read", Access::Read, Path::new(spelled))
+            .check("Write", Access::Write, Path::new(spelled))
             .unwrap_or_else(|d| panic!("{spelled} is the directory the pattern named: {d:?}"));
     }
 }
 
-// --- Request modes (map lines 2637, 2638) ------------------------------
+// --- The plan request (`/plan <task>`) ---------------------------------
 
-/// A project whose profile admits every command line, so a refusal below is
-/// the mode's and not the profile's.
+/// A project whose `Bash` allow pre-approves every command line, so a refusal
+/// below is the plan's and not the profile's.
 fn open_profile(fixture: &Fixture) -> Profile {
     Profile::compile(&fixture.root, Some(r#"{"permissions":{"allow":["Bash"]}}"#))
 }
 
-fn docs_overlay() -> ModeOverlay {
-    ModeOverlay::new(vec!["docs/**".to_string()], Vec::new())
-}
-
 #[test]
-fn explore_refuses_a_write_outside_its_globs_and_names_the_mode() {
-    let fixture = Fixture::new("explore-write");
+fn plan_refuses_a_write_outside_its_plan_and_names_the_plan() {
+    let fixture = Fixture::new("plan-write");
     let source = fixture.root.join("src/x.rs");
-    let execute = open_profile(&fixture);
-    execute
-        .check_request("write", Access::Write, &source)
-        .expect("execute writes inside the root as before");
-    let explore = execute.narrowed_to(RequestMode::Explore, &docs_overlay());
-    assert_eq!(explore.request_mode(), RequestMode::Explore);
-    let denied = refusal(explore.check_request("write", Access::Write, &source));
-    assert!(
-        denied.rule.starts_with("mode explore: writes only under"),
-        "{denied}"
-    );
-    assert!(denied.rule.contains("`docs/**`"), "{denied}");
+    let work = open_profile(&fixture);
+    assert_eq!(work.request_mode(), RequestMode::Work);
+    work.check_request("write", Access::Write, &source)
+        .expect("an ordinary request writes inside the root");
+    let plan = work.narrowed_to(RequestMode::Plan);
+    assert_eq!(plan.request_mode(), RequestMode::Plan);
+    let denied = refusal(plan.check_request("write", Access::Write, &source));
+    assert!(denied.rule.starts_with("plan: no change executes, so every write but the plan to `.sterna/scratch/plan.md` is refused; "), "{denied}");
     assert_eq!(denied.tool, "write");
 }
 
-#[test]
-fn explore_admits_a_write_under_a_configured_documentation_glob() {
-    let fixture = Fixture::new("explore-docs");
-    let explore = open_profile(&fixture).narrowed_to(RequestMode::Explore, &docs_overlay());
-    explore
-        .check_request(
-            "write",
-            Access::Write,
-            &fixture.root.join("docs/notes/today.md"),
-        )
-        .expect("a configured documentation glob is writable in explore");
-    explore
-        .check_request("edit", Access::Write, &fixture.root.join("docs/a.md"))
-        .expect("edit asks the same question");
-}
-
 /// §1.5's one exemption: `.sterna/scratch/**` is the agent's scratchpad, a
-/// property of the profile, so it is writable in `execute` and in `explore`
-/// (whose default writable glob it is) and named by the never rule itself.
+/// property of the profile, so it is writable in an ordinary request and
+/// named by the never rule itself. A plan writes only its plan there.
 #[test]
-fn the_scratchpad_is_carved_out_of_dot_sterna_and_explore_writes_it() {
-    let fixture = Fixture::new("explore-scratch");
-    let execute = open_profile(&fixture);
+fn the_scratchpad_is_carved_out_of_dot_sterna_and_a_plan_writes_only_its_plan() {
+    let fixture = Fixture::new("plan-scratch");
+    let work = open_profile(&fixture);
     let notes = fixture.root.join(".sterna/scratch/notes.md");
-    execute
-        .check_request("write", Access::Write, &notes)
-        .expect("execute writes the scratchpad");
-    let explore = execute
-        .clone()
-        .narrowed_to(RequestMode::Explore, &ModeOverlay::default());
-    explore
-        .check_request("write", Access::Write, &notes)
-        .expect("explore writes its default writable glob");
-    let never = execute
+    work.check_request("write", Access::Write, &notes)
+        .expect("an ordinary request writes the scratchpad");
+    let plan = work.clone().narrowed_to(RequestMode::Plan);
+    let denied = refusal(plan.check_request("write", Access::Write, &notes));
+    assert!(denied.rule.starts_with("plan:"), "{denied}");
+    let never = work
         .rules()
         .find(|rule| rule.effect() == Effect::Never && rule.written().starts_with("`.sterna/**`"))
         .expect("the `.sterna/**` never rule");
@@ -2249,22 +2287,18 @@ fn the_scratchpad_is_carved_out_of_dot_sterna_and_explore_writes_it() {
     );
     assert_eq!(
         never.exempt_subtree(),
-        Some(execute.root().join(".sterna/scratch").as_path())
+        Some(work.root().join(".sterna/scratch").as_path())
     );
 }
 
-/// Everything else under `.sterna/` stays never-writable, in every mode and by
-/// the never rule: a name that merely starts like the scratchpad is not it.
+/// Everything else under `.sterna/` stays never-writable, in every request and
+/// by the never rule: a name that merely starts like the scratchpad is not it.
 #[test]
-fn the_rest_of_dot_sterna_stays_never_writable_in_every_mode() {
+fn the_rest_of_dot_sterna_stays_never_writable_in_every_request() {
     let fixture = Fixture::new("dot-sterna-rest");
-    let execute = open_profile(&fixture);
-    for mode in [
-        RequestMode::Execute,
-        RequestMode::Explore,
-        RequestMode::Plan,
-    ] {
-        let narrowed = execute.clone().narrowed_to(mode, &ModeOverlay::default());
+    let work = open_profile(&fixture);
+    for mode in [RequestMode::Work, RequestMode::Plan] {
+        let narrowed = work.clone().narrowed_to(mode);
         for path in [
             ".sterna/config.toml",
             ".sterna/settings.json",
@@ -2292,11 +2326,9 @@ fn no_spelling_under_the_scratchpad_reaches_outside_it() {
     let root = &fixture.root;
     std::fs::create_dir_all(root.join(".sterna/scratch")).unwrap();
     let profile = open_profile(&fixture);
-    let explore = profile
-        .clone()
-        .narrowed_to(RequestMode::Explore, &ModeOverlay::default());
+    let plan = profile.clone().narrowed_to(RequestMode::Plan);
     let sterna_rule = |path: PathBuf| {
-        for narrowed in [&profile, &explore] {
+        for narrowed in [&profile, &plan] {
             let denied = refusal(narrowed.check_request("write", Access::Write, &path));
             assert!(
                 denied.rule.starts_with("`.sterna/**`"),
@@ -2322,10 +2354,12 @@ fn no_spelling_under_the_scratchpad_reaches_outside_it() {
         sterna_rule(scratch.join("present"));
         symlink("..", scratch.join("up")).unwrap();
         sterna_rule(scratch.join("up/config.toml"));
+        // Out of the project and out of every writable place: the profile
+        // refuses it before the plan is asked.
         let elsewhere = Elsewhere::new("scratch-escape").root.join("x.txt");
         symlink(&elsewhere, scratch.join("out")).unwrap();
-        let denied = refusal(explore.check_request("write", Access::Write, &scratch.join("out")));
-        assert!(!denied.rule.starts_with("mode explore"), "{denied}");
+        let denied = refusal(plan.check_request("write", Access::Write, &scratch.join("out")));
+        assert!(denied.rule.contains("are the writable places"), "{denied}");
     }
 }
 
@@ -2359,49 +2393,58 @@ fn the_scratchpad_carve_out_holds_in_verbatim_and_plain_spellings() {
 }
 
 #[test]
-fn reads_and_profile_refusals_are_unchanged_in_every_mode() {
-    let fixture = Fixture::new("mode-reads");
+fn reads_and_profile_refusals_are_unchanged_in_a_plan() {
+    let fixture = Fixture::new("plan-reads");
     let root = fixture.pattern_root();
     let settings = format!(
         r#"{{"permissions":{{"allow":["Bash"],"deny":["Read({root}/secret/**)","Bash(git log*)"]}}}}"#
     );
-    let execute = Profile::compile(&fixture.root, Some(&settings));
-    let elsewhere = Elsewhere::new("mode-reads").root.join("x.txt");
-    for mode in [RequestMode::Explore, RequestMode::Plan] {
-        let narrowed = execute.clone().narrowed_to(mode, &docs_overlay());
-        narrowed
-            .check("read", Access::Read, &fixture.root.join("src/lib.rs"))
-            .expect("reading runs as in execute");
-        let secret = fixture.root.join("secret/key");
+    let work = Profile::compile(&fixture.root, Some(&settings));
+    let elsewhere = Elsewhere::new("plan-reads").root.join("x.txt");
+    let plan = work.clone().narrowed_to(RequestMode::Plan);
+    for path in [fixture.root.join("src/lib.rs"), elsewhere] {
         assert_eq!(
-            refusal(narrowed.check("read", Access::Read, &secret)).rule,
-            refusal(execute.check("read", Access::Read, &secret)).rule
+            plan.check("read", Access::Read, &path)
+                .expect("a plan reads what an ordinary request reads"),
+            work.check("read", Access::Read, &path).unwrap()
         );
-        assert_eq!(
-            refusal(narrowed.check("read", Access::Read, &elsewhere)).rule,
-            refusal(execute.check("read", Access::Read, &elsewhere)).rule
-        );
-        // The profile's `deny` decides first, even for a read-only command.
-        let denied = refusal(narrowed.admits_command("git log"));
-        assert!(denied.rule.contains("permissions.deny"), "{denied}");
-        // A mode grants nothing the profile did not.
-        assert!(!narrowed.grants_network());
     }
+    let secret = fixture.root.join("secret/key");
+    assert_eq!(
+        refusal(plan.check("read", Access::Read, &secret)).rule,
+        refusal(work.check("read", Access::Read, &secret)).rule
+    );
+    // The profile's `deny` decides first, even for a read-only command.
+    let denied = refusal(plan.admits_command("git log"));
+    assert!(denied.rule.contains("permissions.deny"), "{denied}");
+    // A plan grants nothing the profile did not.
+    assert!(!plan.grants_network());
 }
 
 #[test]
-fn plan_reads_and_refuses_every_write_even_under_a_documentation_glob() {
+fn plan_reads_and_refuses_every_write_but_its_plan() {
     let fixture = Fixture::new("plan");
-    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan, &docs_overlay());
+    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan);
     plan.check("read", Access::Read, &fixture.root.join("docs/a.md"))
         .expect("plan reads");
     for path in ["docs/a.md", "src/x.rs"] {
         let denied = refusal(plan.check_request("write", Access::Write, &fixture.root.join(path)));
+        assert!(denied.rule.starts_with("plan: no change executes, so every write but the plan to `.sterna/scratch/plan.md` is refused; "), "{denied}");
         assert!(
-            denied.rule.starts_with("mode plan: no change executes"),
+            denied
+                .rule
+                .ends_with("send the next message without /plan to make changes"),
             "{denied}"
         );
     }
+    // Nor a write the profile grants outside the project: the temporary
+    // folders are writable places, but not while planning.
+    let denied = refusal(plan.check_request(
+        "write",
+        Access::Write,
+        &std::env::temp_dir().join("sterna-plan-probe.txt"),
+    ));
+    assert!(denied.rule.starts_with("plan:"), "{denied}");
 }
 
 /// `plan` writes its plan file and nothing else: not a sibling in the
@@ -2410,7 +2453,7 @@ fn plan_reads_and_refuses_every_write_even_under_a_documentation_glob() {
 #[test]
 fn plan_writes_only_its_plan_file() {
     let fixture = Fixture::new("plan-file");
-    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan, &docs_overlay());
+    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan);
     plan.check_request(
         "write",
         Access::Write,
@@ -2424,7 +2467,7 @@ fn plan_writes_only_its_plan_file() {
         "docs/plan.md",
     ] {
         let denied = refusal(plan.check_request("write", Access::Write, &fixture.root.join(path)));
-        assert!(denied.rule.starts_with("mode plan:"), "{path}: {denied}");
+        assert!(denied.rule.starts_with("plan:"), "{path}: {denied}");
     }
     #[cfg(unix)]
     {
@@ -2440,82 +2483,53 @@ fn plan_writes_only_its_plan_file() {
             Access::Write,
             &fixture.root.join(".sterna/scratch/plan.md"),
         ));
-        assert!(denied.rule.starts_with("mode plan:"), "{denied}");
+        assert!(denied.rule.starts_with("plan:"), "{denied}");
     }
 }
 
 #[test]
-fn execute_is_the_profile_unchanged_and_a_narrowing_cannot_be_lifted() {
-    let fixture = Fixture::new("execute-unchanged");
+fn work_is_the_profile_unchanged_and_a_narrowing_cannot_be_lifted() {
+    let fixture = Fixture::new("work-unchanged");
     let base = open_profile(&fixture);
-    let execute = base
-        .clone()
-        .narrowed_to(RequestMode::Execute, &docs_overlay());
-    assert_eq!(execute.request_mode(), RequestMode::Execute);
+    let work = base.clone().narrowed_to(RequestMode::Work);
+    assert_eq!(work.request_mode(), RequestMode::Work);
     let source = fixture.root.join("src/x.rs");
-    assert!(
-        execute
-            .check_request("write", Access::Write, &source)
-            .is_ok()
-    );
-    assert!(execute.admits_command("rm -rf target").is_ok());
+    assert!(work.check_request("write", Access::Write, &source).is_ok());
+    assert!(work.admits_command("rm -rf target").is_ok());
     let relifted = base
-        .narrowed_to(RequestMode::Plan, &docs_overlay())
-        .narrowed_to(RequestMode::Execute, &docs_overlay());
+        .narrowed_to(RequestMode::Plan)
+        .narrowed_to(RequestMode::Work);
     assert_eq!(relifted.request_mode(), RequestMode::Plan);
     assert!(
         relifted
             .check_request("write", Access::Write, &source)
             .is_err()
     );
+    assert!(relifted.admits_command("rm -rf target").is_err());
 }
 
 #[test]
-fn a_narrowing_mode_admits_no_mcp_tool() {
-    let fixture = Fixture::new("mode-mcp");
+fn a_plan_admits_no_mcp_tool() {
+    let fixture = Fixture::new("plan-mcp");
     let base = Profile::compile(
         &fixture.root,
         Some(r#"{"permissions":{"allow":["mcp__docs__search"]}}"#),
     );
     assert!(base.admits_mcp_tool("mcp__docs__search"));
-    let explore = base.narrowed_to(RequestMode::Explore, &ModeOverlay::default());
-    assert!(!explore.admits_mcp_tool("mcp__docs__search"));
-    assert!(!explore.admits_mcp_server("docs"));
-}
-
-#[test]
-fn a_writable_glob_outside_the_root_makes_nothing_writable() {
-    let fixture = Fixture::new("mode-escape");
-    let elsewhere = Elsewhere::new("mode-escape");
-    let overlay = ModeOverlay::new(
-        vec![
-            "../**".to_string(),
-            format!("{}/**", elsewhere.pattern_root()),
-        ],
-        Vec::new(),
-    );
-    let explore = open_profile(&fixture).narrowed_to(RequestMode::Explore, &overlay);
-    let dropped = explore
-        .diagnostics()
-        .iter()
-        .filter(|d| d.contains("makes nothing writable"))
-        .count();
-    assert_eq!(dropped, 2, "{:?}", explore.diagnostics());
-    assert!(
-        explore
-            .check_request("write", Access::Write, &fixture.root.join("src/x.rs"))
-            .is_err()
-    );
+    let plan = base.narrowed_to(RequestMode::Plan);
+    assert!(!plan.admits_mcp_tool("mcp__docs__search"));
+    assert!(!plan.admits_mcp_server("docs"));
 }
 
 #[cfg(not(windows))]
 #[test]
-fn explore_runs_read_only_commands_and_refuses_every_writer_by_mode() {
-    let fixture = Fixture::new("explore-bash");
-    let explore = open_profile(&fixture).narrowed_to(RequestMode::Explore, &ModeOverlay::default());
+fn plan_runs_read_only_commands_and_refuses_every_writer() {
+    let fixture = Fixture::new("plan-bash");
+    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan);
     for admitted in [
         "git status",
         "git log --oneline -5",
+        "git rev-parse --show-toplevel",
         "ls -la src",
         "cat Cargo.toml | wc -l",
         "grep -rn needle src 2>/dev/null",
@@ -2524,8 +2538,7 @@ fn explore_runs_read_only_commands_and_refuses_every_writer_by_mode() {
         "date +%s",
         "env",
     ] {
-        explore
-            .admits_command(admitted)
+        plan.admits_command(admitted)
             .unwrap_or_else(|d| panic!("`{admitted}` is read-only: {d}"));
     }
     for refused in [
@@ -2550,26 +2563,17 @@ fn explore_runs_read_only_commands_and_refuses_every_writer_by_mode() {
         "rg --pre ./run needle",
         "date -s 12:00",
         "ls; touch x",
+        "cargo metadata",
     ] {
-        let denied = refusal(explore.admits_command(refused));
+        let denied = refusal(plan.admits_command(refused));
         assert!(
-            denied.rule.starts_with("mode explore:"),
-            "`{refused}` was refused by something other than the mode: {denied}"
+            denied.rule.starts_with("plan:")
+                && denied
+                    .rule
+                    .ends_with("; the shell is read-only while planning"),
+            "`{refused}` was refused by something other than the plan: {denied}"
         );
     }
-}
-
-#[cfg(not(windows))]
-#[test]
-fn a_configured_command_pattern_is_read_only_in_explore() {
-    let fixture = Fixture::new("explore-configured");
-    let overlay = ModeOverlay::new(Vec::new(), vec!["cargo metadata*".to_string()]);
-    let explore = open_profile(&fixture).narrowed_to(RequestMode::Explore, &overlay);
-    explore
-        .admits_command("cargo metadata --format-version 1")
-        .expect("a configured pattern admits its command");
-    assert!(explore.admits_command("cargo metadata > m.json").is_err());
-    assert!(explore.admits_command("cargo build").is_err());
 }
 
 /// On Windows a plain `cmd.exe` line goes to the same reader POSIX uses
@@ -2577,12 +2581,12 @@ fn a_configured_command_pattern_is_read_only_in_explore() {
 /// carrying a construct only `cmd.exe` has is refused naming `cmd.exe`.
 #[cfg(windows)]
 #[test]
-fn explore_refuses_the_cmd_tail_by_name_on_windows() {
-    let fixture = Fixture::new("explore-windows");
-    let explore = open_profile(&fixture).narrowed_to(RequestMode::Explore, &ModeOverlay::default());
-    let plain = refusal(explore.admits_command("dir"));
+fn plan_refuses_the_cmd_tail_by_name_on_windows() {
+    let fixture = Fixture::new("plan-windows");
+    let plan = open_profile(&fixture).narrowed_to(RequestMode::Plan);
+    let plain = refusal(plan.admits_command("dir"));
     assert!(plain.rule.contains("is not a read-only command"), "{plain}");
-    let cmd_only = refusal(explore.admits_command("dir %USERPROFILE%"));
+    let cmd_only = refusal(plan.admits_command("dir %USERPROFILE%"));
     assert!(cmd_only.rule.contains("cmd.exe"), "{cmd_only}");
 }
 
@@ -2591,18 +2595,16 @@ fn explore_refuses_the_cmd_tail_by_name_on_windows() {
 /// unconfined, exactly as `phase-69.md`'s measurement planted it.
 #[cfg(unix)]
 #[test]
-fn a_write_through_a_hard_link_to_a_never_writable_file_is_refused_in_every_mode() {
+fn a_write_through_a_hard_link_to_a_never_writable_file_is_refused_in_every_request() {
     let fixture = Fixture::new("hard-link-never");
     std::fs::create_dir_all(fixture.root.join(".sterna/scratch")).unwrap();
     let config = fixture.root.join(".sterna/config.toml");
     std::fs::write(&config, "model = \"x\"\n").unwrap();
     let hard = fixture.root.join(".sterna/scratch/hard");
     std::fs::hard_link(&config, &hard).unwrap();
-    let execute = open_profile(&fixture);
-    let explore = execute
-        .clone()
-        .narrowed_to(RequestMode::Explore, &ModeOverlay::default());
-    for (mode, profile) in [("execute", &execute), ("explore", &explore)] {
+    let work = open_profile(&fixture);
+    let plan = work.clone().narrowed_to(RequestMode::Plan);
+    for (mode, profile) in [("work", &work), ("plan", &plan)] {
         for tool in ["write", "edit"] {
             let denied = refusal(profile.check_request(tool, Access::Write, &hard));
             assert_eq!(
@@ -2617,8 +2619,7 @@ fn a_write_through_a_hard_link_to_a_never_writable_file_is_refused_in_every_mode
         assert!(denied.rule.contains(".sterna/**"), "{mode}: {denied}");
     }
     // A read through the link is judged exactly as before.
-    execute
-        .check("read", Access::Read, &hard)
+    work.check("read", Access::Read, &hard)
         .expect("a read through a hard link is granted as today");
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "model = \"x\"\n");
 }
@@ -2709,11 +2710,13 @@ fn a_worktree_root_reaches_the_repository_its_git_file_names() {
     assert!(granted.contains(&common), "{granted:?}");
 
     // The repository's *working tree* is a different path and no grant here
-    // names it: this widens git's own directory, never the checkout beside it.
-    let sibling = common.parent().unwrap().join("src/main.rs");
+    // names it: this widens git's own directory, never the checkout beside
+    // it. (Asked of the derived list rather than of `check`, because this
+    // fixture lives in a temporary folder, which is writable anyway.)
+    let checkout = common.parent().unwrap();
     assert!(
-        profile.check("read", Access::Read, &sibling).is_err(),
-        "the repository's working tree must stay outside the grant"
+        granted.iter().all(|dir| !checkout.starts_with(dir)),
+        "the repository's working tree must stay outside the grant: {granted:?}"
     );
 }
 
@@ -2737,8 +2740,11 @@ fn a_git_file_that_names_nothing_reachable_grants_nothing() {
     assert_eq!(profile.repository_dirs().count(), 0);
 }
 
+/// The toolchains and tool caches are writable places: a build installs
+/// into them, downloads into them and locks them. Each is carved out of the
+/// `$HOME` rule, for reading and for writing.
 #[test]
-fn the_toolchain_is_readable_and_never_writable() {
+fn the_toolchain_and_caches_are_readable_and_writable() {
     let fixture = Fixture::new("toolchain");
     let profile = Profile::compile(&fixture.root, None);
     let mut roots = profile.toolchain_roots().peekable();
@@ -2748,17 +2754,16 @@ fn the_toolchain_is_readable_and_never_writable() {
     }
     for root in profile.toolchain_roots() {
         let inside = root.join("settings.toml");
-        profile
-            .check("read", Access::Read, &inside)
-            .unwrap_or_else(|denied| panic!("a build must read its toolchain: {denied}"));
-        // Refused by §4.3 itself: the read is carved out of the broad `$HOME`
-        // boundary and the write is not, so the rule that refuses a write
-        // here is the same one that refuses every other pattern in `$HOME`.
-        let denied = profile
-            .check("write", Access::Write, &inside)
-            .expect_err("the toolchain is read-only");
-        assert!(denied.rule.contains("never grantable"), "{}", denied.rule);
+        for access in [Access::Read, Access::Write] {
+            profile
+                .check("bash", access, &inside)
+                .unwrap_or_else(|denied| panic!("a build must {access:?} its toolchain: {denied}"));
+        }
     }
+    // Next to a cache is not in it.
+    let denied =
+        refusal(profile.check("write", Access::Write, &home().join(".cargo-not-a-cache/x")));
+    assert!(denied.rule.contains("`$HOME`"), "{}", denied.rule);
 }
 
 #[test]

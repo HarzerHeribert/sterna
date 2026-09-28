@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use sterna::sandbox::profile::{Access, Profile};
-use sterna::sandbox::{linux, windows};
+use sterna::sandbox::windows;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -43,7 +43,7 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn sterna_settings_are_carved_out_of_linux_and_windows_project_write_grants() {
+fn sterna_settings_are_carved_out_of_every_project_write_grant() {
     let fixture = Fixture::new();
     let profile = fixture.profile();
     let root = profile.root();
@@ -59,22 +59,9 @@ fn sterna_settings_are_carved_out_of_linux_and_windows_project_write_grants() {
             .is_err()
     );
 
-    let argv: Vec<String> = linux::bwrap_argv(&profile, "/bin/sh".as_ref(), &[])
-        .into_iter()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    let project = root.to_string_lossy();
-    let sterna = root.join(".sterna").to_string_lossy().into_owned();
-    let bind_at = |flag: &str, path: &str| {
-        argv.windows(3)
-            .position(|words| words[0] == flag && words[1] == path && words[2] == path)
-    };
-    let project_at = bind_at("--bind", &project).expect("writable project bind");
-    let sterna_at = bind_at("--ro-bind", &sterna).expect("read-only .sterna bind");
-    assert!(
-        project_at < sterna_at,
-        "the later bind must narrow the project view: {argv:?}"
-    );
+    // Every OS layer is handed `.sterna` as a path that stays read-only
+    // inside the writable project.
+    assert!(profile.protected_paths().contains(&root.join(".sterna")));
 
     let grants = windows::acl_grants(&profile, Path::new(r"C:\Windows\System32\cmd.exe"));
     assert!(
@@ -112,7 +99,7 @@ fn macos_refuses_sterna_settings_writes_by_tools_and_admitted_shells() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    macos::confine(&profile, &shell, &mut command).unwrap();
+    macos::confine(&profile, &mut command).unwrap();
     let output = command.output().expect("confined bash starts");
     assert!(
         !output.status.success(),
@@ -124,30 +111,27 @@ fn macos_refuses_sterna_settings_writes_by_tools_and_admitted_shells() {
     );
 }
 
+/// In the namespaced regime `.sterna` is a read-only mount, so an admitted
+/// shell cannot rewrite the settings a future session reads. Without user
+/// namespaces Landlock's additive rules cannot carve it out, and the regime
+/// says so.
 #[cfg(target_os = "linux")]
 #[test]
-fn landlock_only_refuses_direct_sterna_writes_but_cannot_stop_an_admitted_shell() {
+fn linux_refuses_an_admitted_shell_sterna_settings_writes_where_it_can_and_says_where_not() {
     use std::process::{Command, Stdio};
+    use sterna::sandbox::linux;
 
-    if linux::landlock_abi() < 3 || !linux::seccomp_supported_arch() {
-        eprintln!(
-            "skipped: active Linux confinement requires Landlock ABI 3 and audited seccomp architecture"
-        );
+    let regime = linux::regime();
+    if regime == linux::Regime::Unconfined {
+        eprintln!("skipped: this kernel has no Landlock ABI 3");
         return;
     }
-
     let fixture = Fixture::new();
     let profile = fixture.profile();
     let config = profile.root().join(".sterna/config.toml");
-
-    // Sterna's direct tool boundary remains closed.
     assert!(profile.check("write", Access::Write, &config).is_err());
 
-    // The active Linux spawn path installs Landlock plus seccomp, not the
-    // bubblewrap mount view. Landlock grants are additive, so the writable
-    // project rule also reaches `.sterna` for an arbitrary admitted process.
-    let shell = std::fs::canonicalize("/bin/bash").unwrap();
-    let mut command = Command::new(&shell);
+    let mut command = Command::new("/bin/bash");
     command
         .arg("-c")
         .arg("printf compromised > .sterna/config.toml")
@@ -155,16 +139,20 @@ fn landlock_only_refuses_direct_sterna_writes_but_cannot_stop_an_admitted_shell(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    assert!(linux::confine(&profile, &shell, &mut command).unwrap());
+    assert!(linux::confine(&profile, &mut command).unwrap());
     let output = command.output().expect("confined bash starts");
-    assert!(
-        output.status.success(),
-        "the documented Landlock limitation changed: {output:?}"
-    );
-    assert_eq!(std::fs::read_to_string(config).unwrap(), "compromised");
-
-    let warning = linux::regime().describe();
-    assert!(warning.contains("arbitrary admitted process"), "{warning}");
-    assert!(warning.contains(".sterna/config.toml"), "{warning}");
-    assert!(warning.contains("future session"), "{warning}");
+    match regime {
+        linux::Regime::Namespaced { .. } => {
+            assert!(!output.status.success(), "{output:?}");
+            assert_eq!(
+                std::fs::read_to_string(config).unwrap(),
+                "model = \"fixture\"\n"
+            );
+        }
+        _ => {
+            let said = regime.describe();
+            assert!(said.contains(".sterna"), "{said}");
+            assert!(said.contains("Sterna's own checks only"), "{said}");
+        }
+    }
 }

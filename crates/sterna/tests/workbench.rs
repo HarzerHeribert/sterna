@@ -561,8 +561,8 @@ fn every_theme_and_local_surface_keeps_terminal_background() {
         for mode in 0..4 {
             let mut u = Workbench::default();
             match mode {
-                1 => u.open(Source::Work),
-                2 => u.open(Source::Ask),
+                1 => u.open(Source::Sandbox),
+                2 => u.open(Source::Confirm("full".into())),
                 3 => u.open(Source::Models(Box::new(navigator()))),
                 _ => {}
             }
@@ -620,8 +620,8 @@ fn resize_cannot_panic_or_leave_click_targets_offscreen() {
         for mode in 0..5 {
             let mut u = Workbench::default();
             match mode {
-                1 => u.open(Source::Work),
-                2 => u.open(Source::Ask),
+                1 => u.open(Source::Sandbox),
+                2 => u.open(Source::Confirm("full".into())),
                 3 => u.open(Source::Models(Box::new(navigator()))),
                 4 => u.open(Source::Activity),
                 _ => {}
@@ -916,28 +916,22 @@ fn invalid_setting_leaves_disk_and_live_state_unchanged() {
 /// -- drop the second-from-last -- dropped the boundary first, so an
 /// eighty-column window running with full access looked exactly like one
 /// confined to the project. A control drawn in a warning tone is now exempt
-/// from that rule, and the word is shouted as well as coloured, because a
+/// from that rule, and the chip carries a glyph as well as a colour, because a
 /// monochrome terminal must carry the same warning.
 #[test]
 fn a_lifted_boundary_is_never_the_control_a_narrow_terminal_drops() {
     let (c, n, mut s) = fixture();
     s.project = Some("a-fairly-long-project-name".into());
     s.model = Some("some-long-model-identifier".into());
-    s.full_access = true;
+    s.level.set(sterna::permissions::Level::Full);
     for width in [60u16, 80, 100, 140] {
         let mut u = Workbench::default();
         let screen = text(&draw(&c, &n, &s, &mut u, width, 24));
         assert!(
-            screen.contains("FULL ACCESS"),
+            screen.contains("▲ Full access"),
             "at {width} columns:\n{screen}"
         );
     }
-    // And the ordinary boundary is free to give way, because it is what the
-    // session does by default and costs nothing to be told again.
-    s.full_access = false;
-    let mut u = Workbench::default();
-    let narrow = text(&draw(&c, &n, &s, &mut u, 60, 24));
-    assert!(!narrow.contains("This project"), "{narrow}");
 }
 
 /// A picker says which option the session is on, not only where the cursor is.
@@ -949,35 +943,24 @@ fn a_lifted_boundary_is_never_the_control_a_narrow_terminal_drops() {
 /// monochrome terminal.
 #[test]
 fn a_picker_marks_the_option_the_session_is_on() {
-    let (c, n, mut s) = fixture();
-    s.mode = sterna::tui::Mode::Explore;
-    s.permissions = sterna::permissions::Ladder::new(sterna::permissions::Rung::Manual);
+    let (c, n, s) = fixture();
+    s.level.set(sterna::permissions::Level::Ask);
     let mut u = Workbench::default();
-    u.open(Source::Work);
-    let work = text(&draw(&c, &n, &s, &mut u, 120, 24));
-    assert!(work.contains("Explore  ● now"), "{work}");
+    u.open(Source::Sandbox);
+    let sheet = text(&draw(&c, &n, &s, &mut u, 120, 24));
+    assert!(sheet.contains("Ask  ● now"), "{sheet}");
     assert!(
-        !work.contains("Build  ● now"),
-        "only one is current:
-{work}"
-    );
-    let mut u = Workbench::default();
-    u.open(Source::Ask);
-    let ask = text(&draw(&c, &n, &s, &mut u, 120, 24));
-    assert!(ask.contains("Every call  ● now"), "{ask}");
-    assert!(
-        !ask.contains("Auto-review  ● now"),
-        "only one is current:
-{ask}"
+        !sheet.contains("Sandboxed  ● now"),
+        "only one is current:\n{sheet}"
     );
 }
 
 #[test]
 fn saved_permissions_do_not_change_running_authority() {
     let (_t, mut s, mut p) = prefs();
-    // **A grant is not a rung, and only one of the two may move.**
+    // **A grant is not a level, and only one of the two may move.**
     // A denial list is authority: saving it must leave the running session
-    // exactly where it was, and every `permissions` key but the rung is
+    // exactly where it was, and every `permissions` key is
     // deliberately absent from `live_command` so nothing can carry one into
     // a session that is already running.
     p.save("permissions.deny", Some("Read(secrets/**)".into()), &mut s)
@@ -988,19 +971,18 @@ fn saved_permissions_do_not_change_running_authority() {
         "and it says so: {}",
         p.notice
     );
-    // The rung is how often Sterna asks, which `/permissions <rung>` and
-    // Shift-Tab have always moved mid-session. The panel is the third route
-    // to the same control, so it moves it too -- by handing the loop that
-    // same command, never by writing the ladder behind the session's back.
-    let before = s.permissions.rung();
-    p.save("permissions.mode", Some("manual".into()), &mut s)
-        .unwrap();
+    // The level is how much runs without asking, which `/sandbox <level>`
+    // and the level chip move mid-session. The panel is a third route to the
+    // same control, so it moves it too -- by handing the loop that same
+    // command, never by writing the level behind the session's back.
+    let before = s.level.level();
+    p.save("sandbox.level", Some("ask".into()), &mut s).unwrap();
     assert_eq!(
-        s.permissions.rung(),
+        s.level.level(),
         before,
-        "the panel does not reach into the ladder itself"
+        "the panel does not reach into the level itself"
     );
-    assert_eq!(p.take_live().as_deref(), Some("/permissions manual"));
+    assert_eq!(p.take_live().as_deref(), Some("/sandbox ask"));
 }
 #[test]
 fn concurrent_file_edits_are_not_overwritten() {
@@ -1028,33 +1010,36 @@ fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
     }
 }
 #[test]
-fn never_ask_requires_confirmation_without_changing_work_or_access() {
+fn full_access_requires_confirmation_that_opens_on_cancel() {
+    use sterna::permissions::Level;
     let (c, n, mut s) = fixture();
-    let mode = s.mode;
     let mut u = Workbench::default();
-    u.open(Source::Ask);
+    u.open(Source::Sandbox);
     draw(&c, &n, &s, &mut u, 100, 40);
-    click_item(&mut u, &mut s, &n, "rung:full");
+    click_item(&mut u, &mut s, &n, "level:full");
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
-    assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
+    assert_ne!(s.level.level(), Level::Full);
     // A key typed as the confirmation appears answers nothing.
     draw(&c, &n, &s, &mut u, 100, 40);
     key(&mut u, &mut s, &n, KeyCode::Enter);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
     assert!(u.top().unwrap().sheet.notice.contains("held back"));
     // Half a second without a key arms it; it starts on Cancel, so a
-    // reflexive Enter changes nothing and goes back to the rungs.
+    // reflexive Enter changes nothing and goes back to the Sandbox sheet.
     std::thread::sleep(sterna::workbench::sheet::ARMING + std::time::Duration::from_millis(50));
     key(&mut u, &mut s, &n, KeyCode::Enter);
-    assert_ne!(s.permissions.rung(), sterna::permissions::Rung::Full);
-    assert!(u.showing(|source| matches!(source, Source::Ask)));
+    assert_ne!(s.level.level(), Level::Full);
+    assert!(u.showing(|source| matches!(source, Source::Sandbox)));
     draw(&c, &n, &s, &mut u, 100, 40);
-    click_item(&mut u, &mut s, &n, "rung:full");
+    click_item(&mut u, &mut s, &n, "level:full");
     draw(&c, &n, &s, &mut u, 100, 40);
     armed(&mut u);
     click_item(&mut u, &mut s, &n, "confirm:yes");
-    assert_eq!(s.permissions.rung(), sterna::permissions::Rung::Full);
-    assert_eq!(s.mode, mode);
+    assert_eq!(s.level.level(), Level::Full);
+    // Going back down is not a lifted boundary: it is set at once.
+    draw(&c, &n, &s, &mut u, 100, 40);
+    click_item(&mut u, &mut s, &n, "level:ask");
+    assert_eq!(s.level.level(), Level::Ask);
 }
 #[test]
 fn the_live_session_uses_the_new_renderer() {
@@ -1332,19 +1317,15 @@ fn screenshot() {
     let b = draw(&c, &n, &s, &mut u, 140, 40);
     println!("\n===== DIFF 140x40 =====\n{}", text(&b));
     let mut u = Workbench::default();
-    u.open(Source::Access);
+    u.open(Source::Sandbox);
     let b = draw(&c, &n, &s, &mut u, 140, 40);
-    println!("\n===== ACCESS 140x40 =====\n{}", text(&b));
+    println!("\n===== SANDBOX 140x40 =====\n{}", text(&b));
     let mut u = Workbench::default();
-    u.open(Source::Ask);
+    u.open(Source::Confirm("full".into()));
     let b = draw(&c, &n, &s, &mut u, 140, 30);
-    println!("\n===== ASK 140x30 =====\n{}", text(&b));
-    let mut u = Workbench::default();
-    u.open(Source::Work);
-    let b = draw(&c, &n, &s, &mut u, 140, 30);
-    println!("\n===== WORK 140x30 =====\n{}", text(&b));
+    println!("\n===== CONFIRM FULL ACCESS 140x30 =====\n{}", text(&b));
     let mut sf = s.clone();
-    sf.full_access = true;
+    sf.level = sterna::permissions::LiveLevel::new(sterna::permissions::Level::Full);
     sf.network = Some("on".into());
     let mut u = Workbench::default();
     let b = draw(&c, &n, &sf, &mut u, 80, 20);
@@ -1505,8 +1486,7 @@ fn the_top_bar_is_chips_and_each_one_hits_its_own_control() {
     let bar = screen.lines().next().unwrap();
     for chip in [
         "⟨ fixture-main ▾ ⟩",
-        "⟨ Auto-review ⟩",
-        "⟨ Build · auto ⟩",
+        "⟨ ◼ Sandboxed ⟩",
         "⟨ Settings ⟩",
         "⟨ ? ⟩",
     ] {
@@ -1514,9 +1494,7 @@ fn the_top_bar_is_chips_and_each_one_hits_its_own_control() {
     }
     for action in [
         Action::Models,
-        Action::Approvals,
-        Action::Work,
-        Action::Access,
+        Action::Sandbox,
         Action::Settings,
         Action::Help,
     ] {
@@ -1544,7 +1522,11 @@ fn a_bare_question_mark_opens_the_key_sheet_and_escape_closes_it() {
     assert!(keys(&u));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(screen.contains("KEYS"), "{screen}");
-    assert!(screen.contains("Shift-Tab"), "{screen}");
+    assert!(screen.contains("Ctrl-T"), "{screen}");
+    assert!(
+        !screen.contains("Shift-Tab"),
+        "no key cycles the level: {screen}"
+    );
     key(&mut u, &mut s, &n, KeyCode::Esc);
     assert!(!keys(&u));
     s.input = "why?".into();
@@ -2291,18 +2273,12 @@ fn the_favourite_slots_are_rows_on_the_subagents_section() {
 fn every_sheet_speaks_one_grammar() {
     use sterna::tui::PanelRow;
     type Opener = fn(&mut Workbench, &mut ScreenState, &Notebook, &Temp);
-    let openers: [(&str, Opener); 6] = [
-        ("ask", |u, s, n, _| {
-            s.permissions = sterna::permissions::Ladder::new(sterna::permissions::Rung::Auto);
+    let openers: [(&str, Opener); 5] = [
+        ("sandbox", |u, s, n, _| {
+            s.level = sterna::permissions::LiveLevel::new(sterna::permissions::Level::Ask);
             let (c, _, _) = fixture();
             draw(&c, n, s, u, 120, 40);
-            click(u, s, n, Action::Approvals);
-        }),
-        ("work", |u, s, n, _| {
-            s.mode = sterna::tui::Mode::Plan;
-            let (c, _, _) = fixture();
-            draw(&c, n, s, u, 120, 40);
-            click(u, s, n, Action::Work);
+            click(u, s, n, Action::Sandbox);
         }),
         ("themes", |u, s, _, _| {
             s.theme = Theme::Rose;
@@ -2396,15 +2372,20 @@ fn every_sheet_speaks_one_grammar() {
     // (e) Esc on a child goes back to its parent, on the row that opened it.
     let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
-    u.open(Source::Access);
+    u.open(Source::Sandbox);
     draw(&c, &n, &s, &mut u, 120, 40);
-    click_item(&mut u, &mut s, &n, "access:ask");
-    assert!(u.showing(|source| matches!(source, Source::Ask)));
-    assert_eq!(u.sheets.len(), 2, "the rungs open as Access's child");
+    click_item(&mut u, &mut s, &n, "level:full");
+    assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert_eq!(
+        u.sheets.len(),
+        2,
+        "the confirmation opens as the Sandbox's child"
+    );
     draw(&c, &n, &s, &mut u, 120, 40);
+    armed(&mut u);
     key(&mut u, &mut s, &n, KeyCode::Esc);
-    assert!(u.showing(|source| matches!(source, Source::Access)));
-    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "access:ask");
+    assert!(u.showing(|source| matches!(source, Source::Sandbox)));
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "level:full");
     key(&mut u, &mut s, &n, KeyCode::Esc);
     assert!(u.sheets.is_empty(), "Esc at the root closes");
 }
@@ -2531,7 +2512,7 @@ fn a_form_is_clickable_field_by_field() {
 fn hover_redraws_only_when_the_target_changes() {
     let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
-    u.open(Source::Work);
+    u.open(Source::Sandbox);
     draw(&c, &n, &s, &mut u, 120, 40);
     let focused = u.top().unwrap().sheet.focused().unwrap().id.clone();
     let rects: Vec<_> = u
@@ -2558,35 +2539,35 @@ fn hover_redraws_only_when_the_target_changes() {
     assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, focused);
 }
 
-/// The session card names the rung in force now -- after Shift-Tab, the
-/// Ask sheet or a typed command -- never the one the session started on,
-/// and the line is the way to the Ask sheet.
+/// The session card names the level in force now -- after the Sandbox
+/// sheet or a typed command -- never the one the session started on, and
+/// the line is the way to the Sandbox sheet.
 #[test]
-fn the_greeting_names_the_rung_in_force() {
-    use sterna::permissions::{Ladder, Rung};
+fn the_greeting_names_the_level_in_force() {
+    use sterna::permissions::{Level, LiveLevel};
     let (c, n, mut s) = fixture();
     s.note("session tlqdct-yqr — resume it with:  sterna --resume tlqdct-yqr");
     s.startup_notes = Some(1);
-    s.permissions = Ladder::new(Rung::Auto);
-    s.permissions.set(Rung::Manual);
+    s.level = LiveLevel::new(Level::Full);
+    s.level.set(Level::Ask);
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
     let (y, card) = screen
         .lines()
         .enumerate()
-        .find(|(_, line)| line.contains("Ask: "))
-        .unwrap_or_else(|| panic!("no rung line on the card:\n{screen}"));
+        .find(|(_, line)| line.contains("Sandbox: "))
+        .unwrap_or_else(|| panic!("no sandbox line on the card:\n{screen}"));
     assert!(
-        card.contains(Rung::Manual.label()) && card.contains(Rung::Manual.asks()),
+        card.contains(Level::Ask.label()) && card.contains(Level::Ask.asks()),
         "{card}"
     );
-    assert!(!screen.contains("permissions: auto"), "{screen}");
+    assert!(!screen.contains(Level::Full.label()), "{screen}");
     assert!(
         u.geometry
             .hits
             .iter()
-            .any(|(r, a)| *a == Action::Approvals && r.y as usize == y),
-        "the line opens the Ask sheet"
+            .any(|(r, a)| *a == Action::Sandbox && r.y as usize == y),
+        "the line opens the Sandbox sheet"
     );
 }
 
@@ -2615,38 +2596,43 @@ fn the_effort_chip_stays_on_the_dock_at_default() {
     );
 }
 
-/// The rung has one setter: the Ask sheet, a typed label and a settings row
-/// all reach it, each saves it, and each prints the same notice. Never asks
-/// is confirmed first on every route.
+/// The level has one setter: the Sandbox sheet, a typed command and a
+/// settings row all reach it, each saves it globally, and each prints the
+/// same notice. Full access is confirmed first on every route.
 #[test]
-fn every_route_to_the_rung_saves_it_and_says_the_same() {
-    use sterna::permissions::Rung;
+fn every_route_to_the_level_saves_it_and_says_the_same() {
+    use sterna::permissions::Level;
     let (t, mut s, p) = prefs();
     let (c, n, _) = fixture();
     let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
         .unwrap()
         .path(sterna::settings::Scope::Global);
+    let saved = || std::fs::read_to_string(&global).unwrap_or_default();
     let mut u = Workbench::default();
-    u.open(Source::Ask);
+    u.open(Source::Sandbox);
     draw(&c, &n, &s, &mut u, 100, 40);
-    click_item(&mut u, &mut s, &n, "rung:manual");
-    assert_eq!(s.permissions.rung(), Rung::Manual);
-    assert_eq!(u.top().unwrap().sheet.notice, Rung::Manual.now());
-    let saved = std::fs::read_to_string(&global).unwrap_or_default();
-    assert!(saved.contains("\"manual\""), "saved globally: {saved}");
+    click_item(&mut u, &mut s, &n, "level:ask");
+    assert_eq!(s.level.level(), Level::Ask);
+    assert_eq!(u.top().unwrap().sheet.notice, Level::Ask.now());
+    assert!(
+        saved().contains("level = \"ask\""),
+        "saved globally: {}",
+        saved()
+    );
 
     let mut u = Workbench::default();
-    assert!(u.local_command("/permissions commands", &mut s, &n));
-    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
-    assert_eq!(u.notice, Rung::AcceptEdits.now());
-    assert!(u.local_command("/permissions Never asks", &mut s, &n));
+    assert!(u.local_command("/sandbox sandboxed", &mut s, &n));
+    assert_eq!(s.level.level(), Level::Sandboxed);
+    assert_eq!(u.notice, Level::Sandboxed.now());
+    assert!(saved().contains("level = \"sandboxed\""), "{}", saved());
+    assert!(u.local_command("/sandbox full access", &mut s, &n));
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
-    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+    assert_eq!(s.level.level(), Level::Sandboxed);
 
     let row = p
         .rows()
         .iter()
-        .position(|spec| spec.key == "permissions.mode")
+        .position(|spec| spec.key == "sandbox.level")
         .unwrap();
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
@@ -2657,15 +2643,24 @@ fn every_route_to_the_rung_saves_it_and_says_the_same() {
         .sheet
         .items
         .iter()
-        .position(|item| item.id == "setting:permissions.mode")
+        .position(|item| item.id == "setting:sandbox.level")
         .unwrap();
     assert!(row < item);
-    // Every call, Commands, Auto-review, Never asks: the fourth chip.
+    // Ask, Sandboxed, Full access: the third chip.
     let chips = u.top().unwrap().sheet.items[item].clone();
-    assert!(format!("{chips:?}").contains("Never asks"), "{chips:?}");
-    click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3)));
+    assert!(format!("{chips:?}").contains("Full access"), "{chips:?}");
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 2)));
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
-    assert_eq!(s.permissions.rung(), Rung::AcceptEdits);
+    assert_eq!(s.level.level(), Level::Sandboxed);
+    assert!(!saved().contains("\"full\""), "{}", saved());
+    draw(&c, &n, &s, &mut u, 110, 40);
+    armed(&mut u);
+    key(&mut u, &mut s, &n, KeyCode::Esc);
+    assert!(u.showing(|source| matches!(source, Source::Settings(_))));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 0)));
+    assert_eq!(s.level.level(), Level::Ask);
+    assert!(saved().contains("level = \"ask\""), "{}", saved());
 }
 
 /// Pinned and favourites name a model. Chosen with none named, each opens
@@ -2709,76 +2704,18 @@ fn subagent_modes_without_a_model_open_where_one_is_chosen() {
     }
 }
 
-/// A mode or effort command on its way to the session is saved once,
-/// whichever route sent it; Auto pins nothing and saves nothing.
+/// An effort command on its way to the session is saved once, whichever
+/// route sent it.
 #[test]
-fn a_mode_or_effort_on_its_way_out_is_saved() {
+fn an_effort_on_its_way_out_is_saved() {
     let (t, s, _p) = prefs();
     let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
         .unwrap()
         .path(sterna::settings::Scope::Global);
     let mut u = Workbench::default();
     u.sent("/effort high", &s);
-    u.sent("/mode plan", &s);
     let saved = std::fs::read_to_string(&global).unwrap();
     assert!(saved.contains("effort = \"high\""), "{saved}");
-    assert!(saved.contains("mode = \"plan\""), "{saved}");
-    u.sent("/mode auto", &s);
-    assert!(
-        std::fs::read_to_string(&global)
-            .unwrap()
-            .contains("mode = \"plan\"")
-    );
-}
-
-/// The Work sheet speaks the chip's words and has a row for Auto.
-#[test]
-fn the_work_sheet_names_modes_the_way_the_chip_does() {
-    let (c, n, mut s) = fixture();
-    s.mode_pinned = false;
-    let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
-    assert!(screen.contains("Build · auto"), "{screen}");
-    u.open(Source::Work);
-    draw(&c, &n, &s, &mut u, 140, 42);
-    let labels: Vec<_> = u
-        .top()
-        .unwrap()
-        .sheet
-        .items
-        .iter()
-        .map(|item| item.title.clone())
-        .collect();
-    assert_eq!(labels, ["Build", "Explore", "Plan", "Auto"]);
-    // Auto on: choosing it again pins the mode in force.
-    assert_eq!(
-        click_item(&mut u, &mut s, &n, "mode:auto"),
-        Effect::Command("/mode build".into())
-    );
-    assert_eq!(
-        click_item(&mut u, &mut s, &n, "mode:plan"),
-        Effect::Command("/mode plan".into())
-    );
-}
-
-/// Plan and Explore change what a request may do, so their chip is a
-/// warning that a narrow terminal keeps after the model and the rung have
-/// given way.
-#[test]
-fn the_mode_chip_is_kept_on_a_narrow_terminal_in_plan() {
-    let (c, n, mut s) = fixture();
-    s.mode = sterna::tui::Mode::Plan;
-    s.mode_pinned = true;
-    let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 60, 30));
-    let header = screen.lines().next().unwrap();
-    assert!(header.contains("Plan"), "{header}");
-    assert!(
-        u.geometry
-            .hits
-            .iter()
-            .any(|(r, a)| *a == Action::Work && r.y == 0)
-    );
 }
 
 /// The sidebar's effort and helpers are two targets: stepping the effort
@@ -2871,14 +2808,15 @@ fn settings_show_what_the_session_is_using_now() {
     assert!(row.detail.contains("not saved"), "{}", row.detail);
 }
 
-/// Full access is global only: in Project scope its row says why it cannot
-/// be set, and in Global scope turning it on is confirmed first.
+/// The sandbox level is global only: in Project scope its row says why it
+/// cannot be set, and in Global scope stepping it to Full access is
+/// confirmed first.
 #[test]
-fn full_access_is_global_only_and_confirmed() {
+fn the_sandbox_level_is_global_only_and_full_access_is_confirmed() {
     let (_t, mut s, mut p) = prefs();
     p.switch_scope().unwrap();
     assert_eq!(p.scope, sterna::settings::Scope::Local);
-    p.category = 5;
+    p.category = 0;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -2889,7 +2827,7 @@ fn full_access_is_global_only_and_confirmed() {
             .sheet
             .items
             .iter()
-            .position(|item| item.id == "setting:permissions.full_access")
+            .position(|item| item.id == "setting:sandbox.level")
             .unwrap()
     };
     let item = at(&u);
@@ -2901,19 +2839,14 @@ fn full_access_is_global_only_and_confirmed() {
     draw(&c, &n, &s, &mut u, 110, 60);
     let item = at(&u);
     assert!(u.top().unwrap().sheet.items[item].disabled.is_none());
-    // Off, On: the next value.
-    u.top_mut()
-        .unwrap()
-        .sheet
-        .focus_id("setting:permissions.full_access");
+    // Ask, Sandboxed, Full access: the next value from the default.
+    u.top_mut().unwrap().sheet.focus_id("setting:sandbox.level");
     draw(&c, &n, &s, &mut u, 110, 60);
     key(&mut u, &mut s, &n, KeyCode::Right);
     assert!(u.showing(|source| matches!(source, Source::Confirm(_))));
+    assert_eq!(s.level.level(), sterna::permissions::Level::Sandboxed);
     assert!(
-        u.preferences()
-            .unwrap()
-            .saved("permissions.full_access")
-            .is_none(),
+        u.preferences().unwrap().saved("sandbox.level").is_none(),
         "nothing is saved before the confirmation"
     );
 }
@@ -3025,19 +2958,19 @@ fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
     );
 }
 
-/// One undo list for the session: a rung chosen on the Ask sheet comes back
-/// with Ctrl-Z, and the notice names what came back.
+/// One undo list for the session: a level chosen on the Sandbox sheet comes
+/// back with Ctrl-Z, and the notice names what came back.
 #[test]
-fn one_undo_list_takes_back_a_rung_and_names_it() {
-    use sterna::permissions::Rung;
+fn one_undo_list_takes_back_a_level_and_names_it() {
+    use sterna::permissions::Level;
     let (_t, mut s, _p) = prefs();
     let (c, n, _) = fixture();
-    let before = s.permissions.rung();
+    let before = s.level.level();
     let mut u = Workbench::default();
-    u.open(Source::Ask);
+    u.open(Source::Sandbox);
     draw(&c, &n, &s, &mut u, 100, 40);
-    click_item(&mut u, &mut s, &n, "rung:manual");
-    assert_eq!(s.permissions.rung(), Rung::Manual);
+    click_item(&mut u, &mut s, &n, "level:ask");
+    assert_eq!(s.level.level(), Level::Ask);
     draw(&c, &n, &s, &mut u, 100, 40);
     assert!(
         u.geometry
@@ -3047,10 +2980,10 @@ fn one_undo_list_takes_back_a_rung_and_names_it() {
         "the undo chip rides beside the notice"
     );
     ctrl(&mut u, &mut s, &n, 'z');
-    assert_eq!(s.permissions.rung(), before);
+    assert_eq!(s.level.level(), before);
     assert_eq!(
         u.top().unwrap().sheet.notice,
-        format!("Restored: Ask {}.", before.label())
+        format!("Restored: Sandbox {}.", before.label())
     );
     assert!(u.changes.is_empty(), "an undo is not itself a change");
 }
@@ -3577,7 +3510,7 @@ fn mid_turn_a_row_that_waits_says_so_before_a_click() {
     assert!(workbench::mid_turn("/effort high"));
     assert!(workbench::mid_turn("/model helper claude-x"));
     assert!(!workbench::mid_turn("/model helper"));
-    assert!(!workbench::mid_turn("/mode"));
+    assert!(!workbench::mid_turn("/sandbox"));
     // Between turns nothing waits.
     s.activity = Activity::Complete;
     draw(&c, &n, &s, &mut u, 100, 30);
@@ -4358,7 +4291,7 @@ fn the_active_theme_chip_is_always_drawn() {
 fn the_top_bar_folds_what_does_not_fit_into_one_chip() {
     let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 80, 24));
+    let screen = text(&draw(&c, &n, &s, &mut u, 60, 24));
     let bar = screen.lines().next().unwrap().to_string();
     assert!(bar.contains("⟨ ⋯ ⟩"), "{bar}");
     let folded = u
@@ -4381,7 +4314,7 @@ fn the_top_bar_folds_what_does_not_fit_into_one_chip() {
         .position(|(label, action)| label == "?" && *action == Action::Help)
         .unwrap_or_else(|| panic!("? is neither drawn nor folded: {folded:?}"));
     click(&mut u, &mut s, &n, Action::More(folded));
-    draw(&c, &n, &s, &mut u, 80, 24);
+    draw(&c, &n, &s, &mut u, 60, 24);
     assert!(u.showing(|source| matches!(source, Source::More(_))));
     click_item(&mut u, &mut s, &n, &format!("more:{help}"));
     assert!(
@@ -4594,7 +4527,7 @@ fn a_light_terminal_gets_colours_that_read_on_it() {
         s.theme = theme;
         let mut u = Workbench::default();
         let mut buffers = vec![draw(&c, &n, &s, &mut u, 140, 40)];
-        u.open(Source::Work);
+        u.open(Source::Sandbox);
         buffers.push(draw(&c, &n, &s, &mut u, 140, 40));
         for b in buffers {
             // Plumage is drawing, not text: its pixels keep their own rule.
@@ -4765,5 +4698,98 @@ fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
     assert_eq!(
         key(&mut u, &mut s, &n, KeyCode::Enter),
         Effect::Command("/rollback cancel".into())
+    );
+}
+
+/// The allowed hosts are one sheet away from the Sandbox sheet: every
+/// ecosystem is a switch, the person's own hosts can be added (a pasted URL
+/// is refused, not half-allowed) and removed, each change is saved to the
+/// global settings, and it reaches the running proxy's list at once.
+#[test]
+fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
+    use sterna::sandbox::proxy::{Allowed, ECOSYSTEMS};
+    let (t, mut s, _) = prefs();
+    let (c, n, _) = fixture();
+    let allowed = Allowed::defaults();
+    s.allowed = Some(allowed.clone());
+    let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
+        .unwrap()
+        .path(sterna::settings::Scope::Global);
+    let saved = || std::fs::read_to_string(&global).unwrap_or_default();
+    let mut u = Workbench::default();
+    u.open(Source::Sandbox);
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "sandbox:hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
+    assert!(
+        screen.contains("apply to this session's next command"),
+        "{screen}"
+    );
+    for ecosystem in ECOSYSTEMS {
+        assert!(
+            screen.contains(ecosystem.label),
+            "{}: {screen}",
+            ecosystem.label
+        );
+    }
+
+    click_item(&mut u, &mut s, &n, "eco:rust");
+    assert!(!allowed.permits("crates.io"), "switched off, still reached");
+    assert!(allowed.permits("registry.npmjs.org"));
+    assert!(saved().contains("ecosystems = ["), "{}", saved());
+    assert!(!saved().contains("\"rust\""), "{}", saved());
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "eco:rust");
+    assert!(allowed.permits("crates.io"));
+    assert!(saved().contains("\"rust\""), "{}", saved());
+
+    let type_host = |u: &mut Workbench, s: &mut ScreenState, host: &str| {
+        draw(&c, &n, s, u, 120, 60);
+        u.top_mut().unwrap().sheet.focus_id("host:new");
+        for ch in host.chars() {
+            key(u, s, &n, KeyCode::Char(ch));
+        }
+        key(u, s, &n, KeyCode::Enter);
+    };
+    type_host(&mut u, &mut s, "https://api.example.com/v1");
+    assert!(
+        u.top().unwrap().sheet.notice.contains("is not a host name"),
+        "{}",
+        u.top().unwrap().sheet.notice
+    );
+    assert!(!saved().contains("api.example.com"), "{}", saved());
+    ctrl(&mut u, &mut s, &n, 'u');
+    type_host(&mut u, &mut s, "api.example.com");
+    assert!(allowed.permits("api.example.com"));
+    assert!(
+        saved().contains("hosts = [\"api.example.com\"]"),
+        "{}",
+        saved()
+    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("Remove · api.example.com"), "{screen}");
+
+    click_item(&mut u, &mut s, &n, "host:api.example.com");
+    assert!(!allowed.permits("api.example.com"));
+    assert!(saved().contains("hosts = []"), "{}", saved());
+}
+
+/// With no proxy running, the sheet says a change waits for the next
+/// session, and still saves it.
+#[test]
+fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
+    let (_t, mut s, _) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Sandbox);
+    draw(&c, &n, &s, &mut u, 120, 60);
+    click_item(&mut u, &mut s, &n, "sandbox:hosts");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
+    assert!(screen.contains("apply from the next session"), "{screen}");
+    click_item(&mut u, &mut s, &n, "eco:go");
+    assert_eq!(
+        u.top().unwrap().sheet.notice,
+        "Go is off from the next session."
     );
 }

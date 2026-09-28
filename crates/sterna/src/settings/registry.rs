@@ -87,14 +87,11 @@ const SIDEBAR: &[&str] = &["auto", "show", "hide"];
 const BACKGROUNDS: &[&str] = &crate::tui::background::Background::NAMES;
 const STREAMS: &[&str] = &["actions", "code", "raw"];
 const MOTIONS: &[&str] = &["full", "calm", "off"];
-/// The working mode a session starts in. `build` is this file's word for the
-/// runtime's `execute`; both are accepted, and `build` is what is written.
-const MODES: &[&str] = &["build", "explore", "plan"];
 const AGENT_MODES: &[&str] = &["auto", "off", "pinned", "roster"];
 
-/// The permission ladder's rungs, in cycle order, spelled once in
-/// `permissions::Rung::NAMES` so the panel and Shift-Tab cannot disagree.
-const PERMISSION_RUNGS: &[&str] = &crate::permissions::Rung::NAMES;
+/// The sandbox levels, spelled once in `permissions::Level::NAMES` so the
+/// sheet and the settings row cannot disagree.
+const SANDBOX_LEVELS: &[&str] = &crate::permissions::Level::NAMES;
 const COMPLETION: &[&str] = &["silent", "recap"];
 const PREFLIGHT_SCOPE: &[&str] = &["auto", "always"];
 const DECISION_MODES: &[&str] = &["off", "shadow", "on"];
@@ -102,7 +99,7 @@ const ASK_JEV: &[&str] = &["off", "weight", "decide"];
 
 /// The top-level tables `SternaConfig` parses. A key under one of these is
 /// validated by the runtime parser; everything else is owned here.
-pub(crate) const RUNTIME_TABLES: [&str; 9] = [
+pub(crate) const RUNTIME_TABLES: [&str; 8] = [
     "limits",
     "supervisor",
     "helpers",
@@ -110,7 +107,6 @@ pub(crate) const RUNTIME_TABLES: [&str; 9] = [
     "model",
     "web",
     "decisions",
-    "modes",
     "ask",
 ];
 
@@ -130,10 +126,15 @@ pub fn is_runtime(key: &str) -> bool {
 /// rule is the same boundary Claude Code draws by keeping
 /// `--dangerously-skip-permissions` out of a settings file.
 ///
-/// One entry, deliberately: this is a property of a key, not a dimension of
-/// every key, and a list of one is cheaper to read than a field on sixty
-/// specs. It grows if a second key ever earns it.
-const GLOBAL_ONLY: &[&str] = &["permissions.full_access", "wizard.seen"];
+/// A short list, deliberately: this is a property of a key, not a dimension
+/// of every key. `sandbox.level` is the one that matters most -- a project
+/// that could set it could turn every question off.
+const GLOBAL_ONLY: &[&str] = &[
+    "sandbox.level",
+    "sandbox.hosts",
+    "sandbox.ecosystems",
+    "wizard.seen",
+];
 
 /// Whether `key` may only be set in the global scope ([`GLOBAL_ONLY`]).
 #[must_use]
@@ -169,10 +170,7 @@ pub fn live_command(key: &str, value: Option<&str>) -> Option<String> {
     let value = value?;
     match key {
         "session.effort" => Some(format!("/effort {value}")),
-        // `build` is this file's spelling and `execute` is the runtime's;
-        // `RequestMode::parse` takes either, so the word travels as written.
-        "session.mode" => Some(format!("/mode {value}")),
-        "permissions.mode" => Some(format!("/permissions {value}")),
+        "sandbox.level" => Some(format!("/sandbox {value}")),
         "model.parent" => Some(format!("/model {value}")),
         "helpers.model" => Some(format!("/model helper {value}")),
         "agents.model" => Some(format!("/model subagent {value}")),
@@ -191,8 +189,7 @@ pub fn live_command(key: &str, value: Option<&str>) -> Option<String> {
 /// that puts it in force, so the row is honest either way.
 const LIVE: &[&str] = &[
     "session.effort",
-    "session.mode",
-    "permissions.mode",
+    "sandbox.level",
     "model.parent",
     "helpers.model",
     "agents.model",
@@ -229,15 +226,6 @@ static SPECS: &[SettingSpec] = &[
         description: "How hard the model thinks before answering. Higher is slower and costs more. `default` asks GPT models for low effort (measured faster at equal results) and leaves every other provider's own setting alone, which is not the same as clearing an override you saved.",
         kind: Kind::Choice,
         choices: EFFORT,
-        basic: true,
-        restart: false,
-    },
-    SettingSpec {
-        key: "session.mode",
-        label: "Working mode",
-        description: "What this session may do. Build edits files and runs commands; Explore only reads; Plan reads and writes the plan file alone.",
-        kind: Kind::Choice,
-        choices: MODES,
         basic: true,
         restart: false,
     },
@@ -360,13 +348,31 @@ static SPECS: &[SettingSpec] = &[
     },
     // -- presentation, curated and Sterna-owned -----------------------------
     SettingSpec {
-        key: "permissions.mode",
-        label: "Permission rung",
-        description: "How often Sterna stops to ask you before acting. It changes nothing about what is allowed -- a rung never widens a grant, and the sandbox still refuses what it refused. Shift-Tab cycles it.",
+        key: "sandbox.level",
+        label: "Sandbox",
+        description: "How much runs without asking. Ask confirms every edit and command; Sandboxed runs everything inside the project and asks only to leave the sandbox; Full access runs without a sandbox and asks nothing. Global only.",
         kind: Kind::Choice,
-        choices: PERMISSION_RUNGS,
+        choices: SANDBOX_LEVELS,
         basic: true,
         restart: false,
+    },
+    SettingSpec {
+        key: "sandbox.hosts",
+        label: "Allowed hosts",
+        description: "Hosts commands may reach through Sterna's proxy, beside the ecosystems switched on: `api.example.com`, or `*.example.com` for its subdomains. Global only.",
+        kind: Kind::List,
+        choices: &[],
+        basic: false,
+        restart: true,
+    },
+    SettingSpec {
+        key: "sandbox.ecosystems",
+        label: "Allowed ecosystems",
+        description: "Which package registries and source hosts commands may reach: rust, javascript, deno, python, go, java, ruby, dotnet, php, source. Unset is all of them. Global only.",
+        kind: Kind::List,
+        choices: &[],
+        basic: false,
+        restart: true,
     },
     SettingSpec {
         key: "ui.theme",
@@ -694,15 +700,6 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
-        key: "decisions.mode_above",
-        label: "Mode proposal confidence",
-        description: "Confidence at or above which a read-only intent proposes `explore` for one request, in `execute`, unpinned.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "decisions.scout_relevance_below",
         label: "Scout relevance floor",
         description: "A scout candidate's own relevance confidence at or below which it is left out of what the Scout is served.",
@@ -725,24 +722,6 @@ static SPECS: &[SettingSpec] = &[
         label: "Supervision confidence",
         description: "Confidence at or above which the supervision question's answer is a reason to nudge the working model.",
         kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "modes.explore.writable",
-        label: "Explore writable globs",
-        description: "Project-relative globs, beside the scratchpad, that a write or edit may reach in `explore`.",
-        kind: Kind::List,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "modes.explore.commands",
-        label: "Explore read-only commands",
-        description: "Bash-style segment patterns, beside the fixed read-only list, that run in `explore`.",
-        kind: Kind::List,
         choices: &[],
         basic: false,
         restart: true,
@@ -947,15 +926,6 @@ static SPECS: &[SettingSpec] = &[
         restart: false,
     },
     SettingSpec {
-        key: "permissions.full_access",
-        label: "Full access",
-        description: "One setting for all three halves of `--full-access`: the project root and every command line admitted, no question asked, and no OS confinement of Sterna's own. Global scope only. Removes questions; never widens the never-grantable set.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "permissions.deny",
         label: "Denied patterns",
         description: "Denials beat every allow, and a global denial survives every project overlay.",
@@ -990,6 +960,34 @@ pub fn spec(key: &str) -> Option<&'static SettingSpec> {
 /// one is read as unset, taken out of its file and reported once, never
 /// refused: the file was true of the version that wrote it.
 const RETIRED_KEYS: &[(&str, &str)] = &[
+    (
+        "session.mode",
+        "working modes are gone: /plan <task> plans one request, and every other request works as usual",
+    ),
+    (
+        "modes.explore.writable",
+        "Explore is gone: /plan <task> plans one request, reading only",
+    ),
+    (
+        "modes.explore.commands",
+        "Explore is gone: /plan <task> plans one request, reading only",
+    ),
+    (
+        "permissions.mode",
+        "how much runs without asking is `sandbox.level` now: /sandbox",
+    ),
+    (
+        "decisions.mode_above",
+        "requests are no longer switched to Explore: /plan <task> plans one request",
+    ),
+    (
+        "decisions.command_runs_above",
+        "the decision model no longer lets commands run: /sandbox sets how much runs without asking",
+    ),
+    (
+        "permissions.full_access",
+        "full access is `sandbox.level = \"full\"` now: /sandbox",
+    ),
     ("ui.look", "the bird lives in the parrot themes now: /theme"),
     ("ui.voice", "Sterna speaks one plain voice with every theme"),
     (
@@ -1005,6 +1003,22 @@ const HIDDEN: &[&str] = &["wizard.seen", "legacy.imported"];
 /// Whether `key` is Sterna's own bookkeeping rather than a choice.
 pub fn hidden(key: &str) -> bool {
     HIDDEN.contains(&key)
+}
+
+/// The `sandbox.level` a retired permission word means, when the retired
+/// key carried one: the old rungs that asked become `ask`, the ones that did
+/// not become `sandboxed`, and `full_access = true` is `full`. `None` for
+/// every other key and for a `full_access = false`, which chose nothing.
+#[must_use]
+pub fn migrated_level(key: &str, word: &str) -> Option<&'static str> {
+    match (key, word.trim().to_ascii_lowercase().as_str()) {
+        ("permissions.mode", "manual" | "accept-edits" | "accept_edits" | "acceptedits") => {
+            Some("ask")
+        }
+        ("permissions.mode", "auto" | "full") => Some("sandboxed"),
+        ("permissions.full_access", "true") => Some("full"),
+        _ => None,
+    }
 }
 
 /// Where a removed setting's job went, if `key` is one.
@@ -1186,8 +1200,7 @@ pub fn choices(spec: &SettingSpec) -> String {
 
 fn normalise_choice(key: &str, word: &str) -> String {
     match (key, word) {
-        // The runtime's own spelling of `build`, and `/statusline`'s alias.
-        ("session.mode", "execute") => "build".to_string(),
+        // `/statusline`'s alias.
         ("ui.statusline", "hide") => "hidden".to_string(),
         _ => word.to_string(),
     }
@@ -1284,9 +1297,6 @@ fn unknown_key(key: &str) -> String {
 /// a minute: an absent `permissions.full_access` and a present `false` are
 /// the same to a reader and very different to the loader, which drops a
 /// project document's copy of that key precisely by noticing it is there.
-/// The same trap sits under `modes.explore.writable`, where an injected
-/// empty list would have replaced the built-in writable path rather than
-/// inherited it.
 ///
 /// So: the loader keeps answering "nothing set this", and the panel answers
 /// "and this is what happens when nothing does".
@@ -1296,12 +1306,11 @@ pub fn shown_default(key: &str) -> Option<String> {
     let decisions = crate::config::DecisionsConfig::default();
     let ask = crate::config::AskConfig::default();
     Some(match key {
-        "permissions.mode" => crate::permissions::Rung::default().name().to_string(),
-        "permissions.full_access" => "false".into(),
+        "sandbox.level" => crate::permissions::Level::default().name().to_string(),
+        "sandbox.hosts" => "none".into(),
+        "sandbox.ecosystems" => "all".into(),
         "wizard.seen" => "0".into(),
         "permissions.allow" | "permissions.deny" => "none".into(),
-        "modes.explore.writable" => ".sterna/scratch/**".into(),
-        "modes.explore.commands" => "none".into(),
         "limits.evidence_gate" => crate::config::Limits::default().evidence_gate.to_string(),
         "limits.keep_results" => crate::config::Limits::default().keep_results.to_string(),
         "limits.turn_economy" => crate::config::Limits::default().turn_economy.to_string(),
@@ -1328,7 +1337,6 @@ pub fn shown_default(key: &str) -> Option<String> {
         "decisions.judge_yes_above" => decisions.judge_yes_above.to_string(),
         "decisions.judge_no_below" => decisions.judge_no_below.to_string(),
         "decisions.drift_no_below" => decisions.drift_no_below.to_string(),
-        "decisions.mode_above" => decisions.mode_above.to_string(),
         "decisions.scout_relevance_below" => decisions.scout_relevance_below.to_string(),
         "decisions.helper_no_below" => decisions.helper_no_below.to_string(),
         "decisions.supervision_above" => decisions.supervision_above.to_string(),

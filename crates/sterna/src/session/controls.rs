@@ -6,7 +6,7 @@ mod subagents;
 #[cfg(test)]
 use crate::config::SternaConfig;
 use crate::spend::Tier;
-use crate::tui::{Mode, Panel, PanelRow, TierModels};
+use crate::tui::{Panel, PanelRow, TierModels};
 
 /// The cell ceiling as a person reads it. `None` is the default and means
 /// there is none: a task ends on evidence that it has stopped producing
@@ -1102,40 +1102,26 @@ pub(super) fn command(
                 );
             }
         }
-        "mode" => match argument.map(str::trim) {
-            None => {
-                session_println!(
-                    "Mode: {}{}",
-                    session.mode.get().label(),
-                    if session.mode_pinned.get() {
-                        ""
-                    } else {
-                        " · auto: a confident read-only request may propose Explore"
-                    }
-                );
-            }
-            Some(word) if word.eq_ignore_ascii_case("auto") => {
-                session.mode_pinned.set(false);
-                if let Some(ui) = session.ui {
-                    ui.mode(session.mode.get(), false);
+        // `/sandbox <level>` typed where no screen caught it first: the
+        // screen's own route saves and confirms Full access, this one moves
+        // the running session only.
+        "sandbox" => {
+            let word = argument.map(str::trim).unwrap_or_default();
+            match (
+                crate::permissions::Level::parse(word),
+                session.level.as_ref(),
+            ) {
+                (Some(level), Some(live)) => {
+                    live.set(level);
+                    session_println!("{}", level.now());
                 }
-                session_println!(
-                    "Mode: {} · auto: a confident read-only request may propose Explore",
-                    session.mode.get().label()
-                );
+                (Some(_), None) => session_println!("this session has no live sandbox level"),
+                (None, live) => session_println!(
+                    "Sandbox: {} · use /sandbox ask|sandboxed|full",
+                    live.map_or("unknown", |live| live.level().label())
+                ),
             }
-            Some(word) => match Mode::parse(word) {
-                None => session_println!("Use /mode build|explore|plan|auto"),
-                Some(mode) => {
-                    session.mode.set(mode);
-                    session.mode_pinned.set(true);
-                    if let Some(ui) = session.ui {
-                        ui.mode(mode, true);
-                    }
-                    session_println!("{}", mode.now());
-                }
-            },
-        },
+        }
         "handles" => {
             let table = transcript
                 .notebook
@@ -1226,22 +1212,13 @@ pub(super) fn command(
             let mut lines = vec![
                 format!("Model: {model}"),
                 match session
-                    .ladder
+                    .level
                     .as_ref()
-                    .map(crate::permissions::Ladder::rung)
+                    .map(crate::permissions::LiveLevel::level)
                 {
-                    Some(rung) => format!("Ask: {} · {}", rung.label(), rung.sentence()),
-                    None => "Ask: nobody is asked in this session".to_string(),
+                    Some(level) => format!("Sandbox: {} · {}", level.label(), level.sentence()),
+                    None => "Sandbox: unknown".to_string(),
                 },
-                format!(
-                    "Mode: {}{}",
-                    session.mode.get().label(),
-                    if session.mode_pinned.get() {
-                        ""
-                    } else {
-                        " · auto"
-                    }
-                ),
                 if sent == effort {
                     format!("Effort: {}", effort.name())
                 } else {
@@ -1258,9 +1235,9 @@ pub(super) fn command(
                 format!("Subagents: {subagents}"),
                 format!("Project: {}", session.project.root.display()),
                 format!(
-                    "Sandbox: {} path rules · {} command patterns · network {}",
+                    "Rules: {} path rules · {} pre-approved commands · network {}",
                     session.profile.rule_count(),
-                    session.profile.command_pattern_count(),
+                    session.profile.pre_approved().len(),
                     if session.profile.grants_network() {
                         "on"
                     } else {
@@ -1490,28 +1467,11 @@ fn rollback_confirmation(
 }
 
 fn permissions(session: &Session<'_>, argument: Option<&str>) -> Result<String, String> {
-    // `/permissions <rung>` moves the ladder; every other argument is a
-    // pattern edit, which is what this command has always been. One command
-    // because a person asking "what am I allowed to do" means both.
-    if let Some(rung) = argument
-        .map(str::trim)
-        .filter(|word| !word.is_empty())
-        .and_then(crate::permissions::Rung::parse)
-    {
-        let Some(ladder) = session.ladder.as_ref() else {
-            return Err(format!(
-                "this session has no live permission ladder; start it with --permissions {}",
-                rung.name()
-            ));
-        };
-        ladder.set(rung);
-        return Ok(rung.now());
-    }
     let saved = crate::settings_session::permissions(&session.project.root, argument)?;
     Ok(format!(
-        "Effective current session (immutable): {} path rules · {} command patterns · {} MCP patterns\n{saved}",
+        "Effective current session (immutable): {} path rules · {} pre-approved commands · {} MCP patterns\n{saved}",
         session.profile.rule_count(),
-        session.profile.command_pattern_count(),
+        session.profile.pre_approved().len(),
         session.profile.mcp_tool_count()
     ))
 }
@@ -1794,7 +1754,7 @@ pub(super) mod tests {
             pending_images: RefCell::new(Vec::new()),
             approval_gate: None,
             ask_gate: None,
-            ladder: None,
+            level: None,
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
             roster: Vec::new(),
             ui: None,
@@ -1802,9 +1762,7 @@ pub(super) mod tests {
             context_window: None,
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
-            mode: Cell::new(tui::Mode::Execute),
-            mode_pinned: Cell::new(false),
-            overlay: ModeOverlay::default(),
+            mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
             effort: Cell::new(wire::Effort::Default),
             routing: Default::default(),
             project: &project,
@@ -1869,7 +1827,7 @@ pub(super) mod tests {
             pending_images: RefCell::new(Vec::new()),
             approval_gate: None,
             ask_gate: None,
-            ladder: None,
+            level: None,
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
             roster: Vec::new(),
             ui: None,
@@ -1877,9 +1835,7 @@ pub(super) mod tests {
             context_window: None,
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
-            mode: Cell::new(tui::Mode::Execute),
-            mode_pinned: Cell::new(false),
-            overlay: ModeOverlay::default(),
+            mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
             effort: Cell::new(wire::Effort::Default),
             routing: Default::default(),
             project: &project,

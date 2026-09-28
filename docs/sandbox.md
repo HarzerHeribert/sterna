@@ -3,165 +3,187 @@
 The model's TypeScript is already contained: a V8 isolate has no
 filesystem, no sockets and no ambient authority. This page is about the
 other half — the tools a program calls, which spawn real processes and
-touch real files. Code: `crates/sterna/src/sandbox/{profile,macos,linux,windows}.rs`,
+touch real files. Code: `crates/sterna/src/sandbox/{profile,proxy,macos,linux,windows}.rs`,
 `src/permissions.rs`, `src/approval.rs`.
 
-## The invariants
+## One setting
 
-1. **No grant is ever widened at the model's request.** No tool, argument
-   or prompt adds a path to a profile. Widening takes your configuration or
-   `--add-dir`, before a session starts.
-2. **`deny` beats `allow`**, at every specificity.
-3. **The project root is the only writable root by default.** Not the home
-   directory, not a temp directory, not the project's parent.
-4. **A request outside the grant is refused inside the program.** The call
-   throws `PermissionDenied { tool, path, rule }`; the program may catch it.
-   It never becomes a question to you and never escalates.
-5. **The profile is compiled once, at session start, and never changes.**
-   `.sterna/` lives inside the writable project, so a profile re-read from
-   disk would let a program widen its own sandbox. `.sterna/**` and
-   `.claude/**` are write-denied, except `.sterna/scratch/**`, the agent's
-   scratchpad. A write to a file with more than one hard link is refused.
+How much runs without asking is one setting, `sandbox.level`, with three
+levels:
 
-## Permission patterns
-
-`permissions.allow` and `permissions.deny` in [configuration](configuration.md):
-
-| pattern | kind | becomes |
+| Level | Sandbox | Asks |
 |---|---|---|
-| `Read(<glob>)` | filesystem | read grant |
-| `Write(<glob>)` | filesystem | create and write grant |
-| `Edit(<glob>)` | filesystem | read and write on existing files |
-| `Bash(<prefix>*)` | command admission | the admitted command's own executables may run |
-| `Bash` | command admission | every command line admitted |
-| `mcp__<server>__<tool>` | tool admission | that MCP tool may be listed and called |
+| **Ask** | on | before every edit and every command; reading runs |
+| **Sandboxed** (default) | on | only when a command asks to leave the sandbox |
+| **Full access** | none | nothing |
 
-Paths are resolved before matching: `~` expands, relative paths resolve
-against the project root, and every candidate is compared after following
-symlinks. Command admission and file authority stay separate: admitting a
-command grants none of its data files, writes or network.
+It is chosen on the Sandbox sheet (the level chip in the top bar, F2 or
+`/sandbox`), with `--sandbox ask|sandboxed|full` for one session, and saved
+to your **global** settings only: a project's own settings cannot set it,
+because cloning a repository must never be enough to turn questions off.
+Full access is confirmed on a sheet that opens on Cancel, and the chip stays
+red while it is on. A change applies from the next request.
 
-## What is never grantable
+With nobody at the terminal (`sterna -p`, `--task`), `ask` refuses to
+start, and on Sandboxed a request to leave the sandbox is refused rather
+than asked; the run carries on inside.
 
-On every platform, by any pattern, in every mode — `--full-access`
-included, because `Profile::check` runs in Sterna's own process before
-anything is spawned:
+## What the sandbox allows
 
-1. **Network for shells and tools.** No pattern names a host, so none can
-   grant one. The web tools are a separate host broker ([web](web.md)).
-2. **The OS credential store** (Keychain, Secret Service, DPAPI), the
-   inference gateway's state directory (its database and subscription
-   sign-ins, wherever `INFERENCE_GATEWAY_DATA_DIR` or the platform puts
-   it) and, for writing, the machine's own identity files: `/etc/sudoers*`,
+| | Runs without asking | Refused |
+|---|---|---|
+| Read | every file your user can read | the secrets below, and any `deny` pattern |
+| Write | the project, `--add-dir` roots, a worktree's repository, temp folders, and tool caches and toolchains (`~/.cargo`, `~/.rustup`, `~/.npm`, `~/.bun`, pnpm's store, `~/.cache`, `~/.m2`, `~/.gradle`, `~/go`, …) | the rest of your home folder, other repositories, system folders; `.sterna/**` (except `.sterna/scratch/**`) and `.claude/**` |
+| Run | any program: compilers, linkers, test runners | sandbox launchers; debuggers outside Full access |
+| Network | the allowed hosts, through Sterna's proxy | any other host |
+
+**Every command line runs** unless a `Bash(...)` pattern in
+`permissions.deny` or a never-grantable name refuses it. There is no list of
+admitted commands to maintain; `Bash(...)` patterns in `permissions.allow`
+pre-approve commands on the Ask level.
+
+## Never grantable
+
+On every level, by any pattern — Full access included, because
+`Profile::check` runs in Sterna's own process before anything is spawned:
+
+1. **Secrets:** `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `~/.claude`,
+   `~/.codex`, the OS keyring (Keychain, Secret Service, DPAPI), a
+   toolchain's registry credentials (`~/.cargo/credentials.toml`), and the
+   inference gateway's state directory.
+2. **The machine's identity files, for writing:** `/etc/sudoers*`,
    `/etc/shadow`, `/etc/passwd`, `/etc/group`, `/etc/pam.d`, `/etc/ssh`,
-   `/etc/security`, and `%SystemRoot%\System32\config`.
-3. **Your home outside the project** — `~/.ssh`, `~/.aws`, `~/.claude`,
-   `~/.codex`, `~/.config` are examples, not the rule.
-4. Any path a `deny` matches, and `.claude/**` / `.sterna/**` for writing.
-5. **Process escapes:** debugger attach (`lldb`, `gdb`, `strace`, `dtrace`,
-   …) and re-invoking a sandbox launcher (`sandbox-exec`, `bwrap`) from
-   inside.
+   `/etc/security`, `%SystemRoot%\System32\config`.
+3. Any path a `deny` matches.
+4. **Process escapes:** re-invoking a sandbox launcher (`sandbox-exec`,
+   `bwrap`) from inside, and outside Full access attaching a debugger
+   (`lldb`, `gdb`, `strace`, `dtrace`, …).
 
-Two grants are derived rather than configured, because an ordinary build
-cannot run without them: **toolchain stores**, read and execute only
-(`$CARGO_HOME`/`~/.cargo`, `$RUSTUP_HOME`/`~/.rustup`, `~/.npm`, `~/.nvm`,
-`~/.pyenv`, `$UV_CACHE_DIR`, but never `cargo login`'s credentials file),
-and **a linked worktree's repository** (the `.git/worktrees/<name>` and
-common directory its `.git` file points to). `~/.gitconfig` is readable;
-`~/.git-credentials` is not.
+A write to a file with more than one hard link is refused.
+
+## Allowed hosts
+
+Commands reach the network only through Sterna's proxy
+(`HTTPS_PROXY`/`HTTP_PROXY` point at it), which lets through the allowed
+hosts and refuses the rest. The rule is the host, not the tool: every client
+of a registry works. On by default, one switch per ecosystem
+(`sandbox.ecosystems`), plus your own `sandbox.hosts`; both are global.
+
+| Ecosystem | Hosts | Clients, for example |
+|---|---|---|
+| Rust | `crates.io` `index.crates.io` `static.crates.io` `static.rust-lang.org` | cargo, rustup |
+| JavaScript | `registry.npmjs.org` `registry.yarnpkg.com` `nodejs.org` | npm, pnpm, yarn, bun |
+| Deno, JSR | `jsr.io` `deno.land` `dl.deno.land` | deno |
+| Python | `pypi.org` `files.pythonhosted.org` | pip, uv, poetry |
+| Go | `proxy.golang.org` `sum.golang.org` | go |
+| Java, Kotlin | `repo.maven.apache.org` `repo1.maven.org` `plugins.gradle.org` `services.gradle.org` | maven, gradle |
+| Ruby | `rubygems.org` `index.rubygems.org` | gem, bundler |
+| .NET | `api.nuget.org` | dotnet |
+| PHP | `repo.packagist.org` | composer |
+| Source hosts | `github.com` `codeload.github.com` `objects.githubusercontent.com` `raw.githubusercontent.com` `gitlab.com` | git over https, installers |
+
+The proxy sees the host name, not whether a request downloads or uploads,
+so only registries and source hosts are listed, and your credentials never
+enter the sandbox: without them, publishing or pushing fails. `--allow-host
+HOST` adds a host for one session. The model's own web tool keeps its
+separate `[web]` list ([web](web.md)).
+
+**The Allowed hosts sheet** (Sandbox sheet › Allowed hosts) has one switch
+per ecosystem and your own hosts, each removable, with a field to add one
+(`api.example.com`, or `*.example.com` for every name under it; a pasted
+URL is refused, not half-allowed). Every change is saved to the global
+settings at once. When the session runs a proxy it also reaches the proxy's
+live list, so the next command sees it; where no proxy runs, it applies
+from the next session, and the sheet says which.
+
+## Leaving the sandbox
+
+When a command needs something the sandbox refuses — a host that is not
+allowed, a path outside the writable places — the model can call `bash`
+again with `outside` set to one sentence saying why. That is the one
+question Sandboxed asks. On Ask it is asked like every other command; on
+Full access there is nothing to leave.
+
+**Reach a new host.** The proxy's refusal tells the model to name the
+refused host in `outside`. When the proxy refused a host since the command
+before, the question is titled *Reach a new host* and offers first to let
+the host through rather than the command out:
+
+| key | answer | the command runs |
+|---|---|---|
+| `h` | Allow *host* for this session | again, inside the sandbox |
+| `w` | Always allow *host* — also saved to the global `sandbox.hosts` | again, inside the sandbox |
+| `o` | Allow once, outside the sandbox | outside, this once |
+| `a` | Another way | not |
+| `d` | Deny | not |
+
+Without a refused host the question is titled *Leave the sandbox* and has
+the answers of every confirmation below. Each command takes the proxy's
+refusals before it, so a question never offers a host an older command was
+refused.
+
+**With nobody at the terminal** (`sterna -p`, `--task`) a request to leave
+is refused, and a run the proxy refused hosts in ends with one line naming
+them and the `--allow-host HOST` flag that allows one next time.
+
+**The confirmation** shows the exact checked arguments: `o` once, `s` this
+exact action for the session, `d` deny (remembered, and listed on the
+Sandbox sheet where it can be forgotten), Escape deny once, `a` another
+way. A prompt takes no key until it has been on screen for half a second.
+An action whose arguments do not fit the 16 KiB display is deny-only.
+Waiting pauses the cell's clock, and a confirmation expires after ten
+minutes.
 
 ## Per platform
 
 - **macOS — Seatbelt.** A generated profile applied to each spawned tool
-  before `exec`: deny by default, the project and granted roots, the
-  `.claude`/`.sterna` write carve-outs, `(deny network*)`.
+  before `exec`: reads everywhere but the secrets, the writable places,
+  the `.claude`/`.sterna` write carve-outs (and `.git/hooks`/`.git/config`
+  once the repository exists, so `git init` still works), and network only
+  to localhost, where the proxy listens.
 - **Linux — Landlock and seccomp.** Landlock applies per-path rights;
-  seccomp refuses socket creation on x86_64 and aarch64 (local Unix-socket
-  build daemons are unavailable too). Landlock has no globs, so
-  `Read(**/*.rs)` becomes a grant on the enclosing directory and the
-  extension filter is enforced by Sterna's own pre-call check. Landlock
-  cannot subtract a denied path inside a writable root.
+  seccomp limits sockets. Where user namespaces are available, a command
+  runs in its own network namespace whose only way out is the proxy, and
+  `.git/hooks`, `.git/config` and `.sterna` are mounted read-only; where
+  they are not, commands get no network at all and the doctor says so.
+  Without namespaces those paths, and a secret that sits inside a writable
+  place, are kept from writes by Sterna's own check only (the secret stays
+  unreadable, except one inside a temp folder, which only that check
+  keeps), and a Sterna running as root has its environment readable
+  by the commands it runs.
 - **Windows — an AppContainer** entered at `CreateProcessW`, with no
-  capabilities (`internetClient` included). The project's ACL grants the
-  container's SID, which is derived from the project *and* the user. A job
-  object ties a command's children to it for cancellation; it is not a
-  sandbox. `bash` runs under `cmd.exe`. Tools that shell out to MSYS2
-  binaries (Git for Windows' coreutils) cannot start inside an AppContainer.
+  capabilities (`internetClient` included). Commands have no network there;
+  a command that needs it asks to leave the sandbox. `bash` runs under
+  `cmd.exe`.
 
-On all three, the OS layer renders the project root, added roots and the
-carve-outs rather than every allow and deny pattern; the finer patterns are
-enforced by the in-process check before anything spawns.
+On all three, the finer patterns are enforced by Sterna's own pre-call
+check before anything spawns.
 
 ## Refusal
 
     PermissionDenied: read("/Users/you/.ssh/id_ed25519")
-      rule: no grant covers this path; the project root is the only readable root
+      rule: `~/.ssh` is never grantable by any pattern (docs/sandbox.md, never grantable 3)
       tool: read
 
 A JavaScript exception inside the cell: the program may catch it and go on;
-the runtime does not end the turn, retry or ask you. `rule` names the
-deciding rule so the settings can be fixed without re-deriving the profile.
+the runtime does not end the turn or retry. `rule` names the deciding rule
+so the settings can be fixed without re-deriving the profile.
 
-## Request modes
+## Planning
 
-`execute` (the session profile unchanged), `explore` or `plan`, chosen by
-`--mode`, `--plan` or `/mode`. **A mode narrows and never widens**: it is
-asked only after the never-grantable set, `deny` and `allow` have admitted a
-call.
-
-- **`explore`** — reading tools run; `write`/`edit` only under
-  `.sterna/scratch/**` and `modes.explore.writable`; `bash` runs only a
-  read-only command (`ls cat head tail wc grep rg find stat file git du df
-  ps env which pwd echo date uname`, `git` limited to
-  `status log diff show blame ls-files`), per segment, with no redirects,
-  substitutions, variable prefixes or writing flags. `modes.explore.commands`
-  adds patterns.
-- **`plan`** — the same, plus one write: `.sterna/scratch/plan.md`. The next
-  request outside `plan` carries it once as a `## Plan` system section.
-- On Windows `bash` is `cmd.exe`, whose lines are not parsed, so every
-  `bash` call is refused in both modes.
-
-A confident read-only request may *propose* `explore` for one request when
-the mode is not pinned ([decisions](decisions.md)).
-
-## How often you are asked
-
-A second axis beside the mode: of what is already admissible, how much is
-put to you before it runs. **A rung never widens a grant.** Four rungs, in
-the order Shift-Tab cycles them:
-
-- **`manual`** — every admitted foreground file and shell call is confirmed
-  (`--ask-approval` is this rung).
-- **`accept-edits`** — file tools run; every `bash` line is confirmed.
-- **`auto`** (default) — edits run; a `bash` line a static reader can vouch
-  for (the read-only list above plus ordinary build verbs such as
-  `cargo test`, `cargo fmt`, `sed -n`) runs; anything else is confirmed.
-- **`full`** — nothing is confirmed.
-
-Set by `--permissions`, `permissions.mode`, `/permissions` or Shift-Tab. One
-exact action gets one answer per session. With no terminal to ask at,
-`manual` and `accept-edits` refuse to start, and `auto` runs what it would
-have confirmed and says so.
-
-**The confirmation** shows the exact checked arguments: `o` once, `s` this
-exact action for the session, `d` or Escape deny, `a` ask the model for
-another way. Paste and Enter cannot approve. An action whose arguments do
-not fit the 16 KiB display is deny-only. Waiting pauses the cell's clock,
-and a confirmation expires after ten minutes. Web, MCP, background jobs and
-subagents are outside this gate.
+`/plan <task>` runs one request that may read everything the sandbox
+allows, run read-only commands (`ls cat head tail wc grep rg find stat file
+git du df ps env which pwd echo date uname`, `git` limited to
+`status log diff show blame ls-files rev-parse`), and write one file:
+`.sterna/scratch/plan.md`. The next request works as usual and carries the
+plan once as a `## Plan` section. On Windows, `cmd.exe` constructs are
+refused while planning.
 
 ## Wider on purpose
 
-- **`--add-dir PATH`** grants one more existing directory for the session
-  (macOS and Linux; refused on Windows and together with filesystem deny
-  patterns). Its `.claude`/`.sterna` stay write-denied; its siblings are
-  not granted.
-- **`--full-access`** removes every question and Sterna's own OS
-  confinement — the machine becomes the boundary. The never-grantable set
-  above still applies. It is a command-line flag or the global
-  `permissions.full_access` setting, never something a cell can reach.
-
-There is no per-command "run this one outside the sandbox" today. A command
-that needs the network (`cargo fetch`, `npm install`) has three routes: run
-it yourself, use `--full-access` for the session, or run Sterna inside a
-container that is the boundary.
+- **`--add-dir PATH`** makes one more existing directory writable for the
+  session (macOS and Linux). Its `.claude`/`.sterna` stay write-denied.
+- **Full access** removes Sterna's own OS confinement: the machine becomes
+  the boundary, network included. The never-grantable set still applies.
+  For long runs with nobody watching, run Sterna inside a container and use
+  Full access there.

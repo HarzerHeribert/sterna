@@ -1,8 +1,16 @@
-use sterna::sandbox::linux::{Regime, SocketFilterInstruction, socket_deny_filter};
+use sterna::sandbox::linux::{
+    Regime, SocketFilterInstruction, socket_deny_filter, unix_socket_deny_filter,
+};
 
 // Small classic-BPF interpreter exercises both supported ABI policies on every
 // CI host, including the arch and x32 branches that cannot execute on macOS.
 fn evaluate(filter: &[SocketFilterInstruction], arch: u32, syscall: u32) -> u32 {
+    evaluate_with(filter, arch, syscall, 0)
+}
+
+/// As [`evaluate`], with the call's first argument (`seccomp_data.args[0]`,
+/// its low word at offset 16).
+fn evaluate_with(filter: &[SocketFilterInstruction], arch: u32, syscall: u32, arg0: u32) -> u32 {
     let mut accumulator = 0;
     let mut pc = 0;
     loop {
@@ -12,6 +20,7 @@ fn evaluate(filter: &[SocketFilterInstruction], arch: u32, syscall: u32) -> u32 
                 accumulator = match i.k {
                     0 => syscall,
                     4 => arch,
+                    16 => arg0,
                     _ => panic!("bad load"),
                 }
             }
@@ -65,7 +74,7 @@ fn policy_denies_network_and_compat_bypass_but_allows_file_io() {
         assert_eq!(evaluate(&filter, arch, 0x40000029), 0x80000000);
     }
     assert!(socket_deny_filter("riscv64").is_none());
-    assert!(Regime::LandlockAndSeccomp { abi: 3 }.removes_network());
+    assert!(!Regime::LandlockAndSeccomp { abi: 3 }.reaches_network());
     assert!(
         Regime::LandlockAndSeccomp { abi: 3 }
             .describe()
@@ -73,35 +82,84 @@ fn policy_denies_network_and_compat_bypass_but_allows_file_io() {
     );
 }
 
+/// Inside the network namespace internet sockets are allowed -- they reach
+/// only loopback and the relay -- and a Unix socket is refused, because a
+/// socket file on disk reaches out of the namespace. `socketpair` reaches
+/// only itself.
+#[test]
+fn the_namespaced_policy_refuses_unix_sockets_and_allows_the_rest() {
+    const AF_UNIX: u32 = 1;
+    const AF_INET: u32 = 2;
+    const AF_INET6: u32 = 10;
+    for (name, arch, socket, socketpair, connect) in [
+        ("x86_64", 0xc000003e, 41, 53, 42),
+        ("aarch64", 0xc00000b7, 198, 199, 203),
+    ] {
+        let filter = unix_socket_deny_filter(name).unwrap();
+        assert_eq!(
+            evaluate_with(&filter, arch, socket, AF_UNIX),
+            0x00050001,
+            "{name}"
+        );
+        for family in [AF_INET, AF_INET6] {
+            assert_eq!(
+                evaluate_with(&filter, arch, socket, family),
+                0x7fff0000,
+                "{name}"
+            );
+        }
+        for call in [socketpair, connect] {
+            assert_eq!(
+                evaluate_with(&filter, arch, call, AF_UNIX),
+                0x7fff0000,
+                "{name} {call}"
+            );
+        }
+        for call in [425, 426, 427, 438] {
+            assert_eq!(evaluate(&filter, arch, call), 0x00050001, "{name} {call}");
+        }
+        assert_eq!(evaluate(&filter, 0x40000003, 102), 0x80000000);
+    }
+    assert!(unix_socket_deny_filter("riscv64").is_none());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn confined_socket_probe() {
-    if std::env::var_os("STERNA_TEST_SOCKET_PROBE").is_none() {
+    let Some(regime) = std::env::var_os("STERNA_TEST_SOCKET_PROBE") else {
         return;
+    };
+    let namespaced = regime == "namespaced";
+    let opened = |family| {
+        // SAFETY: socket has no pointer arguments; the descriptor, if any,
+        // is closed before this returns.
+        let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error().raw_os_error())
+    };
+    for family in [libc::AF_INET, libc::AF_INET6] {
+        if namespaced {
+            // Not refused by the filter; a kernel without IPv6 still
+            // answers EAFNOSUPPORT for that family.
+            assert_ne!(opened(family), Err(Some(libc::EPERM)), "{family}");
+        } else {
+            assert_eq!(opened(family), Err(Some(libc::EPERM)));
+        }
     }
-    for family in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
-        // SAFETY: socket has no pointer arguments and returns no fd on denial.
-        assert_eq!(unsafe { libc::socket(family, libc::SOCK_STREAM, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
-        );
-    }
+    assert_eq!(opened(libc::AF_UNIX), Err(Some(libc::EPERM)));
     let mut sockets = [-1; 2];
     // SAFETY: sockets points to two writable descriptors.
-    assert_eq!(
-        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sockets.as_mut_ptr()) },
-        -1
-    );
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EPERM)
-    );
+    let paired =
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sockets.as_mut_ptr()) };
+    assert_eq!(paired == 0, namespaced);
     // SAFETY: forked child performs only socket/_exit, with no allocator access.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
-        let denied = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) } == -1;
+        let denied = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) } == -1;
         unsafe { libc::_exit(if denied { 0 } else { 1 }) };
     }
     let mut status = 0;
@@ -112,22 +170,29 @@ fn confined_socket_probe() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn actual_confined_process_and_descendants_cannot_open_sockets() {
+fn actual_confined_process_and_descendants_get_the_regimes_sockets() {
     use std::process::Command;
     use sterna::sandbox::{linux, profile::Profile};
-    if linux::landlock_abi() < 3 || !linux::seccomp_supported_arch() {
+    let regime = linux::regime();
+    if regime == Regime::Unconfined {
         eprintln!("SKIP: requires Landlock ABI >=3 and supported seccomp architecture");
         return;
     }
     let root = std::env::current_dir().unwrap();
-    let settings = serde_json::json!({"permissions":{"allow":["Bash", format!("Read({}/**)", root.display()), format!("Write({}/**)", root.display())]}}).to_string();
-    let profile = Profile::compile(&root, Some(&settings));
+    let profile = Profile::compile(&root, None);
     let binary = std::env::current_exe().unwrap();
     let mut command = Command::new(&binary);
     command
         .args(["--exact", "confined_socket_probe", "--nocapture"])
-        .env("STERNA_TEST_SOCKET_PROBE", "1");
-    assert!(linux::confine(&profile, &binary, &mut command).unwrap());
+        .env(
+            "STERNA_TEST_SOCKET_PROBE",
+            if regime.reaches_network() {
+                "namespaced"
+            } else {
+                "isolated"
+            },
+        );
+    assert!(linux::confine(&profile, &mut command).unwrap());
     let output = command.output().unwrap();
     assert!(
         output.status.success(),
@@ -136,10 +201,9 @@ fn actual_confined_process_and_descendants_cannot_open_sockets() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let shell = std::fs::canonicalize("/bin/sh").unwrap();
-    let mut command = Command::new(&shell);
+    let mut command = Command::new("/bin/sh");
     command.args(["-c", "printf 'pipes still work' | cat"]);
-    assert!(linux::confine(&profile, &shell, &mut command).unwrap());
+    assert!(linux::confine(&profile, &mut command).unwrap());
     let output = command.output().unwrap();
     assert!(
         output.status.success(),

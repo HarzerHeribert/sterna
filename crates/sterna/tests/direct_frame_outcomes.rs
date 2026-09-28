@@ -14,8 +14,8 @@ use sterna::runtime::isolate::Runtime;
 use sterna::runtime::outcome::{CellOutcome, Ended};
 use sterna::sandbox::profile::Profile;
 
-/// A fixture tree with one source file, and a path outside it that every
-/// profile refuses.
+/// A fixture tree with one source file, and a path outside it that the
+/// fixture's read-only profile denies by name (reads are otherwise wide).
 struct Fixture {
     root: std::path::PathBuf,
     outside: std::path::PathBuf,
@@ -40,6 +40,15 @@ impl Fixture {
         Runtime::new(&profile, &SessionId::new(session))
     }
 
+    /// No pre-approvals, and a `deny` rule over the outside directory.
+    fn read_only(&self) -> String {
+        json!({"permissions": {
+            "allow": [],
+            "deny": [format!("Read({}/**)", self.outside.display())]
+        }})
+        .to_string()
+    }
+
     fn target(&self) -> String {
         self.root.join("target.rs").to_string_lossy().into_owned()
     }
@@ -59,8 +68,6 @@ impl Drop for Fixture {
     }
 }
 
-const READ_ONLY: &str = r#"{"permissions":{"allow":[]}}"#;
-
 fn read(id: &str, path: &str) -> (String, String, serde_json::Value) {
     (id.into(), "Read".into(), json!({"file_path": path}))
 }
@@ -75,7 +82,7 @@ fn glob(id: &str) -> (String, String, serde_json::Value) {
 #[test]
 fn a_denied_first_call_does_not_stop_the_second_and_leaves_no_handle() {
     let fixture = Fixture::new("first-denied");
-    let mut runtime = fixture.runtime("first-denied", READ_ONLY);
+    let mut runtime = fixture.runtime("first-denied", &fixture.read_only());
     let calls = vec![read("a", &fixture.secret()), glob("b")];
     let lowered = lower(Dialect::Anthropic, &calls, runtime.next_cell()).unwrap();
     assert_eq!(lowered.calls[0].binding, "read_1_1");
@@ -131,7 +138,7 @@ fn a_denied_first_call_does_not_stop_the_second_and_leaves_no_handle() {
 #[test]
 fn a_denied_second_call_leaves_the_first_calls_handle_live() {
     let fixture = Fixture::new("second-denied");
-    let mut runtime = fixture.runtime("second-denied", READ_ONLY);
+    let mut runtime = fixture.runtime("second-denied", &fixture.read_only());
     let calls = vec![read("a", &fixture.target()), read("b", &fixture.secret())];
     let lowered = lower(Dialect::Anthropic, &calls, runtime.next_cell()).unwrap();
 
@@ -164,7 +171,7 @@ fn a_denied_second_call_leaves_the_first_calls_handle_live() {
 #[test]
 fn a_single_failing_call_still_throws() {
     let fixture = Fixture::new("single");
-    let mut runtime = fixture.runtime("single", READ_ONLY);
+    let mut runtime = fixture.runtime("single", &fixture.read_only());
     let calls = vec![read("a", &fixture.secret())];
     let lowered = lower(Dialect::Anthropic, &calls, runtime.next_cell()).unwrap();
     assert!(lowered.source.starts_with("const read_1_1 = await read("));
@@ -183,7 +190,7 @@ fn a_single_failing_call_still_throws() {
 #[test]
 fn a_thrown_call_in_a_frame_records_its_message_and_the_frame_continues() {
     let fixture = Fixture::new("threw");
-    let mut runtime = fixture.runtime("threw", READ_ONLY);
+    let mut runtime = fixture.runtime("threw", &fixture.read_only());
     // Reading a directory is a call that runs and fails, not a denial.
     let calls = vec![read("a", &fixture.root.to_string_lossy()), glob("b")];
     let lowered = lower(Dialect::Anthropic, &calls, runtime.next_cell()).unwrap();

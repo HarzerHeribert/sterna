@@ -30,6 +30,9 @@ pub(super) enum Done {
     Redraw,
     /// Ctrl-C: the prompt was cancelled, and the turn is to stop.
     Interrupt,
+    /// "Always allow": the gate has let these hosts through; the loop
+    /// saves them to the global settings, where the screen state is.
+    KeepHosts(Vec<String>),
 }
 
 /// The words behind "another way": the call they refuse, and the field.
@@ -296,9 +299,15 @@ impl Prompts {
             let Some((_, request)) = self.approvals.pop_front() else {
                 return Done::Nothing;
             };
+            let hosts = request.hosts().to_vec();
             let decision = match answer {
                 Answer::AllowOnce => Decision::AllowOnce,
                 Answer::AllowForSession => Decision::AllowForSession,
+                Answer::AllowHost if !hosts.is_empty() => Decision::AllowHostSession,
+                Answer::AlwaysAllowHost if !hosts.is_empty() => {
+                    request.respond(Decision::AllowHostAlways);
+                    return Done::KeepHosts(hosts);
+                }
                 Answer::Deny => Decision::Deny,
                 Answer::AnotherWay => {
                     let text = self
@@ -345,7 +354,15 @@ fn approval_items(
     raw: bool,
 ) -> Vec<Item> {
     let action = request.action();
-    sheet.title = "Approve".into();
+    let hosts = request.hosts();
+    sheet.title = if !hosts.is_empty() {
+        "Reach a new host"
+    } else if request.leaves_sandbox() {
+        "Leave the sandbox"
+    } else {
+        "Approve"
+    }
+    .into();
     sheet.crumbs = vec![action.label()];
     if queued > 1 {
         sheet.crumbs.push(format!("1 of {queued}"));
@@ -369,26 +386,64 @@ fn approval_items(
     }
     let too_large = (!confirmation.complete)
         .then(|| "Too large to confirm here: deny it and ask for a smaller call.".to_string());
+    // A refused host is offered first: letting one host through keeps the
+    // command inside the sandbox, where letting the command out does not.
+    if !hosts.is_empty() {
+        let names = hosts.join(", ");
+        items.push(
+            Item::info(format!(
+                "The sandbox refused {names}. Allowing it runs the command again inside the \
+                 sandbox; Allow once runs it outside."
+            ))
+            .tone(Tone::Strong),
+        );
+        items.push(
+            Item::run(
+                "allow-host",
+                format!("Allow {names} for this session"),
+                Action::Answer(Answer::AllowHost),
+            )
+            .key('h')
+            .inline()
+            .disabled(too_large.clone()),
+        );
+        items.push(
+            Item::run(
+                "always-allow-host",
+                format!("Always allow {names}"),
+                Action::Answer(Answer::AlwaysAllowHost),
+            )
+            .key('w')
+            .inline()
+            .disabled(too_large.clone()),
+        );
+    }
     items.push(
         Item::run(
             "allow-once",
-            "Allow once",
+            if hosts.is_empty() {
+                "Allow once"
+            } else {
+                "Allow once, outside the sandbox"
+            },
             Action::Answer(Answer::AllowOnce),
         )
         .key('o')
         .inline()
         .disabled(too_large.clone()),
     );
-    items.push(
-        Item::run(
-            "allow-session",
-            "Allow this call for the session",
-            Action::Answer(Answer::AllowForSession),
-        )
-        .key('s')
-        .inline()
-        .disabled(too_large.clone()),
-    );
+    if hosts.is_empty() {
+        items.push(
+            Item::run(
+                "allow-session",
+                "Allow this call for the session",
+                Action::Answer(Answer::AllowForSession),
+            )
+            .key('s')
+            .inline()
+            .disabled(too_large.clone()),
+        );
+    }
     items.push(
         Item::open(
             "another-way",
@@ -515,7 +570,7 @@ fn redirect_items(sheet: &mut Sheet, redirect: &Redirect) -> Vec<Item> {
 mod tests {
     use super::*;
     use crate::approval::{Admission, Gate};
-    use crate::permissions::{Ladder, Rung};
+    use crate::permissions::{Level, LiveLevel};
     use std::time::Duration;
 
     /// A write the Every call rung puts to the person, and the thread
@@ -559,7 +614,7 @@ mod tests {
     /// is on the list the Ask sheet shows.
     #[test]
     fn esc_denies_this_call_once_and_deny_is_remembered_visibly() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Esc);
@@ -580,7 +635,7 @@ mod tests {
     /// one, and is never remembered as a refusal.
     #[test]
     fn ctrl_c_cancels_the_call_and_remembers_nothing() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         let done = prompts.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -593,7 +648,7 @@ mod tests {
     /// once -- never on the session-wide chip or on Deny.
     #[test]
     fn enter_allows_once_from_where_the_prompt_opens() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         assert_eq!(prompts.sheet.focused().unwrap().id, "allow-once");
@@ -607,7 +662,7 @@ mod tests {
     #[test]
     fn a_remembered_denial_is_listed_on_the_ask_sheet_and_forgotten_there() {
         use crate::workbench::{Source, Workbench, sheet::Hit};
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Char('d'));
@@ -617,7 +672,7 @@ mod tests {
             ..Default::default()
         };
         let mut u = Workbench::default();
-        u.open(Source::Ask);
+        u.open(Source::Sandbox);
         let draw = |u: &mut Workbench, s: &crate::tui::ScreenState| {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
@@ -685,7 +740,7 @@ mod tests {
     /// it names the call and every answer.
     #[test]
     fn the_prompt_draws_at_every_size() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = Prompts::default();
         prompts.push_approval(request);
@@ -718,6 +773,91 @@ mod tests {
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
     }
 
+    /// A command asking to leave the sandbox, on a gate whose proxy refused
+    /// `hosts` just before it.
+    fn leaving(
+        hosts: &[&str],
+    ) -> (
+        crate::approval::Request,
+        std::thread::JoinHandle<Admission>,
+        crate::sandbox::proxy::Allowed,
+    ) {
+        let allowed = crate::sandbox::proxy::Allowed::new(&[], &[]);
+        let refused = std::sync::Mutex::new(hosts.iter().map(|h| h.to_string()).collect());
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+        let gate = gate.with_hosts(crate::approval::Hosts::new(allowed.clone(), move || {
+            std::mem::take(&mut *refused.lock().unwrap())
+        }));
+        let mut arguments = std::collections::BTreeMap::new();
+        arguments.insert("command".to_string(), "npm install".to_string());
+        arguments.insert(
+            crate::permissions::OUTSIDE.to_string(),
+            "needs the registry".to_string(),
+        );
+        let action =
+            crate::approval::Action::new("bash", std::path::Path::new("/tmp/root"), arguments);
+        let admitted = std::thread::spawn(move || gate.admit(action, || false));
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the person is asked");
+        (request, admitted, allowed)
+    }
+
+    fn screen(prompts: &mut Prompts) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| prompts.draw(f, crate::tui::Theme::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    /// A refused host turns "leave the sandbox" into "reach a new host":
+    /// allowing the host is offered first and opens focused, and "always"
+    /// hands the hosts to the loop to save.
+    #[test]
+    fn a_refused_host_is_offered_before_leaving_the_sandbox() {
+        let (request, admitted, allowed) = leaving(&["registry.example.org"]);
+        let mut prompts = armed_with(request);
+        let text = screen(&mut prompts);
+        for shown in [
+            "REACH A NEW HOST",
+            "h · Allow registry.example.org for this session",
+            "w · Always allow registry.example.org",
+            "o · Allow once, outside the sandbox",
+        ] {
+            assert!(text.contains(shown), "{shown} is missing:\n{text}");
+        }
+        assert!(!text.contains("Allow this call for the session"), "{text}");
+        assert_eq!(prompts.sheet.focused().unwrap().id, "allow-host");
+        assert_eq!(
+            press(&mut prompts, KeyCode::Char('w')),
+            Done::KeepHosts(vec!["registry.example.org".to_string()])
+        );
+        assert_eq!(admitted.join().unwrap(), Admission::HostsAllowed);
+        assert!(allowed.permits("registry.example.org"));
+    }
+
+    /// With no refused host the same call is "leave the sandbox", with the
+    /// answers every approval has.
+    #[test]
+    fn leaving_with_no_refused_host_is_titled_so() {
+        let (request, admitted, _) = leaving(&[]);
+        let mut prompts = armed_with(request);
+        let text = screen(&mut prompts);
+        assert!(text.contains("LEAVE THE SANDBOX"), "{text}");
+        assert!(!text.contains("Always allow"), "{text}");
+        assert_eq!(press(&mut prompts, KeyCode::Char('h')), Done::Nothing);
+        press(&mut prompts, KeyCode::Char('o'));
+        assert_eq!(admitted.join().unwrap(), Admission::Allowed);
+    }
+
     /// Keys before the prompt has been on screen for [`ARMING`], and keys
     /// while someone is still typing, are held back; a key after a quiet
     /// half second answers.
@@ -746,7 +886,7 @@ mod tests {
     /// held -- it never answers the one behind it, which nobody has seen.
     #[test]
     fn a_second_press_never_answers_the_approval_behind_it() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (first, first_admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(first);
         let (second, second_admitted) = asked(&gate, &requests);
@@ -763,7 +903,7 @@ mod tests {
     /// after `a` land in its field rather than being held back again.
     #[test]
     fn words_typed_straight_after_another_way_are_kept() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         press(&mut prompts, KeyCode::Char('a'));
@@ -785,7 +925,7 @@ mod tests {
     /// answers nothing either.
     #[test]
     fn arrows_and_digits_never_answer_a_prompt() {
-        let (gate, requests) = Gate::channel(Ladder::new(Rung::Manual));
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
         let mut prompts = armed_with(request);
         let start = prompts.sheet.focused().unwrap().id.clone();

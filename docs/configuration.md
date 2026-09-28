@@ -19,7 +19,9 @@ not; there is no upward search. *Global* is this OS user.
 
 Precedence, lowest first: built-in defaults → global → project → the named
 profile selected with `--profile NAME` → command-line flags. A global
-permission denial survives every project overlay and `--yolo`.
+permission denial survives every project overlay. `sandbox.level`,
+`sandbox.hosts` and `sandbox.ecosystems` are global only: a project's copy
+is ignored and says so.
 
 ## Changing a setting
 
@@ -29,8 +31,8 @@ permission denial survives every project overlay and `--yolo`.
   project only when the Project tab (F6) is chosen, and a row the project
   overrides says so. Each row shows what the running session uses now. A
   choice validates and saves at once; Ctrl-Z, or the undo chip beside the
-  notice, takes back the newest change -- from Settings, a chip, Shift-Tab
-  or a command alike. Viewing creates no files. `/settings <word>` opens on
+  notice, takes back the newest change -- from Settings, a chip or a
+  command alike. Viewing creates no files. `/settings <word>` opens on
   the row the word names.
 - **`/wizard`** walks through sign-in, a model for each workload and Jev.
 - **From the shell**, with no model, gateway or terminal needed:
@@ -43,7 +45,7 @@ permission denial survives every project overlay and `--yolo`.
   sterna config --help                       # every key, its type and choices
   ```
 
-Display settings (`ui.*`), the rung, the mode, the effort and the models
+Display settings (`ui.*`), the sandbox level, the effort and the models
 apply at once; a row that waits for the next session says so. Unknown keys and invalid values are refused and the file is
 left byte-identical. Values are literal: nothing is shell-expanded or run.
 Credentials never belong here — keys go to the gateway (`/key`).
@@ -54,10 +56,9 @@ Credentials never belong here — keys go to the gateway (`/key`).
 |---|---|
 | `model.parent` | the model that answers you |
 | `session.effort` | how hard it thinks: `low` … `max` |
-| `session.mode` | `build`, `explore` (reads only) or `plan` |
-| `permissions.mode` | how often you are asked: `manual` (Every call), `accept-edits` (Commands), `auto` (Auto-review), `full` (Never asks) ([sandbox](sandbox.md)) |
-| `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow |
-| `permissions.full_access` | global only: the three halves of `--full-access` |
+| `sandbox.level` | global only: `ask`, `sandboxed` (default) or `full` ([sandbox](sandbox.md)) |
+| `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
+| `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |
 | `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
@@ -68,7 +69,7 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits; nothing caps a task's cells unless you set it |
 
 `sterna config --help` lists the rest: per-helper effort, the decision
-thresholds, the explore mode's extra globs and commands, and the prompt
+thresholds and the prompt
 experiments under `limits.*` (off until measured).
 
 ## Named profiles

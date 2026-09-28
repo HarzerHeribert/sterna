@@ -48,7 +48,6 @@ impl Fixture {
                 "Verify cutoff",
                 "--session",
                 "cutoff",
-                "--yolo",
                 "--rollout",
             ])
             .arg(self.root.join("rollout.jsonl"))

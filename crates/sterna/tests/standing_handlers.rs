@@ -366,11 +366,20 @@ fn timeout_and_cpu_cancellation_disable_with_no_retry_and_runtime_recovers() {
 
 #[test]
 fn caught_permission_refusal_disables_a_handler_without_widening_the_profile() {
-    let mut r = runtime(Duration::from_secs(2));
+    // Every command line is admitted unless a deny pattern refuses it.
+    let mut r = Runtime::with_limits(
+        &Profile::compile(
+            std::env::temp_dir(),
+            Some(r#"{"permissions":{"deny":["Bash(refused-command*)"]}}"#),
+        ),
+        &SessionId::new("standing-tests"),
+        DEFAULT_HEAP_LIMIT_BYTES,
+        Duration::from_secs(2),
+    );
     register(
         &mut r,
         "{}",
-        "try { await bash({command: 'not-an-admitted-command'}); } catch {};",
+        "try { await bash({command: 'refused-command'}); } catch {};",
     );
     batch(&mut r);
     let runs = r.run_handlers();

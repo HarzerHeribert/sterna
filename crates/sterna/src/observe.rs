@@ -97,7 +97,7 @@ const REDACTED: &str = "«redacted»";
 /// `span` id so a reader can pair them and take a duration: `session`,
 /// `task`, `turn`, `cell`, `helper`, `agent`. A **moment** happens once and
 /// closes nothing: `cell.repair`, `command.judge`, `file.change`,
-/// `answer.propose`, `ask.raise`, `supervisor.look`, `ladder.move`,
+/// `answer.propose`, `ask.raise`, `supervisor.look`, `sandbox.move`,
 /// `reduction.made`, `approval.raise`.
 ///
 /// **Seven can be refused** once the synchronous half exists
@@ -139,7 +139,7 @@ pub enum Kind {
     AnswerPropose,
     AskRaise,
     SupervisorLook,
-    LadderMove,
+    SandboxMove,
     ReductionMade,
     ApprovalRaise,
 }
@@ -167,7 +167,7 @@ impl Kind {
             Self::AnswerPropose => "answer.propose",
             Self::AskRaise => "ask.raise",
             Self::SupervisorLook => "supervisor.look",
-            Self::LadderMove => "ladder.move",
+            Self::SandboxMove => "sandbox.move",
             Self::ReductionMade => "reduction.made",
             Self::ApprovalRaise => "approval.raise",
         }
@@ -205,7 +205,7 @@ impl Kind {
                 | Self::AgentBegin
                 | Self::AnswerPropose
                 | Self::AskRaise
-                | Self::LadderMove
+                | Self::SandboxMove
         )
     }
 }
@@ -555,7 +555,7 @@ mod tests {
         Kind::AnswerPropose,
         Kind::AskRaise,
         Kind::SupervisorLook,
-        Kind::LadderMove,
+        Kind::SandboxMove,
         Kind::ReductionMade,
         Kind::ApprovalRaise,
     ];
@@ -624,7 +624,7 @@ mod tests {
                 "agent.begin",
                 "answer.propose",
                 "ask.raise",
-                "ladder.move",
+                "sandbox.move",
             ],
             "the refusable set is the approved seven"
         );

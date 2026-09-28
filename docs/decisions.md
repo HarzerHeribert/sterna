@@ -36,9 +36,7 @@ threshold below is a `decisions.*` setting with the default shown.
 | **intent** — `read_only`, `modify`, `run`, `other` | once, before the first turn | hold the first effectful cell once (`hold_above` 0.85); re-issued, it runs |
 | **complexity** — `trivial`, `routine`, `needs_exploration` | same request | add a reason to run the preflight scout (`scout_above` 0.85); never remove one |
 | **kind** — `explore`, `fix`, `implement`, `question`, `run` | same request | lower effort to `low` for `explore`/`question` when you left effort at `default`; brief the scout to dissect an `explore` request |
-| **mode** | from intent | a `read_only` request in unpinned `execute` runs in `explore` for that request (`mode_above` 0.85); `/mode` pins |
 | **drift** — does this cell do what the active plan step says | an effectful cell | hold it once, naming the step (`drift_no_below` 0.10) |
-| **permission** — `reads_only`, `ordinary_development_work`, `needs_a_person`, `destructive` | a command line the `auto` rung's static reader could not place | let the first two run unasked (0.85). The other two change nothing: the model can vouch, never condemn |
 | **completion** — does the diff satisfy the request | a claimed completion | a confident no adds a finding held once (`completion_no_below` 0.10); a confident yes with nothing else found spares the fresh checker (`completion_yes_above` 0.90) |
 | **hygiene** — `has_tests`, `out_of_scope`, `debug_leftovers`, `deletes_tests`, `changes_signature` | same request, when there is a diff | a finding held once (`hygiene_*` 0.10 / 0.90) |
 | **judge** items of the acceptance list | same request | satisfy an item without the checker, or hold once naming it (`judge_*`) |
@@ -48,10 +46,8 @@ threshold below is a `decisions.*` setting with the default shown.
 | **approval hint** | a pending confirmation | one line beside it: `fits the request: 0.91` |
 
 Every "held once" means the same call re-issued runs: a decision can make
-the model look again, never stop it. The permission question runs only on
-the `auto` rung, and the command lines a cell spells out as literals are
-judged together before the cell runs, so a cell with six such lines waits
-once. One answer per command line per session; a timeout is not remembered.
+the model look again, never stop it. A decision never answers a
+confirmation: what asks is the sandbox level ([sandbox](sandbox.md)).
 
 ## From inside a cell
 

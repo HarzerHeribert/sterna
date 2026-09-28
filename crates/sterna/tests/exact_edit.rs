@@ -12,6 +12,16 @@ fn fixture(label: &str) -> PathBuf {
     root
 }
 
+/// A directory outside every writable place: the machine's temp folders are
+/// writable, so an "outside" fixture lives under the test target's own tmpdir.
+fn outside_fixture(label: &str) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("sterna-exact-edit-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
 fn hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
@@ -70,7 +80,7 @@ fn stale_missing_ambiguous_and_noop_edits_do_not_write() {
 #[test]
 fn denied_outside_and_invalid_utf8_targets_are_refused() {
     let root = fixture("confined");
-    let outside = fixture("outside");
+    let outside = outside_fixture("outside");
     let denied = root.join("denied.txt");
     let external = outside.join("external.txt");
     let binary = root.join("binary.txt");

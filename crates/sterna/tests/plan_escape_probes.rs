@@ -1,12 +1,12 @@
 #![cfg(unix)]
-//! Independent escape probes for the `explore` request mode (map 2637, 2638;
-//! `GH-PANE-EXPLORE-MODE`, `sandbox/modes.rs`). POSIX-only: every probe is a
-//! shell form, and `#[cfg(unix)]` on the whole file is the packet's own
-//! requirement.
+//! Independent escape probes for the plan request (`/plan <task>`,
+//! `sandbox/modes.rs`): one request that reads, writes only
+//! `.sterna/scratch/plan.md` and runs only read-only commands. POSIX-only:
+//! every probe is a shell form.
 //!
 //! This is a verifier, not a fixer: every assertion is on **the tree and the
 //! world** (file bytes, permission bits, a real TCP listener), never on the
-//! refusal text alone, per `GH-PANE-EXPLORE-VERIFY`. Helpers below
+//! refusal text alone. Helpers below
 //! (`scratch_dir`, `start_provider`, `answer_one`, `cell_reply`, `run`) are
 //! copied from `request_modes.rs` rather than shared, per that file's own
 //! FORBIDDEN note in the packet.
@@ -29,7 +29,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 fn scratch_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "sterna-explore-escape-{label}-{}-{n}",
+        "sterna-plan-escape-{label}-{}-{n}",
         std::process::id()
     ));
     fs::create_dir_all(&dir).unwrap();
@@ -124,9 +124,9 @@ fn project(label: &str) -> PathBuf {
     root
 }
 
-/// `sterna session` with `args`, `inputs` piped one per line. Copied from
+/// `sterna session` with `inputs` piped one per line. Copied from
 /// `request_modes.rs::run`.
-fn run(root: &Path, args: &[&str], inputs: &[&str], base_url: &str) -> std::process::Output {
+fn run(root: &Path, inputs: &[&str], base_url: &str) -> std::process::Output {
     let rollout = scratch_dir("rollout").join("rollout.jsonl");
     let mut command = Command::new(env!("CARGO_BIN_EXE_sterna"));
     command
@@ -142,7 +142,6 @@ fn run(root: &Path, args: &[&str], inputs: &[&str], base_url: &str) -> std::proc
         ))
         .arg("--model")
         .arg(sterna::wire::MODEL)
-        .args(args)
         .env("ANTHROPIC_BASE_URL", base_url)
         .env("XDG_CONFIG_HOME", scratch_dir("global-config"))
         .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -250,12 +249,10 @@ fn render(findings: &[Finding]) -> String {
 }
 
 fn extract_rule(stdout: &str) -> String {
-    for marker in ["mode explore:", "mode plan:"] {
-        if let Some(idx) = stdout.find(marker) {
-            return stdout[idx..].lines().next().unwrap_or(marker).to_string();
-        }
+    match stdout.find("plan:") {
+        Some(idx) => stdout[idx..].lines().next().unwrap_or("plan:").to_string(),
+        None => "none".to_string(),
     }
-    "none".to_string()
 }
 
 /// One cell attempting `action_js`, wrapped exactly as
@@ -296,16 +293,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Runs one cell containing `action_js` against a fresh `root` in explore
-/// mode and returns the process's stdout. The scripted model attempts the
-/// tool call despite the prompt naming the mode, exactly as
+/// Runs one cell containing `action_js` against a fresh `root` as a plan
+/// request and returns the process's stdout. The scripted model attempts the
+/// tool call despite the task's plan line, exactly as
 /// `request_modes.rs` does throughout.
 fn execute_probe(root: &Path, action_js: &str) -> String {
     let (base_url, _bodies) = start_provider(1, {
         let action_js = action_js.to_string();
         move |_| cell_reply(&attempt_cell(&action_js))
     });
-    let output = run(root, &["--mode", "explore"], &["do it"], &base_url);
+    let output = run(root, &["/plan do it"], &base_url);
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
@@ -529,9 +526,9 @@ fn family_paths_and_tools() {
     }
 
     // 4/5/6: write and edit against `.sterna/config.toml`, `.git/config`,
-    // `.claude/settings.json` — never-grantable regardless of mode, checked
-    // here because the mode packet claims explore writes nothing outside its
-    // globs and these three are the paths most likely to matter if it did.
+    // `.claude/settings.json` — never-grantable in every request, checked
+    // here because a plan writes nothing but its plan and these three are
+    // the paths most likely to matter if it did.
     for (relpath, original, old_substring) in [
         (".sterna/config.toml", STERNA_CONFIG, "allow"),
         (".git/config", GIT_CONFIG, "repositoryformatversion"),
@@ -574,29 +571,25 @@ fn family_paths_and_tools() {
         }
     }
 
-    // 7. `.sterna/scratch/**` itself — the agent's scratchpad, carved out of
-    // the `.sterna/**` never rule (GH-PANE-SCRATCH-AND-PLAN-FILE), is the one
-    // place explore may write by default. The probe is inverted from the
-    // verifier's first run, which predated the carve-out: a refused scratch
-    // write is now the finding, and the sibling `.sterna/config.toml` probe
-    // above still proves the rest of `.sterna/` stays never-writable.
+    // 7. `.sterna/scratch/**` beside the plan: the scratch folder is
+    // writable in an ordinary request, but a plan writes its plan file only.
     {
         let root = project("fam4-scratch-write");
         let probe = "write path=.sterna/scratch/probe.txt".to_string();
         let stdout = execute_probe(&root, &write_action(".sterna/scratch/probe.txt", "changed"));
-        if !root.join(".sterna/scratch/probe.txt").exists() {
+        if root.join(".sterna/scratch/probe.txt").exists() {
             findings.push(Finding {
                 family: "paths",
                 probe,
-                effect: ".sterna/scratch/probe.txt was NOT created — the scratchpad carve-out does not admit explore's default writable glob".to_string(),
+                effect: "created .sterna/scratch/probe.txt beside the plan file".to_string(),
                 rule: extract_rule(&stdout),
             });
         }
     }
 
     // 8/9: a symlink planted before the session, pointing outside the root —
-    // `ln` itself is refused in explore, so this is planted directly on
-    // disk, mirroring the packet's own instruction.
+    // `ln` itself is refused while planning, so this is planted directly
+    // on disk.
     {
         let root = project("fam4-symlink-write");
         let external_dir = scratch_dir("fam4-symlink-external");
@@ -723,9 +716,6 @@ fn family_network() {
                 rule: extract_rule(&stdout),
             });
         }
-        let _ = Command::new("pkill")
-            .args(["-f", &format!("127.0.0.1:{port}")])
-            .status();
     }
     assert!(
         findings.is_empty(),
@@ -736,59 +726,23 @@ fn family_network() {
 }
 
 // ---------------------------------------------------------------------
-// Family 6 — the direct and native doors
+// Family 6 — a hard link planted at the plan file
 // ---------------------------------------------------------------------
 
-/// Mirrors `request_modes.rs::a_direct_tool_frame_is_refused_by_the_same_rule`:
-/// a `/tool` line typed as a user input, answered by no provider turn at all.
+/// A hard link planted unconfined at the plan file -- the one path a plan
+/// may write -- must not let `write` rewrite `.sterna/config.toml` through
+/// it. The binary refuses, and every name of the file keeps its bytes.
 #[test]
-fn family_direct_tool_frame() {
-    let mut findings: Vec<Finding> = Vec::new();
-    let cases: &[&str] = &["src/direct.rs", ".sterna/config.toml", ".git/config"];
-    for (i, path) in cases.iter().enumerate() {
-        let root = project(&format!("fam6-{i}"));
-        let pre = snapshot(&root);
-        let (base_url, _bodies) = start_provider(0, |_| String::new());
-        let line = format!("/tool write path={path} content=changed");
-        let output = run(&root, &["--mode", "explore"], &[&line], &base_url);
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let post = snapshot(&root);
-        if let Some(effect) = diff(&pre, &post) {
-            findings.push(Finding {
-                family: "direct-tool-frame",
-                probe: line,
-                effect,
-                rule: extract_rule(&stdout),
-            });
-        }
-    }
-    assert!(
-        findings.is_empty(),
-        "{} probes run, escapes:\n{}",
-        cases.len(),
-        render(&findings)
-    );
-}
-
-// ---------------------------------------------------------------------
-// Family 7 — a hard link planted in the scratchpad
-// ---------------------------------------------------------------------
-
-/// `phase-69.md` line 2637's defect: a hard link planted unconfined in
-/// `.sterna/scratch/` (explore's own writable glob) made `write` rewrite
-/// `.sterna/config.toml` through it. The shipped binary refuses, and every
-/// name of the file keeps its bytes.
-#[test]
-fn family_hard_link_in_the_scratchpad() {
+fn family_hard_link_at_the_plan_file() {
     let root = project("fam7-hard-link");
     fs::create_dir_all(root.join(".sterna/scratch")).unwrap();
     fs::hard_link(
         root.join(".sterna/config.toml"),
-        root.join(".sterna/scratch/hard"),
+        root.join(".sterna/scratch/plan.md"),
     )
     .unwrap();
     let pre = snapshot(&root);
-    let stdout = execute_probe(&root, &write_action(".sterna/scratch/hard", "changed"));
+    let stdout = execute_probe(&root, &write_action(".sterna/scratch/plan.md", "changed"));
     let post = snapshot(&root);
     assert_eq!(diff(&pre, &post), None, "stdout:\n{stdout}");
     assert_eq!(

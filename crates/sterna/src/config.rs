@@ -186,7 +186,7 @@ pub struct DecisionsConfig {
     pub drift_no_below: f64,
     /// Confidence at or above which a `read_only` intent proposes `explore`
     /// for one request, in `execute`, unpinned (2639). `0.5..=1.0`.
-    pub mode_above: f64,
+
     /// A scout candidate's own relevance noul at or below which it is left
     /// out of what the Scout is served (2644). `0.0..=0.5`.
     pub scout_relevance_below: f64,
@@ -199,15 +199,6 @@ pub struct DecisionsConfig {
     /// reason to nudge -- any criterion but `making_progress`
     /// (`supervisor.md` §3). `0.5..=1.0`.
     pub supervision_above: f64,
-    /// Confidence at or above which the decision model's word lets a command
-    /// line run on the `auto` rung without asking the person -- and only for
-    /// the lines the static reader could not place. `0.5..=1.0`.
-    ///
-    /// **It can only ever remove a question.** No answer at any confidence
-    /// turns an admitted call into a refusal, so raising this towards 1.0
-    /// asks more often and lowering it asks less, and neither end of the
-    /// range can make Sterna refuse something it would otherwise have run.
-    pub command_runs_above: f64,
 }
 
 impl Default for DecisionsConfig {
@@ -224,11 +215,9 @@ impl Default for DecisionsConfig {
             judge_yes_above: 0.90,
             judge_no_below: 0.10,
             drift_no_below: 0.10,
-            mode_above: 0.85,
             scout_relevance_below: 0.10,
             helper_no_below: 0.10,
             supervision_above: 0.85,
-            command_runs_above: 0.85,
         }
     }
 }
@@ -293,27 +282,6 @@ impl Default for AskConfig {
             decide_above: 0.85,
         }
     }
-}
-
-/// `[modes]` -- the configurable half of a request narrowing
-/// (`sandbox/modes.rs::ModeOverlay`). Empty by default, so an unconfigured
-/// project's `explore` is exactly `sandbox::modes::DEFAULT_WRITABLE` and
-/// `READ_ONLY_COMMANDS`, unchanged from before this table existed (2637).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModesConfig {
-    pub explore: ModeExploreConfig,
-}
-
-/// `[modes.explore]` -- extra writable globs and read-only command patterns
-/// for the `explore` request mode.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModeExploreConfig {
-    /// Appended to [`crate::sandbox::modes::DEFAULT_WRITABLE`] by
-    /// `ModeOverlay::new`.
-    pub writable: Vec<String>,
-    /// `Bash`-style segment patterns added to
-    /// [`crate::sandbox::modes::READ_ONLY_COMMANDS`].
-    pub commands: Vec<String>,
 }
 
 /// The whole of `config.toml`. `project.rs`'s own invariant -- loading edits
@@ -528,7 +496,6 @@ pub struct SternaConfig {
     pub model: ModelConfig,
     pub web: crate::web::WebConfig,
     pub decisions: DecisionsConfig,
-    pub modes: ModesConfig,
     pub ask: AskConfig,
     pub wizard: WizardConfig,
 }
@@ -705,7 +672,6 @@ impl SternaConfig {
                 "model",
                 "web",
                 "decisions",
-                "modes",
                 "ask",
                 "wizard",
             ]
@@ -713,7 +679,7 @@ impl SternaConfig {
             {
                 return Err(format!(
                     "config.toml: unknown table `[{key}]`; only [limits], [supervisor], [helpers], \
-                     [agents], [model], [web], [decisions], [modes], [ask] and [wizard] are recognised"
+                     [agents], [model], [web], [decisions], [ask] and [wizard] are recognised"
                 ));
             }
         }
@@ -756,11 +722,6 @@ impl SternaConfig {
             None => DecisionsConfig::default(),
         };
 
-        let modes = match table.get("modes") {
-            Some(value) => parse_modes(value)?,
-            None => ModesConfig::default(),
-        };
-
         let ask = match table.get("ask") {
             Some(value) => parse_ask(value)?,
             None => AskConfig::default(),
@@ -798,7 +759,6 @@ impl SternaConfig {
             model,
             web,
             decisions,
-            modes,
             ask,
             wizard,
         })
@@ -1023,16 +983,12 @@ const JUDGE_NO_BELOW_MIN: f64 = 0.0;
 const JUDGE_NO_BELOW_MAX: f64 = 0.5;
 const DRIFT_NO_BELOW_MIN: f64 = 0.0;
 const DRIFT_NO_BELOW_MAX: f64 = 0.5;
-const MODE_ABOVE_MIN: f64 = 0.5;
-const MODE_ABOVE_MAX: f64 = 1.0;
 const SCOUT_RELEVANCE_BELOW_MIN: f64 = 0.0;
 const SCOUT_RELEVANCE_BELOW_MAX: f64 = 0.5;
 const HELPER_NO_BELOW_MIN: f64 = 0.0;
 const HELPER_NO_BELOW_MAX: f64 = 0.5;
 const SUPERVISION_ABOVE_MIN: f64 = 0.5;
 const SUPERVISION_ABOVE_MAX: f64 = 1.0;
-const COMMAND_RUNS_ABOVE_MIN: f64 = 0.5;
-const COMMAND_RUNS_ABOVE_MAX: f64 = 1.0;
 
 const DECIDE_ABOVE_MIN: f64 = 0.5;
 const DECIDE_ABOVE_MAX: f64 = 1.0;
@@ -1103,11 +1059,9 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
             "judge_yes_above",
             "judge_no_below",
             "drift_no_below",
-            "mode_above",
             "scout_relevance_below",
             "helper_no_below",
             "supervision_above",
-            "command_runs_above",
         ]
         .contains(&key.as_str())
         {
@@ -1273,22 +1227,6 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
         }
     };
 
-    let mode_above = match table.get("mode_above") {
-        None => defaults.mode_above,
-        Some(value) => {
-            let number = value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-                .ok_or_else(|| "config.toml: `mode_above` must be a number".to_string())?;
-            if !(MODE_ABOVE_MIN..=MODE_ABOVE_MAX).contains(&number) {
-                return Err(format!(
-                    "config.toml: `mode_above` must be between {MODE_ABOVE_MIN} and {MODE_ABOVE_MAX}"
-                ));
-            }
-            number
-        }
-    };
-
     let scout_relevance_below = match table.get("scout_relevance_below") {
         None => defaults.scout_relevance_below,
         Some(value) => {
@@ -1339,22 +1277,6 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
         }
     };
 
-    let command_runs_above = match table.get("command_runs_above") {
-        None => defaults.command_runs_above,
-        Some(value) => {
-            let number = value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-                .ok_or_else(|| "config.toml: `command_runs_above` must be a number".to_string())?;
-            if !(COMMAND_RUNS_ABOVE_MIN..=COMMAND_RUNS_ABOVE_MAX).contains(&number) {
-                return Err(format!(
-                    "config.toml: `command_runs_above` must be between {COMMAND_RUNS_ABOVE_MIN} and {COMMAND_RUNS_ABOVE_MAX}"
-                ));
-            }
-            number
-        }
-    };
-
     Ok(DecisionsConfig {
         model,
         mode,
@@ -1367,60 +1289,10 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
         judge_yes_above,
         judge_no_below,
         drift_no_below,
-        mode_above,
         scout_relevance_below,
         helper_no_below,
         supervision_above,
-        command_runs_above,
     })
-}
-
-fn parse_modes(value: &toml::Value) -> Result<ModesConfig, String> {
-    let table = table_of(value, "modes")?;
-    for key in table.keys() {
-        if key != "explore" {
-            return Err(format!(
-                "config.toml: unknown key `{key}` in [modes]; only `explore` is recognised"
-            ));
-        }
-    }
-    let explore = match table.get("explore") {
-        Some(value) => parse_mode_explore(value)?,
-        None => ModeExploreConfig::default(),
-    };
-    Ok(ModesConfig { explore })
-}
-
-fn parse_mode_explore(value: &toml::Value) -> Result<ModeExploreConfig, String> {
-    let table = table_of(value, "modes.explore")?;
-    for key in table.keys() {
-        if !["writable", "commands"].contains(&key.as_str()) {
-            return Err(format!(
-                "config.toml: unknown key `{key}` in [modes.explore]; only `writable` and `commands` are recognised"
-            ));
-        }
-    }
-    Ok(ModeExploreConfig {
-        writable: string_list(table, "writable")?,
-        commands: string_list(table, "commands")?,
-    })
-}
-
-fn string_list(table: &toml::value::Table, key: &str) -> Result<Vec<String>, String> {
-    match table.get(key) {
-        None => Ok(Vec::new()),
-        Some(value) => value
-            .as_array()
-            .ok_or_else(|| format!("config.toml: `{key}` must be a list of strings"))?
-            .iter()
-            .map(|entry| {
-                entry
-                    .as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("config.toml: every entry of `{key}` must be a string"))
-            })
-            .collect(),
-    }
 }
 
 fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {

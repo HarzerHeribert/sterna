@@ -6,7 +6,10 @@
 //! the platform appliers are its siblings, one per operating system.
 
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod linux_ns;
 pub mod macos;
 pub mod modes;
 pub mod profile;
+pub mod proxy;
 pub mod windows;

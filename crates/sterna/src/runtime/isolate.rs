@@ -1327,24 +1327,6 @@ impl Runtime {
             );
         }
 
-        // **The command lines this program already spells out, judged
-        // together before it runs.** Every one of them would otherwise meet
-        // the `auto` rung one at a time, mid-cell, each paying its own wait
-        // on the decision model. Nothing is granted and nobody is asked
-        // here: the answers land in the gate's own memory, keyed by the same
-        // exact line, so the calls that follow read them instead of asking
-        // again. A computed line is not read out at all and meets the gate
-        // as it always did.
-        if saved.is_none()
-            && !self.state.subagent.get()
-            && let Some(gate) = self.state.approval_gate.borrow().as_ref()
-        {
-            let lines = crate::runtime::commands::literal_lines(source);
-            if !lines.is_empty() {
-                gate.prejudge(&lines);
-            }
-        }
-
         let watchdog = Watchdog::arm_pausing(
             self.heap.guard.isolate.get().cloned(),
             self.wall_clock_limit,
@@ -2359,29 +2341,6 @@ mod tests {
     // Documents no item: the test these two paragraphs were written for is
     // gone, and they are kept as a note rather than as a doc comment that
     // documents whatever happens to follow them.
-
-    /// **The pre-judgement happens before the program runs, or it buys
-    /// nothing.** Asked after `execute`, every command line would already
-    /// have met the gate one at a time, which is the cost this exists to
-    /// remove. Provable only by reading: both calls are on paths a unit test
-    /// cannot reach without a decision model and a terminal to ask at.
-    #[test]
-    fn the_command_lines_are_judged_before_the_cell_runs() {
-        let judged = ISOLATE_SOURCE
-            .find("gate.prejudge(")
-            .expect("the cell loop must pre-judge the lines its source spells out");
-        let ran = ISOLATE_SOURCE
-            .find("self.execute(&compiled, saved.as_ref())")
-            .expect("the cell loop must still run the compiled cell through `execute`");
-        assert!(
-            judged < ran,
-            "the lines must be judged before the program runs"
-        );
-        assert!(
-            ISOLATE_SOURCE[judged.saturating_sub(400)..judged].contains("literal_lines("),
-            "what is judged must be the lines read out of this cell's own source"
-        );
-    }
 
     #[test]
     fn the_epilogue_and_the_cell_are_not_the_same_poisoning() {

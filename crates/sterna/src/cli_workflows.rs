@@ -143,7 +143,6 @@ pub fn doctor(args: &[String]) -> i32 {
         sterna::config::SternaConfig,
         std::collections::BTreeMap<String, String>,
     )> = None;
-    let mut rung: Option<String> = None;
     let mut full_access = false;
     match store
         .as_ref()
@@ -152,18 +151,12 @@ pub fn doctor(args: &[String]) -> i32 {
     {
         Ok(loaded) => {
             checks.push(Check {name:"config",status:if loaded.config.model.parent.is_some(){"ok"}else{"warning"},detail:if loaded.config.model.parent.is_some(){"Native/legacy configuration parses; parent model configured".into()}else{"Configuration parses; supply --model or sterna config local model.parent to start a task".into()}});
-            rung = loaded
-                .values
-                .get("permissions")
-                .and_then(|table| table.get("mode"))
-                .and_then(toml::Value::as_str)
-                .map(str::to_string);
             full_access = loaded
                 .values
-                .get("permissions")
-                .and_then(|table| table.get("full_access"))
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(false);
+                .get("sandbox")
+                .and_then(|table| table.get("level"))
+                .and_then(toml::Value::as_str)
+                .is_some_and(|level| level == "full");
             settings = Some((loaded.config, loaded.origins));
         }
         Err(_) => checks.push(Check {
@@ -187,15 +180,15 @@ pub fn doctor(args: &[String]) -> i32 {
             "warning"
         },
         detail: format!(
-            "{} file rules, {} command patterns, {} MCP grants, {} diagnostics",
+            "{} file rules, {} pre-approved commands, {} MCP grants, {} diagnostics",
             profile.rule_count(),
-            profile.command_pattern_count(),
+            profile.pre_approved().len(),
             profile.mcp_tool_count(),
             profile.diagnostics().len()
         ),
     });
     if let Some((config, origins)) = settings.as_ref() {
-        checks.push(inert_settings(config, origins, rung.as_deref(), &profile));
+        checks.push(inert_settings(config, origins));
     }
     for program in ["inference-gateway", "git", "rg", "fd", "jq"] {
         let found = find_executable(program);
@@ -320,8 +313,6 @@ fn decisions_check(decisions: &sterna::config::DecisionsConfig) -> Check {
 fn inert_settings(
     config: &sterna::config::SternaConfig,
     origins: &std::collections::BTreeMap<String, String>,
-    rung: Option<&str>,
-    profile: &sterna::sandbox::profile::Profile,
 ) -> Check {
     let chosen = |key: &str| origins.get(key).is_some_and(|origin| origin != "built-in");
     let any_chosen = |keys: &[&str]| keys.iter().any(|key| chosen(key));
@@ -351,20 +342,6 @@ fn inert_settings(
     {
         inert.push(
             "[decisions] mode is not `off` but names no model, so no decision is ever asked; set `decisions.model`"
-                .into(),
-        );
-    }
-    // The trap that cost a real session its test run: a rung is not a grant
-    // where nobody can be asked. A terminal session judges an unlisted line
-    // per call (`Profile::weigh_command`); a run with no terminal keeps
-    // `Profile::admits_command`, which refuses every line without a
-    // `Bash(...)` pattern whatever the rung.
-    if rung == Some("full")
-        && !profile.admits_every_command()
-        && profile.command_pattern_count() == 0
-    {
-        inert.push(
-            "[permissions] mode is `full` but no `Bash(...)` pattern is allowed, so a run with no terminal to ask at runs no command line — add a Bash grant to permissions.allow for those runs"
                 .into(),
         );
     }
@@ -441,7 +418,7 @@ fn sandbox_check(bypassed: bool) -> Check {
             // filesystem-wide and drops debuggers from the never-grantable
             // set. A surface that said only "no OS confinement" here would
             // be the same comforting half-truth this check exists to end.
-            detail: "None for this configuration: `[permissions] full_access` is set, so Sterna applies no OS confinement to the children it spawns and this machine is the boundary. It also widens this session's reads past the project root and admits a debugger. Writes keep their roots, and every deny pattern and the rest of the never-grantable set (~/.ssh, ~/.aws, ~/.claude, ~/.codex, ~/.config, registry credentials, sandbox launchers) refuse exactly as they do confined.".into(),
+            detail: "None for this configuration: `sandbox.level` is `full`, so Sterna applies no OS confinement to the children it spawns and this machine is the boundary, network included, and a debugger is admitted. Every deny pattern and the rest of the never-grantable set refuse exactly as they do confined.".into(),
         };
     }
     #[cfg(target_os = "linux")]

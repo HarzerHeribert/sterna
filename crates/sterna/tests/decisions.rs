@@ -627,13 +627,8 @@ fn completion_answer_with_judge(noul: f64, judge: &[f64]) -> Value {
     })
 }
 
-/// `mode_above = 1.0` keeps the mode proposal (map 2639) out of these tests:
-/// with the default 0.85, a confident `read_only` intent would narrow the
-/// request to `explore`, where an effectful cell is refused by the profile
-/// before the hold could fire -- `tests/request_modes.rs` proves that path;
-/// this file proves the hold itself.
 const DECISIONS_ON: &str =
-    "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\nmode_above = 1.0\n";
+    "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n";
 const DECISIONS_SHADOW: &str =
     "[decisions]\nmodel = \"jev-latest\"\nmode = \"shadow\"\nhold_above = 0.85\n";
 const DECISIONS_ON_WITH_CHECKER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n[helpers]\nmodel = \"helper-tier\"\ncompletion_check = true\n";

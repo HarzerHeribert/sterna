@@ -41,11 +41,6 @@ pub const NOT_AVAILABLE: &str =
 pub const DISABLED: &str =
     "ask: asking is off for this session (`[ask] enabled`), so decide yourself";
 
-/// What `ask` throws in a request narrowed to `explore`: that mode changes
-/// nothing, so there is no branch a person needs to choose between.
-pub const NOT_IN_EXPLORE: &str =
-    "ask: this request is exploring and changes nothing, so there is nothing to ask about";
-
 /// One question, as the program composed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {

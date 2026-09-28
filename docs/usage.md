@@ -10,10 +10,9 @@ git diff | sterna exec --output-format stream-json      # a task read from stdin
 sterna --resume [id]                     # an earlier session: a picker in a terminal, else the newest
 sterna --continue                        # the same as a bare --resume
 sterna --sessions                        # this folder's sessions, newest first
-sterna --plan                            # start in plan mode
 sterna --image shot.png -p "explain this" # attach up to four images
 sterna --add-dir ../shared-library       # grant one more directory for this session
-sterna --full-access                     # no questions, no OS confinement of Sterna's own
+sterna --sandbox full                    # no sandbox, nothing asked (see sandbox.md)
 sterna doctor [--json]                   # what Sterna found and what is missing; starts nothing
 sterna update [--check]                  # install the newest release
 sterna config …                          # settings (see configuration.md)
@@ -25,9 +24,8 @@ flags follow. `exec` without a task reads all of stdin as one task.
 Ordinary piped input to a session is one turn per line. Every exit prints
 the session id and how to come back to it.
 
-Session flags: `--model`, `--profile NAME`, `--mode execute|explore|plan`,
-`--permissions manual|accept-edits|auto|full`, `--ask-approval` (the same
-as `--permissions manual`), `--interface cells|hybrid|tools`,
+Session flags: `--model`, `--profile NAME`, `--sandbox ask|sandboxed|full`,
+`--allow-host HOST`, `--interface cells|hybrid|tools`,
 `--context-window-tokens N`, `--gateway PATH`, `--root PATH`.
 
 ### Machine output
@@ -48,15 +46,16 @@ Diagnostics go to stderr and failures exit non-zero.
 model that accepts images. Pasting an image from the clipboard is not
 supported.
 
-### Full access
+### The sandbox
 
-`--full-access` is one word for the widest session: every command line and
-the whole project admitted (`--yolo`), nothing asked (`--permissions full`),
-and no OS confinement of the children Sterna spawns
-(`--dangerously-bypass-os-sandbox`, which needs `--yolo`). It still refuses
-the never-grantable set — no network for shells, no `~/.ssh`, `~/.aws`,
-`~/.config`, no sandbox launchers. Use it on a machine or container you
-trust; the machine is then the boundary.
+`--sandbox` sets how much runs without asking for one session: `ask`
+confirms every edit and command, `sandboxed` (the default) runs everything
+inside the sandbox and asks only to leave it, and `full` runs without a
+sandbox and asks nothing. It still refuses the never-grantable set — no
+`~/.ssh`, `~/.aws`, `~/.config`, no sandbox launchers. Use `full` on a
+machine or container you trust; the machine is then the boundary.
+`--allow-host HOST` lets commands reach one more host for the session
+([sandbox](sandbox.md#allowed-hosts)).
 
 ## Inside a session
 
@@ -69,8 +68,9 @@ trust; the machine is then the boundary.
 | `/usage` | how much of each subscription's limits is used |
 | `/entitlements` | the accounts the gateway can serve from |
 | `/wizard` | sign-in, models for each workload, Jev |
-| `/mode execute\|explore\|plan` | what the next request may do |
-| `/permissions` | how often you are asked (Shift-Tab cycles it) |
+| `/sandbox` | how much runs without asking: Ask, Sandboxed or Full access |
+| `/plan <task>` | plan one request: it reads, and writes only the plan |
+| `/permissions` | the allow and deny patterns |
 | `/settings`, `/config` | the settings sheet; exact keys |
 | `/theme` | choose a palette |
 | `/cells`, `/cell`, `/cell N` | open every card, the newest cell that ran, or cell N |

@@ -709,11 +709,22 @@ fn checked_call(
             tool: tool.name().into(),
         });
     }
-    // A command line no allow pattern names goes to the rung's judgement,
-    // but only where the rung judges calls and someone can be asked; with
-    // no gate, or nobody at the terminal, it stays refused as before.
-    let judged = gate.is_some_and(|gate| !gate.ladder().is_unattended());
-    let checked = check_arguments(ctx.profile, tool, args, trace, judged)?;
+    let checked = check_arguments(ctx.profile, tool, args, trace)?;
+    // A command that asks to run outside the sandbox needs somebody to say
+    // yes. Where nobody can be asked -- a subagent, a background job -- it is
+    // refused here, and on Full access there is no sandbox to leave.
+    let outside = checked
+        .iter()
+        .any(|(name, _)| *name == crate::permissions::OUTSIDE);
+    if outside && gate.is_none() && !ctx.profile.os_sandbox_bypassed() {
+        return Err(PermissionDenied {
+            tool: tool.name().into(),
+            path: String::new(),
+            rule: "nobody can be asked here, so this command cannot leave the sandbox; do the work inside it".into(),
+        }
+        .into());
+    }
+    let mut run_outside = false;
     if let Some(gate) = gate {
         if ctx.profile.root().to_str().is_none()
             || checked
@@ -729,7 +740,13 @@ fn checked_call(
         }
         let action = crate::approval::Action::new(tool.name(), ctx.profile.root(), trace.clone());
         let rule = match gate.admit(action.clone(), stopped) {
-            crate::approval::Admission::Allowed => None,
+            crate::approval::Admission::Allowed => {
+                run_outside = outside && !ctx.profile.os_sandbox_bypassed();
+                None
+            }
+            // The person let the refused host through instead: the command
+            // runs again inside the sandbox, which now reaches that host.
+            crate::approval::Admission::HostsAllowed => None,
             // Cancelled the way a running call is: reported as cancelled,
             // never as a refusal the model should work around.
             crate::approval::Admission::Cancelled => {
@@ -737,6 +754,10 @@ fn checked_call(
                     tool: tool.name().into(),
                 });
             }
+            crate::approval::Admission::NobodyToAsk => Some(
+                "nobody is at the terminal to answer, so this call is refused; do the work inside the sandbox or say plainly what needs a person"
+                    .to_string(),
+            ),
             crate::approval::Admission::DeniedEarlier => Some(
                 "you denied this exact call earlier in this session; it stays denied until you forget it on the Ask sheet"
                     .to_string(),
@@ -770,7 +791,7 @@ fn checked_call(
         // the original arguments again; a retargeted symlink gets no authority
         // from the old answer even when both destinations are in the root.
         let mut current = CheckedArgs::new();
-        check_arguments(ctx.profile, tool, args, &mut current, judged)?;
+        check_arguments(ctx.profile, tool, args, &mut current)?;
         if *trace != current || stopped() {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
@@ -831,7 +852,14 @@ fn checked_call(
                 argv.insert(1, format!("--exclude-dir={name}").into());
             }
         }
-        spawn_confined(ctx.profile, &stop, tool, &argv, waiting)?
+        if run_outside {
+            // The one command the person let out, and nothing after it: a
+            // copy of the profile without Sterna's own confinement.
+            let unconfined = ctx.profile.clone().with_os_sandbox_bypass();
+            spawn_confined(&unconfined, &stop, tool, &argv, waiting)?
+        } else {
+            spawn_confined(ctx.profile, &stop, tool, &argv, waiting)?
+        }
     };
     if requested == "grep" && broad_search {
         result.stdout = filter_grep_artifacts(ctx.profile.root(), &result.stdout);
@@ -1242,7 +1270,6 @@ fn check_arguments(
     tool: &Tool,
     args: &Args,
     trace: &mut CheckedArgs,
-    judged: bool,
 ) -> Result<Vec<(&'static str, Checked)>, PermissionDenied> {
     for given in args.names() {
         if !tool.args().iter().any(|arg| arg.name() == given) {
@@ -1325,12 +1352,16 @@ fn check_arguments(
                     Checked::Texts(items.clone()),
                 );
             }
+            (ArgKind::Reason, Some(Argument::Text(value))) => {
+                admit(
+                    &mut checked,
+                    trace,
+                    arg.name(),
+                    Checked::Pattern(value.to_string()),
+                );
+            }
             (ArgKind::CommandLine, Some(Argument::Text(value))) => {
-                if judged {
-                    profile.weigh_command(value)?;
-                } else {
-                    profile.admits_command(value)?;
-                }
+                profile.admits_command(value)?;
                 admit(
                     &mut checked,
                     trace,
@@ -1663,35 +1694,6 @@ fn spawn_confined(
         });
     };
     let grant = exec_grant(executable);
-    let mut descendant_binaries = if tool.argv() == Argv::ShellCommand {
-        argv.last()
-            .and_then(|value| value.to_str())
-            // The line was admitted or judged before it got here; this only
-            // names the programs the OS layer lets it start.
-            .and_then(|line| profile.weigh_command(line).ok())
-            .map(|command| {
-                command
-                    .executables()
-                    .iter()
-                    .filter_map(|program| resolve_program_from(program, profile.root()))
-                    .filter(|binary| !profile.executable_is_refused(binary))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    #[cfg(target_os = "macos")]
-    {
-        let companions = descendant_binaries
-            .iter()
-            .filter_map(|binary| crate::sandbox::macos::python_framework_companion(binary))
-            .filter(|binary| !profile.executable_is_refused(binary))
-            .collect::<Vec<_>>();
-        descendant_binaries.extend(companions);
-    }
-    descendant_binaries.sort();
-    descendant_binaries.dedup();
     // The unresolved branch is a refusal on Windows rather than a wider
     // grant, because that platform has no wider grant to fall back *to*: see
     // [`ExecGrant`]. Refused here as well as in `windows::spawn` so the
@@ -1741,6 +1743,16 @@ fn spawn_confined(
     command.env("GIT_CONFIG_GLOBAL", null_config);
     command.env("GIT_CONFIG_SYSTEM", null_config);
 
+    // **The network is Sterna's proxy, or nothing.** A confined command's
+    // tools are pointed at the proxy that lets the allowed hosts through;
+    // an outer proxy this process inherited is replaced, never passed on,
+    // because the command could not reach it past the sandbox anyway.
+    if let Some(route) = profile.proxy() {
+        for (name, value) in &route.env {
+            command.env(name, value);
+        }
+    }
+
     // The child leads a process group of its own, so a cancellation can name
     // everything the call started and not only the handle it holds. See
     // [`kill_and_reap`] for why that is the difference between stopping a
@@ -1778,7 +1790,6 @@ fn spawn_confined(
     let (mut child, confinement) = spawn_with_confinement_policy(
         profile,
         &grant.binary,
-        &descendant_binaries,
         tool.name(),
         command,
         Pipes {
@@ -2063,7 +2074,7 @@ pub(crate) fn confined_spawn(
     pipes: Pipes,
     line: LineShape,
 ) -> Result<(ConfinedChild, Confinement), SpawnRefusal> {
-    spawn_with_confinement_policy(profile, binary, &[], tool, command, pipes, line)
+    spawn_with_confinement_policy(profile, binary, tool, command, pipes, line)
 }
 
 /// Applies the explicit host-selected bypass or delegates to the platform
@@ -2072,7 +2083,6 @@ pub(crate) fn confined_spawn(
 fn spawn_with_confinement_policy(
     profile: &Profile,
     binary: &Path,
-    descendants: &[PathBuf],
     tool: &str,
     command: Command,
     pipes: Pipes,
@@ -2082,7 +2092,7 @@ fn spawn_with_confinement_policy(
         let child = spawn_bypassed(profile, binary, tool, command, pipes, line)?;
         return Ok((child, Confinement::DangerouslyUnconfined));
     }
-    confined_spawn_with_descendants(profile, binary, descendants, tool, command, pipes, line)
+    platform_confined_spawn(profile, binary, tool, command, pipes, line)
 }
 
 /// The explicit host-selected bypass: a plain `std` spawn with the pipes
@@ -2148,35 +2158,32 @@ fn spawn_bypassed(
 }
 
 #[cfg(target_os = "macos")]
-fn confined_spawn_with_descendants(
+fn platform_confined_spawn(
     profile: &Profile,
-    binary: &Path,
-    descendants: &[PathBuf],
+    _binary: &Path,
     tool: &str,
     mut command: Command,
     pipes: Pipes,
     _line: LineShape,
 ) -> Result<(ConfinedChild, Confinement), SpawnRefusal> {
     apply_pipes(&mut command, pipes);
-    crate::sandbox::macos::confine_with_descendants(profile, binary, descendants, &mut command)
-        .map_err(|error| {
-            SpawnRefusal::Denied(PermissionDenied {
-                tool: tool.to_string(),
-                path: String::new(),
-                rule: format!(
-                    "the seatbelt profile could not be applied, so nothing was spawned: {error}"
-                ),
-            })
-        })?;
+    crate::sandbox::macos::confine(profile, &mut command).map_err(|error| {
+        SpawnRefusal::Denied(PermissionDenied {
+            tool: tool.to_string(),
+            path: String::new(),
+            rule: format!(
+                "the seatbelt profile could not be applied, so nothing was spawned: {error}"
+            ),
+        })
+    })?;
     let child = command.spawn().map_err(SpawnRefusal::Failed)?;
     Ok((ConfinedChild { inner: child }, Confinement::Seatbelt))
 }
 
 #[cfg(target_os = "linux")]
-fn confined_spawn_with_descendants(
+fn platform_confined_spawn(
     profile: &Profile,
-    binary: &Path,
-    descendants: &[PathBuf],
+    _binary: &Path,
     tool: &str,
     mut command: Command,
     pipes: Pipes,
@@ -2190,12 +2197,7 @@ fn confined_spawn_with_descendants(
         })
     };
     apply_pipes(&mut command, pipes);
-    match crate::sandbox::linux::confine_with_descendants(
-        profile,
-        binary,
-        descendants,
-        &mut command,
-    ) {
+    match crate::sandbox::linux::confine(profile, &mut command) {
         Ok(true) => {}
         // `linux::confine` returns `Ok(false)` below Landlock ABI 3 and
         // installs nothing. That is a refusal here rather than a warning.
@@ -2225,17 +2227,15 @@ fn confined_spawn_with_descendants(
 /// the container cannot load, an ACL that would not take the grant — comes
 /// back as a refusal here and nothing is started.
 #[cfg(target_os = "windows")]
-fn confined_spawn_with_descendants(
+fn platform_confined_spawn(
     profile: &Profile,
     binary: &Path,
-    descendants: &[PathBuf],
     tool: &str,
     command: Command,
     pipes: Pipes,
     line: LineShape,
 ) -> Result<(ConfinedChild, Confinement), SpawnRefusal> {
     use crate::sandbox::windows::SpawnError;
-    let _ = descendants;
     match crate::sandbox::windows::spawn(profile, binary, &command, pipes, line) {
         Ok(child) => Ok((ConfinedChild { inner: child }, Confinement::AppContainer)),
         Err(refusal @ SpawnError::NotConfinable(_)) => {
@@ -2254,16 +2254,15 @@ fn confined_spawn_with_descendants(
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn confined_spawn_with_descendants(
+fn platform_confined_spawn(
     profile: &Profile,
     binary: &Path,
-    descendants: &[PathBuf],
     tool: &str,
     command: Command,
     pipes: Pipes,
     line: LineShape,
 ) -> Result<(ConfinedChild, Confinement), SpawnRefusal> {
-    let _ = (profile, binary, descendants, command, pipes, line);
+    let _ = (profile, binary, command, pipes, line);
     Err(SpawnRefusal::Denied(PermissionDenied {
         tool: tool.to_string(),
         path: String::new(),
@@ -2424,21 +2423,20 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// **The bypassed child reaches what the OS sandbox would refuse, and the
-    /// confined child does not** — the decisive difference the bypass exists
-    /// to make, exercised through a real spawn on **both** halves. A file is
-    /// planted outside the project root and `bash` reads it. Sterna's own
-    /// pre-spawn check admits the read in both halves — the grant is the
-    /// same `Read(<outside>/**)` allow rule for both — so the one variable is
-    /// whether the OS sandbox was applied: under the bypass the read
-    /// succeeds; under confinement the seatbelt, Landlock or AppContainer
-    /// blocks it inside the child, which exits non-zero with the content
-    /// never on stdout. A pre-spawn refusal on the confined half would be a
-    /// test failure, not a pass: that half must spawn.
+    /// The bypass is the one variable, exercised through a real spawn on
+    /// both halves: `bash` writes a file outside every writable place. Under
+    /// the bypass the write lands; under confinement the seatbelt, Landlock
+    /// or AppContainer refuses it inside the child. The directory sits beside
+    /// this test binary, because the temp folders are writable places.
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     #[test]
-    fn a_bypassed_child_reads_what_the_sandbox_would_refuse() {
-        let base = std::env::temp_dir().join(format!(
+    fn a_bypassed_child_writes_what_the_sandbox_would_refuse() {
+        let beside = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let base = beside.join(format!(
             "sterna-bypass-reach-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -2446,25 +2444,18 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let root = base.join("project");
+        let root = std::env::temp_dir().join(base.file_name().unwrap());
         let outside = base.join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        let secret = outside.join("secret.txt");
-        std::fs::write(&secret, "SANDBOX-BYPASS-REACHED").unwrap();
-
-        // The same admission for both halves: Sterna's check grants the read.
-        let pattern = outside.to_string_lossy().replace('\\', "/");
-        let settings = serde_json::json!({
-            "permissions": {"allow": ["Bash", format!("Read({pattern}/**)")]}
-        })
-        .to_string();
+        let target = outside.join("made.txt");
+        let settings = serde_json::json!({"permissions": {"allow": ["Bash"]}}).to_string();
         #[cfg(windows)]
-        let command = format!("type \"{}\"", secret.display());
+        let command = format!("echo reached> \"{}\"", target.display());
         #[cfg(not(windows))]
-        let command = format!("cat {}", secret.display());
+        let command = format!("printf reached > '{}'", target.display());
 
-        let read_under = |bypassed: bool| {
+        let write_under = |bypassed: bool| {
             let profile = {
                 let p = Profile::compile(&root, Some(&settings));
                 if bypassed {
@@ -2480,41 +2471,25 @@ mod tests {
             run(&ctx, "bash", &Args::new().with("command", &command))
         };
 
-        let bypassed = read_under(true).expect("the unconfined child spawns");
-        assert_eq!(bypassed.confinement, Confinement::DangerouslyUnconfined);
-        assert!(
-            bypassed.stdout.contains("SANDBOX-BYPASS-REACHED"),
-            "the unconfined child must read the file outside the root: {:?} (exit {:?}, err {:?})",
-            bypassed.stdout,
-            bypassed.exit_code,
-            bypassed.stderr,
-        );
-
-        // The confined half spawns too — Sterna admitted the read — and the
-        // OS sandbox refuses it inside the child.
-        let confined = read_under(false).expect(
-            "the confined child spawns: Sterna admits the read and only the OS sandbox differs",
-        );
+        // The confined half spawns -- Sterna admits the line -- and the OS
+        // sandbox refuses the write inside the child.
+        let confined = write_under(false).expect("the confined child spawns");
         assert_ne!(confined.confinement, Confinement::DangerouslyUnconfined);
         assert!(
-            !confined.stdout.contains("SANDBOX-BYPASS-REACHED"),
-            "the confined child must not read the file outside the root: {:?}",
-            confined.stdout
-        );
-        assert!(
             matches!(confined.exit_code, Some(code) if code != 0),
-            "the confined child's read fails inside the child: exit {:?}, err {:?}",
-            confined.exit_code,
-            confined.stderr
+            "the confined write must fail inside the child: {confined:?}"
         );
-        #[cfg(windows)]
+        assert!(!target.exists(), "the confined child wrote outside");
+
+        let bypassed = write_under(true).expect("the unconfined child spawns");
+        assert_eq!(bypassed.confinement, Confinement::DangerouslyUnconfined);
         assert!(
-            confined.stderr.contains("Access is denied"),
-            "the AppContainer names the refusal: {:?}",
-            confined.stderr
+            target.exists(),
+            "the unconfined child must write: {bypassed:?}"
         );
 
-        std::fs::remove_dir_all(base).unwrap();
+        let _ = std::fs::remove_dir_all(base);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Where no applier can hand back this module's own child, the bypass
@@ -2609,8 +2584,7 @@ mod tests {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("read").unwrap();
         let args = Args::new().with("path", "x").with("depth", "3");
-        let denied =
-            check_arguments(&profile, tool, &args, &mut CheckedArgs::new(), false).unwrap_err();
+        let denied = check_arguments(&profile, tool, &args, &mut CheckedArgs::new()).unwrap_err();
         assert_eq!(denied.path, "depth");
         assert!(denied.rule.contains("declares no argument named `depth`"));
     }
@@ -2619,8 +2593,8 @@ mod tests {
     fn a_missing_required_argument_is_refused() {
         let profile = Profile::compile(std::env::temp_dir(), None);
         let tool = registry::lookup("grep").unwrap();
-        let denied = check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new(), false)
-            .unwrap_err();
+        let denied =
+            check_arguments(&profile, tool, &Args::new(), &mut CheckedArgs::new()).unwrap_err();
         assert!(denied.rule.contains("requires an argument named `pattern`"));
     }
 
@@ -2630,7 +2604,7 @@ mod tests {
         let tool = registry::lookup("grep").unwrap();
         let args = Args::new().with("pattern", "-rf");
         let mut trace = CheckedArgs::new();
-        let checked = check_arguments(&profile, tool, &args, &mut trace, false).unwrap();
+        let checked = check_arguments(&profile, tool, &args, &mut trace).unwrap();
         // The trajectory records the pattern as admitted, and only that.
         assert_eq!(trace.get("pattern").map(String::as_str), Some("-rf"));
         #[cfg(not(windows))]

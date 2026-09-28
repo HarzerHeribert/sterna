@@ -33,7 +33,7 @@ use crate::runtime::handles::HandleTable;
 use crate::runtime::isolate::{DEFAULT_HEAP_LIMIT_BYTES, Runtime};
 use crate::runtime::outcome::{CellOutcome, CellRecord, Ended};
 use crate::runtime::preview;
-use crate::sandbox::modes::{self, ModeOverlay, RequestMode};
+use crate::sandbox::modes::{self, RequestMode};
 use crate::sandbox::profile::Profile;
 use crate::session::context::{
     context_cap, estimate_context, record_request, return_budget, send_task_turn_recovering,
@@ -65,7 +65,6 @@ mod ending;
 use ending::delivered_the_interrupt;
 mod interrupt;
 use interrupt::{DOUBLE_INTERRUPT_WINDOW, INTERRUPT, install_interrupt_handler, watch};
-mod mode_proposal;
 mod native;
 mod notices;
 mod resume;
@@ -400,12 +399,19 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     moved.drain(..).for_each(|line| session_println!("{line}"));
     let mut project = project::load(&args.root);
     let settings_store = crate::settings::Store::new(&args.root)?;
-    let loaded_settings = settings_store.load(args.profile.as_deref())?;
+    let mut loaded_settings = settings_store.load(args.profile.as_deref())?;
     for notice in &loaded_settings.notices {
         session_println!("settings: {notice}");
     }
-    for notice in settings_store.remove_retired(&loaded_settings) {
+    let retired = settings_store.remove_retired(&loaded_settings);
+    for notice in &retired {
         session_println!("settings: {notice}");
+    }
+    // A retired word may have been migrated into the file just now
+    // (`permissions.full_access` into `sandbox.level`): this session runs on
+    // what it announced, not on what the file said a moment ago.
+    if !retired.is_empty() {
+        loaded_settings = settings_store.load(args.profile.as_deref())?;
     }
     if project.settings.is_some() {
         session_println!(
@@ -417,33 +423,14 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     // the next cell's runtime must be built from the choice just made, not
     // from what the file said at startup.
     let config = RefCell::new(loaded_settings.config);
-    let initial_mode = if args.plan {
-        tui::Mode::Plan
-    } else {
-        args.mode.unwrap_or_else(|| {
-            crate::settings_session::value(&loaded_settings.values, "session.mode")
-                .and_then(toml::Value::as_str)
-                .and_then(tui::Mode::parse)
-                .unwrap_or_default()
-        })
-    };
-    // An explicit choice pins; a settings-file default does not, so a
-    // proposal (2639) may still narrow it.
-    let initial_mode_pinned = args.plan || args.mode.is_some();
-    let overlay = {
-        let explore = &config.borrow().modes.explore;
-        ModeOverlay::new(explore.writable.clone(), explore.commands.clone())
-    };
     let initial_effort = crate::settings_session::value(&loaded_settings.values, "session.effort")
         .and_then(toml::Value::as_str)
         .and_then(wire::Effort::parse)
         .unwrap_or_default();
 
-    // After the settings load, because `[permissions] full_access` is one of
-    // the three spellings that set it, and before the profile is compiled,
-    // which is the first thing that reads it.
-    let startup::Reach { yolo, unconfined } = startup::reach(&args, &loaded_settings.values)?;
-    let ladder = startup::ladder(&args, &loaded_settings.values)?;
+    // After the settings load, because `sandbox.level` is one of the two
+    // places that set it.
+    let level = startup::level(&args, &loaded_settings.values)?;
     // An explicit `--model` wins, then the model this project was last left
     // on. There is no compiled-in request-model fallback: starting without a
     // concrete choice would make Sterna silently spend against a model the
@@ -478,31 +465,27 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     } else if let Some(model) = default_decisions.filter(|_| !terminal) {
         session_println!("decisions: {model} (the gateway serves a TypeSafe account)");
     }
-    // A terminal draws the rung live on the session card instead, so the
-    // line cannot go stale the moment Shift-Tab moves it.
+    // A terminal draws the level live on the top bar instead, so the line
+    // cannot go stale the moment the level changes.
     if !terminal {
-        session_println!("{}", startup::permissions_line(&ladder));
+        session_println!("{}", startup::sandbox_line(&level));
     }
 
     // `sandbox-grants.md` §1.5: computed once, at session start, immutable
     // for the session's life. Reloading a persisted configuration must never
     // let a program widen its own sandbox during the running session.
-    let mut profile = compile_profile_once(&project, yolo);
+    let mut profile = compile_profile_once(&project);
     for directory in &args.additional_dirs {
         profile = profile.with_additional_root(directory)?;
     }
-    if unconfined {
-        profile = profile.with_os_sandbox_bypass();
+    if level.level() == crate::permissions::Level::Full {
         // Said plainly, and said with what still holds: a line that only
         // shouts teaches a person to stop reading it.
         session_println!(
-            "sandbox: full access — Sterna applies no OS confinement to the children it spawns; this machine is the boundary. Path admission, the deny patterns and the never-grantable set (network, ~/.ssh, ~/.aws, ~/.claude, ~/.codex, ~/.config, registry credentials, sandbox launchers) are unchanged."
+            "sandbox: full access — Sterna applies no OS confinement to the children it spawns; this machine is the boundary. The deny patterns and the never-grantable set are unchanged."
         );
     }
 
-    // Collected once the profile is final: the manifest reports the grants
-    // in force, and a bypass applied above changes what it says.
-    let manifest = system_manifest(&profile, &config.borrow());
     let roster = startup::subagent_roster(&gateway, &accounts);
     let started_on = requested.map(|model| startup::settle_model(model, &accounts));
     // Held for the whole session: dropping it kills the gateway sterna started.
@@ -514,6 +497,15 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         args.gateway.is_some(),
         &rollout_path.with_extension("gateway.log"),
     )?;
+    // After the gateway, which writes the process environment and so must
+    // start while this process is still single-threaded; the proxy is the
+    // first thread of its own.
+    let proxy = startup::start_proxy(&args, &loaded_settings.values).map(Arc::new);
+    profile = startup::route_through(profile, proxy.as_deref());
+    // Collected once the profile is final: the manifest reports the grants
+    // in force, and the bypass and the proxy applied above change what it
+    // says.
+    let manifest = system_manifest(&profile, &config.borrow());
 
     let resuming = rollout_path.exists();
     let (conversation, provider_checkpoint, provider_start) = if resuming {
@@ -599,9 +591,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
                 {
                     let mut state = tui::ScreenState {
                         model: started_on.clone(),
-                        mode: initial_mode,
-                        mode_pinned: initial_mode_pinned,
-                        permissions: ladder.clone(),
+                        level: level.clone(),
                         effort: initial_effort,
                         settings_root: Some(args.root.clone()),
                         settings_global: crate::project::workflows::user_directory(),
@@ -615,11 +605,10 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
                         // count, and nothing on a status line could ever have
                         // said so.
                         sandbox: Some(format!(
-                            "{} path rules · {} command patterns",
+                            "{} path rules · {} pre-approved commands",
                             profile.rule_count(),
-                            profile.command_pattern_count(),
+                            profile.pre_approved().len(),
                         )),
-                        full_access: yolo,
                         helpers_on: controls::tier_status(&config.borrow()).0,
                         subagents: Some(controls::tier_status(&config.borrow()).1),
                         // The third half, which until 2026-09-19 no surface
@@ -659,10 +648,16 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     let levers = interactive.as_ref().map(ui::LiveUi::steer_handle);
     std::thread::spawn(move || watch(&watched, levers));
 
-    // `full` asks nothing, so it needs no gate at all and pays nothing for
-    // one. Every other rung installs the gate and decides per call whether
-    // it reaches a person (`permissions::judge`).
-    let approval_gate = startup::approval_gate(&ladder, &config.borrow(), interactive.as_ref());
+    // Every session gets the gate: it decides per call whether the level
+    // sends it to a person (`permissions::judge`), and refuses what nobody
+    // is there to answer.
+    let approval_gate = Some(startup::approval_gate(
+        &level,
+        &config.borrow(),
+        &profile,
+        interactive.as_ref(),
+        proxy.as_ref(),
+    ));
     let ask_gate = interactive.as_ref().map(ui::LiveUi::ask_gate);
     let session = Session {
         selected_profile: args.profile.clone(),
@@ -670,7 +665,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         observe: observe.clone(),
         approval_gate,
         ask_gate,
-        ladder: Some(ladder.clone()),
+        level: Some(level.clone()),
         window: RefCell::new(Window::new(WindowConfig::default())),
         roster,
         project: &project,
@@ -683,9 +678,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         ui: interactive.as_ref(),
         model: RefCell::new(started_on.clone().unwrap_or_default()),
         context_window: started_on.clone().zip(args.context_window_tokens),
-        mode: Cell::new(initial_mode),
-        mode_pinned: Cell::new(initial_mode_pinned),
-        overlay,
+        mode: Cell::new(RequestMode::Work),
         effort: Cell::new(initial_effort),
         routing: Default::default(),
         interface: Cell::new(args.interface.unwrap_or_default()),
@@ -702,6 +695,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     resume::offer(&args, &session, &session_id);
     let outcome = drive(&args, &session, &mut transcript, &mut rollout)
         .map_err(|message| startup::explain_failure(&message, &session));
+    startup::refused_hosts(proxy.as_deref(), interactive.is_some());
     // §5 again, and this one is the promise `session::run` itself makes: an
     // input that failed mid-task left `run_task` by `?` without reaching its
     // own shutdown, and a job of that task must not outlive the session
@@ -726,23 +720,18 @@ struct Session<'a> {
     /// Where a question a cell asked goes. `None` whenever nobody is at the
     /// keyboard, which is what makes `ask` throw rather than wait.
     ask_gate: Option<crate::ask::Gate>,
-    /// The live permission rung, when this session has one. `None` only for
-    /// the constructed sessions in tests that never ask anybody anything.
-    ladder: Option<crate::permissions::Ladder>,
+    /// The live sandbox level. `None` only for the constructed sessions in
+    /// tests that never ask anybody anything.
+    level: Option<crate::permissions::LiveLevel>,
     window: RefCell<Window>,
     ui: Option<&'a ui::LiveUi>,
     model: RefCell<String>,
     /// Capacity explicitly associated with the startup model. A `/model`
     /// switch cannot silently reuse it for a different model.
     context_window: Option<(String, u64)>,
-    mode: Cell<tui::Mode>,
-    /// Set by `/mode <m>`, `--mode` or `--plan`; cleared by `/mode auto`. A
-    /// proposal (2639) never narrows a pinned session.
-    mode_pinned: Cell<bool>,
-    /// `[modes.explore]`'s writable globs and command patterns, compiled once
-    /// from the config this session started with (2637): every narrowing
-    /// this session compiles reuses it rather than rebuilding it per request.
-    overlay: ModeOverlay,
+    /// What the request now running may do: `Plan` for the one request
+    /// `/plan` started, `Work` otherwise.
+    mode: Cell<RequestMode>,
     effort: Cell<wire::Effort>,
     /// This task's sticky routing to the provider's cache (cleared per task).
     routing: std::sync::Arc<wire::TurnRouting>,
@@ -935,6 +924,19 @@ fn process_input(
             let task = project_command_task(name, body, argument);
             return Ran::Turn(run_task(&task, session, transcript, rollout));
         }
+        // `/plan <task>`: one request that reads and writes only its plan.
+        // The next request works as usual and is handed the plan.
+        if name == "plan" {
+            let Some(task) = argument.filter(|task| !task.trim().is_empty()) else {
+                session_println!(
+                    "Use /plan <what to plan>: that one request reads, writes only {}, and hands the plan to your next message.",
+                    modes::PLAN_FILE
+                );
+                return Ran::Control(Ok(()));
+            };
+            session.mode.set(RequestMode::Plan);
+            return Ran::Turn(run_task(task, session, transcript, rollout));
+        }
         answer_command(rest, name, argument, session, transcript);
         // The screen hears of a control through `control_done`, which keeps
         // the turn's ending; only the line-mode transcript is drawn here.
@@ -946,8 +948,8 @@ fn process_input(
     Ran::Turn(run_task(input, session, transcript, rollout))
 }
 
-/// One control the screen passed on while a turn ran: `/model`, `/mode` or
-/// `/effort` with its argument.
+/// One control the screen passed on while a turn ran: `/model`, `/sandbox`
+/// or `/effort` with its argument.
 fn answer_control(command: &str, session: &Session<'_>, transcript: &mut Transcript) {
     let rest = command.trim().trim_start_matches('/');
     let (name, argument) = split_command(rest);
@@ -962,7 +964,8 @@ fn is_session_control(name: &str) -> bool {
             | "model"
             | "models"
             | "effort"
-            | "mode"
+            | "plan"
+            | "sandbox"
             | "handlers"
             | "handles"
             | "budget"
@@ -1043,15 +1046,15 @@ fn run_task(
     transcript.notebook.preflight = None;
     // Moves made while the last task ran reach the file here, at the boundary:
     // the UI thread that made them writes nothing itself.
-    rollout.record_moves(session.ladder.as_ref());
+    rollout.record_moves(session.level.as_ref());
     let (mode, started) = (session.mode.get(), std::time::SystemTime::now());
     session.observe.task_begin(
         task,
-        session.mode.get().name(),
+        mode.name(),
         session
-            .ladder
+            .level
             .as_ref()
-            .map_or("unset", |ladder| ladder.rung().name()),
+            .map_or("unset", |level| level.level().name()),
         &session.model.borrow(),
     );
     let ended = run_task_inner(task, session, transcript, rollout);
@@ -1066,7 +1069,9 @@ fn run_task(
         Err(_) => tui::Activity::Failed,
     };
     let result = ended.map(|_| ());
-    rollout.record_moves(session.ladder.as_ref());
+    rollout.record_moves(session.level.as_ref());
+    // A plan is one request: the next one works as usual.
+    session.mode.set(RequestMode::Work);
     if mode == RequestMode::Plan
         && let Some(plan) = modes::written_plan(session.profile.root(), started)
     {
@@ -1115,7 +1120,6 @@ fn run_task_inner(
     let has_history = !transcript.conversation.messages.is_empty();
     let (decision, decision_failures, pending_decision) = task_decision(task, session, has_history);
     let effort_lease = system::EffortLease::for_kind(session, decision.as_ref());
-    let proposal = mode_proposal::propose(session, decision.as_ref());
     // The acceptance lister runs beside the Scout: two independent reads of
     // the same request, and in series the person waited for both.
     let (preflight_outcome, acceptance_record) = std::thread::scope(|scope| {
@@ -1162,15 +1166,10 @@ fn run_task_inner(
         .map_err(|e| format!("could not record the user turn: {e}"))?;
     transcript.conversation.messages.push(user_message);
 
-    // The request mode narrows this task's profile; the prompt line above
-    // informs, and this clone is what refuses (ruling *Request modes*).
-    // `proposal.narrow_mode` is `session.mode.get()` unless a read-only
-    // intent proposed `explore` for this one request (2639); the session's
-    // own mode is never written by a proposal.
-    let request_profile = session
-        .profile
-        .clone()
-        .narrowed_to(proposal.narrow_mode, &session.overlay);
+    // This request's profile: a plan request narrows it, and Full access
+    // lifts Sterna's own confinement. Built once per request from the live
+    // level, so a level changed mid-task applies from the next request.
+    let request_profile = request_profile(session);
     let mut runtime = Runtime::with_limits(
         &request_profile,
         session.id,
@@ -1192,7 +1191,7 @@ fn run_task_inner(
     }
     // Decided once per request, because all three of its inputs can change
     // between requests: the terminal, `[ask] enabled`, and the narrowing.
-    runtime = runtime.with_ask(ask::refusal(session, proposal.narrow_mode));
+    runtime = runtime.with_ask(ask::refusal(session));
     // `events-contract.md` §2: one window is always open, from session start
     // or from the moment the previous batch was delivered. It is per task
     // because the isolate the batch is bound in is, and §5's jobs are
@@ -1229,8 +1228,7 @@ fn run_task_inner(
             &effort_lease,
             preflight_outcome.brief.map(crate::preflight::Brief::as_str),
             preflight_outcome.would_dissect,
-        )
-        .with_mode_proposal(proposal);
+        );
     task_state.pending_decision = pending_decision;
     output::decisions(task_state.decisions_telemetry(&session.config().decisions));
 
@@ -2593,6 +2591,20 @@ fn answer_memory(memory: &LocalMemory, argument: Option<&str>) {
     }
 }
 
+/// The profile one request runs under: the session's, narrowed for a plan
+/// request, and without Sterna's own confinement on Full access.
+fn request_profile(session: &Session<'_>) -> Profile {
+    let profile = session.profile.clone().narrowed_to(session.mode.get());
+    match session
+        .level
+        .as_ref()
+        .map(crate::permissions::LiveLevel::level)
+    {
+        Some(crate::permissions::Level::Full) => profile.with_os_sandbox_bypass(),
+        _ => profile,
+    }
+}
+
 /// The one place a session compiles its [`Profile`], and the one place that
 /// prints the sandbox notice.
 ///
@@ -2602,32 +2614,14 @@ fn answer_memory(memory: &LocalMemory, argument: Option<&str>) {
 /// `sterna session` that produces a `Profile` and it prints as it does so, a
 /// second compilation would print a second line, and
 /// `tests/tools.rs::the_profile_is_built_once_per_session` counts them.
-fn compile_profile_once(project: &ProjectConfig, yolo: bool) -> Profile {
-    let profile = if yolo {
-        session_println!(
-            "sandbox: --yolo — the project root and every command line are granted; \
-             native permission denials and the never-grantable set still apply"
-        );
-        let mut settings: serde_json::Value =
-            serde_json::from_str(&yolo_settings(&project.root)).expect("generated permissions");
-        if let Some(denies) = project
-            .settings
-            .as_deref()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-            .and_then(|v| v.get("permissions").and_then(|p| p.get("deny")).cloned())
-        {
-            settings["permissions"]["deny"] = denies;
-        }
-        Profile::compile(&project.root, Some(&settings.to_string()))
-    } else {
-        Profile::from_project(project)
-    };
+fn compile_profile_once(project: &ProjectConfig) -> Profile {
+    let profile = Profile::from_project(project);
     // A terminal's footer already shows the rule counts and network.
     ui::detail(format!(
-        "sandbox: profile compiled once for this session -- {} path rule(s), {} command \
-         pattern(s), network: {}",
+        "sandbox: profile compiled once for this session -- {} path rule(s), {} pre-approved \
+         command(s), network: {}",
         profile.rule_count(),
-        profile.command_pattern_count(),
+        profile.pre_approved().len(),
         if profile.grants_network() {
             "yes"
         } else {
@@ -2661,20 +2655,6 @@ fn compile_profile_once(project: &ProjectConfig, yolo: bool) -> Profile {
         session_println!("sandbox: {diagnostic}");
     }
     profile
-}
-
-/// The settings document `--yolo` compiles instead of the project's own.
-///
-/// **The invariant: this is an ordinary settings document and nothing else.**
-/// `--yolo` adds no grant kind and no bypass inside `Profile`, so every rule
-/// the compiler already enforces — §4's never-grantable set above all — is
-/// enforced here identically. `Bash` bare is the spec's own "every command
-/// line admitted"; the three path patterns are the project root's closure.
-fn yolo_settings(root: &std::path::Path) -> String {
-    let root = root.display().to_string().replace('\\', "\\\\");
-    format!(
-        r#"{{"permissions":{{"allow":["Read({root}/**)","Write({root}/**)","Edit({root}/**)","Bash"]}}}}"#
-    )
 }
 
 /// The rest of a `/tool …` line, or `None` for any other slash command.
@@ -2736,10 +2716,7 @@ fn answer_tool(rest: &str, session: &Session<'_>) {
         return;
     };
     let ctx = ToolContext {
-        profile: &session
-            .profile
-            .clone()
-            .narrowed_to(session.mode.get(), &session.overlay),
+        profile: &request_profile(session),
         session: session.id,
     };
     match invoke::run(&ctx, &tool, &args) {
@@ -2999,7 +2976,7 @@ mod tests {
             observe: crate::observe::Observer::none(),
             approval_gate: None,
             ask_gate: None,
-            ladder: None,
+            level: None,
             window: RefCell::new(crate::events::window::Window::new(Default::default())),
             roster: Vec::new(),
             ui: None,
@@ -3007,9 +2984,7 @@ mod tests {
             context_window: None,
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
-            mode: Cell::new(tui::Mode::Execute),
-            mode_pinned: Cell::new(false),
-            overlay: ModeOverlay::default(),
+            mode: Cell::new(RequestMode::Work),
             effort: Cell::new(wire::Effort::Default),
             routing: Default::default(),
             project: &project,

@@ -125,8 +125,8 @@ fn a_range_read_keeps_exactly_the_range_that_was_asked_for() {
 fn a_command_the_grant_refuses_is_never_lifted_into_one_that_would_be_allowed() {
     let root = fixture("refused");
     let command = format!("cat {}", root.join("target.rs").to_string_lossy());
-    // Read is granted; the shell command is not admitted at all.
-    let refuses_shell = r#"{"permissions":{"allow":["Read(**)"]}}"#;
+    // Read is granted; the shell command is refused by a deny pattern.
+    let refuses_shell = r#"{"permissions":{"allow":["Read(**)"],"deny":["Bash(cat *)"]}}"#;
     let profile = Profile::compile(&root, Some(refuses_shell));
     let mut runtime = Runtime::new(&profile, &SessionId::new("lifting-refused"));
     let source = format!(
@@ -138,7 +138,7 @@ fn a_command_the_grant_refuses_is_never_lifted_into_one_that_would_be_allowed() 
     let record = record(&outcome);
     assert_eq!(
         record.calls[0].tool, "bash",
-        "an unadmitted command stays the command the model wrote, so the \
+        "a refused command stays the command the model wrote, so the \
          shell's own refusal is what answers it"
     );
     assert!(record.calls[0].lifted_from.is_none());

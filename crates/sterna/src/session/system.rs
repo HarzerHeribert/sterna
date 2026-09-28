@@ -118,8 +118,7 @@ fn lasting_part(system: &str) -> String {
 /// This task's request-mode line and the approved plan, if any: task
 /// context, carried in the task's message rather than the system prompt.
 pub(super) fn task_lines(session: &Session<'_>) -> String {
-    let mut lines =
-        prompt::request_mode_line(session.mode.get(), &session.overlay).unwrap_or_default();
+    let mut lines = prompt::request_mode_line(session.mode.get()).unwrap_or_default();
     if session.mode.get() != RequestMode::Plan
         && let Some(plan) = session.plan.take()
     {
@@ -989,12 +988,6 @@ pub fn session_facts(profile: &Profile) -> prompt::SessionFacts {
     prompt::SessionFacts {
         root: profile.root().display().to_string(),
         writable,
-        command_patterns: profile.command_pattern_count(),
-        // Not `args.yolo`: the flag is a request, the profile is the grant.
-        // A mutation that stopped `--yolo` reaching the compiler survived
-        // while this read the flag, because the model was still told the
-        // grant was open (2026-09-06).
-        all_commands: profile.admits_every_command(),
         network: profile.grants_network(),
         interface: crate::abi::Interface::default(),
         manifest: None,

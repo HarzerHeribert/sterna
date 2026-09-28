@@ -49,9 +49,9 @@ pub struct Entry {
 /// told about this tool is that its exit code is part of its result, and a
 /// platform note may be added to that sentence but never at its expense.
 #[cfg(not(windows))]
-const BASH_SUMMARY: &str = "Run a command line under the sandbox grant; inspect `exit_code` before treating it as successful. A test or lint check that already passed on byte-identical files is not run again; its result comes back with a note in `stderr`.";
+const BASH_SUMMARY: &str = "Run a command line under the sandbox grant; inspect `exit_code` before treating it as successful. A test or lint check that already passed on byte-identical files is not run again; its result comes back with a note in `stderr`. Pass `outside` (one sentence: why) only when the command must leave the sandbox; the person is asked. When the sandbox refuses a host (`Sterna's sandbox does not allow <host>`), call again with `outside` naming that host and why: the person can allow just the host.";
 #[cfg(windows)]
-const BASH_SUMMARY: &str = "Run a command line under the sandbox grant; on this host it runs under `cmd.exe`, so write cmd syntax (`findstr`, `dir`, `&&`) rather than POSIX shell, and inspect `exit_code` before treating it as successful. A test or lint check that already passed on byte-identical files is not run again; its result comes back with a note in `stderr`.";
+const BASH_SUMMARY: &str = "Run a command line under the sandbox grant; on this host it runs under `cmd.exe`, so write cmd syntax (`findstr`, `dir`, `&&`) rather than POSIX shell, and inspect `exit_code` before treating it as successful. A test or lint check that already passed on byte-identical files is not run again; its result comes back with a note in `stderr`. Pass `outside` (one sentence: why) only when the command must leave the sandbox; the person is asked. When the sandbox refuses a host (`Sterna's sandbox does not allow <host>`), call again with `outside` naming that host and why: the person can allow just the host.";
 
 pub const ENTRIES: &[Entry] = &[
     Entry {
