@@ -1241,6 +1241,28 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     assert!(!alive(), "the sign-in outlived the session");
 }
 
+/// A first start says the recommended settings changed **and** keeps the
+/// way into setup on the opening card: the one line never takes the chip's
+/// place.
+#[test]
+fn a_first_start_keeps_the_setup_chip_beside_the_changed_settings_line() {
+    let (base, _requests) = provider();
+    // Helpers off differs from a recommendation this install has not seen.
+    let mut app = App::start_seeded(&base, false, None, &[], &|root| {
+        std::fs::create_dir_all(root.join(".sterna")).unwrap();
+        std::fs::write(
+            root.join(".sterna/config.toml"),
+            "[helpers]\nenabled = false\n",
+        )
+        .unwrap();
+    });
+    app.ready();
+    app.contains("recommended settings changed");
+    app.contains("finish setup");
+    app.send(b"/exit\r");
+    assert_eq!(app.exited(), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
