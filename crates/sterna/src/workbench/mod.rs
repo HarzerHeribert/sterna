@@ -65,6 +65,8 @@ pub enum Action {
     /// The Scout's whole report, under the request it read, shown or put
     /// away.
     Scout,
+    /// The task's acceptance list, whole, on its own sheet.
+    Acceptance,
     Latest,
     Settings,
     Models,
@@ -230,6 +232,8 @@ pub enum Source {
     Keys,
     /// Local notices, newest last.
     Activity,
+    /// The task's acceptance list: each item and what the last check found.
+    Acceptance,
     /// Every theme; `before` is what Esc and Undo go back to.
     Themes {
         before: crate::tui::Theme,

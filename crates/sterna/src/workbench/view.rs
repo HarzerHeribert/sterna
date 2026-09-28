@@ -190,6 +190,8 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
 }
 /// The empty columns kept between the transcript and the sidebar's rule.
 const SIDEBAR_GUTTER: u16 = 2;
+/// The acceptance items the sidebar lists before "… N more".
+const ACCEPTANCE_LINES: usize = 4;
 
 pub struct Layout {
     pub transcript: Rect,
@@ -432,6 +434,8 @@ pub fn render(
             gutter,
             running_cell,
             boxed,
+            (sidebar.is_none() && !n.acceptance.is_empty())
+                .then(|| crate::acceptance::tally(&n.acceptance)),
         );
         y += 1;
     }
@@ -908,6 +912,31 @@ fn session_card(
             lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
         }
     }
+    // The task's acceptance list, when it has one: how much of it stands
+    // met and its first items, every line one click from the whole list.
+    if !n.acceptance.is_empty() {
+        let (met, total) = crate::acceptance::tally(&n.acceptance);
+        lines.push((String::new(), Tone::Normal, None));
+        lines.push((
+            format!("ACCEPTANCE · {met} of {total} met"),
+            Tone::Accent,
+            Some(Action::Acceptance),
+        ));
+        for verdict in n.acceptance.iter().take(ACCEPTANCE_LINES) {
+            lines.push((
+                format!("{} {}", verdict.status.mark(), verdict.item.plain()),
+                super::sheets::acceptance_tone(verdict.status),
+                Some(Action::Acceptance),
+            ));
+        }
+        if total > ACCEPTANCE_LINES {
+            lines.push((
+                format!("  … {} more", total - ACCEPTANCE_LINES),
+                Tone::Muted,
+                Some(Action::Acceptance),
+            ));
+        }
+    }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
     // The newest cell that called a helper: the turn ending does not make
@@ -1004,6 +1033,7 @@ fn dock_top(
     gutter: Option<u16>,
     cell: Option<usize>,
     boxed: bool,
+    tally: Option<(usize, usize)>,
 ) {
     let t = s.theme;
     let running = s.activity.working();
@@ -1098,17 +1128,35 @@ fn dock_top(
         if boxed {
             row(f, Rect::new(a.right() - 1, a.y, 1, 1), "╮", Tone::Line, t);
         }
+        // What stands at the far end, right to left.
+        let mut right = a.right().saturating_sub(2);
         // Rows of the draft above the composer's window say so here, on
         // its top edge.
         if ui.composer_hidden.0 > 0 {
             let above = format!(" ↑ {} more ", ui.composer_hidden.0);
             let w = chrome::width(&above);
             if used + w + 4 < a.width {
-                row(
+                right = right.saturating_sub(w);
+                row(f, Rect::new(right, a.y, w, 1), &above, Tone::Muted, t);
+            }
+        }
+        // The acceptance list's tally, where the sidebar that lists it is
+        // not on screen: beside the turn's status, one click from the list.
+        if let Some((met, total)) = tally {
+            let label = format!("✓ {met} of {total} met");
+            let w = chrome::width(&label) + 4;
+            if right > a.x + used + w + 2 {
+                chrome::chip(
                     f,
-                    Rect::new(a.right().saturating_sub(w + 2), a.y, w, 1),
-                    &above,
-                    Tone::Muted,
+                    g,
+                    right - w - 1,
+                    a.y,
+                    right,
+                    &label,
+                    Action::Acceptance,
+                    false,
+                    Tone::Normal,
+                    ui.press,
                     t,
                 );
             }

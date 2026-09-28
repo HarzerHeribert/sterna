@@ -48,6 +48,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Confirm(what) => confirm(sheet, what),
         Source::Keys => keys(sheet),
         Source::Activity => activity(sheet, s),
+        Source::Acceptance => acceptance(sheet, n),
         Source::Themes { .. } => themes(sheet, s),
         Source::Settings(p) => super::settings::items(sheet, p, s),
         Source::Models(m) => super::models::items(sheet, m),
@@ -55,7 +56,6 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Fold(_) => fold_items(sheet, fold),
         Source::More(controls) => more_items(sheet, controls),
     };
-    let _ = n;
     // While a turn runs, a row that waits for it to end says so before it
     // is clicked, in the one sentence every such refusal uses.
     let items = if s.activity.working() {
@@ -301,6 +301,54 @@ fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         vec![Item::info("Nothing has happened yet.").tone(Tone::Muted)]
     } else {
         lines
+    }
+}
+
+/// The task's acceptance list, whole: each item under its mark, and what
+/// the last check found -- or when it will be checked.
+fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
+    use crate::acceptance::Status;
+    let (met, total) = crate::acceptance::tally(&n.acceptance);
+    sheet.title = "Acceptance".into();
+    sheet.crumbs = vec![format!("{met} of {total} met · derived from your request")];
+    if n.acceptance.is_empty() {
+        return vec![Item::info("This task has no acceptance list.").tone(Tone::Muted)];
+    }
+    let mut items = Vec::new();
+    for verdict in &n.acceptance {
+        items.push(
+            Item::info(format!(
+                "{} {}",
+                verdict.status.mark(),
+                verdict.item.plain()
+            ))
+            .tone(acceptance_tone(verdict.status)),
+        );
+        let found = match verdict.status {
+            _ if !verdict.evidence.is_empty() => verdict.evidence.as_str(),
+            Status::Judge => "left to the checker",
+            _ => "checked when the task finishes",
+        };
+        items.push(Item::info(format!("  {found}")).tone(Tone::Muted));
+    }
+    items.push(
+        Item::info(
+            "Sterna reads files after every cell; it runs commands and judges the rest \
+             when the model says it is done.",
+        )
+        .tone(Tone::Muted),
+    );
+    items
+}
+
+/// The colour of an acceptance item's mark and words.
+pub(super) fn acceptance_tone(status: crate::acceptance::Status) -> Tone {
+    use crate::acceptance::Status;
+    match status {
+        Status::Met => Tone::Success,
+        Status::Unmet => Tone::Failure,
+        Status::Unknown => Tone::Warning,
+        Status::Judge | Status::Open => Tone::Muted,
     }
 }
 

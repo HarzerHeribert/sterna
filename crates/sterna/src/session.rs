@@ -1044,6 +1044,7 @@ fn run_task(
     }
     transcript.notebook.handlers.clear();
     transcript.notebook.preflight = None;
+    transcript.notebook.acceptance.clear();
     // Moves made while the last task ran reach the file here, at the boundary:
     // the UI thread that made them writes nothing itself.
     rollout.record_moves(session.level.as_ref());
@@ -1231,6 +1232,7 @@ fn run_task_inner(
         );
     task_state.pending_decision = pending_decision;
     output::decisions(task_state.decisions_telemetry(&session.config().decisions));
+    transcript.notebook.acceptance = task_state.standing(session);
 
     loop {
         // **The cell boundary, which is where a requested stop is honoured.**
@@ -1617,6 +1619,7 @@ fn run_task_inner(
         step.view.answered = step.answer.is_some();
         transcript.notebook.tokens = budget.tokens();
         transcript.notebook.set(ordinal, step.view.clone());
+        transcript.notebook.acceptance = task_state.standing(session);
         {
             let _line = session.interrupt.writing();
             rollout

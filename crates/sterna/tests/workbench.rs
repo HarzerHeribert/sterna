@@ -1641,6 +1641,61 @@ fn the_transcript_keeps_a_gutter_before_the_sidebar() {
     }
 }
 
+/// The task's acceptance list stands in the sidebar as a tally and its
+/// first items, and without the sidebar as one chip; either opens the whole
+/// list on its own sheet.
+#[test]
+fn the_acceptance_list_is_a_tally_in_the_sidebar_or_a_chip_and_opens_whole() {
+    use sterna::acceptance::{Item, Status, Verdict};
+    let (c, mut n, mut s) = fixture();
+    n.acceptance = vec![
+        Verdict {
+            item: Item::FileExists {
+                path: "src/motion.rs".into(),
+            },
+            status: Status::Met,
+            evidence: "present, 12 bytes".into(),
+        },
+        Verdict {
+            item: Item::RunExitsZero {
+                command: "cargo test".into(),
+            },
+            status: Status::Open,
+            evidence: String::new(),
+        },
+        Verdict {
+            item: Item::Judge {
+                text: "the guard reads the setting".into(),
+            },
+            status: Status::Open,
+            evidence: String::new(),
+        },
+    ];
+    let mut u = Workbench::default();
+    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(wide.contains("ACCEPTANCE · 1 of 3 met"), "{wide}");
+    assert!(wide.contains("✓ file src/motion.rs exists"), "{wide}");
+    assert!(wide.contains("○ cargo test exits 0"), "{wide}");
+    assert!(
+        !wide.contains("✓ 1 of 3 met"),
+        "one tally on screen: {wide}"
+    );
+
+    let narrow = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    assert!(narrow.contains("✓ 1 of 3 met"), "{narrow}");
+    assert!(!narrow.contains("ACCEPTANCE"), "{narrow}");
+    click(&mut u, &mut s, &n, Action::Acceptance);
+    let sheet = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    for line in [
+        "ACCEPTANCE › 1 of 3 met",
+        "present, 12 bytes",
+        "judge: the guard reads the setting",
+        "checked when the task finishes",
+    ] {
+        assert!(sheet.contains(line), "{line}: {sheet}");
+    }
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]

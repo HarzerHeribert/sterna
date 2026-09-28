@@ -925,6 +925,7 @@ impl Workbench {
                 };
             }
             Action::Scout => self.scout = !self.scout,
+            Action::Acceptance => self.show(Source::Acceptance, from_sheet),
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),
             Action::Resume(id) => {

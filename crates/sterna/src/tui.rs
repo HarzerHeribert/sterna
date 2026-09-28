@@ -862,6 +862,9 @@ pub struct Notebook {
     /// The pushed Scout running before the task model's first turn. This is
     /// presentation-only and is never persisted as a model-authored cell.
     pub preflight: Option<HelperRecord>,
+    /// The task's acceptance list as it stands (`acceptance::standing`),
+    /// empty when no list was derived. Presentation only, like `preflight`.
+    pub acceptance: Vec<crate::acceptance::Verdict>,
     pub inbox_depth: usize,
     pub batches_delivered: u64,
     pub handlers: Vec<crate::runtime::handlers::HandlerInfo>,
