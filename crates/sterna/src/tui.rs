@@ -180,7 +180,7 @@ pub struct ScreenState {
     /// sheet changes it from this thread while a task runs.
     pub level: crate::permissions::LiveLevel,
     /// The approval gate's memory: every call answered for the whole
-    /// session, which the Ask sheet lists and can forget.
+    /// session, which the Sandbox sheet lists and can forget.
     pub memory: Option<crate::approval::Memory>,
     /// The live list of hosts the session's network proxy lets through,
     /// shared with it: the hosts sheet changes it from this thread. `None`

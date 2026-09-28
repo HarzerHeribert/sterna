@@ -1346,6 +1346,69 @@ fn surface(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &m
     }
 }
 
+/// Text laid into lines no wider than `width`, **keeping the spaces
+/// between words**: a column laid out with spaces stays a column, and
+/// indentation stays. A break drops the spaces it falls on; a word wider
+/// than a line is split.
+pub(super) fn wrap_spaced(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut runs: Vec<(String, bool)> = Vec::new();
+    for c in text.chars() {
+        let c = if c == '\t' { ' ' } else { c };
+        let space = c == ' ';
+        match runs.last_mut() {
+            Some((run, was)) if *was == space => run.push(c),
+            _ => runs.push((c.to_string(), space)),
+        }
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for (run, space) in runs {
+        let size = run.chars().count();
+        if space {
+            if used + size <= width {
+                line.push_str(&run);
+                used += size;
+            } else {
+                lines.push(std::mem::take(&mut line).trim_end().to_string());
+                used = 0;
+            }
+            continue;
+        }
+        if used > 0 && used + size > width {
+            lines.push(std::mem::take(&mut line).trim_end().to_string());
+            used = 0;
+        }
+        let mut rest: Vec<char> = run.chars().collect();
+        while used + rest.len() > width {
+            let take = width - used;
+            line.extend(rest.drain(..take));
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        used += rest.len();
+        line.extend(rest);
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Code laid into lines no wider than `width`: every character kept, the
+/// line cut where it reaches the edge.
+pub(super) fn wrap_exact(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.replace('\t', "    ").chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
 /// Words laid into lines no wider than `width`.
 pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();

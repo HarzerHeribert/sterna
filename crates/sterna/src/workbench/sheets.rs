@@ -256,11 +256,6 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
             None,
         ),
         ("Ctrl-A E", "start or end of the line", None),
-        (
-            "Ctrl-K U",
-            "delete to the end or the start of the line",
-            None,
-        ),
         ("/", "commands · /help lists every one", None),
         ("?", "this sheet, when the composer is empty", None),
         ("click", "any chip changes the thing it names", None),
@@ -270,13 +265,21 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
 fn keys(sheet: &mut Sheet) -> Vec<Item> {
     sheet.title = "Keys".into();
     sheet.crumbs = vec!["every key, and what it does".into()];
-    keymap()
-        .into_iter()
+    let keys = keymap();
+    let column = keys
+        .iter()
+        .map(|(key, _, _)| key.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    keys.into_iter()
         .map(|(key, what, action)| {
-            let text = format!("{key:<11}{what}");
+            let text = format!("{key:<column$}{what}");
             match action {
                 Some(action) => Item::open(format!("key:{key}"), text, action),
-                None => Item::info(text),
+                // A row that only says something starts where a row that
+                // opens something starts, after its focus mark.
+                None => Item::info(format!("  {text}")),
             }
         })
         .collect()

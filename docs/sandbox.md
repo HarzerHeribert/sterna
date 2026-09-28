@@ -115,7 +115,7 @@ the host through rather than the command out:
 | `w` | Always allow *host* — also saved to the global `sandbox.hosts` | again, inside the sandbox |
 | `o` | Allow once, outside the sandbox | outside, this once |
 | `a` | Another way | not |
-| `d` | Deny | not |
+| `d` | Deny for this session | not |
 
 Without a refused host the question is titled *Leave the sandbox* and has
 the answers of every confirmation below. Each command takes the proxy's
@@ -126,10 +126,12 @@ refused.
 is refused, and a run the proxy refused hosts in ends with one line naming
 them and the `--allow-host HOST` flag that allows one next time.
 
-**The confirmation** shows the exact checked arguments: `o` once, `s` this
-exact action for the session, `d` deny (remembered, and listed on the
-Sandbox sheet where it can be forgotten), Escape deny once, `a` another
-way. A prompt takes no key until it has been on screen for half a second.
+**The confirmation** shows the exact checked arguments, every character
+and space as they will run: `o` once, `s` this exact action for the
+session, `d` *Deny for this session* (remembered, and listed on the
+Sandbox sheet where it can be forgotten), Escape *Not now* (this call
+only, asked again next time), `a` another way. One line on the sheet says
+the difference between the two refusals. A prompt takes no key until it has been on screen for half a second.
 An action whose arguments do not fit the 16 KiB display is deny-only.
 Waiting pauses the cell's clock, and a confirmation expires after ten
 minutes.

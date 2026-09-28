@@ -1210,7 +1210,14 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
                 } else {
                     item.title.clone()
                 };
-                let wrapped = super::view::wrap_words(&text, width.max(8));
+                // What a person approves is shown exactly: code keeps every
+                // character, and other text keeps the spaces it was laid
+                // out with.
+                let wrapped = if item.tone == Tone::Code {
+                    super::view::wrap_exact(&text, width.max(8))
+                } else {
+                    super::view::wrap_spaced(&text, width.max(8))
+                };
                 if wrapped.is_empty() {
                     lines.push(Line::Text(i, String::new()));
                 }

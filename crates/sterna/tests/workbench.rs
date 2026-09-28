@@ -2704,10 +2704,25 @@ fn the_keys_sheet_is_the_keymap() {
     let mut u = Workbench::default();
     u.open(Source::Keys);
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 50));
+    let mut columns = std::collections::BTreeSet::new();
     for (key, what, _) in workbench::keymap() {
         assert!(screen.contains(key), "{key} is missing:\n{screen}");
         assert!(screen.contains(what), "{what} is missing:\n{screen}");
+        // Every description starts in one column, a space clear of the
+        // widest key.
+        let line = screen.lines().find(|l| l.contains(what)).unwrap();
+        let at = line.find(what).unwrap();
+        assert!(
+            line[..at].ends_with("  "),
+            "{key} runs into its words: {line}"
+        );
+        columns.insert(line[..at].chars().count());
     }
+    assert_eq!(
+        columns.len(),
+        1,
+        "the descriptions are one column:\n{screen}"
+    );
     let acting = workbench::keymap()
         .into_iter()
         .filter(|(_, _, action)| action.is_some())

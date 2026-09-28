@@ -9,10 +9,11 @@
 //! typing the sentence: an `s` in it must never allow a call for the whole
 //! session.
 //!
-//! Esc on an approval refuses this one call and remembers nothing (it means
-//! "not now", as everywhere else); Deny, chosen on purpose, is remembered
-//! for the session and listed on the Ask sheet with a way to forget it;
-//! Ctrl-C cancels the call the way it cancels a running one.
+//! Esc on an approval refuses this one call and remembers nothing: "Not
+//! now". "Deny for this session", chosen on purpose, is remembered for the
+//! session and listed on the Sandbox sheet with a way to forget it; the
+//! sheet says the difference in one line. Ctrl-C cancels the call the way
+//! it cancels a running one.
 use crate::workbench::{Action, Answer, Geometry, Item, Outcome, Sheet, Tone, sheet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Frame, layout::Rect, widgets::Clear};
@@ -368,7 +369,7 @@ fn approval_items(
         sheet.crumbs.push(format!("1 of {queued}"));
     }
     sheet.decision = true;
-    sheet.esc = Some("Deny once".into());
+    sheet.esc = Some("Not now".into());
     let confirmation = action.confirmation();
     let mut items = Vec::new();
     if let Some(reason) = request.reason() {
@@ -455,9 +456,22 @@ fn approval_items(
         .disabled(too_large),
     );
     items.push(
-        Item::run("deny", "Deny", Action::Answer(Answer::Deny))
-            .key('d')
-            .inline(),
+        Item::run(
+            "deny",
+            "Deny for this session",
+            Action::Answer(Answer::Deny),
+        )
+        .key('d')
+        .inline(),
+    );
+    // The two refusals look alike; one of them is remembered.
+    items.push(
+        Item::info(
+            "Not now (Esc) refuses this call and asks again if it comes back. Deny for this \
+             session refuses it and every identical call, without asking, until you forget it \
+             on the Sandbox sheet.",
+        )
+        .tone(Tone::Muted),
     );
     items.push(Item::toggle(
         "raw",
@@ -592,6 +606,69 @@ mod tests {
         (request, admitted)
     }
 
+    /// **What a person approves is what runs**: a command's indentation, its
+    /// runs of spaces and every character of a line too long for the sheet
+    /// are on the sheet, in order.
+    #[test]
+    fn an_approval_shows_the_call_exactly() {
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
+        let command = "printf '%s  %s' a  b\n    cd  build && make   -j4 target-with-a-long-name-that-cannot-fit-on-one-row-of-a-narrow-sheet";
+        let mut arguments = std::collections::BTreeMap::new();
+        arguments.insert("command".to_string(), command.to_string());
+        let action =
+            crate::approval::Action::new("bash", std::path::Path::new("/tmp/root"), arguments);
+        let waiting = gate.clone();
+        let admitted = std::thread::spawn(move || waiting.admit(action, || false));
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the person is asked");
+        let mut prompts = Prompts::default();
+        prompts.push_approval(request);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 40)).unwrap();
+        terminal
+            .draw(|f| prompts.draw(f, crate::tui::Theme::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let screen = rows.join("\n");
+        assert!(
+            screen.contains("$ printf '%s  %s' a  b"),
+            "spaces collapsed:\n{screen}"
+        );
+        assert!(
+            screen.contains("$     cd  build && make   -j4"),
+            "indentation lost:\n{screen}"
+        );
+        // The long line, read back across its rows, is whole.
+        let start = rows
+            .iter()
+            .position(|row| row.contains("$     cd"))
+            .expect("the second line");
+        let (left, _) = rows[start].split_once("$     cd").unwrap();
+        let column = left.chars().count();
+        let joined: String = rows[start..start + 3]
+            .iter()
+            .map(|row| {
+                // Up to the sheet's own right edge.
+                let inside: String = row.chars().skip(column).collect();
+                inside.trim_end_matches([' ', '│']).to_string()
+            })
+            .collect();
+        assert!(
+            joined.contains("target-with-a-long-name-that-cannot-fit-on-one-row-of-a-narrow-sheet"),
+            "{joined}"
+        );
+        prompts.clear_approvals();
+        assert_eq!(admitted.join().unwrap(), Admission::Denied);
+    }
+
     /// A prompt that has been on screen, quietly, long enough to take a key.
     fn armed_with(request: crate::approval::Request) -> Prompts {
         let mut prompts = Prompts::default();
@@ -611,7 +688,7 @@ mod tests {
 
     /// **Esc is "not now"**: it refuses this call and remembers nothing, so
     /// the same call asks again. Deny, chosen on purpose, is remembered and
-    /// is on the list the Ask sheet shows.
+    /// is on the list the Sandbox sheet shows.
     #[test]
     fn esc_denies_this_call_once_and_deny_is_remembered_visibly() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
@@ -657,7 +734,7 @@ mod tests {
         assert!(gate.memory().entries().is_empty(), "once is not remembered");
     }
 
-    /// A denial that stays is on the Ask sheet, and Forget there takes it
+    /// A denial that stays is on the Sandbox sheet, and Forget there takes it
     /// back: the next identical call is asked again.
     #[test]
     fn a_remembered_denial_is_listed_on_the_ask_sheet_and_forgotten_there() {
@@ -762,8 +839,9 @@ mod tests {
                     "APPROVE",
                     "write a.txt",
                     "o · Allow once",
-                    "d · Deny",
-                    "Esc · Deny once",
+                    "d · Deny for this session",
+                    "Esc · Not now",
+                    "refuses it and every identical call",
                 ] {
                     assert!(text.contains(shown), "{shown} is missing:\n{text}");
                 }

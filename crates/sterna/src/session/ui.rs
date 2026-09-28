@@ -220,7 +220,7 @@ pub(super) enum Update {
     /// A question a cell put to the person, waiting on the session thread.
     Ask(crate::ask::Request),
     /// The approval gate's memory, sent once when the gate is made, so the
-    /// Ask sheet can list and forget what was answered for the session.
+    /// Sandbox sheet can list and forget what was answered for the session.
     Memory(crate::approval::Memory),
     /// The network proxy's live allowed list, sent once when the session
     /// starts one, so the hosts sheet changes what commands reach now.
