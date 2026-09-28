@@ -533,7 +533,9 @@ impl Document {
                     .or(src.as_deref())
                     .unwrap_or("");
                 match tab {
-                    CellTab::Code => d.program(program, inner, id),
+                    CellTab::Code => {
+                        d.program(program, v.and_then(|v| v.returned.as_deref()), inner, id)
+                    }
                     CellTab::Diff => d.diff(v.and_then(|v| v.changes.as_deref()), inner, id),
                     CellTab::Output => {
                         if let Some(v) = v {
@@ -617,8 +619,13 @@ impl Document {
                     d.helpers(cell, v, s, ui, inner, id);
                 }
                 d.container = RowKind::Plain;
+                // The bottom edge says what the cell changed once it has
+                // ended; a running cell has not changed anything it can
+                // report yet.
                 d.kinded(
-                    v.map(Self::summary).unwrap_or_default(),
+                    v.filter(|_| !running)
+                        .map(Self::summary)
+                        .unwrap_or_default(),
                     None,
                     id,
                     RowKind::CardBottom,
@@ -915,7 +922,7 @@ impl Document {
     /// `edit`, `bash`, a helper, a check -- every `await`ed call and every
     /// call on one of the runtime's own objects -- so the chain of events a
     /// cell will cause is read off it at a glance.
-    fn program(&mut self, program: &str, width: usize, id: usize) {
+    fn program(&mut self, program: &str, answered: Option<&str>, width: usize, id: usize) {
         // `answer("…")` carries the whole answer as one string literal; the
         // block under the card shows it, so here the call is folded to its
         // opening words.
@@ -931,20 +938,26 @@ impl Document {
                 let one_line = line.trim_end().ends_with(");");
                 folded = !one_line;
                 let (head, cut) = answer_head(&line[start + 8..], 36);
-                self.spans_wrapped(
-                    vec![
-                        (line[..start].to_string(), Tone::Code),
-                        ("answer".to_string(), Tone::Accent),
-                        (
-                            format!("(\"{head}{}\")", if cut { "…" } else { "" }),
-                            Tone::Code,
-                        ),
-                        ("  · the answer is below".to_string(), Tone::Muted),
-                    ],
-                    width,
-                    2,
-                    id,
-                );
+                let mut spans = vec![
+                    (line[..start].to_string(), Tone::Code),
+                    ("answer".to_string(), Tone::Accent),
+                    (
+                        format!("(\"{head}{}\")", if cut { "…" } else { "" }),
+                        Tone::Code,
+                    ),
+                ];
+                // Only the call that gave the answer under the card points at
+                // it: a program that threw first, or answered from another
+                // branch, left this one unrun.
+                let opening: String = head.chars().take_while(|c| *c != '\\').take(24).collect();
+                if answered.is_some_and(|answer| {
+                    let answer = crate::prompt::completion_text(answer)
+                        .unwrap_or_else(|| answer.to_string());
+                    answer.trim_start().starts_with(opening.trim_end())
+                }) {
+                    spans.push(("  · the answer is below".to_string(), Tone::Muted));
+                }
+                self.spans_wrapped(spans, width, 2, id);
                 continue;
             }
             self.spans_wrapped(highlight_calls(line), width, 2, id);
@@ -959,12 +972,11 @@ impl Document {
         indent: usize,
         id: usize,
     ) {
-        let avail = width.saturating_sub(indent).max(1);
-        let pad = " ".repeat(indent);
-        let mut row: Vec<(String, Tone)> = vec![(pad.clone(), Tone::Code)];
-        let mut used = 0;
+        // **Code breaks between tokens**: after a space or after `,;({[`,
+        // never inside a word or an escape like `\n`. The rows after the
+        // first hang two columns further in, so a wrapped line reads as one.
+        let mut cells: Vec<(String, Tone, usize)> = Vec::new();
         for (text, tone) in spans {
-            let mut part = String::new();
             for c in text.chars() {
                 if c.is_control() && c != '\t' {
                     continue;
@@ -975,25 +987,56 @@ impl Document {
                     c.to_string()
                 };
                 let w = span_width(&s);
-                if used + w > avail && used > 0 {
-                    if !part.is_empty() {
-                        row.push((std::mem::take(&mut part), tone));
-                    }
-                    self.line(
-                        std::mem::replace(&mut row, vec![(pad.clone(), Tone::Code)]),
-                        None,
-                        id,
-                    );
-                    used = 0;
-                }
-                part.push_str(&s);
-                used += w;
-            }
-            if !part.is_empty() {
-                row.push((part, tone));
+                cells.push((s, tone, w));
             }
         }
-        self.line(row, None, id);
+        let breaks_after = |cell: &(String, Tone, usize)| {
+            matches!(cell.0.as_str(), " " | "    " | "," | ";" | "(" | "{" | "[")
+        };
+        let mut start = 0;
+        let mut first = true;
+        loop {
+            let hang = if first { indent } else { indent + 2 };
+            let avail = width.saturating_sub(hang).max(1);
+            // The farthest end that fits, and the farthest break point in it.
+            let mut used = 0;
+            let mut end = start;
+            let mut last_break = None;
+            while end < cells.len() && used + cells[end].2 <= avail {
+                used += cells[end].2;
+                end += 1;
+                if end < cells.len() && breaks_after(&cells[end - 1]) {
+                    last_break = Some(end);
+                }
+            }
+            if end < cells.len() {
+                end = match last_break {
+                    Some(at) if at > start => at,
+                    // One token wider than the row is cut, but never between
+                    // a backslash and the character it escapes.
+                    _ if end > start + 1 && cells[end - 1].0 == "\\" => end - 1,
+                    _ => end.max(start + 1),
+                };
+            }
+            let mut row: Vec<(String, Tone)> = vec![(" ".repeat(hang), Tone::Code)];
+            for (text, tone, _) in &cells[start..end] {
+                let joins = row.len() > 1 && row.last().is_some_and(|(_, last)| last == tone);
+                match row.last_mut() {
+                    Some((run, _)) if joins => run.push_str(text),
+                    _ => row.push((text.clone(), *tone)),
+                }
+            }
+            self.line(row, None, id);
+            start = end;
+            // A continuation row does not open on the spaces it broke at.
+            while start < cells.len() && cells[start].0.trim().is_empty() {
+                start += 1;
+            }
+            first = false;
+            if start >= cells.len() {
+                break;
+            }
+        }
     }
     /// The chain of calls a cell actually made, one per line: what ran, on
     /// what, and how it ended. Read off the cell's record, so a call the
@@ -1663,7 +1706,7 @@ impl Document {
         }
         let files = match changed_files(v) {
             _ if v.rolled_back => "its changes were rolled back".to_string(),
-            0 => "no captured file changes".to_string(),
+            0 => "no files changed".to_string(),
             1 => "1 file changed".to_string(),
             n => format!("{n} files changed"),
         };
@@ -1743,15 +1786,12 @@ impl Document {
                 id,
                 5,
             );
+        } else if ui.scout && failed {
+            self.wrapped(p.outcome.text.clone(), Tone::Failure, None, width, id, 5);
         } else if ui.scout {
-            self.wrapped(
-                p.outcome.text.clone(),
-                if failed { Tone::Failure } else { Tone::Normal },
-                None,
-                width,
-                id,
-                5,
-            );
+            // The report reads as the answers do: its Markdown drawn, never
+            // shown as hashes and backticks.
+            self.prose(&scout_report(&p.outcome.text), Tone::Normal, width, id, 5);
         }
     }
     fn helpers(
@@ -1929,6 +1969,50 @@ fn helper_account(text: &str) -> (&str, Vec<String>, &str) {
 
 /// The start of an `answer("…")` literal, up to its closing quote: whole
 /// when it fits in `room` characters, else cut at a word and marked cut.
+/// The Scout's report with its empty sections folded into one closing
+/// line: "## Tests / none found" and "## Risks / none found" become "No
+/// tests or risks found."
+fn scout_report(text: &str) -> String {
+    let mut kept: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut lead: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("## ") {
+            kept.push((name.trim().to_string(), Vec::new()));
+        } else if let Some((_, body)) = kept.last_mut() {
+            body.push(line);
+        } else {
+            lead.push(line);
+        }
+    }
+    let empty = |body: &[&str]| {
+        body.iter()
+            .map(|line| line.trim().trim_end_matches('.').to_lowercase())
+            .filter(|line| !line.is_empty())
+            .all(|line| matches!(line.as_str(), "none" | "none found" | "- none" | "n/a"))
+    };
+    let mut none = Vec::new();
+    let mut out: Vec<String> = lead.iter().map(|line| (*line).to_string()).collect();
+    for (name, body) in &kept {
+        if empty(body) {
+            none.push(name.to_lowercase());
+            continue;
+        }
+        out.push(format!("## {name}"));
+        out.extend(body.iter().map(|line| (*line).to_string()));
+    }
+    if !none.is_empty() {
+        let last = none.pop().unwrap_or_default();
+        let named = if none.is_empty() {
+            last
+        } else {
+            format!("{} or {last}", none.join(", "))
+        };
+        out.push(String::new());
+        out.push(format!("No {named} found."));
+    }
+    out.join("\n")
+}
+
 fn answer_head(literal: &str, room: usize) -> (String, bool) {
     let mut text = String::new();
     let mut escaped = false;

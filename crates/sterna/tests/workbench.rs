@@ -1326,7 +1326,7 @@ fn screenshot() {
     println!("\n===== CONFIRM FULL ACCESS 140x30 =====\n{}", text(&b));
     let mut sf = s.clone();
     sf.level = sterna::permissions::LiveLevel::new(sterna::permissions::Level::Full);
-    sf.network = Some("on".into());
+    sf.network = Some("web".into());
     let mut u = Workbench::default();
     let b = draw(&c, &n, &sf, &mut u, 80, 20);
     println!("\n===== FULL ACCESS 80x20 =====\n{}", text(&b));
@@ -2050,6 +2050,11 @@ fn the_answer_is_shown_once_under_the_card_and_not_again_inside_it() {
     let text = words(&doc(&c, &n, &s, &u));
     assert!(text.contains("the answer is below"), "{text}");
     assert_eq!(text.matches("Nothing else changed.").count(), 1, "{text}");
+    // A program that threw before its answer, answered by the runtime with
+    // other words, does not point at an answer it never gave.
+    n.cells[0].returned = Some("The write was refused, so nothing changed.".into());
+    let text = words(&doc(&c, &n, &s, &u));
+    assert!(!text.contains("the answer is below"), "{text}");
 }
 
 /// Cells that differ between two frames.
@@ -5309,4 +5314,165 @@ fn enter_on_an_untouched_field_saves_nothing() {
         let saved = std::fs::read_to_string(&file).unwrap_or_default();
         assert!(!saved.contains("hosts"), "{}: {saved}", file.display());
     }
+}
+
+/// The rail names the fact it shows: Sterna's web tools, set up or not.
+/// Commands reach the network only through the proxy, which is another
+/// fact, and a set-up web posture is never "unknown".
+#[test]
+fn the_rail_says_whether_the_web_tools_are_on() {
+    let (c, n, mut s) = fixture();
+    for (posture, word) in [("web", "web tools on"), ("off", "web tools off")] {
+        s.network = Some(posture.into());
+        let screen = text(&draw(&c, &n, &s, &mut Workbench::default(), 140, 40));
+        assert!(screen.contains(word), "{posture}: {screen}");
+        assert!(!screen.contains("unknown"), "{posture}: {screen}");
+    }
+}
+
+/// The foot says what Enter does on the row it is on: "Enter cancel" on
+/// Cancel, never "Enter run" on a row that runs nothing.
+#[test]
+fn the_foot_names_what_enter_does_on_the_focused_row() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Confirm("full".into()));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 30));
+    assert!(screen.contains("Enter cancel"), "{screen}");
+    assert!(!screen.contains("Enter run"), "{screen}");
+}
+
+/// The Scout's report reads as an answer does: its headings drawn, never
+/// shown as "##", and its empty sections said once at the end.
+#[test]
+fn the_scouts_report_reads_as_markdown() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Make the greeting friendlier.".into(),
+        outcome: HelperOutcome {
+            text: "## Constraints\n- keep the exported name `greet`\n## Files\nsrc/greet.ts — the greeting\n## Tests\nnone found\n## Risks\nnone found\n".into(),
+            ok: true,
+            elapsed_ms: 900,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let mut u = Workbench::default();
+    u.scout = true;
+    let all = words(&doc(&c, &n, &s, &u));
+    assert!(all.contains("Constraints"), "{all}");
+    assert!(!all.contains("## "), "{all}");
+    assert!(!all.contains('`'), "{all}");
+    assert!(!all.contains("none found"), "{all}");
+    assert!(all.contains("No tests or risks found."), "{all}");
+}
+
+/// While helpers work -- the Scout before the first cell, a helper inside a
+/// running one -- the rail lists them; "none yet" is for a turn with none.
+#[test]
+fn the_rail_lists_the_helpers_that_are_working() {
+    let (c, mut n, s) = fixture();
+    n.preflight = Some(HelperRecord {
+        helper: "dissect".into(),
+        verb: "dissecting".into(),
+        asked: "Make the greeting friendlier.".into(),
+        ..Default::default()
+    });
+    n.cells.iter_mut().for_each(|cell| cell.helpers.clear());
+    let screen = text(&draw(&c, &n, &s, &mut Workbench::default(), 140, 40));
+    assert!(screen.contains("Scout · working"), "{screen}");
+    assert!(!screen.contains("none yet"), "{screen}");
+}
+
+/// Code wraps between tokens, never inside a word or an escape: `\n` stays
+/// whole, and the rows after the first hang further in.
+#[test]
+fn code_wraps_between_tokens() {
+    let (c, mut n, s) = fixture();
+    let program = "await write({path: \"src/greet.ts\", content: 'export function greet(name: string): string {\\n  return \"Hello, \" + name + \"! Good to see you.\";\\n}\\n'});";
+    n.cells[0].executed_source = Some(program.into());
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    for width in [60, 84, 101] {
+        let d = Document::build(&c, &n, &s, &u, width);
+        // The line's first row, and the rows hanging under it.
+        let first = d
+            .rows
+            .iter()
+            .position(|r| r.text.contains("await write"))
+            .expect("the program is drawn");
+        let mut rows = vec![d.rows[first].text.as_str()];
+        rows.extend(
+            d.rows[first + 1..]
+                .iter()
+                .map(|r| r.text.as_str())
+                .take_while(|t| t.starts_with("    ")),
+        );
+        assert!(rows.len() > 1, "{width}: {rows:#?}");
+        // Every row but the last ends where a break is allowed.
+        for row in &rows[..rows.len() - 1] {
+            assert!(
+                row.ends_with([' ', ',', ';', '(', '{', '[']),
+                "{width}: a row ends inside a token: {rows:#?}"
+            );
+        }
+        for row in &rows {
+            assert!(
+                !row.trim_end().ends_with('\\'),
+                "{width}: an escape split: {rows:#?}"
+            );
+        }
+        let joined: String = rows
+            .iter()
+            .map(|row| row.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for token in [
+            "greet(name:",
+            "string):",
+            "\"Hello,",
+            "see",
+            "you.\";",
+            "'});",
+        ] {
+            assert!(
+                joined.contains(token),
+                "{width}: {token} was split: {rows:#?}"
+            );
+        }
+    }
+}
+
+/// A card's bottom edge says what the cell changed once it has ended: a
+/// running cell has nothing to report there yet, and never "no files
+/// changed" a moment before it writes one.
+#[test]
+fn a_running_cards_bottom_edge_waits_for_the_cell_to_end() {
+    let (mut c, mut n, mut s) = fixture();
+    c.messages.push(Message::text(Role::User, "and again"));
+    let mut m = Message::text(Role::Assistant, "Once more.");
+    m.content.push(Block::ToolUse {
+        id: "call-2".into(),
+        name: "execute_cell".into(),
+        input: serde_json::json!({"code": "await write({path: \"a.txt\", content: \"x\"});"}),
+    });
+    c.messages.push(m);
+    n.cells[0].changes = None;
+    n.cells.push(sterna::tui::CellView::default());
+    s.activity = Activity::Executing;
+    let mut u = Workbench::default();
+    u.expanded.insert(1);
+    u.expanded.insert(2);
+    let d = Document::build(&c, &n, &s, &u, 100);
+    let bottoms: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::CardBottom)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(bottoms.len(), 2, "{bottoms:?}");
+    assert!(bottoms[0].contains("no files changed"), "{bottoms:?}");
+    assert!(bottoms[1].trim().is_empty(), "{bottoms:?}");
 }

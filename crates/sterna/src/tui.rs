@@ -950,10 +950,11 @@ impl Notebook {
     /// The newest cell that called a helper: what F5 and the sidebar's
     /// helper rows show when no card is selected.
     pub fn last_with_helpers(&self) -> Option<usize> {
-        self.program_cells()
-            .rev()
-            .find(|(_, view)| !view.helpers.is_empty())
-            .map(|(cell, _)| cell)
+        // A running cell counts: its helpers are working now.
+        self.cells
+            .iter()
+            .rposition(|view| !view.helpers.is_empty())
+            .map(|index| index + 1)
     }
 
     /// The program cell before or after `from`; the newest one from none.
