@@ -925,6 +925,11 @@ impl Workbench {
                 };
             }
             Action::Scout => self.scout = !self.scout,
+            Action::Note(index) => {
+                if !self.notes_open.remove(&index) {
+                    self.notes_open.insert(index);
+                }
+            }
             Action::Acceptance => self.show(Source::Acceptance, from_sheet),
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),

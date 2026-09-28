@@ -25,7 +25,7 @@ pub(super) fn footer_row(
     ])
 }
 
-pub(super) fn compact_tokens(value: u64) -> String {
+pub(crate) fn compact_tokens(value: u64) -> String {
     if value >= 1_000_000 {
         format!("{:.1}M", value as f64 / 1_000_000.0)
     } else if value >= 1_000 {

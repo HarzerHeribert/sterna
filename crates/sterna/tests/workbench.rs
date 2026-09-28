@@ -5037,3 +5037,57 @@ fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
         "Go is off from the next session."
     );
 }
+
+/// A check's reasons fold under its verdict line, which ends in what the
+/// check used, said quietly. A click opens the reasons, wrapped between
+/// words and never cut at the edge; another click folds them again.
+#[test]
+fn a_checks_reasons_fold_under_its_verdict_and_open_on_a_click() {
+    let (c, n, mut s) = fixture();
+    s.messages_seen = c.messages.len();
+    s.note(format!(
+        "{}cannot tell · 11.2k tokens\nThe documented delivery does support the packaging part: customers receive a ZIP for their setup, with tenant URLs filled in by the install script.\nNot read: docs/delivery.md",
+        sterna::tui::history::CHECKED
+    ));
+    let index = s.history.len() - 1;
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(
+        screen.contains("checked after the answer: cannot tell · 11.2k tokens ▸"),
+        "{screen}"
+    );
+    assert!(!screen.contains("packaging part"), "folded: {screen}");
+    let d = doc(&c, &n, &s, &u);
+    let verdict = d
+        .rows
+        .iter()
+        .find(|r| r.text.contains("cannot tell"))
+        .unwrap();
+    assert!(
+        verdict
+            .spans
+            .iter()
+            .any(|(text, tone)| text.contains("11.2k tokens") && *tone == Tone::Muted),
+        "the cost is said quietly: {:?}",
+        verdict.spans
+    );
+
+    click(&mut u, &mut s, &n, Action::Note(index));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("cannot tell · 11.2k tokens ▾"), "{screen}");
+    assert!(
+        screen.contains("install script."),
+        "wrapped whole: {screen}"
+    );
+    assert!(screen.contains("Not read: docs/delivery.md"), "{screen}");
+    assert!(
+        !screen
+            .lines()
+            .any(|line| line.contains("packaging") && line.contains('…')),
+        "nothing is cut: {screen}"
+    );
+
+    click(&mut u, &mut s, &n, Action::Note(index));
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(!screen.contains("packaging part"), "folded again: {screen}");
+}

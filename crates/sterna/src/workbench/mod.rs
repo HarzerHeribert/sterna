@@ -65,6 +65,9 @@ pub enum Action {
     /// The Scout's whole report, under the request it read, shown or put
     /// away.
     Scout,
+    /// A check's reasons, under its verdict line, shown or put away: the
+    /// index of the note in the session's history.
+    Note(usize),
     /// The task's acceptance list, whole, on its own sheet.
     Acceptance,
     Latest,
@@ -278,6 +281,8 @@ pub struct Workbench {
     pub helper_raw: Option<(usize, usize)>,
     /// Whether the Scout's report is open under its request.
     pub scout: bool,
+    /// The check notes whose reasons are open under their verdict.
+    pub notes_open: BTreeSet<usize>,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
     pub sheets: Vec<Layer>,

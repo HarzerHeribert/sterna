@@ -354,7 +354,7 @@ impl Document {
             .and_then(|_| reads.iter().rposition(|r| *r == Reads::You));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
-            d.notes(s, &mut note, idx, width);
+            d.notes(s, ui, &mut note, idx, width);
             let cell = match reads[idx] {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
@@ -609,7 +609,7 @@ impl Document {
             }
             d.blank(id);
         }
-        d.notes(s, &mut note, usize::MAX, width);
+        d.notes(s, ui, &mut note, usize::MAX, width);
         d.behind(s, width);
         // A Scout with no turn of the person's in view to sit under still
         // shows, where it always did.
@@ -1352,9 +1352,17 @@ impl Document {
     /// **A notice is not a message and never pretends to be one.** It is
     /// quiet, it is marked, and it stays in the transcript where a person
     /// can scroll back to it -- the same notes the Activity surface lists.
-    fn notes(&mut self, s: &ScreenState, next: &mut usize, upto: usize, width: usize) {
+    fn notes(
+        &mut self,
+        s: &ScreenState,
+        ui: &Workbench,
+        next: &mut usize,
+        upto: usize,
+        width: usize,
+    ) {
         while let Some(note) = s.history.get(*next).filter(|n| n.after <= upto) {
-            let settling = super::motion::note_settling(s, *next);
+            let index = *next;
+            let settling = super::motion::note_settling(s, index);
             *next += 1;
             let kind = crate::tui::NoteKind::of(&note.text);
             let (mark_tone, first_tone) = match kind {
@@ -1366,8 +1374,21 @@ impl Document {
                 crate::tui::NoteKind::Learned => (Tone::Helper, Tone::Helper),
                 crate::tui::NoteKind::Plain => (Tone::Line, Tone::Muted),
             };
-            for (index, line) in note.text.lines().enumerate() {
-                let (mark, text_tone) = if index == 0 {
+            // **A check's reasons fold under its verdict.** The person reads
+            // the verdict first and opens the why when they want it; the
+            // reasons never push the next turn off the screen.
+            let folds = matches!(
+                kind,
+                crate::tui::NoteKind::Checked | crate::tui::NoteKind::Flagged
+            ) && note.text.lines().nth(1).is_some();
+            let open = ui.notes_open.contains(&index);
+            let fold = folds.then_some(Action::Note(index));
+            let room = width.saturating_sub(5).max(8);
+            for (line_no, line) in note.text.lines().enumerate() {
+                if folds && line_no > 0 && !open {
+                    break;
+                }
+                let (mark, text_tone) = if line_no == 0 {
                     (kind.mark(), first_tone)
                 } else {
                     (" ", Tone::Muted)
@@ -1376,7 +1397,6 @@ impl Document {
                 // and a click on any of them copies it.
                 let trimmed = line.trim();
                 if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-                    let room = width.saturating_sub(5).max(1);
                     let chars: Vec<char> = trimmed.chars().collect();
                     for (part, chunk) in chars.chunks(room).enumerate() {
                         self.kinded(
@@ -1394,15 +1414,32 @@ impl Document {
                     }
                     continue;
                 }
-                self.kinded(
-                    vec![
-                        (format!("  {mark} "), mark_tone),
-                        (clip(line, width.saturating_sub(5)), text_tone),
-                    ],
-                    None,
-                    usize::MAX - 4,
-                    RowKind::Note,
-                );
+                // What the check used is said quietly at the verdict's end.
+                let (said, cost) = match line
+                    .rfind(crate::tui::history::COST)
+                    .filter(|_| line_no == 0 && folds && line.ends_with(" tokens"))
+                {
+                    Some(at) => (&line[..at], Some(&line[at..])),
+                    None => (line, None),
+                };
+                let parts = super::view::wrap_words(said, room);
+                let last = parts.len().saturating_sub(1);
+                for (part_no, part) in parts.into_iter().enumerate() {
+                    let mut spans = vec![(
+                        format!("  {} ", if part_no == 0 { mark } else { " " }),
+                        mark_tone,
+                    )];
+                    spans.push((part, text_tone));
+                    if part_no == last && line_no == 0 {
+                        if let Some(cost) = cost {
+                            spans.push((cost.to_string(), Tone::Muted));
+                        }
+                        if folds {
+                            spans.push(((if open { " ▾" } else { " ▸" }).to_string(), Tone::Line));
+                        }
+                    }
+                    self.kinded(spans, fold.clone(), usize::MAX - 4, RowKind::Note);
+                }
             }
         }
     }
