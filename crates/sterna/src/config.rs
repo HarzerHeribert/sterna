@@ -1371,7 +1371,7 @@ fn parse_helper_efforts(value: &toml::Value) -> Result<HelperEfforts, String> {
                     "config.toml: `[helpers.effort] {name}` must be low, medium, high, xhigh or max, not `{word}`"
                 )
             })?;
-            if effort == crate::wire::Effort::Default {
+            if effort == crate::wire::Effort::Auto {
                 return Err(format!(
                     "config.toml: `[helpers.effort] {name}` must be a hard value: low, medium, high, xhigh or max"
                 ));

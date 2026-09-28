@@ -302,7 +302,11 @@ fn route_words(route: &str) -> String {
 /// The model sheet's rows: what the tier runs on now, the favourite slots on
 /// the Subagents section, then every model grouped under the account that
 /// serves it, and the way to turn the tier off.
-pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::Item> {
+pub(super) fn items(
+    sheet: &mut super::Sheet,
+    m: &mut Navigator,
+    effort: crate::wire::Effort,
+) -> Vec<super::Item> {
     use super::{Action, Item};
     const ROLES: [(&str, &str); 3] = [
         ("Main", "answers you"),
@@ -362,6 +366,35 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
     .unwrap_or_else(|| "not chosen yet".into());
     let (name, purpose) = ROLES[m.role.min(2)];
     let mut items = vec![Item::info(format!("{name} {purpose}. Now: {now}"))];
+    // Main's effort sits under its model: how that model works, chosen in
+    // the same place. A search is for a model, so the row steps aside.
+    if m.role == 0 && m.target_key.is_none() && m.query.is_empty() {
+        const EFFORTS: [crate::wire::Effort; 6] = [
+            crate::wire::Effort::Auto,
+            crate::wire::Effort::Low,
+            crate::wire::Effort::Medium,
+            crate::wire::Effort::High,
+            crate::wire::Effort::Xhigh,
+            crate::wire::Effort::Max,
+        ];
+        items.push(
+            Item::value(
+                "main:effort",
+                "Effort",
+                EFFORTS
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.name().to_string(),
+                            Action::Command(format!("/effort {}", e.name())),
+                        )
+                    })
+                    .collect(),
+                EFFORTS.iter().position(|e| *e == effort),
+            )
+            .detail("auto lets the model choose; higher thinks longer and costs more"),
+        );
+    }
     if m.role == 2 && m.target_key.is_none() {
         // The pinned model, or none: never the favourites' word.
         let pinned = m
@@ -380,7 +413,7 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
                 Action::Slot(None),
             )
             .detail(format!(
-                "{} · every subagent runs on one model{}",
+                "{} · every subagent runs on one model; Main picks the effort per job{}",
                 pinned.as_deref().unwrap_or("none"),
                 if m.slot.is_none() { next } else { "" }
             )),
@@ -464,6 +497,10 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
     let rows = m.candidates();
     let mut last_route = String::new();
     let mut selected = None;
+    // Without the current model in the list, the sheet opens on the first
+    // model a person can choose -- never on the effort row above them, so
+    // Enter chooses a model as it always has.
+    let mut first = None;
     for (i, c) in rows.iter().enumerate() {
         if !m.measured_order && c.route != last_route {
             items.push(Item::heading(route_words(&c.route)));
@@ -493,6 +530,9 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
         // the list; otherwise on its own current value (a slot, say).
         if i == m.selected && current.as_deref() == Some(c.model.as_str()) {
             selected = Some(id.clone());
+        }
+        if first.is_none() && c.available {
+            first = Some(id.clone());
         }
         items.push(
             Item::choice(
@@ -537,6 +577,6 @@ pub(super) fn items(sheet: &mut super::Sheet, m: &mut Navigator) -> Vec<super::I
     if let Some((text, action)) = off {
         items.push(Item::run("off", text, action));
     }
-    sheet.prefer = selected;
+    sheet.prefer = selected.or(first.filter(|_| m.role == 0));
     items
 }

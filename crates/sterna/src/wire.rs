@@ -41,11 +41,12 @@ const MODEL_HEADER: &str = "x-glasshouse-model";
 /// literal, so both stay in one place.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// User-selected response effort. Default leaves the existing wire body untouched.
+/// User-selected response effort. `auto` sends no effort: the model's own
+/// choice, and the wire body stays untouched.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Effort {
     #[default]
-    Default,
+    Auto,
     Low,
     Medium,
     High,
@@ -54,7 +55,7 @@ pub enum Effort {
 }
 impl Effort {
     /// What a main-model turn asks for: one the person chose is sent as
-    /// chosen; `default` on an OpenAI-family model is `low`
+    /// chosen; `auto` on an OpenAI-family model is `low`
     /// ([`crate::session`]'s `turn_effort` states why). The screen shows this,
     /// so the effort it names is the one sent.
     pub fn sent_for(self, model: &str) -> Effort {
@@ -62,7 +63,7 @@ impl Effort {
             crate::abi::Dialect::for_model(model),
             crate::abi::Dialect::OpenAi
         );
-        if self == Effort::Default && openai {
+        if self == Effort::Auto && openai {
             Effort::Low
         } else {
             self
@@ -71,7 +72,7 @@ impl Effort {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "default" => Some(Self::Default),
+            "auto" => Some(Self::Auto),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
@@ -89,7 +90,7 @@ impl Effort {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::Default => "default",
+            Self::Auto => "auto",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -406,7 +407,7 @@ pub fn request_body(conversation: &Conversation) -> Vec<u8> {
 
 /// The same request body used for sending and estimating an explicitly selected model.
 pub fn request_body_on_model(conversation: &Conversation, model: &str) -> Vec<u8> {
-    request_body_configured(conversation, model, Effort::Default)
+    request_body_configured(conversation, model, Effort::Auto)
 }
 
 /// Which tool definitions a request carries — `tool-abi.md` §3.
@@ -572,7 +573,7 @@ fn effort_budget(effort: Effort) -> u32 {
         // `Default` never reaches here through [`configure_effort`]; this arm
         // is `Max` and the compiler cannot see that, so it is spelled rather
         // than a wildcard that would silently absorb a sixth level.
-        Effort::Max | Effort::Default => 65536,
+        Effort::Max | Effort::Auto => 65536,
     }
 }
 
@@ -585,7 +586,7 @@ fn effort_budget(effort: Effort) -> u32 {
 /// waste it then permitted. It asks this function now.
 #[must_use]
 pub fn wire_max_tokens(model: &str, allowance: Allowance, effort: Effort) -> u32 {
-    if effort == Effort::Default || model.contains("claude") {
+    if effort == Effort::Auto || model.contains("claude") {
         return allowance.declared();
     }
     match allowance {
@@ -595,7 +596,7 @@ pub fn wire_max_tokens(model: &str, allowance: Allowance, effort: Effort) -> u32
 }
 
 fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, allowance: Allowance) -> Vec<u8> {
-    if effort == Effort::Default {
+    if effort == Effort::Auto {
         return body;
     }
     let mut value: serde_json::Value = serde_json::from_slice(&body).expect("serialized request");
@@ -949,7 +950,7 @@ pub fn send_turn(conversation: &Conversation) -> Result<Turn, WireError> {
 
 /// A task request with its active model, preserving provider usage accounting.
 pub fn send_turn_on_model(conversation: &Conversation, model: &str) -> Result<Turn, WireError> {
-    send_turn_configured(conversation, model, Effort::Default)
+    send_turn_configured(conversation, model, Effort::Auto)
 }
 pub fn send_turn_configured(
     conversation: &Conversation,
@@ -1873,7 +1874,7 @@ pub fn send_turn_streaming(
     model: &str,
     on_delta: &mut dyn FnMut(StreamDelta),
 ) -> Result<Turn, WireError> {
-    send_turn_streaming_configured(conversation, model, Effort::Default, on_delta)
+    send_turn_streaming_configured(conversation, model, Effort::Auto, on_delta)
 }
 pub fn send_turn_streaming_configured(
     conversation: &Conversation,
@@ -2188,7 +2189,7 @@ mod tests {
         let turn = send_errand_within(
             &sample_conversation(),
             "a-test-model",
-            Effort::Default,
+            Effort::Auto,
             Allowance::Capped(128),
             Surface::TextOnly,
             None,
@@ -2212,7 +2213,7 @@ mod tests {
         let outcome = send_errand_within(
             &sample_conversation(),
             "a-test-model",
-            Effort::Default,
+            Effort::Auto,
             Allowance::Capped(128),
             Surface::TextOnly,
             None,
@@ -2889,9 +2890,9 @@ mod effort_tests {
 
     #[test]
     fn default_is_the_display_name_and_the_only_spelling() {
-        assert_eq!(Effort::parse("default"), Some(Effort::Default));
-        assert_eq!(Effort::parse("auto"), None);
-        assert_eq!(Effort::Default.name(), "default");
+        assert_eq!(Effort::parse("auto"), Some(Effort::Auto));
+        assert_eq!(Effort::parse("default"), None, "the retired word");
+        assert_eq!(Effort::Auto.name(), "auto");
     }
 
     #[test]
@@ -2901,7 +2902,7 @@ mod effort_tests {
             messages: vec![],
         };
         assert_eq!(
-            request_body_configured(&conversation, MODEL, Effort::Default),
+            request_body_configured(&conversation, MODEL, Effort::Auto),
             request_body(&conversation)
         );
         let claude: serde_json::Value = serde_json::from_slice(&request_body_configured(

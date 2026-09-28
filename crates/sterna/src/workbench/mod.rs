@@ -122,10 +122,6 @@ pub enum Action {
     ConfirmSetting(String, String),
     Sources,
     Scores,
-    /// Step the reasoning effort one place along its own ladder, in place.
-    /// The status strip's first control: the setting a person changes most
-    /// often, and the one the session bar has no room for.
-    Effort,
     /// Open settings already on the category that owns the thing just
     /// clicked, so a control on the strip is one click from the row that
     /// changes it rather than four.

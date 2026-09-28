@@ -55,7 +55,7 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | key | what it decides |
 |---|---|
 | `model.parent` | the model that answers you |
-| `session.effort` | how hard it thinks: `low` … `max` |
+| `session.effort` | how hard Main thinks: `auto` (the model chooses) or `low` … `max`; a saved `default` is read as `auto` |
 | `sandbox.level` | global only: `ask`, `sandboxed` (default) or `full` ([sandbox](sandbox.md)) |
 | `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |

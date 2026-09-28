@@ -154,11 +154,21 @@ fn controls(
 /// them is the chip that changes it.
 fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui: &Workbench) {
     // A long project name must not cost you the session's controls: it gets
-    // a quarter of what the brand leaves of the row, and clips.
+    // a quarter of what the brand leaves of the row, and gives up more --
+    // down to eight columns -- before the model chip would fold away.
     let brand = " ⠿ STERNA /";
+    let model = clip(s.model.as_deref().unwrap_or("choose model"), 28);
+    let model_chip = format!("{model} · {} ▾", super::facts::effort_short(s));
+    let essential = chrome::width(&model_chip)
+        + chrome::width(&super::facts::level_word(s))
+        + chrome::width("⋯")
+        + 3 * 5;
+    let room = a.width.saturating_sub(chrome::width(brand) + 3);
     let project = clip(
         s.project.as_deref().unwrap_or("workspace"),
-        (a.width.saturating_sub(chrome::width(brand)) as usize / 4).max(8),
+        (room as usize / 4)
+            .min(room.saturating_sub(essential) as usize)
+            .max(8),
     );
     row(f, a, brand, Tone::Accent, s.theme);
     row(
@@ -168,23 +178,26 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
         Tone::Strong,
         s.theme,
     );
-    let model = clip(s.model.as_deref().unwrap_or("choose model"), 18);
+    // **The model and its effort are one chip**: the effort is how that
+    // model works, so they are read and changed together, on the Models
+    // sheet's Main tab.
     controls(
         f,
         g,
         a,
         chrome::width(brand) + 1 + chrome::width(&project) + 2,
         &[
-            (format!("{model} ▾"), Action::Models, Tone::Normal, 3),
-            // The level outranks the model's name: at eighty columns a
-            // session must still say how much runs without asking.
+            (model_chip, Action::Models, Tone::Normal, 2),
+            // The level outranks the model: at eighty columns a session must
+            // still say how much runs without asking.
             (
                 super::facts::level_word(s),
                 Action::Sandbox,
                 level_tone(s),
                 1,
             ),
-            ("Settings".to_string(), Action::Settings, Tone::Normal, 0),
+            // Settings folds before the model does: F2 and ⋯ still reach it.
+            ("Settings".to_string(), Action::Settings, Tone::Normal, 4),
             ("?".to_string(), Action::Help, Tone::Normal, 5),
         ],
         ui.press,
@@ -857,12 +870,12 @@ fn session_card(
             Tone::Normal,
             Some(Action::Models),
         ),
-        // Two lines, two targets: the effort steps where it stands, and
-        // the helpers open the settings that turn them on.
+        // The effort opens where the model is chosen; the helpers open the
+        // settings that turn them on.
         (
             super::facts::effort_word(s),
             Tone::Muted,
-            Some(Action::Effort),
+            Some(Action::Models),
         ),
         (
             format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
@@ -1202,9 +1215,8 @@ fn dock_bottom(
     let limit = a.right().saturating_sub(rw + 3);
     let mut x = a.x + 3;
     if s.status_line != StatusLine::Hidden {
-        // **A chip says only what differs from Sterna's own default** --
-        // except the effort, which is a control stepped in place: a chip
-        // that vanished at `default` could not be stepped again.
+        // **A chip says only what differs from Sterna's own default.** The
+        // effort is not here: it rides with the model on the session bar.
         let items = [
             // A sign-in running beside the session, one click from its panel.
             (
@@ -1214,7 +1226,6 @@ fn dock_bottom(
                     .unwrap_or_default(),
                 Action::ReopenSignIn,
             ),
-            (super::facts::effort_word(s), Action::Effort),
             (
                 if s.helpers_on {
                     "◇ helpers on".to_string()

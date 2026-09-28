@@ -48,7 +48,7 @@ impl Definition {
         let effort = string("effort")?
             .map(|value| {
                 Effort::parse(&value).ok_or_else(|| {
-                    "agent effort must be default, low, medium, high, xhigh, or max".to_string()
+                    "agent effort must be auto, low, medium, high, xhigh, or max".to_string()
                 })
             })
             .transpose()?;

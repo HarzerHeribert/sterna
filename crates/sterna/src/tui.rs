@@ -565,7 +565,7 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 (
                     "/effort".to_string(),
-                    "default, low, medium, high, xhigh or max",
+                    "auto, low, medium, high, xhigh or max",
                 ),
                 (
                     "/context".to_string(),

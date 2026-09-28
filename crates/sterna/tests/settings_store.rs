@@ -263,7 +263,7 @@ fn global_defaults_are_overridden_by_the_project_with_visible_origins() {
     assert_eq!(level(&loaded.values), None);
     assert_eq!(
         string(&loaded.values, "session.effort").as_deref(),
-        Some("default")
+        Some("auto")
     );
 }
 
@@ -1357,6 +1357,35 @@ fn the_supervisors_settings_are_retired_with_one_notice() {
     );
     let saved = read(&store.path(Scope::Global));
     assert!(!saved.contains("supervis"), "{saved}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}
+
+/// The effort the model chooses for itself was saved as `default`; it is
+/// `auto` now. A saved word is read as `auto`, rewritten in its file, and
+/// said once.
+#[test]
+fn a_saved_default_effort_becomes_auto() {
+    let temp = Temp::new("migrate-effort");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[session]\neffort = \"default\"\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    assert_eq!(
+        string(&loaded.values, "session.effort").as_deref(),
+        Some("auto")
+    );
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(
+        notices,
+        [
+            "`session.effort = default` is now `\"auto\"`: the same setting under a clearer name. The model chooses its own effort."
+        ]
+    );
+    let saved = read(&store.path(Scope::Global));
+    assert!(!saved.contains("default"), "{saved}");
     let after = store.load(None).expect("loads");
     assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
 }

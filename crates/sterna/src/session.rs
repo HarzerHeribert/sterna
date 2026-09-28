@@ -2926,7 +2926,7 @@ mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &config,

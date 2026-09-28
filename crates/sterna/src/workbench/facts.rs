@@ -109,27 +109,25 @@ pub fn level_word(s: &ScreenState) -> String {
     }
 }
 
+/// The effort as the model chip carries it: `auto`, or `auto (low)` when
+/// the model is sent something else.
+pub fn effort_short(s: &ScreenState) -> String {
+    let sent = s.effort.sent_for(s.model.as_deref().unwrap_or(""));
+    if sent == s.effort {
+        s.effort.name().to_string()
+    } else {
+        format!("{} ({})", s.effort.name(), sent.name())
+    }
+}
+
 /// The effort as the chip names it, with what is actually sent when that
-/// differs: `effort default (low)` on a model that has its own default.
+/// differs: `effort auto (low)` on a model that has its own default.
 pub fn effort_word(s: &ScreenState) -> String {
     let sent = s.effort.sent_for(s.model.as_deref().unwrap_or(""));
     if sent == s.effort {
         format!("effort {}", s.effort.name())
     } else {
         format!("effort {} ({})", s.effort.name(), sent.name())
-    }
-}
-
-/// The next effort on the ladder, from the stored value -- never from the
-/// value a model is sent, or a first step could land where it started.
-pub fn next_effort(effort: Effort) -> Effort {
-    match effort {
-        Effort::Default => Effort::Low,
-        Effort::Low => Effort::Medium,
-        Effort::Medium => Effort::High,
-        Effort::High => Effort::Xhigh,
-        Effort::Xhigh => Effort::Max,
-        Effort::Max => Effort::Default,
     }
 }
 

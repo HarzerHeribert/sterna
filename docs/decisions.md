@@ -35,7 +35,7 @@ threshold below is a `decisions.*` setting with the default shown.
 |---|---|---|
 | **intent** — `read_only`, `modify`, `run`, `other` | once, before the first turn | hold the first effectful cell once (`hold_above` 0.85); re-issued, it runs |
 | **complexity** — `trivial`, `routine`, `needs_exploration` | same request | add a reason to run the preflight scout (`scout_above` 0.85); never remove one |
-| **kind** — `explore`, `fix`, `implement`, `question`, `run` | same request | lower effort to `low` for `explore`/`question` when you left effort at `default`; brief the scout to dissect an `explore` request |
+| **kind** — `explore`, `fix`, `implement`, `question`, `run` | same request | lower effort to `low` for `explore`/`question` when you left effort at `auto`; brief the scout to dissect an `explore` request |
 | **drift** — does this cell do what the active plan step says | an effectful cell | hold it once, naming the step (`drift_no_below` 0.10) |
 | **completion** — does the diff satisfy the request | a claimed completion | a confident no adds a finding held once (`completion_no_below` 0.10); a confident yes with nothing else found spares the fresh checker (`completion_yes_above` 0.90) |
 | **hygiene** — `has_tests`, `out_of_scope`, `debug_leftovers`, `deletes_tests`, `changes_signature` | same request, when there is a diff | a finding held once (`hygiene_*` 0.10 / 0.90) |

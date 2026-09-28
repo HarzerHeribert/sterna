@@ -50,7 +50,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Acceptance => acceptance(sheet, n),
         Source::Themes { .. } => themes(sheet, s),
         Source::Settings(p) => super::settings::items(sheet, p, s),
-        Source::Models(m) => super::models::items(sheet, m),
+        Source::Models(m) => super::models::items(sheet, m, s.effort),
         Source::Panel(panel) => panel_items(sheet, panel),
         Source::Fold(_) => fold_items(sheet, fold),
         Source::More(controls) => more_items(sheet, controls),

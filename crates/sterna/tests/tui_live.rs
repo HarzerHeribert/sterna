@@ -875,7 +875,7 @@ fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_retur
                 && text.contains("PREFLIGHT · SCOUT")
                 && text.contains("scanning")
                 && text.contains("searching")
-                && text.contains("effort medium")
+                && text.contains("· medium ▾")
         },
     );
 
@@ -1494,7 +1494,7 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.send(b"\x06");
     app.wait("header and status gone after Ctrl-F", |screen| {
         let screen = screen.contents();
-        !screen.contains("STERNA /") && !screen.contains("⟨ Settings ⟩")
+        !screen.contains("STERNA /") && !screen.contains("⟨ ◼ Sandboxed ⟩")
     });
     // The composer is not part of the hide-set, and neither is what is in it.
     app.contains("a draft mid-thought");
@@ -1502,7 +1502,7 @@ fn ctrl_f_takes_the_screen_and_gives_it_back_with_the_draft_intact() {
     app.contains("a draft mid-thought still typing");
     app.send(b"\x06");
     app.contains("STERNA /");
-    app.contains("⟨ Settings ⟩");
+    app.contains("⟨ ◼ Sandboxed ⟩");
     app.contains("a draft mid-thought still typing");
     app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
@@ -2506,9 +2506,9 @@ fn a_setting_chosen_on_the_panel_is_in_force_in_this_session() {
     app.send(b"\x1b[C");
     app.contains("Effort is now low");
     app.send(b"\x1b");
-    // The strip reads the running session. If the choice had only reached
-    // the file, this would still say `default`.
-    app.contains("effort low");
+    // The model chip reads the running session. If the choice had only
+    // reached the file, this would still say `auto`.
+    app.contains("· low ▾");
     // And it reached the file too, so the next session starts there.
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();
     assert!(saved.contains("low"), "{saved}");
@@ -2600,10 +2600,13 @@ fn a_typed_level_offers_the_one_it_left_back() {
 fn workbench_pointer_opens_settings_only_on_release_and_wheel_stays_local() {
     let (base, _requests) = provider();
     let mut app = App::start(&base);
-    app.contains("Settings");
+    app.ready();
+    // Wide enough that Settings has its own chip rather than the fold.
+    app.resize(120);
+    app.contains("⟨ Settings ⟩");
     // Header is one row; the chip's column is counted in cells, not bytes,
     // because the glyphs before it are more than one byte each.
-    let rows: Vec<_> = app.screen.screen().rows(0, 80).collect();
+    let rows: Vec<_> = app.screen.screen().rows(0, 120).collect();
     let x = rows[0]
         .char_indices()
         .position(|(byte, _)| rows[0][byte..].starts_with("Settings"))

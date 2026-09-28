@@ -585,7 +585,7 @@ impl<'s, 'a> EffortLease<'s, 'a> {
                 *kind == crate::decide::KIND_EXPLORE || *kind == crate::decide::KIND_QUESTION
             })
             .map(|_| wire::Effort::Low)
-            .filter(|_| session.effort.get() == wire::Effort::Default);
+            .filter(|_| session.effort.get() == wire::Effort::Auto);
         let mut lease = Self {
             session,
             restore: None,

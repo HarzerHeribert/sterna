@@ -64,7 +64,7 @@ machine or container you trust; the machine is then the boundary.
 | `/login` | sign in: a subscription, an API key or your own endpoint |
 | `/key <provider>` | store an API key (not echoed) |
 | `/models`, `/model` | browse models; set the main, helper or subagent model |
-| `/effort` | reasoning effort |
+| `/effort` | Main's reasoning effort: `auto`, `low` … `max`; also on the model chip in the top bar |
 | `/wizard` | sign-in, models for each workload, Jev |
 | `/sandbox` | how much runs without asking: Ask, Sandboxed or Full access |
 | `/plan <task>` | plan one request: it reads, and writes only the plan |

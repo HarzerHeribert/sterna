@@ -930,19 +930,8 @@ impl Workbench {
             Action::SettingsAt(category) => {
                 self.open_settings_at(s, category, None);
             }
-            // **The whole point of the strip is that it acts where it
-            // stands.** Stepping the effort opens nothing: the word on the
-            // strip is the next word before the finger has left the mouse,
-            // because `/effort` was always a live control and this is it.
-            Action::Effort => {
-                // What it was goes on the undo list on its way out
-                // (`sent`), and is offered beside the notice the step
-                // produces: reversibility over confirmation.
-                let next = super::facts::next_effort(s.effort);
-                return Effect::Command(format!("/effort {}", next.name()));
-            }
             Action::Help => self.show(Source::Keys, from_sheet),
-            // The dock's fourth chip steps in place, like the effort one.
+            // The dock's stream chip steps in place.
             Action::Stream => {
                 let next = s.stream.next();
                 let word = next.name();

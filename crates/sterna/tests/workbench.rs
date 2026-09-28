@@ -1758,7 +1758,7 @@ fn the_top_bar_is_chips_and_each_one_hits_its_own_control() {
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
     let bar = screen.lines().next().unwrap();
     for chip in [
-        "⟨ fixture-main ▾ ⟩",
+        "⟨ fixture-main · auto ▾ ⟩",
         "⟨ ◼ Sandboxed ⟩",
         "⟨ Settings ⟩",
         "⟨ ? ⟩",
@@ -1808,8 +1808,8 @@ fn a_bare_question_mark_opens_the_key_sheet_and_escape_closes_it() {
 }
 
 /// The composer is a dock: its top edge says what the session is doing and
-/// its bottom edge carries the effort, which is stepped in place, and a chip
-/// for each other setting changed from Sterna's own default.
+/// its bottom edge a chip for each setting changed from Sterna's own
+/// default. The effort is not one of them: it rides with the model.
 #[test]
 fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     let (c, n, mut s) = fixture();
@@ -1822,7 +1822,7 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     assert!(top.contains("✓ complete"), "{top}");
     let bottom = screen.lines().last().unwrap();
     assert!(bottom.starts_with("╰─"), "{bottom}");
-    assert!(bottom.contains("⟨ effort default ⟩"), "{bottom}");
+    assert!(!bottom.contains("effort"), "{bottom}");
     for default in ["helpers", "subagents", "stream"] {
         assert!(
             !bottom.contains(default),
@@ -1833,12 +1833,7 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     s.helpers_on = true;
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     let bottom = screen.lines().last().unwrap();
-    assert!(bottom.contains("⟨ effort high ⟩"), "{bottom}");
     assert!(bottom.contains("⟨ ◇ helpers on ⟩"), "{bottom}");
-    assert!(
-        u.geometry.hits.iter().any(|(_, a)| *a == Action::Effort),
-        "the effort chip is a control"
-    );
     // And what typing lands on is still marked the way the transcript
     // marks what was said.
     assert!(screen.contains("│ ❯ "), "{screen}");
@@ -1882,10 +1877,9 @@ fn a_notice_fades_from_the_dock_and_takes_its_undo_with_it() {
     s.effort = sterna::wire::Effort::Medium;
     let mut u = Workbench::default();
     draw(&c, &n, &s, &mut u, 100, 40);
-    let Effect::Command(step) = click(&mut u, &mut s, &n, Action::Effort) else {
-        panic!("the effort chip steps the effort");
-    };
-    // The loop hands the command on; on its way out it joins the undo list.
+    // The Models sheet's effort row sends the command; on its way out it
+    // joins the undo list.
+    let step = "/effort high".to_string();
     u.sent(&step, &s);
     assert_eq!(
         u.changes.last().map(|c| c.was.as_str()),
@@ -2858,29 +2852,54 @@ fn the_greeting_names_the_level_in_force() {
     );
 }
 
-/// The effort chip is a control stepped in place, so it stays on the dock
-/// at `default` and says what a model is actually sent.
+/// **The model and its effort are one chip** on the session bar, which
+/// says what a model is actually sent and opens the Models sheet, where
+/// Main's effort sits under its model.
 #[test]
-fn the_effort_chip_stays_on_the_dock_at_default() {
+fn the_model_chip_carries_the_effort_and_opens_where_both_are_chosen() {
     let (c, n, mut s) = fixture();
-    s.effort = sterna::wire::Effort::Default;
+    s.effort = sterna::wire::Effort::Auto;
     let mut u = Workbench::default();
-    draw(&c, &n, &s, &mut u, 140, 42);
-    assert!(
-        u.geometry
-            .hits
-            .iter()
-            .any(|(r, a)| *a == Action::Effort && r.y == 41),
-        "an effort chip on the dock at default"
-    );
+    let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-main · auto ▾"), "{bar}");
     s.model = Some("gpt-5.5".into());
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 42));
-    assert!(screen.contains("effort default (low)"), "{screen}");
-    // The ladder steps from the stored value, so the first step is a change.
-    assert_eq!(
-        click(&mut u, &mut s, &n, Action::Effort),
-        Effect::Command("/effort low".into())
+    assert!(
+        screen
+            .lines()
+            .next()
+            .unwrap()
+            .contains("gpt-5.5 · auto (low) ▾"),
+        "{screen}"
     );
+    let chip = u
+        .geometry
+        .hits
+        .iter()
+        .find(|(r, a)| *a == Action::Models && r.y == 0)
+        .map(|(_, a)| a.clone())
+        .expect("the chip is a target");
+    assert_eq!(chip, Action::Models);
+}
+
+/// At a narrow width Settings folds away before the model does: which
+/// model answers, and how hard it works, is the fact a person acts on.
+#[test]
+fn the_model_chip_outlasts_settings_at_a_narrow_width() {
+    let (c, n, s) = fixture();
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 80, 30));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-main · auto"), "{bar}");
+    assert!(!bar.contains("Settings"), "{bar}");
+    // A long project name gives up its room first, down to eight columns.
+    let mut s = s;
+    s.project = Some("sterna-live-24197-57-and-then-some".into());
+    s.model = Some("fixture-model-long".into());
+    let screen = text(&draw(&c, &n, &s, &mut u, 80, 30));
+    let bar = screen.lines().next().unwrap();
+    assert!(bar.contains("fixture-model-long · auto"), "{bar}");
 }
 
 /// The level has one setter: the Sandbox sheet, a typed command and a
@@ -3005,8 +3024,8 @@ fn an_effort_on_its_way_out_is_saved() {
     assert!(saved.contains("effort = \"high\""), "{saved}");
 }
 
-/// The sidebar's effort and helpers are two targets: stepping the effort
-/// never happens from the helpers line, and a helper's own line opens it.
+/// The sidebar's effort and helpers are two targets: the effort opens the
+/// Models sheet, never the helpers line, and a helper's own line opens it.
 #[test]
 fn the_sidebar_splits_effort_from_helpers() {
     let (c, n, mut s) = fixture();
@@ -3021,7 +3040,7 @@ fn the_sidebar_splits_effort_from_helpers() {
             .map(|(r, _)| r.y)
             .collect::<Vec<_>>()
     };
-    let effort = side(&Action::Effort);
+    let effort = side(&Action::Models);
     let helpers = side(&Action::SettingsAt(2));
     assert!(!effort.is_empty() && !helpers.is_empty());
     assert!(effort.iter().all(|y| !helpers.contains(y)));
@@ -5515,4 +5534,29 @@ fn a_running_cards_bottom_edge_waits_for_the_cell_to_end() {
     assert_eq!(bottoms.len(), 2, "{bottoms:?}");
     assert!(bottoms[0].contains("no files changed"), "{bottoms:?}");
     assert!(bottoms[1].trim().is_empty(), "{bottoms:?}");
+}
+
+/// Main's effort sits under its model on the Models sheet: the current word
+/// is marked, and choosing another sends `/effort`.
+#[test]
+fn mains_effort_is_chosen_where_its_model_is() {
+    let (c, n, mut s) = fixture();
+    s.effort = sterna::wire::Effort::Auto;
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(navigator())));
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
+    assert!(screen.contains("Effort"), "{screen}");
+    assert!(screen.contains("auto lets the model choose"), "{screen}");
+    let item = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "main:effort")
+        .expect("the effort row");
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(item, 3))),
+        Effect::Command("/effort high".into())
+    );
 }

@@ -56,7 +56,7 @@ pub struct SettingSpec {
 
 /// Reasoning effort as the parent tier accepts it: `default` means *the
 /// provider's own*, which is not the same as removing a saved override.
-const EFFORT: &[&str] = &["default", "low", "medium", "high", "xhigh", "max"];
+const EFFORT: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
 /// Per-helper effort is a hard policy (`config.rs`): a helper never inherits
 /// `default`, so the curated word is absent here on purpose.
 const HARD_EFFORT: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -980,6 +980,8 @@ pub fn migrated_value(key: &str, word: &str) -> Option<&'static str> {
     match (key, word) {
         ("helpers.completion_check", "true") => Some("auto"),
         ("helpers.completion_check", "false") => Some("off"),
+        // The effort the model chooses for itself was called `default`.
+        ("session.effort", "default") => Some("auto"),
         _ => None,
     }
 }
@@ -997,6 +999,11 @@ pub fn migration_notice(key: &str, word: &str, now: &str, written: bool) -> Stri
         ("helpers.completion_check", "auto") => format!(
             "{what}: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
         ),
+        ("session.effort", "auto") => {
+            format!(
+                "{what}: the same setting under a clearer name. The model chooses its own effort."
+            )
+        }
         _ => format!("{what}; /settings changes it."),
     }
 }

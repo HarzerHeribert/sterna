@@ -191,10 +191,11 @@ fn helper_effort_has_role_defaults_and_accepts_partial_hard_overrides() {
     assert_eq!(configured.for_helper("find"), Some(Effort::Medium));
     assert_eq!(configured.for_helper("unknown"), None);
 
-    let error = SternaConfig::parse("[helpers.effort]\nreduce = \"default\"\n").unwrap_err();
+    // A helper's effort is a hard value: `auto`, the model's own choice,
+    // is refused, and the retired word `default` is no word at all.
+    let error = SternaConfig::parse("[helpers.effort]\nreduce = \"auto\"\n").unwrap_err();
     assert!(error.contains("hard value"), "{error}");
-    // `auto` is no word at all any more, so it is refused as one.
-    assert!(SternaConfig::parse("[helpers.effort]\nreduce = \"auto\"\n").is_err());
+    assert!(SternaConfig::parse("[helpers.effort]\nreduce = \"default\"\n").is_err());
 }
 
 /// A saved token cap is retired: read as unset, never refused, and it

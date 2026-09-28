@@ -1074,10 +1074,10 @@ pub(super) fn command(
                     }
                     session_println!("{}", effort.now());
                 } else {
-                    session_println!("Use /effort default|low|medium|high|xhigh|max");
+                    session_println!("Use /effort auto|low|medium|high|xhigh|max");
                 }
             } else {
-                const LADDER: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+                const LADDER: [&str; 6] = ["auto", "low", "medium", "high", "xhigh", "max"];
                 let rows = LADDER
                     .iter()
                     .map(|value| PanelRow::command(value.to_string(), format!("/effort {value}")))
@@ -1890,7 +1890,7 @@ pub(super) mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &RefCell::new(config),
@@ -1963,7 +1963,7 @@ pub(super) mod tests {
             interface: Cell::new(crate::abi::Interface::default()),
             manifest: crate::manifest::Manifest::default(),
             mode: Cell::new(crate::sandbox::modes::RequestMode::Work),
-            effort: Cell::new(wire::Effort::Default),
+            effort: Cell::new(wire::Effort::Auto),
             routing: Default::default(),
             project: &project,
             config: &config,
