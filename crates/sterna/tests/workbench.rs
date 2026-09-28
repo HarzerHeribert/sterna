@@ -1561,11 +1561,12 @@ fn the_scout_folds_under_the_request_it_read() {
     );
 }
 
-/// Prose wraps at a reading width on a wide terminal, where a line of 160
-/// columns is too long to read; a table keeps the whole width, because a cut
-/// row stops being a row.
+/// Prose ends where the cards end, at every width: the same padding on the
+/// right as on the left, and no fixed column leaving a wide terminal's
+/// right third empty. A table keeps the whole width, because a cut row
+/// stops being a row.
 #[test]
-fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
+fn prose_ends_where_the_cards_end_and_a_table_keeps_the_whole_width() {
     let sentence = "The generator already tells missing data from a clean result. ";
     let table = format!("| check | {} |", "x".repeat(120));
     let c = Conversation {
@@ -1591,9 +1592,14 @@ fn prose_wraps_at_a_reading_width_and_a_table_keeps_the_whole_width() {
         .filter(|t| t.contains("generator"))
         .collect();
     assert!(prose.len() > 2, "{}", words(&d));
+    assert!(
+        prose.iter().any(|line| line.chars().count() > 120),
+        "prose uses a wide terminal's width: {prose:#?}"
+    );
     for line in &prose {
+        // The cards' right corner is three columns in from the edge.
         assert!(
-            line.chars().count() <= workbench::READING_WIDTH,
+            line.chars().count() <= 160 - 2,
             "{} columns: {line}",
             line.chars().count()
         );
@@ -5090,4 +5096,84 @@ fn a_checks_reasons_fold_under_its_verdict_and_open_on_a_click() {
     click(&mut u, &mut s, &n, Action::Note(index));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(!screen.contains("packaging part"), "folded again: {screen}");
+}
+
+/// A cell's intent says what the cell is for: normal text, never cut with
+/// "…", wrapped under its own first word, with the state word kept on the
+/// first line, open or folded.
+#[test]
+fn a_cells_intent_wraps_in_normal_text_and_keeps_its_state_word() {
+    let (c, mut n, s) = fixture();
+    let intent = "I'll check the dashboard layout and delivery guidance for practical strengths and friction points before I answer.";
+    n.cells[0].description = Some(intent.into());
+    let mut u = Workbench::default();
+    for open in [true, false] {
+        if open {
+            u.expanded.insert(1);
+        } else {
+            u.expanded.clear();
+            u.collapsed.insert(1);
+        }
+        let d = Document::build(&c, &n, &s, &u, 84);
+        let title = d
+            .rows
+            .iter()
+            .find(|r| matches!(r.kind, sterna::workbench::RowKind::CardTop { .. }))
+            .expect("the card's title row");
+        assert!(!title.text.contains('…'), "cut: {}", title.text);
+        assert!(
+            title
+                .spans
+                .iter()
+                .any(|(t, tone)| t.starts_with("I'll check") && *tone == Tone::Normal),
+            "the intent stands out: {:?}",
+            title.spans
+        );
+        let all = words(&d);
+        assert!(
+            all.contains("friction points") && all.contains("answer."),
+            "open {open}: the whole intent is there: {all}"
+        );
+        let screen = text(&draw(&c, &n, &s, &mut u, 84, 30));
+        let first = screen
+            .lines()
+            .find(|line| line.contains("I'll check"))
+            .expect("the title on screen");
+        assert!(
+            first.contains("EXECUTED") || first.contains("RECORDED"),
+            "{first}"
+        );
+        assert!(
+            screen
+                .lines()
+                .any(|line| line.contains("answer.") && !line.contains("I'll check")),
+            "the intent goes on under its first line: {screen}"
+        );
+    }
+}
+
+/// Your turn wraps between words, as the composer showed it: a word is
+/// never split at the edge.
+#[test]
+fn your_turn_wraps_between_words() {
+    let (mut c, n, s) = fixture();
+    c.messages[0] = Message::text(
+        Role::User,
+        "add a retry with backoff to tools/calm.py for 429 and 503, and honour Retry-After when the server sends one",
+    );
+    let d = Document::build(&c, &n, &s, &Workbench::default(), 84);
+    let yours: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::You)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert!(yours.len() > 2, "{yours:?}");
+    assert!(
+        yours.iter().any(|line| line.contains("Retry-After")),
+        "a word was split: {yours:?}"
+    );
+    for line in &yours {
+        assert!(line.chars().count() <= 84 - 2 - 3, "{line}");
+    }
 }

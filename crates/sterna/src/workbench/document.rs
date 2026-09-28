@@ -93,11 +93,13 @@ enum Mover {
     Prose,
 }
 
-/// The widest a line of prose runs, indent included: yours, Sterna's answer,
-/// the words around a cell. At the width of a wide terminal a line runs
-/// 160 columns, too long to read. Code, tables, cards and output keep the
-/// whole width: cutting them costs more than it saves.
-pub const READING_WIDTH: usize = 100;
+/// The columns between a card's right corner and the conversation's right
+/// edge. **Every line of the conversation ends where the cards end** --
+/// your turn, the answers, the words around a cell, the notes -- so the text
+/// keeps the same padding on the right as on the left, at every width. A
+/// fixed reading width left a wide terminal's right third empty while the
+/// cards ran on.
+const EDGE: usize = 2;
 
 #[derive(Default)]
 pub struct Document {
@@ -176,10 +178,7 @@ impl Document {
                 Block::Verbatim(line) => self.wrapped(line, Tone::Code, None, width, id, indent),
                 Block::Prose { lead, pieces } => {
                     let hang = indent + span_width(&lead);
-                    let rows = flow(
-                        &pieces,
-                        width.min(READING_WIDTH).saturating_sub(hang).max(1),
-                    );
+                    let rows = flow(&pieces, width.saturating_sub(hang).max(1));
                     for (i, row) in rows.into_iter().enumerate() {
                         let first = if i == 0 {
                             format!("{pad}{lead}")
@@ -324,7 +323,8 @@ impl Document {
             ..Self::default()
         };
         let mut note = 0usize;
-        d.card(c, s, &mut note, width);
+        let room = width.saturating_sub(EDGE).max(1);
+        d.card(c, s, &mut note, room);
         // What the card drew is the session's own header, not conversation:
         // an empty conversation is still empty underneath it.
         let card_rows = d.rows.len();
@@ -335,7 +335,7 @@ impl Document {
             && s.streaming_tool_input.is_none()
             && s.streaming_reasoning.is_none()
         {
-            d.opening(s, width);
+            d.opening(s, room);
         }
         // A card's body sits inside two edges, a three-column indent and the
         // column kept clear before the gutter: nine columns in all.
@@ -354,21 +354,21 @@ impl Document {
             .and_then(|_| reads.iter().rposition(|r| *r == Reads::You));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
-            d.notes(s, ui, &mut note, idx, width);
+            d.notes(s, ui, &mut note, idx, room);
             let cell = match reads[idx] {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
-                    d.turn_you(&m.as_written(), width, id);
+                    d.turn_you(&m.as_written(), room, id);
                     if scout_under == Some(idx)
                         && let Some(p) = &n.preflight
                     {
-                        d.scout(p, s, ui, width, id);
+                        d.scout(p, s, ui, room, id);
                         d.blank(id);
                     }
                     continue;
                 }
                 Reads::After => {
-                    d.prose(&prose(m), Tone::Normal, width, id, 2);
+                    d.prose(&prose(m), Tone::Normal, room, id, 2);
                     d.blank(id);
                     continue;
                 }
@@ -378,7 +378,7 @@ impl Document {
             let src = source(m);
             d.turn_sterna(id);
             if !has_cell(src.as_deref(), v) {
-                d.prose(&prose(m), Tone::Normal, width, id, 2);
+                d.prose(&prose(m), Tone::Normal, room, id, 2);
                 d.blank(id);
                 continue;
             }
@@ -390,7 +390,7 @@ impl Document {
                 .and_then(|v| v.description.as_deref())
                 .is_some_and(|d| d.trim() == explanation.trim());
             if !explanation.trim().is_empty() && !titled {
-                d.prose(&explanation, Tone::Normal, width, id, 2);
+                d.prose(&explanation, Tone::Normal, room, id, 2);
                 d.blank(id);
             }
             let running = cell >= n.cells.len()
@@ -463,22 +463,51 @@ impl Document {
             // The selected card says so in a glyph, which a failed card's
             // own colour cannot hide.
             let selected = ui.selected_cell == Some(cell);
+            let number = format!("{}{cell:03}", if selected { "› " } else { "" });
+            // **The intent is what the cell is for**: normal text, never cut.
+            // It wraps under its own first word, and the state word keeps
+            // the first line. The view sets the card three columns in, its
+            // lead ("╭─ " open, "▸ " folded) before the number, and the state
+            // word three columns in from the corner, two from the edge.
+            let lead = if open { 3 } else { 2 };
+            let start = 3 + lead + number.chars().count() + 3;
+            let state_width: usize = state.iter().map(|(word, _)| word.chars().count()).sum();
+            // Room for the first line: it stops five columns short of the
+            // state word, so an open card's edge shows a short rule there.
+            let intent_room = width.saturating_sub(start + state_width + 10).max(12);
+            let parts = super::view::wrap_words(description, intent_room);
+            let (first, rest) = parts
+                .split_first()
+                .map_or((String::new(), &[][..]), |(first, rest)| {
+                    (first.clone(), rest)
+                });
             d.kinded(
                 vec![
-                    (
-                        format!("{}{cell:03}", if selected { "› " } else { "" }),
-                        Tone::Strong,
-                    ),
+                    (number, Tone::Strong),
                     (" · ".to_string(), tone),
-                    (
-                        clip(description, width.saturating_sub(30)),
-                        if open { Tone::Normal } else { Tone::Muted },
-                    ),
+                    (first, Tone::Normal),
                 ],
                 Some(Action::Cell(cell)),
                 id,
                 RowKind::CardTop { open, right: state },
             );
+            for part in rest {
+                // An open card's body starts two columns inside its edge.
+                let (pad, kind) = if open {
+                    (start - 5, RowKind::CardBody)
+                } else {
+                    (start, d.container.clone())
+                };
+                d.kinded(
+                    vec![
+                        (" ".repeat(pad), Tone::Normal),
+                        (part.clone(), Tone::Normal),
+                    ],
+                    Some(Action::Cell(cell)),
+                    id,
+                    kind,
+                );
+            }
             if open {
                 d.container = RowKind::CardBody;
                 let tab = ui.tabs.get(&cell).copied().unwrap_or(CellTab::Code);
@@ -604,23 +633,23 @@ impl Document {
                     let answer =
                         crate::prompt::completion_text(answer).unwrap_or_else(|| answer.clone());
                     d.blank(id);
-                    d.answer(&answer, v, cell, s, last_assistant == Some(idx), width, id);
+                    d.answer(&answer, v, cell, s, last_assistant == Some(idx), room, id);
                 }
             }
             d.blank(id);
         }
-        d.notes(s, ui, &mut note, usize::MAX, width);
-        d.behind(s, width);
+        d.notes(s, ui, &mut note, usize::MAX, room);
+        d.behind(s, room);
         // A Scout with no turn of the person's in view to sit under still
         // shows, where it always did.
         if scout_under.is_none()
             && let Some(p) = &n.preflight
         {
-            d.scout(p, s, ui, width, usize::MAX - 2);
+            d.scout(p, s, ui, room, usize::MAX - 2);
         }
         if let Some(reasoning) = &s.streaming_reasoning {
             d.turn_sterna(usize::MAX - 4);
-            d.reasoning(reasoning, s, width);
+            d.reasoning(reasoning, s, room);
         }
         if let Some(fragment) = &s.streaming_tool_input {
             d.turn_sterna(usize::MAX - 3);
@@ -631,7 +660,7 @@ impl Document {
             if d.rows.len() == card_rows {
                 d.turn_sterna(usize::MAX - 1);
             }
-            d.arriving(&text, s, width);
+            d.arriving(&text, s, room);
         }
         d
     }
@@ -676,14 +705,7 @@ impl Document {
     /// The rail marks it as live; the caret is its one moving cell.
     fn arriving(&mut self, text: &str, s: &ScreenState, width: usize) {
         let before = self.rows.len();
-        self.wrapped(
-            text,
-            Tone::Normal,
-            None,
-            width.min(READING_WIDTH),
-            usize::MAX - 1,
-            2,
-        );
+        self.wrapped(text, Tone::Normal, None, width, usize::MAX - 1, 2);
         let last = self.rows.len().saturating_sub(1);
         let mark = self.caret(s, Mover::Prose);
         for (i, row) in self.rows[before..].iter_mut().enumerate() {
@@ -704,17 +726,16 @@ impl Document {
             id,
             RowKind::You,
         );
-        let before = self.rows.len();
-        self.wrapped(
-            text,
-            Tone::Strong,
-            None,
-            width.saturating_sub(3).min(READING_WIDTH),
-            id,
-            0,
-        );
-        for row in &mut self.rows[before..] {
-            row.kind = RowKind::You;
+        // Between words, as the composer showed the draft: every character
+        // is kept, and a word is broken only when it is wider than the room.
+        let text = text.replace('\t', "    ");
+        for (_, line) in super::view::composer_lines(&text, width.saturating_sub(3).max(1)) {
+            self.kinded(
+                vec![(line.to_string(), Tone::Strong)],
+                None,
+                id,
+                RowKind::You,
+            );
         }
         self.blank(id);
     }
@@ -1383,7 +1404,7 @@ impl Document {
             ) && note.text.lines().nth(1).is_some();
             let open = ui.notes_open.contains(&index);
             let fold = folds.then_some(Action::Note(index));
-            let room = width.saturating_sub(5).max(8);
+            let room = width.saturating_sub(4).max(8);
             for (line_no, line) in note.text.lines().enumerate() {
                 if folds && line_no > 0 && !open {
                     break;
