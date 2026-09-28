@@ -1146,6 +1146,48 @@ fn a_global_permission_rung_migrates_to_a_sandbox_level() {
     assert!(!read(&store.path(Scope::Global)).contains("mode"));
 }
 
+/// `helpers.completion_check` was on or off and is now when. A saved word of
+/// the old kind is read as what it means now, rewritten in its own file,
+/// and said once: `true` keeps the check where it pays, `false` stays off.
+#[test]
+fn a_saved_on_or_off_completion_check_becomes_auto_or_off() {
+    let temp = Temp::new("migrate-check");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[helpers]\ncompletion_check = true\n",
+    );
+    write(
+        &store.path(Scope::Local),
+        "[helpers]\ncompletion_check = false\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    assert_eq!(
+        loaded.values["helpers"]["completion_check"].as_str(),
+        Some("off"),
+        "the project's word wins, read as what it means now"
+    );
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices.contains(
+            &"`helpers.completion_check = true` is now `\"auto\"`: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
+                .to_string()
+        ),
+        "{notices:?}"
+    );
+    assert!(
+        notices.contains(
+            &"`helpers.completion_check = false` is now `\"off\"`; /settings changes it."
+                .to_string()
+        ),
+        "{notices:?}"
+    );
+    assert!(read(&store.path(Scope::Global)).contains("completion_check = \"auto\""));
+    assert!(read(&store.path(Scope::Local)).contains("completion_check = \"off\""));
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}
+
 /// `full_access = true` alone becomes `full`; beside a rung, the rung
 /// decided the old session's level, so it decides the new one.
 #[test]

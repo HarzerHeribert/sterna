@@ -1229,7 +1229,7 @@ fn run_task_inner(
     let supervisor_active = crate::supervisor::active(&session.config());
     let mut cells_since_look: Vec<CellRecord> = Vec::new();
     let mut task_state = TaskState::new(task, &request_profile, &session.config())
-        .with_acceptance(acceptance_items)
+        .with_acceptance(acceptance_items, acceptance_from)
         .with_decision(
             decision,
             decision_failures,

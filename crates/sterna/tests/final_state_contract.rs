@@ -234,7 +234,14 @@ fn fresh_checker_evidence_carries_no_narrative_and_bounds_the_diff() {
     }];
     let facts = vec!["edited /app/x.c (cell 1)".to_string()];
     let diff = "+line\n".repeat(10_000);
-    let evidence = fresh_checker_evidence("Add coverage to sqlite", &diff, &facts, &findings, &[]);
+    let evidence = fresh_checker_evidence(
+        "Add coverage to sqlite",
+        "Coverage added.",
+        &diff,
+        &facts,
+        &findings,
+        &[],
+    );
     let _ = control;
     assert!(!evidence.contains(control));
     assert!(evidence.starts_with("## Original request\nAdd coverage to sqlite\n"));
@@ -246,6 +253,82 @@ fn fresh_checker_evidence_carries_no_narrative_and_bounds_the_diff() {
     );
     assert!(evidence.contains("## Facts\n- edited /app/x.c (cell 1)\n"));
     assert!(evidence.contains("## Final-state findings\n- Re-run the verification.\n"));
-    assert!(evidence.ends_with("Does the current state satisfy the original request?\n"));
+    assert!(
+        evidence.contains("## The answer\nCoverage added.\n"),
+        "the checker reads the answer the person reads"
+    );
+    assert!(evidence.ends_with(
+        "Does the answer hold, and does the current state satisfy the original request?\n"
+    ));
     assert!(evidence.len() < 26 * 1024, "{}", evidence.len());
+}
+
+/// `auto` checks big work only; nothing is checked after a turn that
+/// changed no file, whatever the setting says.
+#[test]
+fn the_checker_runs_after_big_work_and_never_after_a_turn_that_changed_nothing() {
+    use sterna::completion::{BIG_CELLS, BIG_FILES, BIG_LINES, Work, wants_check};
+    use sterna::config::CompletionCheck::{Always, Auto, Off};
+    let small = Work {
+        files: 1,
+        lines: 3,
+        cells: 2,
+        scout_list: false,
+    };
+    let nothing = Work {
+        files: 0,
+        lines: 0,
+        cells: 12,
+        scout_list: true,
+    };
+    assert!(
+        !wants_check(Always, &nothing),
+        "a read-only turn was checked"
+    );
+    assert!(!wants_check(Auto, &nothing));
+    assert!(wants_check(Always, &small));
+    assert!(!wants_check(Auto, &small), "small work was checked on auto");
+    assert!(!wants_check(Off, &Work { files: 9, ..small }));
+    for big in [
+        Work {
+            scout_list: true,
+            ..small
+        },
+        Work {
+            files: BIG_FILES,
+            ..small
+        },
+        Work {
+            lines: BIG_LINES,
+            ..small
+        },
+        Work {
+            cells: BIG_CELLS,
+            ..small
+        },
+    ] {
+        assert!(wants_check(Auto, &big), "{big:?}");
+    }
+    for below in [
+        Work {
+            files: BIG_FILES - 1,
+            ..small
+        },
+        Work {
+            lines: BIG_LINES - 1,
+            ..small
+        },
+        Work {
+            cells: BIG_CELLS - 1,
+            ..small
+        },
+    ] {
+        assert!(!wants_check(Auto, &below), "{below:?}");
+    }
+    assert_eq!(
+        sterna::completion::changed_lines(
+            "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+more\n same\n"
+        ),
+        3
+    );
 }

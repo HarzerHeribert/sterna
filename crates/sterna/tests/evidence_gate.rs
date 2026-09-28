@@ -400,7 +400,7 @@ fn an_unmet_acceptance_item_is_a_note_with_what_was_observed_and_never_holds() {
     std::fs::write(
         root.join(".sterna/config.toml"),
         "[helpers]\nmodel = \"test/helper\"\npreflight = false\nacceptance_list = true\n\
-         completion_check = false\nlearn = false\n",
+         completion_check = \"off\"\nlearn = false\n",
     )
     .unwrap();
     let (endpoint, bodies) = providers(vec![

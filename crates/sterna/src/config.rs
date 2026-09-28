@@ -306,10 +306,11 @@ pub struct HelpersConfig {
     pub preflight_scope: PreflightScope,
     /// What the completion gate does once a task is accepted.
     pub completion: CompletionStyle,
-    /// Run the fresh independent checker on the terminal candidate: the
-    /// original request, the task's diff and its exact evidence, never the
-    /// parent's rationale. Costs one cheap request per completed task.
-    pub completion_check: bool,
+    /// When the fresh independent checker reads the finished work behind
+    /// the answer: the original request, the answer, the task's diff and its
+    /// exact evidence, never the parent's rationale. One cheap request each
+    /// time it runs; [`CompletionCheck::Auto`] runs it only after big work.
+    pub completion_check: CompletionCheck,
     /// Derive an acceptance list from the request before the first turn and
     /// check it when the model claims completion (`acceptance.rs`). One
     /// cheap toolless request per task; the list is shown to the model.
@@ -344,6 +345,43 @@ pub struct HelpersConfig {
     /// (`session/after.rs::may_start`).
     pub completion_check_set: bool,
     pub learn_set: bool,
+}
+
+/// `[helpers] completion_check` -- when the checker reads the finished work.
+/// A turn that changed nothing is never checked, whatever this says
+/// (`session::after::wants_check`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompletionCheck {
+    /// After big work: a list the Scout wrote, or many files, many lines or
+    /// many cells.
+    #[default]
+    Auto,
+    /// After every answer that changed something.
+    Always,
+    Off,
+}
+
+impl CompletionCheck {
+    pub const NAMES: [&'static str; 3] = ["auto", "always", "off"];
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "config.toml: `completion_check` must be \"auto\", \"always\" or \"off\", not `{other}`"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Off => "off",
+        }
+    }
 }
 
 /// `[helpers] preflight_scope` -- which tasks the Scout runs for when
@@ -462,9 +500,10 @@ impl Default for HelpersConfig {
             preflight: false,
             preflight_scope: PreflightScope::Auto,
             completion: CompletionStyle::Silent,
-            // Behind the answer since 2026-09-23 (`session/after.rs`): it
-            // costs the person no wait and the model no turn.
-            completion_check: true,
+            // Behind the answer since 2026-09-23 (`session/after.rs`), and
+            // only after big work since it read a question it could not
+            // settle: "cannot tell" after three turns, every time.
+            completion_check: CompletionCheck::Auto,
             // Off: its derived items were the false alarms measured that day
             // (a prose "contains" item, a command the machine lacks).
             acceptance_list: false,
@@ -1377,9 +1416,9 @@ fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {
     };
     let completion_check = match table.get("completion_check") {
         None => defaults.completion_check,
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| "config.toml: `completion_check` must be true or false".to_string())?,
+        Some(value) => CompletionCheck::parse(value.as_str().ok_or_else(|| {
+            "config.toml: `completion_check` must be \"auto\", \"always\" or \"off\"".to_string()
+        })?)?,
     };
     let reduce_above_tokens = match int_field(table, "reduce_above_tokens")? {
         Some(v) => usize::try_from(REDUCE_ABOVE_TOKENS.check(v)?).expect("range is non-negative"),

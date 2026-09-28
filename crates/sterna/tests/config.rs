@@ -436,8 +436,9 @@ fn the_acceptance_list_and_its_effort_are_configurable() {
         "off by default since 2026-09-23: its derived items were the measured false alarms"
     );
     assert!(
-        defaults.helpers.completion_check && defaults.helpers.learn,
-        "the checker behind the answer and the learned notes are on by default"
+        defaults.helpers.completion_check == sterna::config::CompletionCheck::Auto
+            && defaults.helpers.learn,
+        "the checker behind the answer runs after big work, and the learned notes are on, by default"
     );
     assert_eq!(
         defaults.helpers.effort.for_helper("accept"),

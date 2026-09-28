@@ -57,7 +57,7 @@ fn pinned(text: &str) -> String {
     let mut keys = String::new();
     for (key, value) in [
         ("acceptance_list", "true"),
-        ("completion_check", "false"),
+        ("completion_check", "\"off\""),
         ("learn", "false"),
     ] {
         if !set(key) {
@@ -631,7 +631,11 @@ const DECISIONS_ON: &str =
     "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n";
 const DECISIONS_SHADOW: &str =
     "[decisions]\nmodel = \"jev-latest\"\nmode = \"shadow\"\nhold_above = 0.85\n";
-const DECISIONS_ON_WITH_CHECKER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n[helpers]\nmodel = \"helper-tier\"\ncompletion_check = true\n";
+/// A task cell that changes a file before it answers: the checker reads
+/// work, and a turn that changed nothing is never checked.
+const WRITES_THEN_ANSWERS: &str =
+    "await write({path:'fix.txt',content:'fixed'});\nanswer(\"done\");";
+const DECISIONS_ON_WITH_CHECKER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n[helpers]\nmodel = \"helper-tier\"\ncompletion_check = \"always\"\n";
 
 fn write_checks_toml(root: &Path, text: &str) {
     let dir = root.join(".sterna");
@@ -1666,10 +1670,10 @@ fn an_undecided_answer_runs_the_checker_as_today() {
     write_config(&root, DECISIONS_ON_WITH_CHECKER);
     let (endpoint, messages, _decisions, _headers) = providers(
         vec![
-            cell("c1", "answer(\"done\");"),
+            cell("c1", WRITES_THEN_ANSWERS),
             prose("The change holds; nothing more is needed."),
         ],
-        vec![],
+        vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer(0.55))],
     );
     let result = exec_bounded(&root, &endpoint, "fix the bug", None)
@@ -1693,11 +1697,11 @@ fn a_yes_never_removes_a_mechanical_finding() {
     write_checks_toml(&root, "[contract]\nrequired = [\"missing.txt\"]\n");
     let (endpoint, messages, _decisions, _headers) = providers(
         vec![
-            cell("c1", "answer(\"done\");"),
+            cell("c1", WRITES_THEN_ANSWERS),
             cell("c2", "answer(\"done\");"),
             prose("holds\nnothing more is needed."),
         ],
-        vec![],
+        vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer(0.94))],
     );
     let result = exec_bounded(&root, &endpoint, "fix the bug", None)
@@ -1739,10 +1743,10 @@ fn a_checker_that_says_does_not_hold_is_a_note_behind_the_answer_and_costs_no_tu
     write_config(&root, DECISIONS_ON_WITH_CHECKER);
     let (endpoint, messages, decisions, _headers) = providers(
         vec![
-            cell("c1", "answer(\"done\");"),
+            cell("c1", WRITES_THEN_ANSWERS),
             prose("does not hold\nthe diff misses the retry path"),
         ],
-        vec![],
+        vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer(0.55))],
     );
     let result = exec_bounded(&root, &endpoint, "fix the bug", None)
@@ -1783,10 +1787,10 @@ fn a_checker_that_says_holds_leaves_one_verdict_and_nothing_else() {
     write_config(&root, DECISIONS_ON_WITH_CHECKER);
     let (endpoint, messages, _decisions, _headers) = providers(
         vec![
-            cell("c1", "answer(\"done\");"),
+            cell("c1", WRITES_THEN_ANSWERS),
             prose("holds\nthe answer does what was asked"),
         ],
-        vec![],
+        vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer(0.55))],
     );
     let result = exec_bounded(&root, &endpoint, "fix the bug", None)
@@ -2095,7 +2099,7 @@ fn a_confident_no_over_the_answer_state_is_a_note_and_never_holds() {
 // -- judge items (2642) ----------------------------------------------------
 
 const DECISIONS_ON_WITH_LISTER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\ncompletion_check = true\n";
+     [helpers]\nmodel = \"helper-tier\"\ncompletion_check = \"always\"\n";
 /// No `completion_check`, so a judge finding that does not spare the checker
 /// (a confident no, or shadow mode never sparing it) does not also pay for
 /// one -- these tests are about the judge decision alone.
@@ -2182,10 +2186,10 @@ fn a_judge_item_answered_undecided_runs_the_checker_as_today() {
     let (endpoint, messages, _decisions, _headers) = providers(
         vec![
             prose("judge: the tone is friendly"),
-            cell("c1", "answer(\"done\");"),
+            cell("c1", WRITES_THEN_ANSWERS),
             prose("The change holds; nothing more is needed."),
         ],
-        vec![],
+        vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer_with_judge(0.94, &[0.5]))],
     );
     let result = exec_bounded(&root, &endpoint, "make sure the tone is friendly", None)

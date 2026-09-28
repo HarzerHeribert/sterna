@@ -3018,7 +3018,7 @@ fn live_acceptance_list_counts_the_file_the_cell_wrote() {
         std::fs::write(
             root.join(".sterna/config.toml"),
             "[helpers]\nmodel = \"helper-tier\"\npreflight = false\nacceptance_list = true\n\
-             completion_check = false\nlearn = false\n",
+             completion_check = \"off\"\nlearn = false\n",
         )
         .unwrap();
     });

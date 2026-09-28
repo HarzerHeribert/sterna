@@ -93,6 +93,7 @@ const AGENT_MODES: &[&str] = &["auto", "off", "pinned", "roster"];
 /// sheet and the settings row cannot disagree.
 const SANDBOX_LEVELS: &[&str] = &crate::permissions::Level::NAMES;
 const COMPLETION: &[&str] = &["silent", "recap"];
+const COMPLETION_CHECKS: &[&str] = &crate::config::CompletionCheck::NAMES;
 const PREFLIGHT_SCOPE: &[&str] = &["auto", "always"];
 const DECISION_MODES: &[&str] = &["off", "shadow", "on"];
 const ASK_JEV: &[&str] = &["off", "weight", "decide"];
@@ -485,10 +486,10 @@ static SPECS: &[SettingSpec] = &[
     },
     SettingSpec {
         key: "helpers.completion_check",
-        label: "Fresh completion check",
-        description: "After the answer, a second model checks it against the original request, the diff and exact evidence only. It never holds the answer and never reaches the model; the verdict is a note for you. A one-task run (sterna -p, exec) runs it only when you set this yourself.",
-        kind: Kind::Bool,
-        choices: &[],
+        label: "Check the answer",
+        description: "After the answer, a second model checks the work against your request, the answer, the diff and exact evidence. It never holds the answer back; the verdict is a note for you. `auto` checks after big work: a list the Scout wrote, or many files, lines or cells. `always` checks every answer that changed something. A turn that changed nothing is never checked. A one-task run (sterna -p, exec) checks only when you set this yourself.",
+        kind: Kind::Choice,
+        choices: COMPLETION_CHECKS,
         basic: false,
         restart: true,
     },
@@ -1005,6 +1006,35 @@ pub fn hidden(key: &str) -> bool {
     HIDDEN.contains(&key)
 }
 
+/// The word a setting that changed kind is saved as now, for the word it
+/// was saved as before. `helpers.completion_check` was on or off; it is now
+/// when: on meant "every answer", and "auto" keeps the check where it pays.
+#[must_use]
+pub fn migrated_value(key: &str, word: &str) -> Option<&'static str> {
+    match (key, word) {
+        ("helpers.completion_check", "true") => Some("auto"),
+        ("helpers.completion_check", "false") => Some("off"),
+        _ => None,
+    }
+}
+
+/// The one-time sentence for a value [`migrated_value`] rewrote: what it
+/// is now, and what to do to keep the old behaviour where it differs.
+#[must_use]
+pub fn migration_notice(key: &str, word: &str, now: &str, written: bool) -> String {
+    let what = if written {
+        format!("`{key} = {word}` is now `\"{now}\"`")
+    } else {
+        format!("`{key} = {word}` is read as `\"{now}\"`")
+    };
+    match (key, now) {
+        ("helpers.completion_check", "auto") => format!(
+            "{what}: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
+        ),
+        _ => format!("{what}; /settings changes it."),
+    }
+}
+
 /// The `sandbox.level` a retired permission word means, when the retired
 /// key carried one: the old rungs that asked become `ask`, the ones that did
 /// not become `sandboxed`, and `full_access = true` is `full`. `None` for
@@ -1320,7 +1350,7 @@ pub fn shown_default(key: &str) -> Option<String> {
         "limits.instructions_outline" => crate::config::Limits::default()
             .instructions_outline
             .to_string(),
-        "helpers.completion_check" => helpers.completion_check.to_string(),
+        "helpers.completion_check" => helpers.completion_check.as_str().into(),
         "helpers.acceptance_list" => helpers.acceptance_list.to_string(),
         "helpers.preflight_scope" => "auto".into(),
         "helpers.reduce_above_tokens" => helpers.reduce_above_tokens.to_string(),

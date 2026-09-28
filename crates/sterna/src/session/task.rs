@@ -299,8 +299,15 @@ pub(super) struct TaskState {
     pub(super) previous_frame: Option<CellRecord>,
     pub(super) previous_failed: bool,
     pub(super) evidence_gate: bool,
-    pub(super) completion_check: bool,
+    /// When the checker reads the finished work; `Off` for a one-task run
+    /// whose person did not choose it (`after::may_start`).
+    pub(super) completion_check: crate::config::CompletionCheck,
     pub(super) checker_ran: bool,
+    /// The first cell this task ran, so a check can count the task's cells
+    /// before the last one has been folded in.
+    pub(super) first_cell: Option<u64>,
+    /// Whether the Scout wrote the acceptance list (`acceptance::Origin`).
+    pub(super) scout_list: bool,
     /// The request-derived acceptance list (`acceptance.rs`), empty when no
     /// lister ran; its latest evaluation is what the result reports.
     pub(super) acceptance: Vec<crate::acceptance::Item>,
@@ -424,9 +431,14 @@ impl TaskState {
             previous_frame: None,
             previous_failed: false,
             evidence_gate: config.limits.evidence_gate,
-            completion_check: config.helpers.completion_check
-                && super::after::may_start(config.helpers.completion_check_set),
+            completion_check: if super::after::may_start(config.helpers.completion_check_set) {
+                config.helpers.completion_check
+            } else {
+                crate::config::CompletionCheck::Off
+            },
             checker_ran: false,
+            first_cell: None,
+            scout_list: false,
             opened: std::collections::BTreeMap::new(),
             learn_asked: false,
             pending_decision: None,
@@ -460,8 +472,13 @@ impl TaskState {
     }
 
     /// The request-derived acceptance list this task is checked against.
-    pub(super) fn with_acceptance(mut self, items: Vec<crate::acceptance::Item>) -> Self {
+    pub(super) fn with_acceptance(
+        mut self,
+        items: Vec<crate::acceptance::Item>,
+        origin: crate::acceptance::Origin,
+    ) -> Self {
         self.acceptance = items;
+        self.scout_list = origin == crate::acceptance::Origin::Scout && !self.acceptance.is_empty();
         self
     }
 
@@ -636,6 +653,7 @@ impl TaskState {
         plan: &[crate::runtime::outcome::PlanItem],
         snapshots: Option<(&crate::changes::Snapshot, &crate::changes::Snapshot)>,
     ) -> Observed {
+        self.first_cell.get_or_insert(record.cell);
         if let Some((before, after)) = snapshots {
             let changed = before.changed_paths(after);
             if !changed.is_empty() {
@@ -949,7 +967,7 @@ impl TaskState {
                     && answer.noul >= decisions_config.completion_yes_above
                     && findings.is_empty()
                     && judged_undecided == 0
-                    && self.completion_check
+                    && self.completion_check != crate::config::CompletionCheck::Off
                     && !self.checker_ran
                 {
                     self.checker_ran = true;
@@ -997,7 +1015,15 @@ impl TaskState {
         let sentences: Vec<String> = hard.iter().map(|f| f.sentence.clone()).collect();
         let notes: Vec<String> = soft.iter().map(|f| f.sentence.clone()).collect();
         if sentences.is_empty() || self.deferred_findings.as_ref() == Some(&sentences) {
-            self.after_answer(&diff, &findings, &notes, session);
+            let work = crate::completion::Work {
+                files: files.created.len() + files.modified.len() + files.deleted.len(),
+                lines: diff.as_deref().map_or(0, crate::completion::changed_lines),
+                cells: self
+                    .first_cell
+                    .map_or(1, |first| cell.saturating_sub(first) + 1),
+                scout_list: self.scout_list,
+            };
+            self.after_answer(&diff, &findings, &notes, (candidate, &work), session);
         }
         if sentences.is_empty() {
             // Verified only when nothing was noted either: an answer that
@@ -1030,6 +1056,7 @@ impl TaskState {
         diff: &Option<String>,
         findings: &[crate::completion::Finding],
         notes: &[String],
+        (answer, work): (&str, &crate::completion::Work),
         session: &Session<'_>,
     ) {
         output::completion_notes(notes);
@@ -1076,7 +1103,7 @@ impl TaskState {
                 });
             }
         }
-        if !self.completion_check || self.checker_ran {
+        if self.checker_ran || !crate::completion::wants_check(self.completion_check, work) {
             return;
         }
         let (true, Some(model), Some(effort)) = (
@@ -1092,6 +1119,7 @@ impl TaskState {
             .unwrap_or_else(|| "(no observed changes)".to_string());
         let evidence = crate::completion::fresh_checker_evidence(
             &self.task,
+            answer,
             &diff,
             &self.capsule.fact_lines(),
             findings,

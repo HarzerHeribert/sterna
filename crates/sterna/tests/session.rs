@@ -7261,8 +7261,21 @@ fn a_gpt_main_model_left_at_default_effort_asks_for_low() {
     assert!(first_request_effort(None, true).is_null());
 }
 
-/// How many requests of one task went to the helper model.
+/// How many requests of one task went to the helper model, when the task
+/// writes a file.
 fn helper_requests(helpers: &str) -> usize {
+    helper_requests_after(helpers, writing_reply())
+}
+
+/// A task that writes one file and answers.
+fn writing_reply() -> String {
+    assistant_reply(
+        "```sterna\nawait write({path:'made.txt',content:'made'});\nanswer(\"done\");\n```",
+    )
+}
+
+/// How many requests of one task went to the helper model, for one reply.
+fn helper_requests_after(helpers: &str, reply: String) -> usize {
     let root = scratch_dir("one-task-behind");
     fs::create_dir_all(root.join(".sterna")).unwrap();
     fs::write(
@@ -7270,7 +7283,7 @@ fn helper_requests(helpers: &str) -> usize {
         format!("[helpers]\nacceptance_list = false\nmodel = \"helper-tier\"\n{helpers}"),
     )
     .unwrap();
-    let (base, bodies) = start_answering_provider(2, |_| ending_reply());
+    let (base, bodies) = start_answering_provider(2, move |_| reply.clone());
     let output = run_session(
         &root,
         &root.join("rollout.jsonl"),
@@ -7298,7 +7311,19 @@ fn helper_requests(helpers: &str) -> usize {
 #[test]
 fn a_one_task_run_starts_the_completion_check_only_when_the_person_set_it() {
     assert_eq!(helper_requests(""), 0, "an unset check held a one-task run");
-    assert_eq!(helper_requests("completion_check = true\n"), 1);
+    assert_eq!(helper_requests("completion_check = \"always\"\n"), 1);
+}
+
+/// A turn that changed nothing leaves nothing in the files to check: the
+/// checker spent its turns finding that out and said it could not tell.
+/// It is never asked, even when the person chose `always`.
+#[test]
+fn a_turn_that_changed_nothing_is_never_checked() {
+    assert_eq!(
+        helper_requests_after("completion_check = \"always\"\n", ending_reply()),
+        0,
+        "a read-only answer was checked"
+    );
 }
 
 /// An upgrade retired `ui.stream = "quiet"`, and a sterna that refused to start
