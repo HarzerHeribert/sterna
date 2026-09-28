@@ -877,16 +877,21 @@ impl Sheet {
         let mut parts: Vec<String> = Vec::new();
         match self
             .focused()
-            .map(|item| (&item.kind, item.disabled.is_some()))
+            .map(|item| (&item.kind, item.disabled.is_some(), item.title.as_str()))
         {
-            Some((_, true)) => parts.push("Enter says why".into()),
-            Some((Kind::Choice { .. }, _)) => parts.push("Enter choose".into()),
-            Some((Kind::Value { .. }, _)) => parts.push("←→ change".into()),
-            Some((Kind::Toggle(_), _)) => parts.push("Enter switch".into()),
-            Some((Kind::Open, _)) => parts.push("Enter open".into()),
-            Some((Kind::Run, _)) => parts.push("Enter run".into()),
-            Some((Kind::Danger, _)) => parts.push("Enter confirm".into()),
-            Some((Kind::Field(_), _)) => parts.push("type to edit".into()),
+            Some((_, true, _)) => parts.push("Enter says why".into()),
+            Some((Kind::Choice { .. }, ..)) => parts.push("Enter choose".into()),
+            Some((Kind::Value { .. }, ..)) => parts.push("←→ change".into()),
+            Some((Kind::Toggle(_), ..)) => parts.push("Enter switch".into()),
+            Some((Kind::Open, ..)) => parts.push("Enter open".into()),
+            // Enter does what the row says: "Enter cancel" on Cancel, never
+            // "Enter run" on a row that runs nothing.
+            Some((Kind::Run, _, title)) if title.chars().count() <= 28 => {
+                parts.push(format!("Enter {}", sentence_case(title)));
+            }
+            Some((Kind::Run, ..)) => parts.push("Enter run".into()),
+            Some((Kind::Danger, ..)) => parts.push("Enter confirm".into()),
+            Some((Kind::Field(_), ..)) => parts.push("type to edit".into()),
             _ => {}
         }
         if self.sections.len() > 1 {
@@ -896,11 +901,24 @@ impl Sheet {
             parts.push("type to filter".into());
         }
         parts.push(match &self.esc {
-            Some(esc) => format!("Esc {}", esc.to_lowercase()),
+            Some(esc) => format!("Esc {}", sentence_case(esc)),
             None if self.root => "Esc close".into(),
             None => "Esc back".into(),
         });
         parts
+    }
+}
+
+/// A label as it reads after "Enter" or "Esc": its first letter lowered,
+/// every other word as written, so a name keeps its capital ("let Sterna
+/// decide") and an acronym stays whole.
+fn sentence_case(label: &str) -> String {
+    let mut chars = label.chars();
+    match (chars.next(), label.chars().nth(1)) {
+        (Some(first), Some(second)) if !second.is_uppercase() => {
+            first.to_lowercase().chain(chars).collect()
+        }
+        _ => label.to_string(),
     }
 }
 
@@ -1644,6 +1662,17 @@ fn chips_in_row(
 
 #[cfg(test)]
 mod tests {
+    /// A label after Enter or Esc keeps a name's capital and an acronym.
+    #[test]
+    fn a_label_keeps_its_names() {
+        assert_eq!(
+            super::sentence_case("Let Sterna decide"),
+            "let Sterna decide"
+        );
+        assert_eq!(super::sentence_case("Not now"), "not now");
+        assert_eq!(super::sentence_case("MCP servers"), "MCP servers");
+    }
+
     use super::*;
 
     /// A sheet never opens on a row that cannot be taken back, even when it
