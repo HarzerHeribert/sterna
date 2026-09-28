@@ -1396,6 +1396,14 @@ impl Workbench {
         } else if let Some((key, buffer)) = p.editing.clone()
             && key == spec.key
         {
+            // **An untouched field saves nothing.** Enter on the word the
+            // field opened with wrote that word: a host named "none", or a
+            // default turned into a saved override.
+            if buffer == p.effective(&key) {
+                p.editing = None;
+                p.notice = "Nothing changed".into();
+                return Effect::Consumed;
+            }
             match p.save(&key, Some(buffer), s) {
                 Ok(()) => {
                     p.editing = None;

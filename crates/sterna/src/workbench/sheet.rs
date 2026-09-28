@@ -262,6 +262,9 @@ pub struct Sheet {
     pub page: usize,
     /// Body lines in all at the last draw, which bounds the wheel.
     pub lines: usize,
+    /// The body line each row starts on at the last draw (`None` for a row
+    /// not laid out), so PgUp and PgDn move by what a page shows.
+    pub item_lines: Vec<Option<usize>>,
     /// How many things the search is narrowing, and how many of them match,
     /// for `N of M`.
     pub total: Option<usize>,
@@ -426,6 +429,39 @@ impl Sheet {
         Outcome::Redraw
     }
 
+    /// PgUp and PgDn move the focus by what one page shows: to the farthest
+    /// row that starts within a page of the focused one. **Counting rows
+    /// instead of lines skipped every row whose description pushed it below
+    /// the page**, so one PgDn on Advanced passed thirteen settings no one
+    /// had seen. A row taller than a page moves one row.
+    fn page_focus(&mut self, forward: bool) -> Outcome {
+        let line_of = |i: usize| self.item_lines.get(i).copied().flatten();
+        let Some(from) = line_of(self.focus) else {
+            return self.move_focus(forward, 1);
+        };
+        let page = self.page.max(1);
+        let mut at = self.focus;
+        while let Some(next) = self.next_focusable(at, forward) {
+            let within = line_of(next).is_some_and(|line| {
+                if forward {
+                    line <= from + page
+                } else {
+                    line + page >= from
+                }
+            });
+            if !within {
+                break;
+            }
+            at = next;
+        }
+        if at == self.focus {
+            return self.move_focus(forward, 1);
+        }
+        self.focus = at;
+        self.follow = true;
+        Outcome::Redraw
+    }
+
     /// What activating a row does: the one answer a click, Enter and Space
     /// share.
     pub fn activate(&mut self, index: usize) -> Outcome {
@@ -529,8 +565,8 @@ impl Sheet {
             },
             KeyCode::Up => self.move_focus(false, 1),
             KeyCode::Down => self.move_focus(true, 1),
-            KeyCode::PageUp => self.move_focus(false, self.page.max(1)),
-            KeyCode::PageDown => self.move_focus(true, self.page.max(1)),
+            KeyCode::PageUp => self.page_focus(false),
+            KeyCode::PageDown => self.page_focus(true),
             KeyCode::Home => match self.first_focusable() {
                 Some(first) if first != self.focus => {
                     self.focus = first;
@@ -643,6 +679,12 @@ impl Sheet {
         let Kind::Field(field) = &mut item.kind else {
             return None;
         };
+        // Enter belongs to the sheet: it saves, or says nothing changed. As
+        // a field's first key it was swallowed, and the second saved the
+        // word the field opened with.
+        if key.code == KeyCode::Enter {
+            return None;
+        }
         let fresh = std::mem::take(&mut field.fresh);
         if fresh && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) && !ctrl {
             field.text.clear();
@@ -1228,6 +1270,19 @@ fn draw_body(
     let lines = layout_lines(sheet, body.width as usize);
     let height = body.height as usize;
     sheet.lines = lines.len();
+    let mut starts = vec![None; sheet.items.len()];
+    for (n, line) in lines.iter().enumerate() {
+        let rows = match line {
+            Line::Chips(run) => run.clone(),
+            other => line_item(other).into_iter().collect(),
+        };
+        for i in rows {
+            if let Some(start) = starts.get_mut(i) {
+                start.get_or_insert(n);
+            }
+        }
+    }
+    sheet.item_lines = starts;
     // One line each for the cues when they are needed.
     let page = height.max(1);
     sheet.page = page.saturating_sub(2).max(1);

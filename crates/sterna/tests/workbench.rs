@@ -5217,3 +5217,81 @@ fn an_empty_row_separates_the_conversation_from_the_composer() {
         }
     }
 }
+
+/// Paging through a sheet shows every row on the way: counting rows instead
+/// of lines once passed thirteen settings on Advanced that were never drawn
+/// on any page.
+#[test]
+fn page_down_never_passes_a_row_it_did_not_show() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    // Advanced: the long section.
+    for _ in 0..5 {
+        key(&mut u, &mut s, &n, KeyCode::Tab);
+    }
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let drawn = |u: &Workbench| -> Vec<usize> {
+        u.geometry
+            .hits
+            .iter()
+            .filter_map(|(_, action)| match action {
+                Action::Sheet(Hit::Item(i)) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    };
+    let start = u.top().unwrap().sheet.focus;
+    let mut seen: std::collections::BTreeSet<usize> = drawn(&u).into_iter().collect();
+    let mut presses = 0;
+    loop {
+        let before = u.top().unwrap().sheet.focus;
+        key(&mut u, &mut s, &n, KeyCode::PageDown);
+        if u.top().unwrap().sheet.focus == before {
+            break;
+        }
+        presses += 1;
+        draw(&c, &n, &s, &mut u, 110, 40);
+        seen.extend(drawn(&u));
+    }
+    let sheet = &u.top().unwrap().sheet;
+    for row in start..=sheet.focus {
+        if sheet.items[row].focusable() {
+            assert!(
+                seen.contains(&row),
+                "paging passed row {row} ({}) without drawing it",
+                sheet.items[row].id
+            );
+        }
+    }
+    assert!(presses > 1, "Advanced takes more than one page");
+}
+
+/// Enter on a field nobody typed in saves nothing: it once wrote the word
+/// the field opened with, which made a host named "none".
+#[test]
+fn enter_on_an_untouched_field_saves_nothing() {
+    let (t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    for ch in "allowed hosts".chars() {
+        key(&mut u, &mut s, &n, KeyCode::Char(ch));
+    }
+    draw(&c, &n, &s, &mut u, 110, 40);
+    click_item(&mut u, &mut s, &n, "setting:sandbox.hosts");
+    draw(&c, &n, &s, &mut u, 110, 40);
+    key(&mut u, &mut s, &n, KeyCode::Enter);
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    assert!(screen.contains("Nothing changed"), "{screen}");
+    for file in [
+        t.0.join("user/config.toml"),
+        t.0.join(".sterna/config.toml"),
+    ] {
+        let saved = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(!saved.contains("hosts"), "{}: {saved}", file.display());
+    }
+}
