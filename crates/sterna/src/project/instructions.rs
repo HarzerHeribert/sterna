@@ -320,6 +320,17 @@ fn render_documents(profile: &Profile, load: &InstructionLoad) -> String {
     render(profile, load, None, false)
 }
 
+/// A directory whose `.git` is a file is another checkout -- a linked
+/// worktree or a submodule -- with its own instructions for its own work.
+/// The index does not walk into it: a stale Claude Code worktree under
+/// `.claude/worktrees/` once put its 48 KB of another product's rules in
+/// front of every `bash` call, in every task (session tm3hb2-1k3n,
+/// 2026-09-29). A path inside one still reaches its documents through
+/// [`docs_for_paths`], which walks up from the path itself.
+fn separate_checkout(directory: &Path) -> bool {
+    std::fs::symlink_metadata(directory.join(".git")).is_ok_and(|meta| meta.is_file())
+}
+
 fn discover(profile: &Profile, limits: &mut Limits) -> Vec<PathBuf> {
     let mut found = BTreeSet::new();
     let mut queue = VecDeque::from([(profile.root().to_path_buf(), 0usize)]);
@@ -384,7 +395,9 @@ fn discover(profile: &Profile, limits: &mut Limits) -> Vec<PathBuf> {
                 continue;
             }
             if kind.is_dir() {
-                if !SKIP_DIRS.iter().any(|name| entry.file_name() == *name) {
+                if !SKIP_DIRS.iter().any(|name| entry.file_name() == *name)
+                    && !separate_checkout(&path)
+                {
                     queue.push_back((path, depth + 1));
                 }
             } else if depth > 0
@@ -547,5 +560,25 @@ mod tests {
         assert!(out.contains("L6 ## Rules\n"), "{out}");
         assert!(!out.contains("not a heading"), "{out}");
         assert!(out.contains(r#"read({path: "CLAUDE.md"})"#), "{out}");
+    }
+
+    #[test]
+    fn the_index_skips_a_linked_checkout_but_not_a_plain_directory() {
+        let root =
+            std::env::temp_dir().join(format!("sterna-index-checkout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let worktree = root.join(".claude/worktrees/agent");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        std::fs::write(worktree.join("AGENTS.md"), "another product").unwrap();
+        std::fs::write(root.join("nested/AGENTS.md"), "nested policy").unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let profile = Profile::compile(&root, None);
+
+        let paths = index(&profile).paths;
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(paths, vec![root.join("nested/AGENTS.md")]);
     }
 }

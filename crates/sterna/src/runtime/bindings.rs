@@ -237,6 +237,14 @@ impl CellTrace {
     }
 }
 
+/// The instruction gate stopped a call: the cell ends here with a reason that
+/// names the scope and says what did not happen (`InstructionContext::stop_reason`).
+fn stop_for_instructions(scope: &mut v8::PinScope, before: &str, not_done: &str) {
+    let reason = state(scope).instruction_stop_reason(before, not_done);
+    trace(scope).request_yield(Some(reason));
+    scope.terminate_execution();
+}
+
 fn trace(scope: &v8::PinScope) -> Rc<CellTrace> {
     scope
         .get_slot::<Rc<CellTrace>>()
@@ -577,10 +585,7 @@ fn mcp_list_callback(
         // that -- while the gate stays closed for every later call in the cell,
         // so nothing slips past it. The text still reaches the model at the turn
         // boundary through `pending_instructions`, unchanged.
-        trace(scope).request_yield(Some(
-            "project instructions must be delivered before MCP discovery; no server started".into(),
-        ));
-        scope.terminate_execution();
+        stop_for_instructions(scope, "MCP discovery", "no server started");
         return;
     }
     let context = ToolContext {
@@ -625,11 +630,7 @@ fn mcp_call_callback(
     };
     let state = state(scope);
     if state.instruction_boundary("bash", &Args::new()) {
-        trace(scope).request_yield(Some(
-            "project instructions must be delivered before MCP invocation; the call did not run"
-                .into(),
-        ));
-        scope.terminate_execution();
+        stop_for_instructions(scope, "an MCP call", "the call did not run");
         return;
     }
     let context = ToolContext {
@@ -882,11 +883,7 @@ fn tool_callback(
         // and writes again writes nothing. What a throw would cost is the
         // signal, turning a `Yielded` carrying its reason into a `Threw`
         // carrying an error, for no work recovered.
-        trace(scope).request_yield(Some(format!(
-            "project instructions must be delivered before `{}`; the call did not run",
-            tool.name()
-        )));
-        scope.terminate_execution();
+        stop_for_instructions(scope, &format!("`{}`", tool.name()), "the call did not run");
         return;
     }
     // Cloned rather than borrowed across the call: the call is the longest
@@ -1495,18 +1492,27 @@ fn call_failure(tool: &str, result: &ToolResult) -> Option<String> {
     if tolerated {
         return None;
     }
-    // One line, bounded like a preview: the model needs the reason, not the
-    // child's whole diagnostic.
-    let detail = result
-        .stderr
+    Some(format!(
+        "`{tool}` failed with exit {code}: {}",
+        stderr_reason(&result.stderr)
+    ))
+}
+
+/// One line, bounded like a preview: the model needs the reason, not the
+/// child's whole diagnostic. A first line that only announces one
+/// (`rg: regex parse error:`) gets the last line, which states it.
+fn stderr_reason(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map_or_else(
-            || "the child wrote nothing to stderr".to_string(),
-            |line| line.chars().take(200).collect::<String>(),
-        );
-    Some(format!("`{tool}` failed with exit {code}: {detail}"))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let detail = match lines.as_slice() {
+        [] => "the child wrote nothing to stderr".into(),
+        [first, .., last] if first.ends_with(':') => format!("{first} {last}"),
+        [first, ..] => (*first).to_string(),
+    };
+    detail.chars().take(200).collect()
 }
 
 fn build_file<'s>(
@@ -2559,10 +2565,7 @@ fn bg_run_callback(
     let state = state(scope);
     let instruction_args = Args::new().with("command", &command);
     if state.instruction_boundary("bg.run", &instruction_args) {
-        trace(scope).request_yield(Some(
-            "project instructions must be delivered before `bg.run`; the job did not start".into(),
-        ));
-        scope.terminate_execution();
+        stop_for_instructions(scope, "`bg.run`", "the job did not start");
         return;
     }
     match bg::run(&state.profile, &state.session, &command, &options) {
@@ -2596,11 +2599,7 @@ fn bg_watch_callback(
     let state = state(scope);
     let instruction_args = Args::new().with("command", &command);
     if state.instruction_boundary("bg.watch", &instruction_args) {
-        trace(scope).request_yield(Some(
-            "project instructions must be delivered before `bg.watch`; the watcher did not start"
-                .into(),
-        ));
-        scope.terminate_execution();
+        stop_for_instructions(scope, "`bg.watch`", "the watcher did not start");
         return;
     }
     match bg::watch(&state.profile, &state.session, &command, &options) {
@@ -2982,6 +2981,23 @@ fn off_callback(
 mod tests {
     use super::search::{match_line, parse_match};
     use super::*;
+
+    /// Session tm3hb2-1k3n: a bad `rg` pattern reached the model as
+    /// "rg: regex parse error:" and nothing else.
+    #[test]
+    fn a_diagnosis_announced_on_one_line_keeps_the_line_that_states_it() {
+        let rg = "rg: regex parse error:\n    (?:a|b(\n       ^\nerror: unclosed group\n";
+        assert_eq!(
+            stderr_reason(rg),
+            "rg: regex parse error: error: unclosed group"
+        );
+        let missing = "rg: docs/x.md: No such file or directory (os error 2)\nsecond line\n";
+        assert_eq!(
+            stderr_reason(missing),
+            "rg: docs/x.md: No such file or directory (os error 2)"
+        );
+        assert_eq!(stderr_reason("\n  \n"), "the child wrote nothing to stderr");
+    }
 
     #[test]
     fn a_grep_line_splits_on_the_first_colon_that_precedes_a_line_number() {

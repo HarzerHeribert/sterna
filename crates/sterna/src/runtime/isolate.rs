@@ -544,6 +544,14 @@ impl Runtime {
         self
     }
 
+    /// The system prompt this runtime's model already holds, so the gate
+    /// does not deliver again a document an earlier task delivered into it.
+    #[must_use]
+    pub fn with_delivered_instructions(self, system: &str) -> Self {
+        self.state.seed_delivered_instructions(system);
+        self
+    }
+
     /// The `[helpers]` roster this runtime's cells may call. Not passing it
     /// leaves helpers off, which is the same answer an unset `[helpers]
     /// model` gives: a runtime nobody configured spends nothing.
@@ -1322,6 +1330,22 @@ impl Runtime {
                 source,
                 started,
                 Ending::Threw(value),
+                Stopped::none(),
+                &EpilogueBudget::unwatched(),
+            );
+        }
+
+        if saved.is_none() && self.state.instructions_before_cell(source) {
+            let reason = self
+                .state
+                .instruction_stop_reason("this cell", "nothing in it ran");
+            return self.finish(
+                cell,
+                source,
+                started,
+                Ending::Yielded {
+                    reason: Some(reason),
+                },
                 Stopped::none(),
                 &EpilogueBudget::unwatched(),
             );

@@ -38,6 +38,79 @@ impl Drop for Fixture {
     }
 }
 
+/// Session tm3hb2-1k3n: a helper answered in five seconds, then `bash`
+/// beside it met the gate, the cell stopped and the answer was lost. A cell
+/// whose own source calls `bash` is stopped before any of it runs, and told
+/// which scope stopped it.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn a_cell_that_calls_bash_stops_before_anything_in_it_runs() {
+    let fixture = Fixture::new("before-cell");
+    let mut runtime = fixture.runtime(true);
+    let first = fixture.root.join("first.txt");
+    let marker = fixture.root.join("bash-ran.txt");
+    let source = format!(
+        "await write({{path:{first:?}, content:\"once\"}}); await bash({{command: 'echo ran > {}'}});",
+        marker.display()
+    );
+    let CellOutcome::Yielded { turn } = runtime.run_cell(&source) else {
+        panic!("the gate must stop the cell as a yield");
+    };
+    assert!(!first.exists(), "nothing in the cell may run");
+    assert!(!marker.exists());
+    let reason = turn.yield_reason.unwrap_or_default();
+    assert!(reason.contains("nothing in it ran"), "{reason}");
+    assert!(reason.contains("(scope `nested`)"), "{reason}");
+    assert!(
+        reason.contains("Newly applicable project instructions"),
+        "{reason}"
+    );
+
+    runtime.acknowledge_instructions();
+    let _ = runtime.run_cell(&source);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "once");
+    assert!(marker.exists());
+}
+
+/// Session tm3hb2-1k3n: each task starts a fresh gate, but a delivery lives
+/// in the system prompt for as long as that prompt is kept -- and the same
+/// 48 KB went into one context twice. A task whose system prompt already
+/// carries a document is not stopped to be given it again; one whose prompt
+/// was rebuilt without it is.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn a_document_the_system_prompt_already_carries_is_not_delivered_again() {
+    let fixture = Fixture::new("delivered");
+    let marker = fixture.root.join("again.txt");
+    let source = format!(
+        "await bash({{command: 'echo ran > {}'}});",
+        marker.display()
+    );
+    let mut first_task = fixture.runtime(true);
+    let _ = first_task.run_cell(&source);
+    let delivery = first_task
+        .pending_instructions()
+        .expect("the first task delivers the nested policy")
+        .text;
+    let system = format!("## Project instructions\n\nroot policy\n\n{delivery}");
+
+    let mut kept = fixture.runtime(true).with_delivered_instructions(&system);
+    assert!(matches!(
+        kept.run_cell(&source),
+        CellOutcome::Yielded { .. }
+    ));
+    assert!(kept.pending_instructions().is_none(), "delivered twice");
+    assert!(marker.exists());
+
+    std::fs::remove_file(&marker).unwrap();
+    let mut rebuilt = fixture
+        .runtime(true)
+        .with_delivered_instructions("## Project instructions\n\nroot policy\n");
+    let _ = rebuilt.run_cell(&source);
+    assert!(rebuilt.pending_instructions().is_some());
+    assert!(!marker.exists());
+}
+
 #[test]
 fn caught_boundary_cannot_write_and_prior_effect_is_not_replayed() {
     let fixture = Fixture::new("structured");

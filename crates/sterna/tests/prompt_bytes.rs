@@ -620,6 +620,47 @@ fn an_unattributed_throw_omits_the_position_line() {
     );
 }
 
+/// Session tm3hb2-1k3n: `line 1, column 47` above `at cell 6, line 1,
+/// column 47` read as two places. A frame that already names the position
+/// is the only place it is said.
+#[test]
+fn a_position_the_first_frame_names_is_said_once() {
+    let rendered = prompt::render_result(&CellResult {
+        ask_answer: None,
+        cell: 6,
+        description: None,
+        elapsed_ms: 26,
+        yield_reason: None,
+        handle_table: String::new(),
+        output: None,
+        error: Some(ErrorSection {
+            class: "ToolError".into(),
+            message: "`rg` failed with exit 2: rg: regex parse error: error: unclosed group".into(),
+            position: Some((1, 47)),
+            frames: vec!["cell 6, line 1, column 47".into()],
+        }),
+        stdout_tail: None,
+        budget: Budget {
+            turn_cap: 8_000,
+            task_used: 1,
+            task_cap: 400_000,
+            cells_used: 1,
+            cells_cap: Some(40),
+            feedback: None,
+        },
+        plan: Vec::new(),
+    });
+    assert_eq!(
+        rendered.matches("line 1, column 47").count(),
+        1,
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("unclosed group\n  at cell 6, line 1, column 47"),
+        "{rendered}"
+    );
+}
+
 /// `runtime-contract.md` §9.3: a yield's reason is one line directly under
 /// the cell line, before `## Handles` -- and it is never rendered with
 /// `threw`, because a throw is not a yield whatever else was filled in.

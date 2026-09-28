@@ -453,6 +453,20 @@ impl RuntimeState {
         self.instructions.borrow().pending()
     }
 
+    pub(crate) fn seed_delivered_instructions(&self, system: &str) {
+        self.instructions.borrow_mut().seed_delivered(system);
+    }
+
+    pub(crate) fn instructions_before_cell(&self, source: &str) -> bool {
+        self.instructions
+            .borrow_mut()
+            .before_cell(&self.profile, source)
+    }
+
+    pub(crate) fn instruction_stop_reason(&self, before: &str, not_done: &str) -> String {
+        self.instructions.borrow().stop_reason(before, not_done)
+    }
+
     pub(crate) fn instruction_file_written(
         &self,
         tool: &str,

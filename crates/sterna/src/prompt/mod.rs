@@ -999,7 +999,16 @@ fn render_result_with_state(result: &CellResult, include_state: bool) -> String 
         out.push_str("\n\n## Error\n");
         out.push_str(&format!("{}: {}", error.class, error.message));
         if let Some((line, column)) = error.position {
-            out.push_str(&format!("\nline {line}, column {column}"));
+            // Once, not twice: a first frame of `cell 6, line 1, column 47`
+            // under its own copy read as a second location to look at.
+            let at = format!("line {line}, column {column}");
+            if !error
+                .frames
+                .first()
+                .is_some_and(|frame| frame.ends_with(&at) || frame.contains(&format!("{at})")))
+            {
+                out.push_str(&format!("\n{at}"));
+            }
         }
         for frame in error.frames.iter().take(3) {
             out.push_str(&format!("\n  at {frame}"));

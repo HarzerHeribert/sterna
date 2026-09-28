@@ -1170,6 +1170,7 @@ fn run_task_inner(
     )
     .with_response_byte_cap(session.config().limits.response_bytes)
     .with_instruction_context()
+    .with_delivered_instructions(&transcript.conversation.system)
     .with_config(session.config().clone())?;
     // The approval hint's own `asked`/`failed` counts are session-wide (the
     // gate outlives one task); this task's telemetry reports the delta from

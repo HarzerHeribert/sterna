@@ -108,6 +108,54 @@ impl<'a> Visit<'a> for Lines {
     }
 }
 
+/// Whether `source` calls a tool the instruction gate answers with the whole
+/// project index -- `bash`, `context`, `bg.run`, `bg.watch` or an `mcp` call --
+/// under its own name or a dialect's. Read before the cell runs, so the gate
+/// can stop the cell before any of it has (`InstructionContext::before_cell`).
+///
+/// A shadowed name reads as the tool here, and that is the safe direction:
+/// the worst it does is deliver instructions one cell early.
+#[must_use]
+pub fn calls_a_broad_tool(source: &str) -> bool {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source, SourceType::ts())
+        .with_options(ParseOptions {
+            allow_return_outside_function: true,
+            ..ParseOptions::default()
+        })
+        .parse();
+    if !parsed.diagnostics.is_empty() {
+        return false;
+    }
+    let mut found = BroadCall::default();
+    found.visit_program(&parsed.program);
+    found.0
+}
+
+#[derive(Default)]
+struct BroadCall(bool);
+
+impl<'a> Visit<'a> for BroadCall {
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        match &it.callee {
+            Expression::Identifier(callee) => {
+                let name = crate::abi::dialect::lookup_any(&callee.name)
+                    .map_or(callee.name.as_str(), |shape| shape.target.callee());
+                self.0 |= matches!(name, "bash" | "context");
+            }
+            Expression::StaticMemberExpression(member) => {
+                if let Expression::Identifier(object) = &member.object {
+                    self.0 |= object.name == "mcp"
+                        || (object.name == "bg"
+                            && matches!(member.property.name.as_str(), "run" | "watch"));
+                }
+            }
+            _ => {}
+        }
+        walk::walk_call_expression(self, it);
+    }
+}
+
 /// The string this expression certainly is, or `None`.
 ///
 /// A template literal counts only when it has no substitution at all: one
@@ -127,6 +175,27 @@ fn certain(value: &Expression<'_>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broad_tool_is_found_by_name_member_or_dialect_and_nothing_else_is() {
+        for source in [
+            "const [a, b] = await Promise.all([helper.find('x'), bash({command: 'git status'})]);",
+            "await context({path: 'src/a.rs', symbol: 'f'});",
+            "const job = bg.run('cargo test');",
+            "await mcp.call('server', 'tool', {});",
+            "await Bash({command: 'ls'});",
+        ] {
+            assert!(calls_a_broad_tool(source), "{source}");
+        }
+        for source in [
+            "await read({path: 'src/a.rs'});",
+            "await rg({pattern: 'bash', path: 'src'});",
+            "const text = 'bash({command: 1})';",
+            "bg.list();",
+        ] {
+            assert!(!calls_a_broad_tool(source), "{source}");
+        }
+    }
 
     #[test]
     fn a_literal_command_is_read_out_of_the_source() {

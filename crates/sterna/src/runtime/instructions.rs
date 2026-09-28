@@ -1,4 +1,11 @@
 //! Task-scoped gate between path discovery and side effects.
+//!
+//! The gate is task-scoped; what it delivers is not. A delivery is appended
+//! to the system prompt, which outlives the task whenever nothing it is built
+//! from changed (`session::system::keep_session_system`). So a task's gate is
+//! seeded with that prompt ([`InstructionContext::seed_delivered`]) and does
+//! not deliver a document the prompt already carries word for word: session
+//! tm3hb2-1k3n (2026-09-29) carried the same 48 KB twice in one context.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -24,6 +31,11 @@ pub(crate) struct InstructionContext {
     /// The index's scan budget ran out once this task and the model was told;
     /// the notice is delivered once, never as a stop (see `gate`).
     budget_noticed: bool,
+    /// The system prompt this task started with, earlier deliveries included.
+    delivered: String,
+    /// The scopes the pending delivery covers, relative to the project root,
+    /// for the sentence that tells the model why its cell stopped.
+    pending_scopes: Vec<String>,
 }
 
 impl InstructionContext {
@@ -42,6 +54,50 @@ impl InstructionContext {
                 fatal: true,
             });
         }
+    }
+
+    pub(crate) fn seed_delivered(&mut self, system: &str) {
+        self.delivered = system.to_string();
+    }
+
+    /// The gate, asked before a cell starts rather than at its first broad
+    /// call. Stopping at the call threw away everything the cell had already
+    /// done: a 5-second `helper.find` answered, then `bash` beside it was
+    /// refused and the next cell asked the same question again (session
+    /// tm3hb2-1k3n). A cell whose own source calls a tool that reads the whole
+    /// index now stops before any of it runs; a path the source computes is
+    /// still met at the call.
+    pub(crate) fn before_cell(&mut self, profile: &Profile, source: &str) -> bool {
+        crate::runtime::commands::calls_a_broad_tool(source)
+            && self.gate(profile, "bash", &Args::new())
+    }
+
+    /// Why the cell stopped, in the words the model reads next: which scope's
+    /// instructions stopped it, where they now are, and what did not happen.
+    pub(crate) fn stop_reason(&self, before: &str, not_done: &str) -> String {
+        if self.pending.as_ref().is_some_and(|pending| pending.fatal) {
+            return format!(
+                "Stopped before {before}: the project instructions that apply to it could not be \
+                 loaded completely, so {not_done}."
+            );
+        }
+        if self.pending_scopes.is_empty() {
+            return format!(
+                "Stopped before {before}: the instruction index reached its scan budget, and the \
+                 notice is now in your system prompt. {not_done}; run the step again."
+            );
+        }
+        let scopes = self
+            .pending_scopes
+            .iter()
+            .map(|scope| format!("`{scope}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Stopped before {before}: new project instructions apply to it (scope {scopes}). They \
+             are now in your system prompt under \"Newly applicable project instructions\"; read \
+             them, then run the step again. {not_done}."
+        )
     }
 
     pub(crate) fn gate(&mut self, profile: &Profile, tool: &str, args: &Args) -> bool {
@@ -94,6 +150,11 @@ impl InstructionContext {
             .documents
             .into_iter()
             .filter(|doc| self.known.get(&(doc.path.clone(), doc.scope.clone())) != Some(&doc.text))
+            .filter(|doc| {
+                !self
+                    .delivered
+                    .contains(&delivery(&doc.path, &doc.scope, &doc.text))
+            })
             .collect();
         let fatal = !load.complete;
         if fresh.is_empty() && !fatal && budget_notice.is_none() {
@@ -107,26 +168,35 @@ impl InstructionContext {
                 .map(|doc| ((doc.path.clone(), doc.scope.clone()), doc.text.clone()))
                 .collect()
         };
+        self.pending_scopes = if fatal {
+            Vec::new()
+        } else {
+            let mut scopes: Vec<String> = fresh
+                .iter()
+                .map(|doc| {
+                    let relative = doc.scope.strip_prefix(profile.root()).unwrap_or(&doc.scope);
+                    let shown = relative.display().to_string();
+                    if shown.is_empty() { ".".into() } else { shown }
+                })
+                .collect();
+            scopes.dedup();
+            scopes
+        };
         let mut text = String::from("## Newly applicable project instructions\n");
         if fatal {
             text.push_str("\nThe applicable instruction set could not be loaded completely. The blocked call did not run.\n");
         }
         if !fatal {
             for doc in &fresh {
-                let replacement = if self
+                if self
                     .known
                     .contains_key(&(doc.path.clone(), doc.scope.clone()))
                 {
-                    " This full document replaces the earlier version from the same path and scope."
-                } else {
-                    ""
-                };
-                text.push_str(&format!(
-                    "\n### `{}` (scope `{}`)\n\n{replacement}\n\n{}\n",
-                    doc.path.display(),
-                    doc.scope.display(),
-                    doc.text.trim_end()
-                ));
+                    text.push_str(
+                        "\nThe next full document replaces the earlier version from the same path and scope.\n",
+                    );
+                }
+                text.push_str(&delivery(&doc.path, &doc.scope, &doc.text));
             }
         }
         if !load.omissions.is_empty() {
@@ -171,6 +241,17 @@ impl InstructionContext {
             self.pending = None;
         }
     }
+}
+
+/// One delivered document exactly as the system prompt carries it, which is
+/// also how [`InstructionContext::gate`] recognises a delivery it already made.
+fn delivery(path: &std::path::Path, scope: &std::path::Path, text: &str) -> String {
+    format!(
+        "\n### `{}` (scope `{}`)\n\n{}\n",
+        path.display(),
+        scope.display(),
+        text.trim_end()
+    )
 }
 
 fn tool_paths(profile: &Profile, tool: &str, args: &Args) -> Vec<PathBuf> {
