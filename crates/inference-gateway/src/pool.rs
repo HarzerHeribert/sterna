@@ -33,7 +33,9 @@
 use std::collections::BTreeMap;
 
 use crate::entitlement::AccountEntry;
-use crate::gateway::subscription_broker::{BrokerPaths, RunningSubscriptionBroker};
+use crate::gateway::subscription_broker::{
+    BrokerPaths, RunningSubscriptionBroker, credential_present,
+};
 use crate::gateway::upstream::UpstreamBackend;
 use crate::gateway::{Route, Upstream, UpstreamError};
 use crate::provider::{ProtocolCompatibleProviders, Provider};
@@ -166,7 +168,9 @@ pub struct Pool {
 ///
 /// - **broker-backed** (`subscription_broker` is set): a CLIProxyAPI sidecar
 ///   is started for it, and the subscription's own model catalogue decides
-///   which models that backend serves.
+///   which models that backend serves. An account with no saved login is
+///   skipped before its sidecar starts: that sidecar never becomes ready, and
+///   waiting out its startup timeout held the ready line for fifteen seconds.
 /// - **provider-backed** (`provider` names something in `providers`): the
 ///   account's own `credential` is resolved if it states one, and the
 ///   provider's declared `credential_env` names are tried if it does not.
@@ -204,6 +208,19 @@ pub fn pool_from_catalogue(
     for (name, entry) in accounts {
         if entry.subscription_broker().is_some() {
             let paths = broker_paths(name);
+            match credential_present(&paths.auth_dir) {
+                Ok(true) => {}
+                Ok(false) => {
+                    notes.push(format!(
+                        "account `{name}`: not connected, so it was skipped"
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    notes.push(format!("account `{name}`: {error:#}"));
+                    continue;
+                }
+            }
             match RunningSubscriptionBroker::start(&paths, name) {
                 Ok(broker) => match subscription_backend(broker) {
                     Ok(backend) => {
@@ -640,5 +657,58 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("nowhere"), "{rendered}");
         assert!(rendered.contains("account `one`"), "{rendered}");
+    }
+
+    fn subscription_account() -> BTreeMap<String, AccountEntry> {
+        let mut entry = AccountEntry::default();
+        entry.set_subscription_broker(Some(crate::entitlement::SubscriptionBroker::CliProxyApi));
+        BTreeMap::from([("grok".to_owned(), entry)])
+    }
+
+    /// A subscription nobody signed in to is skipped before its sidecar is
+    /// started: that sidecar never becomes ready, and three five-second
+    /// startup attempts held the gateway's ready line for fifteen seconds.
+    #[test]
+    fn a_subscription_with_no_saved_login_starts_no_broker() {
+        let Err(error) = pool_from_catalogue(
+            &subscription_account(),
+            &[],
+            &EnvironmentSecretStore::new(),
+            &broker_paths,
+            &|_| false,
+        ) else {
+            panic!("an unconnected subscription serves nothing")
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("account `grok`: not connected, so it was skipped"),
+            "{rendered}"
+        );
+    }
+
+    /// The other side: a saved login still gets its sidecar started (here it
+    /// fails at once, because the executable does not exist).
+    #[test]
+    fn a_subscription_with_a_saved_login_starts_its_broker() {
+        let auth = tempfile::tempdir().unwrap();
+        std::fs::write(auth.path().join("login.json"), "{}").unwrap();
+        let paths = |_: &str| BrokerPaths {
+            auth_dir: auth.path().to_path_buf(),
+            ..broker_paths("grok")
+        };
+        let Err(error) = pool_from_catalogue(
+            &subscription_account(),
+            &[],
+            &EnvironmentSecretStore::new(),
+            &paths,
+            &|_| false,
+        ) else {
+            panic!("the broker executable does not exist")
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("account `grok`: its broker would not start"),
+            "{rendered}"
+        );
     }
 }

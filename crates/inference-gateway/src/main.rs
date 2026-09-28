@@ -49,7 +49,9 @@ use serde::Serialize;
 
 use inference_gateway::config::{self, GatewayConfig};
 use inference_gateway::entitlement::{EntitlementKind, EntitlementVendor};
-use inference_gateway::gateway::subscription_broker::RunningSubscriptionBroker;
+use inference_gateway::gateway::subscription_broker::{
+    RunningSubscriptionBroker, credential_present,
+};
 use inference_gateway::gateway::{self, BackendDemand};
 use inference_gateway::pool::{self, Pool};
 use inference_gateway::provider::cache::{
@@ -1930,24 +1932,6 @@ fn refuse_unless_real_directory_or_absent(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("could not inspect {}", path.display())),
     }
-}
-
-fn credential_present(dir: &Path) -> Result<bool> {
-    let metadata = match std::fs::symlink_metadata(dir) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).with_context(|| format!("could not inspect {dir:?}")),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        bail!("subscription auth location {dir:?} is not a private directory");
-    }
-    for entry in std::fs::read_dir(dir).with_context(|| format!("could not inspect {dir:?}"))? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]

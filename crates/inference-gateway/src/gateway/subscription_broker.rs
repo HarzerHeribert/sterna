@@ -436,6 +436,26 @@ fn validate_entitlement(entitlement: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether an account's broker auth directory holds a saved login: any
+/// regular file in it. Absent means never connected (or logged out).
+pub fn credential_present(dir: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("could not inspect {dir:?}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("subscription auth location {dir:?} is not a private directory");
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("could not inspect {dir:?}"))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn discover_executable(paths: &BrokerPaths, override_path: Option<OsString>) -> Result<PathBuf> {
     if let Some(path) = override_path.filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
