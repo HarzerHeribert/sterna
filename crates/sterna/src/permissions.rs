@@ -81,6 +81,13 @@ impl Level {
         }
     }
 
+    /// Why a call asks when the level alone asks for it, in the screen's
+    /// words: "you chose Ask, which asks before every edit and command".
+    #[must_use]
+    pub fn chosen(self) -> String {
+        format!("you chose {}, which {}", self.label(), self.asks())
+    }
+
     /// The notice every route that changes the level prints.
     #[must_use]
     pub fn now(self) -> String {
@@ -267,8 +274,8 @@ pub fn judge(
         Level::Ask if !effectful => Verdict::Runs,
         Level::Ask => match arguments.get("command") {
             Some(line) if pre_approved(line) => Verdict::Runs,
-            Some(_) => Verdict::Ask("sandbox ask: every command is confirmed".into()),
-            None => Verdict::Ask("sandbox ask: every edit is confirmed".into()),
+            Some(_) => Verdict::Ask(level.chosen()),
+            None => Verdict::Ask(level.chosen()),
         },
     }
 }

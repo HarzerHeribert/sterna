@@ -297,9 +297,20 @@ impl Action {
         Confirmation::new(&self.tool, &self.root, &self.arguments)
     }
 
-    /// The tool and what it acts on, in the project's own terms: a path
-    /// relative to the project, or the start of a command line.
+    /// The tool and what it acts on, in the project's own terms.
     pub fn label(&self) -> String {
+        let target = self.target();
+        if target.is_empty() {
+            self.tool.clone()
+        } else {
+            format!("{} {target}", self.tool)
+        }
+    }
+
+    /// What the call acts on without the tool's name: a path relative to
+    /// the project, or the start of a command line. A refusal quotes this
+    /// as `bash("ls -la")`, so it must not repeat the tool.
+    pub fn target(&self) -> String {
         let relative = |path: &str| {
             path.strip_prefix(&self.root)
                 .map(|rest| rest.trim_start_matches(['/', '\\']))
@@ -308,7 +319,7 @@ impl Action {
                 .to_string()
         };
         match (self.arguments.get("path"), self.arguments.get("command")) {
-            (Some(path), _) => format!("{} {}", self.tool, relative(path)),
+            (Some(path), _) => relative(path),
             (_, Some(command)) => {
                 let line = command.lines().next().unwrap_or_default();
                 let short: String = line.chars().take(60).collect();
@@ -317,9 +328,9 @@ impl Action {
                 } else {
                     ""
                 };
-                format!("{} {short}{more}", self.tool)
+                format!("{short}{more}")
             }
-            _ => self.tool.clone(),
+            _ => String::new(),
         }
     }
 }

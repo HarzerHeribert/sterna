@@ -782,7 +782,7 @@ fn checked_call(
         if let Some(rule) = rule {
             return Err(PermissionDenied {
                 tool: tool.name().into(),
-                path: action.label(),
+                path: action.target(),
                 rule,
             }
             .into());

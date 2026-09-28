@@ -1,6 +1,6 @@
 """A local, free stand-in for the Anthropic Messages endpoint.
 
-A turn's first request is answered with a small cell (a fenced `pane` program that lists the
+A turn's first request is answered with a small cell (a fenced `sterna` program that lists the
 project and reads the README); once the conversation holds an assistant reply, the answer is
 plain text, which ends the turn. Every request is recorded in `self.requests`.
 Set `script` to a list of replies to answer requests in order instead.
@@ -8,7 +8,7 @@ Set `script` to a list of replies to answer requests in order instead.
 import json, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-CELL = ('```pane\nconst files = await bash({command: "ls -la && git log --oneline -3"});\n'
+CELL = ('```sterna\nconst files = await bash({command: "ls -la && git log --oneline -3"});\n'
         'const readme = await read({path: "README.md"});\n'
         'return {files: files.stdout, readme: readme.excerpt({lines: 5})};\n```')
 ANSWER = ('The project has a README and `src/main.py`, which defines `add` and prints `add(2, 3)`. '

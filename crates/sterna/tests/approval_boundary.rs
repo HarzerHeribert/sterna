@@ -216,6 +216,33 @@ fn sandboxed_runs_every_ordinary_command_line_without_asking() {
     );
 }
 
+/// The approval says why it asks in the screen's words, and a denied call
+/// is quoted once: `bash("ls -la")`, not `bash("bash ls -la")`.
+#[test]
+fn a_denied_call_names_the_level_and_quotes_the_call_once() {
+    let fixture = Fixture::new();
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
+    let responder = std::thread::spawn(move || {
+        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        let reason = asked.reason().unwrap_or_default().to_string();
+        assert!(asked.respond(Decision::DenyOnce));
+        reason
+    });
+    let mut runtime = fixture.runtime(None).with_approval_gate(gate);
+    let outcome = runtime.run_cell(
+        r#"try { bash({command: "touch made"}); }
+           catch (e) { return e.path; }
+           return "unexpected";"#,
+    );
+    returned(&outcome, "touch made");
+    let reason = responder.join().unwrap();
+    assert_eq!(
+        reason,
+        "you chose Ask, which asks before every edit and command"
+    );
+    assert!(!fixture.0.join("made").exists());
+}
+
 /// Nobody at the terminal changes nothing on Sandboxed: the level asks
 /// nothing, so an unlisted line runs exactly as it does with a person there.
 #[test]

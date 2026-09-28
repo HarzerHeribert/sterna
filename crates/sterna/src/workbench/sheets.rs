@@ -319,17 +319,14 @@ fn themes(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
                 theme.family().blurb()
             )));
         }
-        let mut item = Item::choice(
+        let item = Item::choice(
             format!("theme:{}", theme.name()),
             theme.title(),
             s.theme == theme,
             Action::Theme(theme),
         );
         // The swatch and the name are one target.
-        if let Some(rgb) = super::theme::accent_value(theme) {
-            item = item.swatch(rgb);
-        }
-        items.push(item);
+        items.push(item.swatch(super::theme::accent_value(theme)));
     }
     items
 }
