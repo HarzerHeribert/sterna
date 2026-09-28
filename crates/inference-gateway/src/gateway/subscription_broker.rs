@@ -110,6 +110,8 @@ impl RunningSubscriptionBroker {
     /// or the Glasshouse-managed pinned executable.
     pub fn start(paths: &BrokerPaths, entitlement: &str) -> Result<Self> {
         let executable = discover_executable(paths, std::env::var_os(ENV_CLIPROXYAPI_BIN))?;
+        #[cfg(unix)]
+        orphans::reap(&paths.entitlement_dir.join("instances"));
         let mut last = None;
         for _ in 0..3 {
             match Self::start_with(paths, entitlement, &executable, READY_TIMEOUT, &[]) {
@@ -622,6 +624,9 @@ fn set_owner_only_directory(_path: &Path) -> Result<()> {
 }
 
 pub mod login;
+
+#[cfg(unix)]
+mod orphans;
 
 #[cfg(test)]
 mod tests;

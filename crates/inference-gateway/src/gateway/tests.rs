@@ -118,6 +118,10 @@ fn relay_sources() -> Vec<(&'static str, &'static str)> {
             "gateway/subscription_broker.rs",
             include_str!("subscription_broker.rs"),
         ),
+        (
+            "gateway/subscription_broker/orphans.rs",
+            include_str!("subscription_broker/orphans.rs"),
+        ),
         ("gateway/upstream.rs", include_str!("upstream.rs")),
         // The 2026-09-03 ruling's reader. It is here rather than beside the
         // codecs on purpose: it holds no parser, so the scan below is a real
@@ -1148,7 +1152,7 @@ fn the_gateway_names_no_glasshouse_path() {
     // ... and the scan is not vacuous: it runs over the whole crate, and it
     // fires on the change it exists to catch rather than passing because a
     // needle was misspelled.
-    assert_eq!(crate_sources().len(), 43);
+    assert_eq!(crate_sources().len(), 44);
     let violating =
         production_code_to_test_module("use glasshouse::session::SessionId;\nfn f() {}");
     assert!(FORBIDDEN.iter().any(|needle| violating.contains(needle)));
@@ -1290,7 +1294,7 @@ fn the_gateway_dependency_scan_would_catch_a_violation() {
     assert!(!production_code_to_test_module(inline_tests).contains("crate::events"));
     // ... and the file list it runs over is not empty, which would make
     // every assertion in it vacuous.
-    assert_eq!(gateway_sources().len(), 16);
+    assert_eq!(gateway_sources().len(), 17);
 }
 
 /// No file of the **relay** may deserialize anything. The whole of
@@ -1345,7 +1349,7 @@ fn no_part_of_the_relay_deserializes_anything() {
         codecs_parse,
         "translate/ no longer deserializes anything, so the split above proves nothing"
     );
-    assert_eq!(relay_sources().len(), 8);
+    assert_eq!(relay_sources().len(), 9);
 
     // ... and the scan fires on the change it exists to catch, rather
     // than passing because the needle was misspelled.
