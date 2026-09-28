@@ -304,8 +304,9 @@ fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     }
 }
 
-/// The task's acceptance list, whole: each item under its mark, and what
-/// the last check found -- or when it will be checked.
+/// The task's acceptance list, whole: grouped by what needs attention first
+/// -- not met, not checkable, open, met -- each item under its mark, and
+/// under it what the last check found or when it will be checked.
 fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
     use crate::acceptance::Status;
     let (met, total) = crate::acceptance::tally(&n.acceptance);
@@ -318,26 +319,42 @@ fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
         return vec![Item::info("This task has no acceptance list.").tone(Tone::Muted)];
     }
     let mut items = Vec::new();
-    for verdict in &n.acceptance {
-        items.push(
-            Item::info(format!(
-                "{} {}",
-                verdict.status.mark(),
-                verdict.item.plain()
-            ))
-            .tone(acceptance_tone(verdict.status)),
-        );
-        let found = match verdict.status {
-            _ if !verdict.evidence.is_empty() => verdict.evidence.as_str(),
-            Status::Judge => "left to the checker",
-            _ => "checked when the task finishes",
-        };
-        items.push(Item::info(format!("  {found}")).tone(Tone::Muted));
+    for (heading, wanted) in [
+        ("Not met", &[Status::Unmet][..]),
+        ("Could not check", &[Status::Unknown][..]),
+        ("Open", &[Status::Open, Status::Judge][..]),
+        ("Met", &[Status::Met][..]),
+    ] {
+        let group: Vec<_> = n
+            .acceptance
+            .iter()
+            .filter(|verdict| wanted.contains(&verdict.status))
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        items.push(Item::heading(format!("{heading} · {}", group.len())));
+        for verdict in group {
+            items.push(
+                Item::info(format!(
+                    "{} {}",
+                    verdict.status.mark(),
+                    verdict.item.plain()
+                ))
+                .tone(status_tone(verdict.status)),
+            );
+            let found = match verdict.status {
+                _ if !verdict.evidence.is_empty() => verdict.evidence.as_str(),
+                Status::Judge => "left to the checker",
+                _ => "checked when the task finishes",
+            };
+            items.push(Item::info(format!("↳ {found}")).tone(Tone::Muted));
+        }
     }
     items.push(
         Item::info(
-            "Sterna reads files after every cell; it runs commands and judges the rest \
-             when the model says it is done.",
+            "Files are read after every cell. Commands and judged items are checked \
+             when the model says it is done; only that check marks an item met.",
         )
         .tone(Tone::Muted),
     );
@@ -345,7 +362,7 @@ fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
 }
 
 /// The colour of an acceptance item's mark and words.
-pub(super) fn acceptance_tone(status: crate::acceptance::Status) -> Tone {
+fn status_tone(status: crate::acceptance::Status) -> Tone {
     use crate::acceptance::Status;
     match status {
         Status::Met => Tone::Success,

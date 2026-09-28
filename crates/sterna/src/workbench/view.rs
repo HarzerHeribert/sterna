@@ -190,8 +190,6 @@ fn session_bar(f: &mut Frame<'_>, g: &mut Geometry, a: Rect, s: &ScreenState, ui
 }
 /// The empty columns kept between the transcript and the sidebar's rule.
 const SIDEBAR_GUTTER: u16 = 2;
-/// The acceptance items the sidebar lists before "… N more".
-const ACCEPTANCE_LINES: usize = 4;
 
 pub struct Layout {
     pub transcript: Rect,
@@ -434,8 +432,11 @@ pub fn render(
             gutter,
             running_cell,
             boxed,
-            (sidebar.is_none() && !n.acceptance.is_empty())
-                .then(|| crate::acceptance::tally(&n.acceptance)),
+            if sidebar.is_none() {
+                &n.acceptance
+            } else {
+                &[]
+            },
         );
         y += 1;
     }
@@ -912,35 +913,15 @@ fn session_card(
             lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
         }
     }
-    // The task's acceptance list, when it has one: how much of it stands
-    // met and its first items, every line one click from the whole list.
+    // The task's acceptance list, when it has one, is one line of progress:
+    // its items cut to the card's width could not be read, and the whole
+    // list is one click away.
     if !n.acceptance.is_empty() {
-        let (met, total) = crate::acceptance::tally(&n.acceptance);
-        lines.push((String::new(), Tone::Normal, None));
         lines.push((
-            format!("ACCEPTANCE · {met} of {total} met"),
-            Tone::Accent,
+            format!("{} ▸", crate::acceptance::glance(&n.acceptance)),
+            acceptance_tone(&n.acceptance, Tone::Accent),
             Some(Action::Acceptance),
         ));
-        lines.push((
-            n.acceptance_from.words().into(),
-            Tone::Muted,
-            Some(Action::Acceptance),
-        ));
-        for verdict in n.acceptance.iter().take(ACCEPTANCE_LINES) {
-            lines.push((
-                format!("{} {}", verdict.status.mark(), verdict.item.plain()),
-                super::sheets::acceptance_tone(verdict.status),
-                Some(Action::Acceptance),
-            ));
-        }
-        if total > ACCEPTANCE_LINES {
-            lines.push((
-                format!("  … {} more", total - ACCEPTANCE_LINES),
-                Tone::Muted,
-                Some(Action::Acceptance),
-            ));
-        }
     }
     lines.push((String::new(), Tone::Normal, None));
     lines.push(("◇ HELPERS".into(), Tone::Helper, None));
@@ -1038,7 +1019,7 @@ fn dock_top(
     gutter: Option<u16>,
     cell: Option<usize>,
     boxed: bool,
-    tally: Option<(usize, usize)>,
+    acceptance: &[crate::acceptance::Verdict],
 ) {
     let t = s.theme;
     let running = s.activity.working();
@@ -1145,10 +1126,10 @@ fn dock_top(
                 row(f, Rect::new(right, a.y, w, 1), &above, Tone::Muted, t);
             }
         }
-        // The acceptance list's tally, where the sidebar that lists it is
-        // not on screen: beside the turn's status, one click from the list.
-        if let Some((met, total)) = tally {
-            let label = format!("✓ {met} of {total} met");
+        // The acceptance list's one line, where the sidebar that carries it
+        // is not on screen: beside the turn's status, one click from the list.
+        if !acceptance.is_empty() {
+            let label = crate::acceptance::glance(acceptance);
             let w = chrome::width(&label) + 4;
             if right > a.x + used + w + 2 {
                 chrome::chip(
@@ -1160,12 +1141,21 @@ fn dock_top(
                     &label,
                     Action::Acceptance,
                     false,
-                    Tone::Normal,
+                    acceptance_tone(acceptance, Tone::Normal),
                     ui.press,
                     t,
                 );
             }
         }
+    }
+}
+/// The acceptance list's one line in the failure colour once a check has
+/// found an item not met, and in `calm` until then.
+fn acceptance_tone(acceptance: &[crate::acceptance::Verdict], calm: Tone) -> Tone {
+    if crate::acceptance::failed(acceptance) > 0 {
+        Tone::Failure
+    } else {
+        calm
     }
 }
 /// The dock's bottom edge: the three everyday chips, one whispered hint,

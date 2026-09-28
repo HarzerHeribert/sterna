@@ -346,6 +346,26 @@ pub fn tally(verdicts: &[Verdict]) -> (usize, usize) {
     (met, verdicts.len())
 }
 
+/// How many items a check found not met.
+#[must_use]
+pub fn failed(verdicts: &[Verdict]) -> usize {
+    verdicts
+        .iter()
+        .filter(|verdict| verdict.status == Status::Unmet)
+        .count()
+}
+
+/// The whole list in one line, where the screen has room for one:
+/// `≡ 4 of 7 met`, and `· 1 failed` once a check has found one.
+#[must_use]
+pub fn glance(verdicts: &[Verdict]) -> String {
+    let (met, total) = tally(verdicts);
+    match failed(verdicts) {
+        0 => format!("≡ {met} of {total} met"),
+        failed => format!("≡ {met} of {total} met · {failed} failed"),
+    }
+}
+
 fn read_bounded(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|_| "absent".to_string())?;
     if meta.len() > READ_CAP {
@@ -575,6 +595,7 @@ mod tests {
             vec![Status::Met, Status::Open, Status::Open, Status::Open]
         );
         assert_eq!(tally(&before), (1, 4));
+        assert_eq!(glance(&before), "≡ 1 of 4 met");
 
         let mut runner =
             |_: &str| -> Result<(Option<i32>, String), String> { Ok((Some(1), "1 failed".into())) };
@@ -590,6 +611,7 @@ mod tests {
             "{}",
             after[2].evidence
         );
+        assert_eq!(glance(&after), "≡ 2 of 4 met · 1 failed");
         std::fs::remove_file(root.join("a.txt")).unwrap();
         assert_eq!(standing(&items, &checked, &root)[0].status, Status::Unmet);
         let _ = std::fs::remove_dir_all(root);

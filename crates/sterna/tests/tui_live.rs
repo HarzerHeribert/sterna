@@ -3008,8 +3008,8 @@ fn acceptance_provider() -> String {
 
 /// The acceptance list reaches the screen from a real session: the lister's
 /// items stand open before the work, and the file item turns met once the
-/// cell has written it -- counted on the chip an eighty-column terminal
-/// shows in place of the sidebar.
+/// cell has written it -- counted on the one line an eighty-column
+/// terminal shows on the dock in place of the sidebar.
 #[test]
 fn live_acceptance_list_counts_the_file_the_cell_wrote() {
     let base = acceptance_provider();
@@ -3026,7 +3026,7 @@ fn live_acceptance_list_counts_the_file_the_cell_wrote() {
     app.send(b"write done.txt with a greeting\r");
     app.wait_for_file("done.txt");
     app.contains_line("WROTE THE NOTE");
-    app.contains("✓ 1 of 2 met");
+    app.contains("≡ 1 of 2 met");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }

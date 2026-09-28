@@ -1641,12 +1641,13 @@ fn the_transcript_keeps_a_gutter_before_the_sidebar() {
     }
 }
 
-/// The task's acceptance list stands in the sidebar as a tally and its
-/// first items, and without the sidebar as one chip; either opens the whole
-/// list on its own sheet.
+/// The task's acceptance list is one line of progress: in the sidebar, or
+/// without it as one chip on the dock. Its items cut to the sidebar's width
+/// could not be read, so they live in a panel either one opens, grouped by
+/// what needs attention first. A failure a check found turns the line red.
 #[test]
-fn the_acceptance_list_is_a_tally_in_the_sidebar_or_a_chip_and_opens_whole() {
-    use sterna::acceptance::{Item, Status, Verdict};
+fn the_acceptance_list_is_one_line_that_opens_a_grouped_panel() {
+    use sterna::acceptance::{Item, Origin, Status, Verdict};
     let (c, mut n, mut s) = fixture();
     n.acceptance = vec![
         Verdict {
@@ -1673,37 +1674,50 @@ fn the_acceptance_list_is_a_tally_in_the_sidebar_or_a_chip_and_opens_whole() {
     ];
     let mut u = Workbench::default();
     let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
-    assert!(wide.contains("ACCEPTANCE · 1 of 3 met"), "{wide}");
-    assert!(wide.contains("✓ file src/motion.rs exists"), "{wide}");
-    assert!(wide.contains("○ cargo test exits 0"), "{wide}");
-    assert!(wide.contains("from your request only"), "{wide}");
-    assert!(
-        !wide.contains("✓ 1 of 3 met"),
-        "one tally on screen: {wide}"
+    assert!(wide.contains("≡ 1 of 3 met ▸"), "{wide}");
+    assert_eq!(
+        wide.matches("≡ 1 of 3 met").count(),
+        1,
+        "one line on screen: {wide}"
     );
-    let scouted = Notebook {
-        acceptance_from: sterna::acceptance::Origin::Scout,
-        ..n.clone()
-    };
-    let scouted_screen = text(&draw(&c, &scouted, &s, &mut u, 140, 40));
     assert!(
-        scouted_screen.contains("from the Scout's look"),
-        "{scouted_screen}"
+        !wide.contains("cargo test"),
+        "the items stay in the panel: {wide}"
     );
 
     let narrow = text(&draw(&c, &n, &s, &mut u, 100, 30));
-    assert!(narrow.contains("✓ 1 of 3 met"), "{narrow}");
-    assert!(!narrow.contains("ACCEPTANCE"), "{narrow}");
+    assert!(narrow.contains("⟨ ≡ 1 of 3 met ⟩"), "{narrow}");
     click(&mut u, &mut s, &n, Action::Acceptance);
-    let sheet = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
     for line in [
         "ACCEPTANCE › 1 of 3 met · from your request only",
-        "present, 12 bytes",
-        "judge: the guard reads the setting",
-        "checked when the task finishes",
+        "OPEN · 2",
+        "○ cargo test exits 0",
+        "↳ checked when the task finishes",
+        "MET · 1",
+        "↳ present, 12 bytes",
     ] {
-        assert!(sheet.contains(line), "{line}: {sheet}");
+        assert!(panel.contains(line), "{line}: {panel}");
     }
+    assert!(!panel.contains("NOT MET"), "{panel}");
+    assert!(panel.find("OPEN · 2") < panel.find("MET · 1"), "{panel}");
+
+    // After a check found `cargo test` failing: the line says so, and the
+    // failure heads the panel.
+    n.acceptance[1].status = Status::Unmet;
+    n.acceptance[1].evidence = "exit 101: 2 failed".into();
+    n.acceptance_from = Origin::Scout;
+    let mut u = Workbench::default();
+    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
+    assert!(wide.contains("≡ 1 of 3 met · 1 failed ▸"), "{wide}");
+    click(&mut u, &mut s, &n, Action::Acceptance);
+    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
+    assert!(panel.contains("from the Scout's look"), "{panel}");
+    assert!(panel.contains("↳ exit 101: 2 failed"), "{panel}");
+    let failed = panel
+        .find("NOT MET · 1")
+        .expect("the failure has its group");
+    assert!(failed < panel.find("OPEN · 1").unwrap(), "{panel}");
 }
 
 /// Every control in the top bar is a chip, and every chip is a click target
