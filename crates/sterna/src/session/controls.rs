@@ -1253,10 +1253,6 @@ pub(super) fn command(
                     config.limits.response_bytes
                 ),
                 format!(
-                    "Supervisor: {}",
-                    config.supervisor.model.as_deref().unwrap_or("off")
-                ),
-                format!(
                     "Helper effort: find {} · reduce {} · check {}",
                     config.helpers.effort.find.name(),
                     config.helpers.effort.reduce.name(),
@@ -1266,38 +1262,6 @@ pub(super) fn command(
             lines.push("Change any of these in Settings (F2).".into());
             drop(config);
             show(session, Panel::text("Session", lines.join("\n")));
-        }
-        "supervisor" => {
-            let latest = match transcript.notebook.supervisor.as_ref() {
-                Some(SupervisorStatus::Nudged(reason)) => format!("nudged: {reason}"),
-                Some(SupervisorStatus::LookedNoNudge) => "looked; no nudge".into(),
-                Some(SupervisorStatus::LookFailed(reason)) => format!("look failed: {reason}"),
-                Some(SupervisorStatus::Off) | None => "no look in this session".into(),
-            };
-            show(
-                session,
-                Panel::text(
-                    "Supervisor",
-                    format!(
-                        "State: {}\nModel: {}\nCadence: every {} cells\nLatest: {}\nConfigure [supervisor] in .sterna/config.toml for the next session.",
-                        if session.config().supervisor.enabled
-                            && session.config().supervisor.model.is_some()
-                        {
-                            "active"
-                        } else {
-                            "off"
-                        },
-                        session
-                            .config()
-                            .supervisor
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "not configured".to_string()),
-                        session.config().supervisor.every,
-                        latest
-                    ),
-                ),
-            );
         }
         "rollback" => rollback(session, argument, &mut transcript.notebook),
         "permissions" => match permissions(session, argument) {
@@ -2054,12 +2018,7 @@ pub(super) mod tests {
             );
             assert_eq!(SternaConfig::load(&root).unwrap(), base);
             let reloaded = SternaConfig::load_profile(&root, Some("review")).unwrap();
-            let mut live = session.config().clone();
-            // Supervisor fallback is resolved at startup, not silently changed
-            // by a different tier's live model choice.
-            assert_eq!(live.supervisor.model.as_deref(), Some("review-helper"));
-            assert_eq!(reloaded.supervisor.model.as_deref(), Some("base-helper"));
-            live.supervisor = reloaded.supervisor.clone();
+            let live = session.config().clone();
             assert_eq!(reloaded, live);
         });
         fs::remove_dir_all(root).unwrap();

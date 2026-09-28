@@ -169,8 +169,8 @@ fn built_in_controls_with_existing_subsystems_are_available() {
     assert_eq!(handles.source, CommandSource::BuiltIn(BuiltIn::Handles));
     assert_eq!(handles.status, CommandStatus::Available);
 
-    let supervisor = commands::resolve(&config, "supervisor").unwrap();
-    assert_eq!(supervisor.status, CommandStatus::Available);
+    let rollback = commands::resolve(&config, "rollback").unwrap();
+    assert_eq!(rollback.status, CommandStatus::Available);
 
     let model = commands::resolve(&config, "model").unwrap();
     assert_eq!(model.status, CommandStatus::Available);

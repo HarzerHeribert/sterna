@@ -1,5 +1,5 @@
-//! Sterna runtime settings, layered by the native settings store at startup --
-//! `docs/supervisor.md`. A missing file means every default
+//! Sterna runtime settings, layered by the native settings store at startup
+//! (`docs/configuration.md`). A missing file means every default
 //! the runtime limits already used before this package existed
 //! (`runtime-contract.md` §7), so an absent file changes no
 //! existing test.
@@ -22,8 +22,7 @@ pub struct Limits {
     /// four-hour session at cell 120 of 120, mid-implementation, with code
     /// that did not compile — and cancelled that session's own `cargo test`
     /// job on the way out. What ends a task now is evidence that it has
-    /// stopped producing anything: `progress::Stall`'s run of empty windows,
-    /// or the supervisor's repeated verdict.
+    /// stopped producing anything: `progress::Stall`'s run of empty windows.
     pub cells: Option<u64>,
     /// Whether a terminal return is held once for the deterministic
     /// final-state contract check and the no-progress guard's findings
@@ -88,32 +87,6 @@ impl Default for Limits {
     }
 }
 
-/// `[supervisor]` -- the look's cadence, model and switch (§1, §3).
-///
-/// **`model` unset falls back to `[helpers] model`, and only a session with
-/// neither runs unwatched.** The look is one short request answered with one
-/// JSON object -- exactly the cheap tier's kind of work -- and a session that
-/// configured a helper model has already chosen that tier. Measured
-/// 2026-09-17 (session `tlitep-13fv`): the supervisor was off for want of a
-/// model it could have inherited, and the run it was built to interrupt --
-/// sixty cells of reading without an edit -- ran to the cell cap.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupervisorConfig {
-    pub every: u32,
-    pub model: Option<String>,
-    pub enabled: bool,
-}
-
-impl Default for SupervisorConfig {
-    fn default() -> Self {
-        Self {
-            every: 4,
-            model: None,
-            enabled: true,
-        }
-    }
-}
-
 /// `[decisions] mode` -- whether the decision model's hold reaches the task
 /// model at all. `off` and an unset `model` are both "no request is ever
 /// made"; `mode` only matters once a model is configured.
@@ -147,9 +120,8 @@ impl DecisionMode {
 }
 
 /// `[decisions]` -- the decision model's one intent question and the hold it
-/// buys (`docs/decisions.md`). `model` has no default,
-/// exactly as `[supervisor] model` has none: unset means decisions are off,
-/// said once at start.
+/// buys (`docs/decisions.md`). `model` has no default: unset means
+/// decisions are off, said once at start.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionsConfig {
     pub model: Option<String>,
@@ -195,10 +167,6 @@ pub struct DecisionsConfig {
     /// floor for the preflight Scout's own result and the completion gate's
     /// fresh checker. `0.0..=0.5`.
     pub helper_no_below: f64,
-    /// Confidence at or above which the supervision question's answer is a
-    /// reason to nudge -- any criterion but `making_progress`
-    /// (`supervisor.md` §3). `0.5..=1.0`.
-    pub supervision_above: f64,
 }
 
 impl Default for DecisionsConfig {
@@ -217,7 +185,6 @@ impl Default for DecisionsConfig {
             drift_no_below: 0.10,
             scout_relevance_below: 0.10,
             helper_no_below: 0.10,
-            supervision_above: 0.85,
         }
     }
 }
@@ -287,8 +254,8 @@ impl Default for AskConfig {
 /// The whole of `config.toml`. `project.rs`'s own invariant -- loading edits
 /// `[helpers]` -- the little-helper tier (`docs/helpers.md`).
 ///
-/// `model` has no default, exactly as `[supervisor] model` has none: unset
-/// means helpers are off, said once at start. A helper spends money on the
+/// `model` has no default: unset means helpers are off, said once at
+/// start. A helper spends money on the
 /// user's behalf, so the fail-closed direction is *not configured, not run*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpersConfig {
@@ -529,7 +496,6 @@ impl Default for HelpersConfig {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SternaConfig {
     pub limits: Limits,
-    pub supervisor: SupervisorConfig,
     pub helpers: HelpersConfig,
     pub agents: AgentsConfig,
     pub model: ModelConfig,
@@ -607,12 +573,6 @@ const REDUCE_ABOVE_TOKENS: Range = Range {
     key: "reduce_above_tokens",
     min: 256,
     max: 32_768,
-};
-
-const EVERY: Range = Range {
-    key: "every",
-    min: 1,
-    max: 100,
 };
 
 impl Range {
@@ -698,14 +658,12 @@ impl SternaConfig {
     fn parse_base(text: &str) -> Result<Self, String> {
         let value: toml::Value = toml::from_str(text).map_err(|e| format!("config.toml: {e}"))?;
         let table = value.as_table().ok_or_else(|| {
-            "config.toml: must be a table of [limits], [supervisor], [helpers] and [agents]"
-                .to_string()
+            "config.toml: must be a table of [limits], [helpers] and [agents]".to_string()
         })?;
 
         for key in table.keys() {
             if ![
                 "limits",
-                "supervisor",
                 "helpers",
                 "agents",
                 "model",
@@ -717,7 +675,7 @@ impl SternaConfig {
             .contains(&key.as_str())
             {
                 return Err(format!(
-                    "config.toml: unknown table `[{key}]`; only [limits], [supervisor], [helpers], \
+                    "config.toml: unknown table `[{key}]`; only [limits], [helpers], \
                      [agents], [model], [web], [decisions], [ask] and [wizard] are recognised"
                 ));
             }
@@ -726,10 +684,6 @@ impl SternaConfig {
         let limits = match table.get("limits") {
             Some(value) => parse_limits(value)?,
             None => Limits::default(),
-        };
-        let supervisor = match table.get("supervisor") {
-            Some(value) => parse_supervisor(value)?,
-            None => SupervisorConfig::default(),
         };
 
         let helpers = match table.get("helpers") {
@@ -783,16 +737,8 @@ impl SternaConfig {
             None => WizardConfig::default(),
         };
 
-        // The fallback above, applied once so every reader -- the session's
-        // own switch, `/supervisor`, the sidebar -- sees one effective model.
-        let supervisor = SupervisorConfig {
-            model: supervisor.model.or_else(|| helpers.model.clone()),
-            ..supervisor
-        };
-
         Ok(Self {
             limits,
-            supervisor,
             helpers,
             agents,
             model,
@@ -966,44 +912,6 @@ fn parse_limits(value: &toml::Value) -> Result<Limits, String> {
     })
 }
 
-fn parse_supervisor(value: &toml::Value) -> Result<SupervisorConfig, String> {
-    let table = table_of(value, "supervisor")?;
-    let defaults = SupervisorConfig::default();
-
-    for key in table.keys() {
-        if !["every", "model", "enabled"].contains(&key.as_str()) {
-            return Err(format!("config.toml: unknown key `{key}` in [supervisor]"));
-        }
-    }
-
-    let every = match int_field(table, "every")? {
-        Some(v) => u32::try_from(EVERY.check(v)?).expect("range is non-negative"),
-        None => defaults.every,
-    };
-    let model = match table.get("model") {
-        None => None,
-        Some(value) => {
-            let text = value
-                .as_str()
-                .ok_or_else(|| "config.toml: `model` must be a string".to_string())?;
-            check_names_no_tool_path_or_grant("model", text)?;
-            Some(text.to_string())
-        }
-    };
-    let enabled = match table.get("enabled") {
-        None => defaults.enabled,
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| "config.toml: `enabled` must be true or false".to_string())?,
-    };
-
-    Ok(SupervisorConfig {
-        every,
-        model,
-        enabled,
-    })
-}
-
 const HOLD_ABOVE_MIN: f64 = 0.5;
 const HOLD_ABOVE_MAX: f64 = 1.0;
 const SCOUT_ABOVE_MIN: f64 = 0.5;
@@ -1026,8 +934,6 @@ const SCOUT_RELEVANCE_BELOW_MIN: f64 = 0.0;
 const SCOUT_RELEVANCE_BELOW_MAX: f64 = 0.5;
 const HELPER_NO_BELOW_MIN: f64 = 0.0;
 const HELPER_NO_BELOW_MAX: f64 = 0.5;
-const SUPERVISION_ABOVE_MIN: f64 = 0.5;
-const SUPERVISION_ABOVE_MAX: f64 = 1.0;
 
 const DECIDE_ABOVE_MIN: f64 = 0.5;
 const DECIDE_ABOVE_MAX: f64 = 1.0;
@@ -1100,7 +1006,6 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
             "drift_no_below",
             "scout_relevance_below",
             "helper_no_below",
-            "supervision_above",
         ]
         .contains(&key.as_str())
         {
@@ -1300,22 +1205,6 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
         }
     };
 
-    let supervision_above = match table.get("supervision_above") {
-        None => defaults.supervision_above,
-        Some(value) => {
-            let number = value
-                .as_float()
-                .or_else(|| value.as_integer().map(|v| v as f64))
-                .ok_or_else(|| "config.toml: `supervision_above` must be a number".to_string())?;
-            if !(SUPERVISION_ABOVE_MIN..=SUPERVISION_ABOVE_MAX).contains(&number) {
-                return Err(format!(
-                    "config.toml: `supervision_above` must be between {SUPERVISION_ABOVE_MIN} and {SUPERVISION_ABOVE_MAX}"
-                ));
-            }
-            number
-        }
-    };
-
     Ok(DecisionsConfig {
         model,
         mode,
@@ -1330,7 +1219,6 @@ fn parse_decisions(value: &toml::Value) -> Result<DecisionsConfig, String> {
         drift_no_below,
         scout_relevance_below,
         helper_no_below,
-        supervision_above,
     })
 }
 

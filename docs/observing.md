@@ -47,7 +47,6 @@ once. A reader takes a duration by pairing, never by parsing prose.
 | `answer.propose` | the text that would end the task, before it has |
 | `ask.raise` | the question put to you |
 | `approval.raise` | what is being confirmed |
-| `supervisor.look` | the verdict |
 | `sandbox.move` | the sandbox level, from and to |
 | `reduction.made` | what was reduced and by how much |
 

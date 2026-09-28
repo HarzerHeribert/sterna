@@ -100,9 +100,8 @@ const ASK_JEV: &[&str] = &["off", "weight", "decide"];
 
 /// The top-level tables `SternaConfig` parses. A key under one of these is
 /// validated by the runtime parser; everything else is owned here.
-pub(crate) const RUNTIME_TABLES: [&str; 8] = [
+pub(crate) const RUNTIME_TABLES: [&str; 7] = [
     "limits",
-    "supervisor",
     "helpers",
     "agents",
     "model",
@@ -548,33 +547,6 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
-        key: "supervisor.enabled",
-        label: "Supervisor",
-        description: "Whether the supervisor look runs.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "supervisor.every",
-        label: "Supervisor cadence",
-        description: "How many turns between supervisor looks.",
-        kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "supervisor.model",
-        label: "Supervisor model",
-        description: "The model the supervisor runs on. Unset means the supervisor is off.",
-        kind: Kind::Model,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "decisions.mode",
         label: "Decisions",
         description: "`off` asks nothing. `shadow` asks and records what would hold. `on` holds a read-only request's effectful cell once.",
@@ -713,15 +685,6 @@ static SPECS: &[SettingSpec] = &[
         key: "decisions.helper_no_below",
         label: "Helper judge no threshold",
         description: "A helper result's own confidence at or below which its record carries the one line that it may not answer what was asked.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.supervision_above",
-        label: "Supervision confidence",
-        description: "Confidence at or above which the supervision question's answer is a reason to nudge the working model.",
         kind: Kind::Float,
         choices: &[],
         basic: false,
@@ -995,7 +958,15 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
         "ui.reduced_motion",
         "motion off freezes every animation the same way: /motion off",
     ),
+    ("supervisor.enabled", SUPERVISOR_GONE),
+    ("supervisor.every", SUPERVISOR_GONE),
+    ("supervisor.model", SUPERVISOR_GONE),
+    ("decisions.supervision_above", SUPERVISOR_GONE),
 ];
+
+/// Where the supervisor's job went when it was removed.
+const SUPERVISOR_GONE: &str =
+    "the supervisor is gone: a task that stops producing anything still ends on its own";
 
 /// Keys Sterna writes for itself. They load like any other and are never
 /// offered as a choice.
@@ -1375,7 +1346,6 @@ pub fn shown_default(key: &str) -> Option<String> {
         "decisions.drift_no_below" => decisions.drift_no_below.to_string(),
         "decisions.scout_relevance_below" => decisions.scout_relevance_below.to_string(),
         "decisions.helper_no_below" => decisions.helper_no_below.to_string(),
-        "decisions.supervision_above" => decisions.supervision_above.to_string(),
         _ => return None,
     })
 }

@@ -13,7 +13,7 @@ use sterna::runtime::handles::{HandleTable, render_table};
 use sterna::runtime::preview::{ArrayValue, FileValue, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP, Value};
 use sterna::tui::{
     CellError, CellView, Counted, HelperModelTokens, HelperTokens, Notebook, ScreenState,
-    SupervisorStatus, TaskTokens, cell_ordinal, render, render_screen,
+    TaskTokens, cell_ordinal, render, render_screen,
 };
 
 fn conversation(messages: Vec<Message>) -> Conversation {
@@ -1014,91 +1014,6 @@ fn a_terminal_response_is_the_assistants_turn_and_a_yield_reason_sits_by_the_tab
     assert!(!text.contains("[3] in"), "the reply is not a cell:\n{text}");
 }
 
-// --- docs/supervisor.md §4: the sidebar's own line ----------
-
-/// §4: the sidebar shows the supervisor's line under the spend line, and a
-/// nudge's own reason is what it says.
-#[test]
-fn a_nudge_shows_under_the_spend_line() {
-    let notebook = Notebook {
-        tokens: Some(TaskTokens {
-            used: 100,
-            parent_used: 100,
-            helpers: Default::default(),
-            counted: Counted::Estimated,
-        }),
-        // Short enough to fit the sidebar's own width on one row -- this test
-        // is about placement, not wrapping, which `notebook_lines`' own
-        // `push_text_region` already covers for the conversation column.
-        supervisor: Some(SupervisorStatus::Nudged("looping".to_string())),
-        ..Notebook::default()
-    };
-
-    let conversation = conversation(vec![Message::text(Role::User, "hi")]);
-    let buffer = rendered_notebook(
-        &conversation,
-        &known_served_by(),
-        &HandleTable::new(),
-        &notebook,
-        20,
-    );
-    let text = buffer_text(&buffer);
-
-    let spend_at = text.find("Σ 100 tokens").expect("the spend line renders");
-    let supervisor_at = text
-        .find("supervisor: looping")
-        .expect("the nudge's own reason renders under the spend line");
-    assert!(
-        spend_at < supervisor_at,
-        "the supervisor line must sit under the spend line:\n{text}"
-    );
-}
-
-/// §3: a look that produced no answer is recorded **as such**, so the sidebar
-/// must not show it as the healthy "looked, no nudge" -- otherwise a
-/// supervisor whose model id or endpoint is wrong reads exactly like one that
-/// is watching, while spending a request every `every` cells.
-#[test]
-fn a_failed_look_shows_as_failed_and_names_its_cause() {
-    let notebook = Notebook {
-        tokens: Some(TaskTokens {
-            used: 100,
-            parent_used: 100,
-            helpers: Default::default(),
-            counted: Counted::Estimated,
-        }),
-        supervisor: Some(SupervisorStatus::LookFailed("unparseable".to_string())),
-        ..Notebook::default()
-    };
-
-    let conversation = conversation(vec![Message::text(Role::User, "hi")]);
-    let buffer = rendered_notebook(
-        &conversation,
-        &known_served_by(),
-        &HandleTable::new(),
-        &notebook,
-        20,
-    );
-    let text = buffer_text(&buffer);
-
-    let spend_at = text.find("Σ 100 tokens").expect("the spend line renders");
-    let supervisor_at = text
-        .find("supervisor: FAILED")
-        .expect("a failed look must say so, under the spend line");
-    assert!(
-        spend_at < supervisor_at,
-        "the supervisor line must sit under the spend line:\n{text}"
-    );
-    assert!(
-        text.contains("unparseable"),
-        "the failed look must name its cause:\n{text}"
-    );
-    assert!(
-        !text.contains("looked, no nudge"),
-        "a failed look must never render as a healthy look:\n{text}"
-    );
-}
-
 #[test]
 fn sidebar_shows_real_inbox_and_batch_counts_without_changing_narrow_layout() {
     let notebook = Notebook {
@@ -1311,9 +1226,8 @@ fn a_helper_lane_runs_then_resolves_then_folds() {
     );
 }
 
-/// A helper that failed renders ` !! ` with its reason and stays there --
-/// the supervisor shipped for weeks rendering a permanently failing look as
-/// a healthy one, and the collapse must not rebuild that.
+/// A helper that failed renders ` !! ` with its reason and stays there: a
+/// failing request must never render as a healthy one, collapsed or not.
 #[test]
 fn a_failed_helper_shows_its_reason_and_survives_the_collapse() {
     let failed = failed_helper("4118 lines", "request failed: 429", 400);

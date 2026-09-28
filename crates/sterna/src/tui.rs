@@ -529,7 +529,6 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     BuiltIn::Setup => "set Sterna up: sign in, models for each workload, Jev",
                     BuiltIn::Usage => "how much of each subscription's limits is used",
                     BuiltIn::Handles => "inspect runtime handles",
-                    BuiltIn::Supervisor => "inspect supervisor settings",
                     BuiltIn::Rollback => "roll back to a checkpoint",
                     BuiltIn::Budget => "inspect cumulative task spend",
                     BuiltIn::Memory => "read or save project memory",
@@ -836,27 +835,9 @@ pub struct ContextTokens {
     pub counted: Counted,
 }
 
-/// The supervisor's own sidebar line -- `docs/supervisor.md`
-/// and §5: a nudge's own reason, a look that ran and did not intervene, a look
-/// that produced no answer at all, or off because no model is configured or
-/// the switch is off.
-///
-/// [`SupervisorStatus::LookFailed`] is its own state because §3 records an
-/// unanswered look **as such**: it answers *not intervene* like a healthy
-/// look, so folding the two together makes a supervisor that fails every
-/// request -- and spends one every `every` cells -- indistinguishable from one
-/// that is watching.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SupervisorStatus {
-    Nudged(String),
-    LookedNoNudge,
-    LookFailed(String),
-    Off,
-}
-
 /// What the session knows about the conversation beyond the messages
-/// themselves: one view per assistant cell, in cell order, the task's token
-/// total, and the supervisor's latest status.
+/// themselves: one view per assistant cell, in cell order, and the task's
+/// token total.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Notebook {
     /// The pushed Scout running before the task model's first turn. This is
@@ -874,7 +855,6 @@ pub struct Notebook {
     pub cells: Vec<CellView>,
     pub tokens: Option<TaskTokens>,
     pub context: Option<ContextTokens>,
-    pub supervisor: Option<SupervisorStatus>,
     /// The decision model's summary line for this task
     /// (`decide::summary_line`), `None` only when no decision model is
     /// configured at all.
@@ -2190,15 +2170,4 @@ fn known_sidebar_lines(served_by: &ServedBy) -> Vec<Line<'static>> {
         (None, None) => {}
     }
     lines
-}
-
-/// §4 and §5's fixed lines, and nothing else -- the sidebar shows this one
-/// line under the task-spend line, whatever `served_by` says.
-fn supervisor_line(status: &SupervisorStatus) -> String {
-    match status {
-        SupervisorStatus::Nudged(reason) => format!("supervisor: {reason}"),
-        SupervisorStatus::LookedNoNudge => "supervisor: looked, no nudge".to_string(),
-        SupervisorStatus::LookFailed(reason) => format!("supervisor: FAILED {reason}"),
-        SupervisorStatus::Off => "supervisor: off (no model)".to_string(),
-    }
 }

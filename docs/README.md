@@ -19,7 +19,6 @@ Start with [architecture](architecture.md): two programs, one page.
 - [sandbox](sandbox.md) — grants, platforms, modes, how often you are asked
 - [helpers](helpers.md) — the scout, reducer and checker; subagents
 - [decisions](decisions.md) — Jev, the classifier
-- [supervisor](supervisor.md) — the loop watcher
 - [project context](project-context.md) — instructions, MCP servers, source context
 - [observing](observing.md) — the live event stream
 - [gateway](gateway.md) — the inference gateway

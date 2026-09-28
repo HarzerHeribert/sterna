@@ -1334,3 +1334,29 @@ fn scopes_parse_the_words_the_command_line_accepts() {
     assert_eq!(Scope::Local.label(), "Project");
     assert_eq!(Scope::Global.name(), "global");
 }
+
+/// The supervisor is gone. A settings file that still configures it loads,
+/// the keys come out of the file they were in, and the notice says once
+/// where the job went.
+#[test]
+fn the_supervisors_settings_are_retired_with_one_notice() {
+    let temp = Temp::new("retire-supervisor");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[supervisor]\nenabled = true\nevery = 4\nmodel = \"watcher\"\n\n[decisions]\nsupervision_above = 0.9\n",
+    );
+    let loaded = store.load(None).expect("a retired key never stops a load");
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(notices.len(), 4, "{notices:?}");
+    assert!(
+        notices
+            .iter()
+            .all(|notice| notice.contains("the supervisor is gone")),
+        "{notices:?}"
+    );
+    let saved = read(&store.path(Scope::Global));
+    assert!(!saved.contains("supervis"), "{saved}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}

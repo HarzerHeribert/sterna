@@ -62,7 +62,6 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
-| `supervisor.model`, `supervisor.every` | the loop watcher ([supervisor](supervisor.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
 | `ui.motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
 | `web.enabled`, `web.allow_domains`, `web.search_endpoint`, … | the web broker ([web](web.md)) |

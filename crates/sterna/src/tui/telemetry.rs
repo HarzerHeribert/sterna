@@ -389,9 +389,6 @@ pub(super) fn rail(
     if !metric_line.is_empty() {
         lines.push(muted(metric_line));
     }
-    if let Some(status) = &notebook.supervisor {
-        lines.push(muted(super::supervisor_line(status)));
-    }
     if inner.height >= 24
         && let Some(cell) = notebook.cells.iter().rfind(|cell| cell.execution.is_some())
     {

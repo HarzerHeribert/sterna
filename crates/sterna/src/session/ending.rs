@@ -25,7 +25,8 @@
 //!   model had no appeal. Measured across three benchmark runs on
 //!   2026-09-19, the supervisor's nudge fired four, two and five times and
 //!   was ignored every time with no consequence: simultaneously too weak to
-//!   help and strong enough to kill. It nudges now and does not end.
+//!   help and strong enough to kill. It stopped ending tasks that day, and
+//!   the supervisor itself was removed on 2026-09-28.
 //! - **turns that ran no program.** A pure count of work, and
 //!   `session.rs`'s own field doc had already concluded the right thing —
 //!   *"a model reasoning its way toward a hard decision in prose is

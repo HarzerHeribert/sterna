@@ -410,7 +410,7 @@ impl Store {
             if profile.is_some() && !registry::is_runtime(key) {
                 return Err(format!(
                     "settings: `{key}` is not a runtime setting; a profile overlays only \
-                     [limits], [supervisor], [helpers], [agents], [model] and [web]"
+                     [limits], [helpers], [agents], [model], [web], [decisions] and [ask]"
                 ));
             }
             let typed = match value {
@@ -1362,7 +1362,6 @@ fn nest<'a>(entries: impl Iterator<Item = (&'a String, &'a toml::Value)>) -> tom
 /// which is exactly what "unset means off" means for helpers and agents.
 fn defaults() -> Vec<(&'static str, toml::Value)> {
     let limits = crate::config::Limits::default();
-    let supervisor = crate::config::SupervisorConfig::default();
     let helpers = crate::config::HelpersConfig::default();
     let agents = crate::config::AgentsConfig::default();
     let web = crate::web::WebConfig::default();
@@ -1385,11 +1384,6 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         // `0` is this file's spelling for "no ceiling", the same as absent,
         // so the row round-trips through the parser unchanged.
         ("limits.cells", count(limits.cells.unwrap_or(0))),
-        (
-            "supervisor.enabled",
-            toml::Value::Boolean(supervisor.enabled),
-        ),
-        ("supervisor.every", count(u64::from(supervisor.every))),
         ("helpers.enabled", toml::Value::Boolean(helpers.enabled)),
         ("helpers.preflight", toml::Value::Boolean(helpers.preflight)),
         (

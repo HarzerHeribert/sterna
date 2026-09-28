@@ -14,7 +14,7 @@ use crate::contract::ProjectConfig;
 /// in no list, so the `/` menu never offered it and it read as a command sterna
 /// did not have. Being absent from a menu is how a command that works comes
 /// to look broken.
-pub const BUILT_INS: [BuiltIn; 12] = [
+pub const BUILT_INS: [BuiltIn; 11] = [
     BuiltIn::Model,
     BuiltIn::Models,
     // `login` was the same defect as `exit` one line down, and outlasted its
@@ -26,7 +26,6 @@ pub const BUILT_INS: [BuiltIn; 12] = [
     BuiltIn::Usage,
     BuiltIn::Entitlements,
     BuiltIn::Handles,
-    BuiltIn::Supervisor,
     BuiltIn::Rollback,
     BuiltIn::Budget,
     BuiltIn::Memory,
@@ -44,7 +43,6 @@ pub enum BuiltIn {
     Usage,
     Entitlements,
     Handles,
-    Supervisor,
     Rollback,
     Budget,
     Memory,
@@ -65,7 +63,6 @@ impl BuiltIn {
             BuiltIn::Usage => "usage",
             BuiltIn::Entitlements => "entitlements",
             BuiltIn::Handles => "handles",
-            BuiltIn::Supervisor => "supervisor",
             BuiltIn::Rollback => "rollback",
             BuiltIn::Budget => "budget",
             BuiltIn::Memory => "memory",

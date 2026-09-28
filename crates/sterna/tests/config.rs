@@ -1,4 +1,4 @@
-//! `docs/supervisor.md`: `.glasshouse/pane.toml`, loaded once
+//! `docs/configuration.md`: `.glasshouse/pane.toml`, loaded once
 //! at session start. Absent means every default the runtime already used;
 //! anything present is validated with one sentence per
 //! refusal.
@@ -93,36 +93,20 @@ fn absent_sterna_toml_means_the_defaults() {
         "no ceiling unless this person sets one: a task ends on evidence that it stopped \
          producing anything, not on a count of cells"
     );
-    assert_eq!(config.supervisor.every, 4);
-    assert_eq!(config.supervisor.model, None);
-    assert!(config.supervisor.enabled);
     assert!(!config.helpers.preflight);
 }
 
-/// Measured 2026-09-17 (session `tlitep-13fv`): the supervisor sat off for
-/// want of a model the session had already configured for its helpers, and
-/// the run it exists to interrupt — sixty cells of reading without an edit —
-/// ran to the cell cap unwatched.
+/// The supervisor is gone, and a file that still configures it loads: its
+/// keys are read as unset, never refused, and the rest of the file stands.
 #[test]
-fn the_supervisor_inherits_the_helper_model_when_it_names_none() {
-    let root = scratch_dir("supervisor-inherits-helper-model");
-    write_legacy_toml(&root, "[helpers]\nmodel = \"helper-tier\"\n");
-    let config = SternaConfig::load(&root).unwrap();
-    assert_eq!(config.supervisor.model.as_deref(), Some("helper-tier"));
-
-    // Its own model still wins.
-    let root = scratch_dir("supervisor-keeps-its-own-model");
+fn a_file_that_still_configures_the_supervisor_loads() {
+    let root = scratch_dir("supervisor-retired");
     write_legacy_toml(
         &root,
-        "[supervisor]\nmodel = \"watcher\"\n\n[helpers]\nmodel = \"helper-tier\"\n",
+        "[supervisor]\nenabled = true\nevery = 4\nmodel = \"watcher\"\n\n[helpers]\nmodel = \"helper-tier\"\n",
     );
-    let config = SternaConfig::load(&root).unwrap();
-    assert_eq!(config.supervisor.model.as_deref(), Some("watcher"));
-
-    // Neither configured is the one session that still runs unwatched.
-    let root = scratch_dir("supervisor-with-no-model-anywhere");
-    write_legacy_toml(&root, "[limits]\ncells = 10\n");
-    assert_eq!(SternaConfig::load(&root).unwrap().supervisor.model, None);
+    let config = SternaConfig::load(&root).expect("a retired table never stops Sterna");
+    assert_eq!(config.helpers.model.as_deref(), Some("helper-tier"));
 }
 
 #[test]
@@ -231,12 +215,6 @@ fn a_limit_outside_its_range_is_refused_with_one_sentence() {
     assert!(err.contains("cell_wall_clock_s"), "{err}");
     assert!(err.contains('1') && err.contains("600"), "{err}");
     assert_eq!(err.lines().count(), 1, "refused with one sentence: {err}");
-
-    let root = scratch_dir("range-every");
-    write_legacy_toml(&root, "[supervisor]\nevery = 0\n");
-    let err = SternaConfig::load(&root).unwrap_err();
-    assert!(err.contains("every"), "{err}");
-    assert_eq!(err.lines().count(), 1, "refused with one sentence: {err}");
 }
 
 #[test]
@@ -255,12 +233,12 @@ fn an_unknown_key_is_refused() {
 #[test]
 fn sterna_toml_names_no_tool_path_or_grant() {
     let root = scratch_dir("tool-name");
-    write_legacy_toml(&root, "[supervisor]\nmodel = \"grep\"\n");
+    write_legacy_toml(&root, "[decisions]\nmodel = \"grep\"\n");
     let err = SternaConfig::load(&root).unwrap_err();
     assert!(err.contains("names no tool, path or grant"), "{err}");
 
     let root = scratch_dir("path-like");
-    write_legacy_toml(&root, "[supervisor]\nmodel = \"../etc/passwd\"\n");
+    write_legacy_toml(&root, "[decisions]\nmodel = \"../etc/passwd\"\n");
     let err = SternaConfig::load(&root).unwrap_err();
     assert!(err.contains("names no tool, path or grant"), "{err}");
 

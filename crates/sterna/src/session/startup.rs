@@ -233,37 +233,6 @@ pub(super) fn start_proxy(
     }
 }
 
-/// The startup line naming who is watching this session.
-///
-/// **Off is worth one line; on is worth one too.** A session that cannot say
-/// who is watching it reads exactly like a session nobody is watching --
-/// measured 2026-09-17 (session `tlitep-13fv`), where `supervisor: off (no
-/// model)` scrolled past at startup and sixty cells of reading without an
-/// edit then ran to the cell cap.
-pub(super) fn supervisor_line(
-    supervisor: &crate::config::SupervisorConfig,
-    decisions: &crate::config::DecisionsConfig,
-) -> String {
-    if !supervisor.enabled {
-        return "supervisor: off (disabled)".to_string();
-    }
-    let classifier = decisions
-        .model
-        .as_deref()
-        .filter(|_| decisions.mode != crate::config::DecisionMode::Off);
-    let every = supervisor.every;
-    match (classifier, supervisor.model.as_deref()) {
-        (Some(classifier), Some(model)) => format!(
-            "supervisor: {classifier} decides, {model} writes the nudge, looking every {every} cell(s)"
-        ),
-        (Some(classifier), None) => {
-            format!("supervisor: {classifier} decides, looking every {every} cell(s)")
-        }
-        (None, Some(model)) => format!("supervisor: {model}, looking every {every} cell(s)"),
-        (None, None) => "supervisor: off (no model)".to_string(),
-    }
-}
-
 /// The gateway's cached account listing; empty when there is no gateway.
 pub(super) fn served_accounts(gateway: &Gateway) -> Vec<ServedAccount> {
     gateway

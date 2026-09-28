@@ -3,8 +3,8 @@
 //! A helper sets `"stream": true` and reads Server-Sent Events, so that its
 //! ceiling can measure silence rather than duration
 //! (`wire::SIDE_ERRAND_SILENCE`) — the one-shot errand and, since
-//! 2026-09-19, the narrowed loop that holds tools. Supervisor and decision
-//! traffic still take the whole response. Rendering the same assistant JSON
+//! 2026-09-19, the narrowed loop that holds tools. Decision traffic still
+//! takes the whole response. Rendering the same assistant JSON
 //! both ways keeps
 //! every expectation about content and usage identical across the two paths
 //! — a fixture that answered SSE to everybody would be testing a transport no

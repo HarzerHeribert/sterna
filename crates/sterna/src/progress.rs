@@ -78,7 +78,7 @@ pub fn fingerprint(
 /// A turn that ran no program, fingerprinted by what it said.
 ///
 /// **A prose turn writes no cell record**, so [`fingerprint`] has nothing to
-/// read and neither the stall nor the supervisor's cadence ever observes one.
+/// read and the stall never observes one.
 /// That gap is why a count of prose turns kept coming back, and the count
 /// cannot tell a model reasoning its way toward a hard decision from a model
 /// stuck — `session.rs`'s own field doc says so.
@@ -354,8 +354,7 @@ pub fn stall_notice(cells: u32) -> String {
 /// **One stall is a notice; a run of them is the end of the task** (the user,
 /// 2026-09-17: limits are dumb for abstract tasks, but a task that has stopped
 /// producing anything must still stop without a person watching it). This is
-/// the ender that needs no model, and it is what a session with no supervisor
-/// configured falls back on.
+/// the ender that needs no model.
 ///
 /// **Progress is a frame this task has not seen before, and that is the whole
 /// definition.** It used to be "the tree changed, a fact was recorded, or a

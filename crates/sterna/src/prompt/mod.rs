@@ -468,9 +468,6 @@ pub const COLLAPSED: &str = "[output collapsed to keep the context small; every 
 pub enum ExhaustedReason {
     /// The person configured `[limits] cells` and the task reached it.
     CellLimit { cap: u64 },
-    /// The supervisor returned the same not-working verdict `looks` times
-    /// running, and nothing changed between them.
-    Supervised { reason: String, looks: u32 },
     /// `windows` whole stall windows in a row: no tree change, no new fact,
     /// no verification result moved, after being told so.
     Stalled { windows: u32, cells: u32 },
@@ -478,7 +475,7 @@ pub enum ExhaustedReason {
     ///
     /// **This is not a budget on thinking.** A turn carrying no program runs
     /// no cell, so it writes no record — and with no record there is nothing
-    /// for the stall guard to observe or the supervisor to look at. It is the
+    /// for the stall guard to observe. It is the
     /// only evidence a prose-only task ever produces, which is why it is the
     /// one thing still counted anywhere in this loop.
     NoProgram { turns: u32 },
@@ -496,10 +493,6 @@ pub fn exhausted_preamble(reason: &ExhaustedReason) -> String {
     match reason {
         ExhaustedReason::CellLimit { cap } => format!(
             "The cell limit this project set ({cap}) is reached; the only action this turn may \
-             take is returning a final answer string at top level."
-        ),
-        ExhaustedReason::Supervised { reason, looks } => format!(
-            "The supervisor has said {looks} times that {reason}; the only action this turn may \
              take is returning a final answer string at top level."
         ),
         ExhaustedReason::NoProgram { turns } => format!(

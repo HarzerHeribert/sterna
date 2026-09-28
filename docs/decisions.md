@@ -42,7 +42,6 @@ threshold below is a `decisions.*` setting with the default shown.
 | **judge** items of the acceptance list | same request | satisfy an item without the checker, or hold once naming it (`judge_*`) |
 | **field shape** — `log`, `listing`, `source`, `prose`, `data` | a returned field over 2,048 tokens, with `helpers.reduce_returns` | send a `log` to the reducer; the whole value stays bound |
 | **enough** | a return that names unread project files, with `helpers.prefetch_returns` | fetch up to three of them into the same return budget, as text |
-| **supervision** | every few cells | see [supervisor](supervisor.md) |
 | **approval hint** | a pending confirmation | one line beside it: `fits the request: 0.91` |
 
 Every "held once" means the same call re-issued runs: a decision can make

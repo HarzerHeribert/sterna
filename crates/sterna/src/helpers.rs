@@ -44,7 +44,7 @@ pub const FORBIDDEN_TOOLS: [&str; 3] = ["write", "edit", "bash"];
 pub const HELPER_HASTE: &str = "Answer in one pass if you can, and stop as soon as you have the answer. You are a side errand inside someone else's turn: they are waiting on you, so do not explore beyond the question you were asked.\n\nNothing counts your turns and nothing will cut you off mid-answer, so take the looks the question needs — and if you cannot answer it from what you can reach, say so plainly and name what is missing. Never guess to fill the gap: an answer the caller trusts and acts on is worse than no answer, and \"I could not determine X because Y\" is a useful result.";
 
 /// Lets the ledger tell a helper's request from a task turn before the gateway
-/// reads the body -- the same seam `supervisor.rs` uses for its look.
+/// reads the body.
 pub const PURPOSE_HEADER: (&str, &str) = ("x-glasshouse-purpose", "helper");
 
 /// What a helper accepts.
@@ -446,9 +446,9 @@ pub struct HelperOutcome {
     /// Whether the call produced an answer at all.
     ///
     /// A transport error and a refused status are **not** silently an empty
-    /// answer: `supervisor.rs` shipped for weeks rendering a permanently
-    /// failing look as a healthy one, and this field is why that cannot repeat
-    /// here.
+    /// answer: a checker once shipped for weeks rendering a permanently
+    /// failing request as a healthy one, and this field is why that cannot
+    /// repeat here.
     pub ok: bool,
     /// The caller's cancellation token ended this call. Kept distinct from a
     /// provider or protocol failure so the session can consume exactly the

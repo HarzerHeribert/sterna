@@ -17,8 +17,7 @@
 //! jumping into its session in and out"*). It writes its own rollout as it
 //! goes, in the same format and beside the parent's, so a person can read
 //! what it is doing while it does it; and it has an inbox, so a person can
-//! say something to it, delivered at its next turn boundary. The supervisor
-//! may watch it on the same evidence.
+//! say something to it, delivered at its next turn boundary.
 //!
 //! **What a subagent still is not**: it cannot start a subagent of its own,
 //! it is started and owned by a cell rather than by a person, and its rollout
