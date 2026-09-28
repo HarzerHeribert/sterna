@@ -1692,7 +1692,7 @@ fn notebook_lines(
     history::push_notes(&mut lines, notes, &mut next_note, 0);
     if let Some(task) = messages.next() {
         turn_header(&mut lines, "USER".into(), ACCENT);
-        push_text_region(&mut lines, &message_text(task));
+        push_text_region(&mut lines, &task.as_written());
     }
     let total_cells = cell_ordinal(conversation, notebook);
 
@@ -2135,7 +2135,7 @@ fn notebook_lines(
                     continue;
                 }
                 turn_header(&mut lines, "USER".into(), ACCENT);
-                push_text_region(&mut lines, &format!("you: {}", message_text(message)));
+                push_text_region(&mut lines, &format!("you: {}", message.as_written()));
             }
         }
     }

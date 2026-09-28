@@ -1476,6 +1476,36 @@ fn turns_are_labelled_and_the_persons_words_stand_under_a_bar() {
     assert!(screen.contains("⠿ sterna"), "{screen}");
 }
 
+/// Your turn shows what you wrote. The task's context -- the Scout's brief,
+/// the acceptance list, the mode -- rides in the same message for the model,
+/// and drawn under your name it read as if you had written it.
+#[test]
+fn your_turn_shows_only_what_you_wrote() {
+    let (mut c, n, s) = fixture();
+    c.messages[0].content.push(Block::Text(
+        "## Request (verbatim, authoritative)\nRespect reduced motion.\n\n## Scouting record\nscout (dissection) · 3 of 5 sections answered".into(),
+    ));
+    c.messages[0].content.push(Block::Image {
+        media_type: "image/png".into(),
+        data: String::new(),
+    });
+    let d = doc(&c, &n, &s, &Workbench::default());
+    let yours: Vec<&str> = d
+        .rows
+        .iter()
+        .filter(|r| r.kind == sterna::workbench::RowKind::You)
+        .map(|r| r.text.as_str())
+        .collect();
+    let yours = yours.join("\n");
+    assert!(
+        yours.contains("Respect reduced motion and the terminal background."),
+        "{yours}"
+    );
+    assert!(yours.contains("[image attachment]"), "{yours}");
+    assert!(!words(&d).contains("Scouting record"), "{}", words(&d));
+    assert!(!words(&d).contains("## Request"), "{}", words(&d));
+}
+
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]

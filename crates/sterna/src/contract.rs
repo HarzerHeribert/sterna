@@ -98,6 +98,37 @@ impl Message {
         }
     }
 
+    /// A person's message as they wrote it: its first text block, which is
+    /// the request itself, and a marker for each image they attached.
+    ///
+    /// A task's message also carries the task's context for the model --
+    /// mode, plan, the Scout's brief, the acceptance list -- in the blocks
+    /// after the request (`carry_task_context`). Those blocks are not the
+    /// person's words, and a screen that shows them under their name shows
+    /// them something they never wrote.
+    #[must_use]
+    pub fn as_written(&self) -> String {
+        let mut words = self
+            .content
+            .iter()
+            .find_map(|block| match block {
+                Block::Text(text) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for image in self
+            .content
+            .iter()
+            .filter(|block| matches!(block, Block::Image { .. }))
+        {
+            if !words.is_empty() {
+                words.push('\n');
+            }
+            words.push_str(image.text());
+        }
+        words
+    }
+
     pub fn runtime(text: impl Into<String>, historical: impl Into<String>) -> Self {
         Self {
             historical: Some(historical.into()),

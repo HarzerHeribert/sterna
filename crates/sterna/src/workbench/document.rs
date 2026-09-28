@@ -343,7 +343,7 @@ impl Document {
             let cell = match reads[idx] {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
-                    d.turn_you(&prose(m), width, id);
+                    d.turn_you(&m.as_written(), width, id);
                     continue;
                 }
                 Reads::After => {
