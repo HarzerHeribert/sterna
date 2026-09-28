@@ -1,4 +1,4 @@
-//! `/wizard` (also `/setup`): the first-start wizard -- sign in, a model for each workload,
+//! `/wizard`: the first-start wizard -- sign in, a model for each workload,
 //! and Jev -- and the one-line reminder a session prints while a step is
 //! still missing.
 //!

@@ -524,13 +524,9 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 match command {
                     BuiltIn::Model => "set the parent, helper or subagent model",
                     BuiltIn::Models => "browse models by agent, provider or intelligence",
-                    BuiltIn::Entitlements => "inspect available entitlements",
                     BuiltIn::Login => "sign in: a subscription, an API key or your own endpoint",
                     BuiltIn::Setup => "set Sterna up: sign in, models for each workload, Jev",
-                    BuiltIn::Usage => "how much of each subscription's limits is used",
-                    BuiltIn::Handles => "inspect runtime handles",
-                    BuiltIn::Rollback => "roll back to a checkpoint",
-                    BuiltIn::Budget => "inspect cumulative task spend",
+                    BuiltIn::Rollback => "undo the files the newest cell changed",
                     BuiltIn::Memory => "read or save project memory",
                     BuiltIn::Exit => "end the session, printing its resume id",
                 },
@@ -543,10 +539,6 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect the last cell before/after diff",
                 ),
                 (
-                    "/activity".to_string(),
-                    "inspect local notices without sending to the model",
-                ),
-                (
                     "/subagents".to_string(),
                     "configure explicit favorite slots · on|off|SLOT MODEL [EFFORT]",
                 ),
@@ -555,10 +547,6 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "inspect standing handlers · /handlers off <name>",
                 ),
                 ("/help".to_string(), "show available commands"),
-                (
-                    "/sidebar".to_string(),
-                    "auto, show or hide the sidebar · Ctrl-B",
-                ),
                 ("/theme".to_string(), "choose a bird or a classic palette"),
                 (
                     "/telemetry".to_string(),
@@ -585,9 +573,12 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                 ),
                 (
                     "/context".to_string(),
-                    "inspect current context and token usage",
+                    "what fills the context window, by kind",
                 ),
-                ("/status".to_string(), "inspect session status"),
+                (
+                    "/status".to_string(),
+                    "this session: models, sandbox, and each subscription's limits",
+                ),
                 (
                     "/resume".to_string(),
                     "go back to an earlier session in this folder",

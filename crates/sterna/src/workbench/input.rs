@@ -55,6 +55,21 @@ impl Workbench {
     /// session with no project root is not an error here -- the choice
     /// still applies to the running screen, and the notice says which of
     /// the two happened.
+    /// Ctrl-B: shows or hides the sidebar, saved like any setting and one
+    /// undo away.
+    pub fn toggle_sidebar(&mut self, s: &mut ScreenState) {
+        let (word, visibility) = match s.sidebar {
+            crate::tui::SidebarVisibility::Hidden => ("show", crate::tui::SidebarVisibility::Shown),
+            _ => ("hide", crate::tui::SidebarVisibility::Hidden),
+        };
+        self.persist("ui.sidebar", word, s);
+        s.sidebar = visibility;
+        s.note(if word == "show" {
+            "Sidebar shown · Ctrl-B hides it"
+        } else {
+            "Sidebar hidden · Ctrl-B shows it"
+        });
+    }
     fn persist(&mut self, key: &str, value: &str, s: &mut ScreenState) -> bool {
         let Ok(mut p) = super::Preferences::open(s) else {
             return false;
@@ -199,10 +214,6 @@ impl Workbench {
                 self.open_settings_at(s, 1, Some("ui.motion"));
                 true
             }
-            ["/sidebar"] => {
-                self.open_settings_at(s, 1, Some("ui.sidebar"));
-                true
-            }
             ["/stream"] => {
                 self.open_settings_at(s, 1, Some("ui.stream"));
                 true
@@ -257,11 +268,6 @@ impl Workbench {
             ["/chat"] => {
                 self.close_all();
                 s.telemetry_open = false;
-                true
-            }
-            ["/activity"] => {
-                s.telemetry_open = false;
-                self.open(Source::Activity);
                 true
             }
             ["/telemetry"] => {
@@ -324,21 +330,6 @@ impl Workbench {
                 s.note("Usage: /stream actions | code | raw");
                 true
             }
-            ["/sidebar", word @ ("auto" | "show" | "hide")] => {
-                self.persist("ui.sidebar", word, s);
-                s.sidebar = match *word {
-                    "show" => crate::tui::SidebarVisibility::Shown,
-                    "hide" => crate::tui::SidebarVisibility::Hidden,
-                    _ => crate::tui::SidebarVisibility::Auto,
-                };
-                // The line names the three words and the key, exactly as it
-                // always has: someone who just used one of them is the
-                // likeliest person to want another.
-                s.note(format!(
-                    "Sidebar: /sidebar auto|show|hide · Ctrl-B toggles · now {word}"
-                ));
-                true
-            }
             ["/fullscreen"] => {
                 s.fullscreen = !s.fullscreen;
                 s.note(if s.fullscreen {
@@ -364,10 +355,6 @@ impl Workbench {
                 } else {
                     s.note(format!("Status line: {word} · this session only"));
                 }
-                true
-            }
-            ["/sidebar", ..] => {
-                s.note("Usage: /sidebar auto | show | hide");
                 true
             }
             ["/statusline", ..] => {

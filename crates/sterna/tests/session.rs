@@ -870,7 +870,7 @@ fn a_session_with_no_flag_starts_sandboxed_and_says_nobody_is_watching() {
     let rollout = root.join("rollout.jsonl");
     let base_url = refused_base_url();
 
-    let output = run_session(&root, &rollout, "sess-rung", "/handles", &base_url);
+    let output = run_session(&root, &rollout, "sess-rung", "/context", &base_url);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -905,7 +905,7 @@ fn sandbox_ask_refuses_a_scripted_session() {
             "--session",
             "sess-manual",
             "--task",
-            "/handles",
+            "/context",
             "--sandbox",
             "ask",
         ])
@@ -927,24 +927,37 @@ fn sandbox_ask_refuses_a_scripted_session() {
     assert!(!output.status.success(), "{combined}");
 }
 
+/// `/status` is the Session sheet: what the session runs on, and how much
+/// of each subscription's limits is used -- there is no separate `/usage`.
+/// `/context` breaks the next request down by kind.
 #[test]
-fn handles_command_reports_the_recorded_preview() {
-    let root = scratch_dir("unbuilt-root");
+fn status_is_the_session_sheet_and_context_breaks_the_request_down() {
+    let root = scratch_dir("status-sheet");
     let rollout = root.join("rollout.jsonl");
-    let base_url = refused_base_url();
-
-    let output = run_session(&root, &rollout, "sess-unbuilt", "/handles", &base_url);
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let output = run_session(
+        &root,
+        &rollout,
+        "sess-status",
+        "/status",
+        &refused_base_url(),
     );
+    assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("No handles recorded yet"),
-        "the command must report available recorded handles: {stdout}"
+    for line in ["Session", "Model", "Sandbox", "Subscription limits"] {
+        assert!(stdout.contains(line), "{line}: {stdout}");
+    }
+    let output = run_session(
+        &root,
+        &root.join("context-rollout.jsonl"),
+        "sess-context",
+        "/context",
+        &refused_base_url(),
     );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in ["System prompt", "Tools and framing", "Conversation"] {
+        assert!(stdout.contains(line), "{line}: {stdout}");
+    }
 }
 
 #[test]

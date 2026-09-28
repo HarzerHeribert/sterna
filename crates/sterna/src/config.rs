@@ -817,10 +817,6 @@ fn parse_limits(value: &toml::Value) -> Result<Limits, String> {
         if ![
             "cell_wall_clock_s",
             "response_bytes",
-            // Accepted as a no-op so an existing project does not stop
-            // starting when token caps are removed. New sessions account for
-            // spend but never use this value to control execution.
-            "task_tokens",
             "cells",
             "evidence_gate",
             "compact_above_percent",
@@ -851,11 +847,6 @@ fn parse_limits(value: &toml::Value) -> Result<Limits, String> {
         Some(v) => usize::try_from(RESPONSE_BYTES.check(v)?).expect("range is non-negative"),
         None => defaults.response_bytes,
     };
-    if let Some(value) = table.get("task_tokens")
-        && !value.is_integer()
-    {
-        return Err("config.toml: `task_tokens` must be an integer".into());
-    }
     let compact_above_percent = match int_field(table, "compact_above_percent")? {
         Some(v) => u64::try_from(COMPACT_ABOVE_PERCENT.check(v)?).expect("range is non-negative"),
         None => defaults.compact_above_percent,

@@ -1309,12 +1309,12 @@ impl Document {
             ),
             (
                 if startup.len() > 1 {
-                    format!("+{} more · /activity", startup.len() - 1)
+                    format!("+{} more ▸", startup.len() - 1)
                 } else {
                     String::new()
                 },
                 Tone::Line,
-                None,
+                (startup.len() > 1).then_some(Action::Activity),
             ),
         ];
         for (glyph, (text, tone, action)) in art.into_iter().zip(facts) {
@@ -1366,9 +1366,9 @@ impl Document {
         );
         if startup.len() > 2 {
             facts.push((
-                format!("+{} more · /activity", startup.len() - 2),
+                format!("+{} more ▸", startup.len() - 2),
                 Tone::Line,
-                None,
+                Some(Action::Activity),
             ));
         }
         let top = 4usize.min(bird.len().saturating_sub(facts.len()));

@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::contract::{Conversation, ServedBy};
-use crate::tui::{self, Activity, Notebook, ScreenState, SidebarVisibility};
+use crate::tui::{self, Activity, Notebook, ScreenState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, MouseEventKind};
 use crossterm::execute;
@@ -1539,18 +1539,9 @@ fn run(
                             state.compact = !state.compact;
                             continue;
                         }
-                        // The same route as `/sidebar`: saved, noted, and
-                        // one undo away.
+                        // Saved, noted, and one undo away.
                         KeyCode::Char('b') => {
-                            let word = match state.sidebar {
-                                SidebarVisibility::Hidden => "show",
-                                _ => "hide",
-                            };
-                            workbench.local_command(
-                                &format!("/sidebar {word}"),
-                                &mut state,
-                                &notebook,
-                            );
+                            workbench.toggle_sidebar(&mut state);
                             continue;
                         }
                         // The same route as `/fullscreen`, and said the same way.
@@ -1648,8 +1639,8 @@ fn run(
                         state.notice = None;
                         continue;
                     }
-                    // Sits with the other argument-less presentation toggles
-                    // rather than with `/sidebar`, so it still works while a
+                    // Sits with the other argument-less presentation toggles,
+                    // so it still works while a
                     // task runs -- watching a long stream fill the screen is
                     // the case this command exists for.
                     if editor.text.trim() == "/mouse" {

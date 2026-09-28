@@ -165,9 +165,9 @@ fn built_in_controls_with_existing_subsystems_are_available() {
     let fixture = Fixture::new("available-controls");
     let config = project::load(&fixture.root);
 
-    let handles = commands::resolve(&config, "handles").unwrap();
-    assert_eq!(handles.source, CommandSource::BuiltIn(BuiltIn::Handles));
-    assert_eq!(handles.status, CommandStatus::Available);
+    let memory = commands::resolve(&config, "memory").unwrap();
+    assert_eq!(memory.source, CommandSource::BuiltIn(BuiltIn::Memory));
+    assert_eq!(memory.status, CommandStatus::Available);
 
     let rollback = commands::resolve(&config, "rollback").unwrap();
     assert_eq!(rollback.status, CommandStatus::Available);

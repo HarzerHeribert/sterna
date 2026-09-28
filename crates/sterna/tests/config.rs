@@ -197,8 +197,10 @@ fn helper_effort_has_role_defaults_and_accepts_partial_hard_overrides() {
     assert!(SternaConfig::parse("[helpers.effort]\nreduce = \"auto\"\n").is_err());
 }
 
+/// A saved token cap is retired: read as unset, never refused, and it
+/// configures no cap.
 #[test]
-fn legacy_task_tokens_is_accepted_but_does_not_configure_a_cap() {
+fn a_saved_task_token_cap_loads_and_caps_nothing() {
     let root = scratch_dir("legacy-task-tokens");
     write_legacy_toml(&root, "[limits]\ntask_tokens = 1000\n");
 

@@ -1023,11 +1023,10 @@ fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
         p.category = category;
         assert!(p.rows().len() <= 8, "category {category}");
     }
-    // Every key a person can choose; not Sterna's own bookkeeping, and not
-    // the retired key the parser still reads.
+    // Every key a person can choose; not Sterna's own bookkeeping.
     for spec in sterna::settings::specs()
         .iter()
-        .filter(|spec| !sterna::settings::hidden(spec.key) && spec.key != "limits.task_tokens")
+        .filter(|spec| !sterna::settings::hidden(spec.key))
     {
         p.query = spec.key.into();
         assert!(p.rows().iter().any(|s| s.key == spec.key), "{}", spec.key);
@@ -3233,7 +3232,7 @@ fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
     for key in &advanced {
         assert!(!elsewhere.contains(key), "{key} is repeated");
     }
-    for key in ["wizard.seen", "legacy.imported", "limits.task_tokens"] {
+    for key in ["wizard.seen", "legacy.imported"] {
         assert!(
             !advanced.contains(&key) && !elsewhere.contains(key),
             "{key}"

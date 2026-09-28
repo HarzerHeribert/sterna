@@ -8,7 +8,7 @@ Code: `crates/sterna/src/workbench/` (layout, input, sheets, themes),
 
 Four regions, drawn with lines, never with fills: the **top bar**, the
 **conversation**, the **session card** on the right (shown when the
-terminal is wide enough; `/sidebar`), and the **composer dock** at the
+terminal is wide enough; Ctrl-B), and the **composer dock** at the
 bottom.
 
 - **The conversation is turns.** Your message under a bar labelled `you`,

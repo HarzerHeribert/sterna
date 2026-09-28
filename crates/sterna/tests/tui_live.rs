@@ -1125,10 +1125,10 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
             >= 2
     });
     app.send(b"/context\r");
-    app.contains("Next request:");
+    app.contains("IN THE NEXT REQUEST");
     app.send(b"\x1b");
     // Closed means the panel's frame is gone, not only its text: a redraw
-    // caught halfway has already cleared "Next request:" while the frame
+    // caught halfway has already cleared the heading while the frame
     // is still drawn (measured locally, 2026-09-25), and an open text panel
     // swallows every plain key, Enter included -- so `/statusline compact`
     // and `/exit` sent into that gap never reach the composer, which is the
@@ -1137,7 +1137,7 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
     // the header was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
-        !screen.contains("Next request:") && !screen.contains("Esc · Close")
+        !screen.contains("IN THE NEXT REQUEST") && !screen.contains("Esc · Close")
     });
     app.send(b"/statusline compact\r");
     app.contains("Status line");
@@ -1216,7 +1216,7 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     app.contains("signing in to Grok ▸");
     // The session is free: a command answers while the sign-in waits.
     app.send(b"/status\r");
-    app.contains("Sandbox: Sandboxed");
+    app.contains("SUBSCRIPTION LIMITS");
     app.settle(200);
     app.send(b"\x1b");
     app.wait("the status sheet closes", |screen| {
@@ -1828,13 +1828,6 @@ fn handlers_can_be_inspected_and_cancelled_during_an_active_task() {
     });
     app.resize(80);
     app.contains("HANDLER CONTROL DONE");
-    app.send(b"/handles\r");
-    app.contains("LAST HANDLE PREVIEW");
-    app.contains("stale");
-    app.send(b"\x1b");
-    app.wait("handle panel closed", |screen| {
-        !screen.contents().contains("LAST HANDLE PREVIEW")
-    });
     // With nothing standing, the answer is one line: a notice, not a sheet,
     // so there is nothing to close before the next command.
     app.send(b"/handlers\r");

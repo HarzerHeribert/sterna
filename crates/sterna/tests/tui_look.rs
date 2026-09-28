@@ -301,21 +301,16 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // wizard. `/bird` (2026-09-23) went on 2026-09-26: the parrots are themes.
     // `/stream` worked and was in no list until the settings pass. `/resume`
     // (2026-09-27) opens the resume sheet from inside a session.
-    // `/supervisor` went with the supervisor on 2026-09-28.
-    assert_eq!(slash_matches("/").len(), 37);
+    // `/supervisor` went with the supervisor on 2026-09-28, and with it
+    // `/budget`, `/usage` (the Session sheet shows the limits), `/handles`,
+    // `/entitlements`, `/activity` and `/sidebar` (Ctrl-B).
+    assert_eq!(slash_matches("/").len(), 31);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(offered.len(), unique.len(), "no command is offered twice");
-    for command in [
-        "/diff",
-        "/activity",
-        "/subagents",
-        "/tool",
-        "/login",
-        "/mouse",
-    ] {
+    for command in ["/diff", "/subagents", "/tool", "/login", "/mouse"] {
         assert!(
             slash_matches("/").iter().any(|(name, _)| name == command),
             "{command} is offered"

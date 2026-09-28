@@ -718,15 +718,6 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
-        key: "limits.task_tokens",
-        label: "Task token cap (retired)",
-        description: "Accepted so an existing project still starts; spend is accounted and never capped here.",
-        kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "limits.evidence_gate",
         label: "Evidence gate",
         description: "Hold a terminal return once for the deterministic final-state check and the no-progress guard's findings. Off is an ablation switch.",
@@ -962,6 +953,10 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
     ("supervisor.every", SUPERVISOR_GONE),
     ("supervisor.model", SUPERVISOR_GONE),
     ("decisions.supervision_above", SUPERVISOR_GONE),
+    (
+        "limits.task_tokens",
+        "spend is shown and never capped: nobody knows up front how much a task needs",
+    ),
 ];
 
 /// Where the supervisor's job went when it was removed.

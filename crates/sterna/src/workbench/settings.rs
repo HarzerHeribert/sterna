@@ -172,7 +172,7 @@ impl Preferences {
             // A key the parser still accepts so an existing project starts,
             // and that does nothing, is not offered; nor is Sterna's own
             // bookkeeping.
-            .filter(|spec| spec.key != "limits.task_tokens" && !crate::settings::hidden(spec.key))
+            .filter(|spec| !crate::settings::hidden(spec.key))
             .filter(|spec| {
                 if !self.query.is_empty() {
                     let q = self.query.to_lowercase();
@@ -386,7 +386,7 @@ pub fn restore(
 }
 
 /// Puts the saved presentation keys in force on the screen. Only the keys
-/// named: an unrelated save must not erase a live /motion or /sidebar.
+/// named: an unrelated save must not erase a live /motion or Ctrl-B.
 fn apply(s: &mut ScreenState, values: &toml::Value, keys: &[&str]) {
     let mut resolved = ScreenState::default();
     crate::settings_session::presentation(&mut resolved, values);
@@ -469,7 +469,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     sheet.total = Some(
         crate::settings::specs()
             .iter()
-            .filter(|spec| spec.key != "limits.task_tokens" && !crate::settings::hidden(spec.key))
+            .filter(|spec| !crate::settings::hidden(spec.key))
             .count(),
     );
     if sheet.notice.is_empty() && !p.notice.is_empty() {

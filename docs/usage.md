@@ -65,8 +65,6 @@ machine or container you trust; the machine is then the boundary.
 | `/key <provider>` | store an API key (not echoed) |
 | `/models`, `/model` | browse models; set the main, helper or subagent model |
 | `/effort` | reasoning effort |
-| `/usage` | how much of each subscription's limits is used |
-| `/entitlements` | the accounts the gateway can serve from |
 | `/wizard` | sign-in, models for each workload, Jev |
 | `/sandbox` | how much runs without asking: Ask, Sandboxed or Full access |
 | `/plan <task>` | plan one request: it reads, and writes only the plan |
@@ -75,14 +73,14 @@ machine or container you trust; the machine is then the boundary.
 | `/theme` | choose a palette |
 | `/cells`, `/cell`, `/cell N` | open every card, the newest cell that ran, or cell N |
 | `/diff` | the last cell's before/after diff |
-| `/handles` | what the runtime holds |
 | `/rollback` | preview and undo what the session changed, keeping your own edits |
 | `/memory` | read or save this project's notes |
 | `/subagents` | subagent favourites: `on`, `off`, `SLOT MODEL [EFFORT]` |
 | `/handlers` | standing event handlers; `/handlers off <name>` |
-| `/context`, `/status`, `/budget` | context and token use, session status, task spend |
-| `/activity`, `/telemetry` | local notices; live requests and execution (Ctrl-T) |
-| `/statusline`, `/sidebar`, `/motion`, `/fullscreen` | what the screen carries |
+| `/status` | the Session sheet: models, sandbox, helpers, and how much of each subscription's limits is used |
+| `/context` | what fills the context window: system prompt, project instructions, tools, conversation and free space |
+| `/telemetry` | live requests and execution (Ctrl-T) |
+| `/statusline`, `/motion`, `/fullscreen` | what the screen carries; Ctrl-B shows or hides the sidebar |
 | `/tool <name> key=value …` | run one tool directly |
 | `/mouse` | release or recapture the mouse (Ctrl-G) |
 | `/help`, `/exit` | the list; end the session and print its resume id |
