@@ -214,6 +214,12 @@ pub(super) fn start_acceptance<'s>(
     })
 }
 
+/// "1 check" or "3 checks": the acceptance list's items, as the person
+/// reads them.
+fn checks(count: usize) -> String {
+    format!("{count} check{}", if count == 1 { "" } else { "s" })
+}
+
 /// The lister's answer parsed into the block, the items and the record.
 pub(super) fn finish_acceptance(
     session: &Session<'_>,
@@ -230,20 +236,17 @@ pub(super) fn finish_acceptance(
     output::acceptance_helper(&record);
     if !record.outcome.ok {
         session_println!(
-            "acceptance: the lister did not answer ({})",
+            "The checks for this request were not listed: the helper did not answer ({})",
             record.outcome.text.lines().next().unwrap_or("").trim()
         );
         return None;
     }
     let items = crate::acceptance::parse(&record.outcome.text);
     if items.is_empty() {
-        session_println!("acceptance: the lister named nothing verifiable");
+        session_println!("No checks for this request: the helper found nothing it could verify");
         return None;
     }
-    session_println!(
-        "acceptance: {} item(s) derived from the request",
-        items.len()
-    );
+    session_println!("{} taken from your request", checks(items.len()));
     Some((crate::acceptance::render_list(&items), items, record))
 }
 
@@ -508,8 +511,8 @@ pub(super) fn append_acceptance(
     use crate::acceptance::Origin;
     if !scouted.is_empty() {
         session_println!(
-            "acceptance: {} item(s) from the Scout's dissection",
-            scouted.len()
+            "{} taken from your request by the Scout",
+            checks(scouted.len())
         );
         task_context.push_str(&crate::acceptance::render_list(&scouted));
         return (scouted, Origin::Scout);
@@ -740,10 +743,11 @@ pub(super) fn preflight_block(
         crate::preflight::Decision::Run(signals)
             if signals.contains(&crate::preflight::SIGNAL_DECIDED_EXPLORATION)
     );
-    session_println!(
-        "preflight: {}",
-        crate::preflight::signals_summary(&scouting_decision)
-    );
+    // Machine output says why the Scout ran or did not; the conversation
+    // shows the Scout's own card instead of a configuration line.
+    if session.ui.is_none() {
+        session_println!("{}", crate::preflight::signals_summary(&scouting_decision));
+    }
     let none = PreflightOutcome {
         block: None,
         brief: None,

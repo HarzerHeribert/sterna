@@ -259,10 +259,11 @@ pub(super) fn send_task_turn_recovering(
             .record_checkpoint(&checkpoint)
             .map_err(|e| format!("could not record the checkpoint: {e}"))?;
     }
+    let live = runtime.handle_names().len();
     session_println!(
-        "context: still did not fit, so provider context was replaced by a checkpoint; {} handle(s) \
-         are still live, visible history was preserved, and nothing was re-run",
-        runtime.handle_names().len()
+        "The conversation still did not fit, so the model now works from a checkpoint of it. \
+         {live} handle{} still live, the conversation on screen is kept, and nothing was re-run.",
+        if live == 1 { " is" } else { "s are" }
     );
     let retry = provider_view(transcript);
     timed_send_task_turn(&retry, session, task, cause).map_err(|error| after_checkpoint(&error))

@@ -698,7 +698,7 @@ fn key_form(provider: &str) -> crate::tui::Form {
     let form = Form::new(
         format!("Sign in › API key · {provider}"),
         format!(
-            "Paste your {provider} key below. It goes straight to the gateway's key store and is never logged or written to a file."
+            "Paste your {provider} key below. The gateway keeps it in its credential file. Sterna never shows it, logs it or puts it in the conversation."
         ),
         vec![
             Field::new(
@@ -972,13 +972,14 @@ pub(super) fn key(session: &Session<'_>, provider: Option<&str>) {
     };
     let mut form = key_form(provider);
     loop {
-        let Some(value) = fill(session, form)
-            .and_then(|answers| answers.into_iter().next())
-            .filter(|value| !value.is_empty())
-        else {
-            session_println!("no key entered");
+        // A form closed without a key changed nothing, and says nothing.
+        let Some(value) = fill(session, form).and_then(|answers| answers.into_iter().next()) else {
             return;
         };
+        if value.is_empty() {
+            session_println!("No key was pasted, so nothing was stored for {provider}.");
+            return;
+        }
         if let Some(variable) = crate::gateway::store_credential(session.gateway, provider, &value)
         {
             session_println!("Stored the {variable} for {provider} in the gateway.");
@@ -1235,13 +1236,13 @@ pub(super) fn command(
                 format!("Subagents: {subagents}"),
                 format!("Project: {}", session.project.root.display()),
                 format!(
-                    "Rules: {} path rules · {} pre-approved commands · network {}",
-                    session.profile.rule_count(),
-                    session.profile.pre_approved().len(),
+                    "Rules: {} · {} · commands reach {}",
+                    counted(session.profile.rule_count(), "path rule"),
+                    counted(session.profile.pre_approved().len(), "pre-approved command"),
                     if session.profile.grants_network() {
-                        "on"
+                        "any host"
                     } else {
-                        "off"
+                        "allowed hosts only"
                     }
                 ),
                 format!("Web: {}", config.web.describe()),
@@ -1369,21 +1370,33 @@ fn pool(session: &Session<'_>, argument: Option<&str>) {
     }
 }
 
+/// "1 path rule" or "3 path rules".
+fn counted(count: usize, thing: &str) -> String {
+    format!("{count} {thing}{}", if count == 1 { "" } else { "s" })
+}
+
 /// The rollback preview: what the rollback would change, a danger row that
 /// confirms it, and Cancel -- where the sheet opens, and what Esc does.
-fn rollback_panel(preview: &str) -> Panel {
-    let mut panel = Panel::text(
-        "Rollback preview · confirmation required",
-        format!("The latest file-changing cell affected:\n{preview}"),
+fn rollback_panel(preview: &str, cell: Option<usize>) -> Panel {
+    let cell = cell.map_or_else(
+        || "the latest cell".to_string(),
+        |cell| format!("cell {cell:03}"),
     );
-    panel.rows.push(PanelRow::danger(
-        "Confirm rollback",
-        crate::workbench::Action::Command("/rollback confirm".into()),
-    ));
+    let mut panel = Panel::text(
+        format!("Rollback › {cell}"),
+        format!(
+            "These files go back to how they were before {cell}. This cannot be undone.\n{preview}"
+        ),
+    );
+    // Cancel comes first, where the sheet opens.
+    panel.selected = panel.rows.len();
     panel
         .rows
         .push(PanelRow::command("Cancel", "/rollback cancel"));
-    panel.selected = panel.rows.len() - 1;
+    panel.rows.push(PanelRow::danger(
+        format!("Roll back {cell}"),
+        crate::workbench::Action::Command("/rollback confirm".into()),
+    ));
     panel.back = Some(crate::workbench::Action::Command("/rollback cancel".into()));
     panel
 }
@@ -1410,7 +1423,8 @@ fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::N
     match argument.filter(|value| !value.is_empty()) {
         None => {
             session.rollback_pending.set(Some(count));
-            show(session, rollback_panel(&plan.preview()));
+            let cell = session.rollbacks.borrow().last().map(|last| last.cell);
+            show(session, rollback_panel(&plan.preview(), cell));
         }
         Some("cancel") => {
             session.rollback_pending.set(None);
@@ -1661,7 +1675,14 @@ pub(super) mod tests {
     /// Cancel, confirming is a danger row, and Esc cancels too.
     #[test]
     fn the_rollback_preview_starts_on_cancel() {
-        let panel = rollback_panel("a.txt: restored");
+        let panel = rollback_panel("a.txt: restored", Some(1));
+        assert_eq!(panel.title, "Rollback › cell 001");
+        let cancel = panel.rows.iter().position(|row| row.text == "Cancel");
+        let roll = panel
+            .rows
+            .iter()
+            .position(|row| row.text == "Roll back cell 001");
+        assert!(cancel < roll, "Cancel comes first");
         assert_eq!(
             panel.rows[panel.selected].command_line(),
             Some("/rollback cancel")
@@ -1669,7 +1690,7 @@ pub(super) mod tests {
         let confirm = panel
             .rows
             .iter()
-            .find(|row| row.text == "Confirm rollback")
+            .find(|row| row.text == "Roll back cell 001")
             .unwrap();
         assert_eq!(confirm.kind, crate::workbench::ItemKind::Danger);
         assert_eq!(

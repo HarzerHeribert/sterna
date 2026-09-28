@@ -110,7 +110,12 @@ fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
     );
     items.push(Item::info(format!("Pre-approved      {}", unknown(&s.sandbox))).tone(Tone::Muted));
-    items.push(Item::info(format!("Host tools        {}", unknown(&s.network))).tone(Tone::Muted));
+    let web = match s.network.as_deref() {
+        Some("web") => "on · fetch and search run in Sterna, outside the sandbox".to_string(),
+        Some("off") => "off".to_string(),
+        other => unknown(&other.map(str::to_string)),
+    };
+    items.push(Item::info(format!("Web tools         {web}")).tone(Tone::Muted));
     items.push(
         Item::open("sandbox:hosts", "Allowed hosts", Action::Hosts)
             .detail("the registries and hosts commands may reach"),

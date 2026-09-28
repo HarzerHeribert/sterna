@@ -550,10 +550,16 @@ fn ask_items(sheet: &mut Sheet, request: &crate::ask::Request) -> Vec<Item> {
             .weights()
             .and_then(|weights| weights.probabilities.get(index))
         {
-            item = item.detail(format!("Jev gives it {:.0}%", weight * 100.0));
+            item = item.detail(format!("Sterna's guess: {:.0}%", weight * 100.0));
         }
         items.push(item);
     }
+    // What Esc does is said where the choices are: the cell goes on either
+    // way.
+    items.push(
+        Item::info("Esc lets Sterna decide: it picks one and tells you what it assumed.")
+            .tone(Tone::Muted),
+    );
     // The decision model's own pick is where the sheet opens.
     sheet.prefer = request.weights().and_then(|weights| {
         question

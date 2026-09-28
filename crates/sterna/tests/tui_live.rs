@@ -2490,9 +2490,11 @@ fn a_rollback_marks_its_cell_and_says_so_in_one_line() {
         "the cell wrote its file"
     );
     app.send(b"/rollback\r");
-    app.contains("Confirm rollback");
+    app.contains("Roll back cell 001");
+    app.contains("This cannot be undone");
     app.settle(600);
-    app.send(b"\x1b[A");
+    // Cancel is first; the rollback is the row under it.
+    app.send(b"\x1b[B");
     // A decision sheet takes a key only after half a second without one.
     app.settle(700);
     app.send(b"\r");

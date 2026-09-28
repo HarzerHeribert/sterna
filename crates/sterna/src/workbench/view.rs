@@ -40,11 +40,14 @@ pub(super) fn label(f: &mut Frame<'_>, a: Rect, y: u16, text: &str, tone: Tone, 
     }
 }
 
+/// Whether Sterna's own web tools (fetch and search) are set up. Commands
+/// reach the network only through the sandbox's proxy, which the Sandbox
+/// sheet shows; this is the other fact, and says which one it is.
 fn network_word(s: &ScreenState) -> &'static str {
     match s.network.as_deref() {
-        Some("on") => "network on",
-        Some("off") => "network off",
-        _ => "network unknown",
+        Some("web") => "web tools on",
+        Some("off") => "web tools off",
+        _ => "web tools unknown",
     }
 }
 /// The level chip's tone: Full access is a warning, so it is never dropped
@@ -939,31 +942,34 @@ fn session_card(
     let helpers = with_helpers
         .and_then(|cell| n.cells.get(cell - 1))
         .map_or(&[][..], |c| c.helpers.as_slice());
-    if helpers.is_empty() {
-        lines.push((
+    let state = |record: &crate::helpers::HelperRecord| {
+        if record.outcome.ok {
+            ("returned", Tone::Muted)
+        } else if record.outcome.text.is_empty() {
+            ("working", Tone::Muted)
+        } else {
+            ("failed", Tone::Failure)
+        }
+    };
+    // The Scout is a helper too: while it reads the project before the
+    // first cell, the rail says so rather than "none yet".
+    match (helpers.is_empty(), n.preflight.as_ref()) {
+        (true, Some(scout)) => {
+            let (word, tone) = state(scout);
+            lines.push((format!("Scout · {word}"), tone, Some(Action::Scout)));
+        }
+        (true, None) => lines.push((
             if s.helpers_on { "none yet" } else { "off" }.into(),
             Tone::Muted,
             Some(Action::SettingsAt(2)),
-        ));
+        )),
+        _ => {}
     }
     for (i, helper) in helpers.iter().enumerate() {
+        let (word, tone) = state(helper);
         lines.push((
-            format!(
-                "{} · {}",
-                helper.helper,
-                if helper.outcome.ok {
-                    "returned"
-                } else if helper.outcome.text.is_empty() {
-                    "waiting"
-                } else {
-                    "failed"
-                }
-            ),
-            if helper.outcome.ok || helper.outcome.text.is_empty() {
-                Tone::Muted
-            } else {
-                Tone::Failure
-            },
+            format!("{} · {word}", helper.helper),
+            tone,
             // The same lane the card shows, opened there.
             Some(Action::Helper(with_helpers.unwrap_or(0), i)),
         ));

@@ -501,7 +501,7 @@ fn a_subagent_that_stopped_early_reports_its_turns_and_trajectory() {
         "the parent must be able to tell why it stopped: {result:?}"
     );
     assert!(
-        result.stderr.contains("2 turn(s)"),
+        result.stderr.contains("2 turns"),
         "the parent must be able to see how far it got: {result:?}"
     );
 }

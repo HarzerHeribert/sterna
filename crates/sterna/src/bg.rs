@@ -529,7 +529,11 @@ fn note_for(answered: &crate::agent::AgentResult) -> String {
         "failed" => "failed",
         other => other,
     };
-    let mut note = format!("subagent {stopped} after {} turn(s)", answered.turns);
+    let mut note = format!(
+        "subagent {stopped} after {} turn{}",
+        answered.turns,
+        if answered.turns == 1 { "" } else { "s" }
+    );
     if answered.trajectory.is_empty() {
         note.push_str("; it made no tool call");
     } else {
@@ -965,7 +969,7 @@ mod tests {
         };
         let note = note_for(&cancelled);
         assert!(note.contains("was cancelled"), "{note}");
-        assert!(note.contains("3 turn(s)"), "{note}");
+        assert!(note.contains("3 turns"), "{note}");
         assert!(note.contains("read, rg, context"), "{note}");
 
         // The wall clock and the turn hint are different stops and say so:

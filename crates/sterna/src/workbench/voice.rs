@@ -129,7 +129,7 @@ pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'st
 pub fn hint(n: usize, busy: bool, changed: bool) -> &'static str {
     const HINTS: [(&str, Needs); 8] = [
         (
-            "Shift-Tab changes how often Sterna asks before it acts",
+            "Click the sandbox level in the top bar: what Sterna may do, and what you allowed",
             Needs::Nothing,
         ),
         (
