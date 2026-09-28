@@ -66,6 +66,21 @@ fn supply_test_model(command: &mut Command, root: &Path) {
     }
 }
 
+/// A loopback `ANTHROPIC_BASE_URL` makes the child an *attached* session,
+/// and an attached session asks the `inference-gateway` beside its own
+/// binary which models are served -- the real one in `target/`, reading the
+/// developer's real accounts. `/model deepseek-v4-flash` was then refused on
+/// this machine and accepted on CI. The child's gateway reads a catalogue
+/// that lives in the fixture, which holds no account.
+fn isolate_gateway_catalogue(command: &mut Command, root: &Path) {
+    command
+        .env(
+            "INFERENCE_GATEWAY_CONFIG",
+            root.join("gateway-config").join("gateway.toml"),
+        )
+        .env("INFERENCE_GATEWAY_DATA_DIR", root.join("gateway-data"));
+}
+
 /// Unix only: the fakes are shell scripts. The Windows sterna cell runs every
 /// other test in this file; a `.cmd` twin is the successor if one is wanted.
 #[cfg(unix)]
@@ -654,6 +669,7 @@ fn run_session_with_gateway(
         .env_remove("ANTHROPIC_AUTH_TOKEN")
         .env_remove("ANTHROPIC_API_KEY");
     supply_test_model(&mut command, root);
+    isolate_gateway_catalogue(&mut command, root);
     if let Some(gateway) = gateway {
         command.arg("--gateway").arg(gateway);
         // `--gateway` is ignored by a *hosted* session, which resolves the
@@ -3490,6 +3506,7 @@ fn run_session_stdin(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     supply_test_model(&mut command, root);
+    isolate_gateway_catalogue(&mut command, root);
     let mut child = command.spawn().unwrap();
     {
         let stdin = child.stdin.as_mut().unwrap();

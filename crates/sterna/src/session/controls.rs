@@ -1922,6 +1922,22 @@ pub(super) mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The configuration a fixture session loads: the project's, over the
+    /// fixture's own global folder -- the one its saves land in -- and never
+    /// the developer's `~/.config/sterna/config.toml`. Reading the real one
+    /// made a global `[agents] mode = "roster"` collide with a fixture's
+    /// `[agents] model` and fail a test on one machine only.
+    fn fixture_config(
+        root: &std::path::Path,
+        selected: Option<&str>,
+    ) -> Result<SternaConfig, String> {
+        Ok(
+            crate::settings::Store::with_global(root, Some(root.join("user-settings")))?
+                .load(selected)?
+                .config,
+        )
+    }
+
     /// Builds a session rooted at `root` and runs `body` against it.
     pub(in crate::session) fn with_session(
         root: &std::path::Path,
@@ -1939,8 +1955,7 @@ pub(super) mod tests {
             root: root.to_path_buf(),
             ..ProjectConfig::default()
         };
-        let config =
-            RefCell::new(SternaConfig::load_profile(root, selected).expect("the fixture parses"));
+        let config = RefCell::new(fixture_config(root, selected).expect("the fixture parses"));
         let profile = Profile::compile(root, None);
         let gateway = crate::gateway::Gateway::Command {
             gateway: root.join("absent-gateway"),
@@ -2138,7 +2153,7 @@ pub(super) mod tests {
         // Parsing only the project text made the pair differ by whatever the
         // developer's own global configuration contributes, so the test read
         // the machine it ran on.
-        let base = SternaConfig::load(&root).unwrap();
+        let base = fixture_config(&root, None).unwrap();
         with_selected_session(&root, Some("review"), |session| {
             assign_model(session, Tier::Helpers, "changed-helper").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
@@ -2158,8 +2173,8 @@ pub(super) mod tests {
                 session.config().model.parent.as_deref(),
                 Some("review-parent")
             );
-            assert_eq!(SternaConfig::load(&root).unwrap(), base);
-            let reloaded = SternaConfig::load_profile(&root, Some("review")).unwrap();
+            assert_eq!(fixture_config(&root, None).unwrap(), base);
+            let reloaded = fixture_config(&root, Some("review")).unwrap();
             let live = session.config().clone();
             assert_eq!(reloaded, live);
         });
@@ -2188,7 +2203,7 @@ pub(super) mod tests {
                 session.config().agents.slots["quick"].model,
                 "explicit-agent"
             );
-            assert_eq!(SternaConfig::load(&root).unwrap().limits.cells, Some(42));
+            assert_eq!(fixture_config(&root, None).unwrap().limits.cells, Some(42));
         });
         fs::remove_dir_all(root).unwrap();
     }
