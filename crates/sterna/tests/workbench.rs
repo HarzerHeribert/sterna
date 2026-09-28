@@ -872,9 +872,8 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
     for width in [80, 50] {
         draw(&c, &n, &s, &mut u, width, 30);
         let reach = reachable(&u);
-        // Everyday, Display, Little helpers, Models & accounts, Subagents,
-        // Advanced, Tuning.
-        for i in 0..7 {
+        // Everyday, Models, Little helpers, Display, Advanced.
+        for i in 0..5 {
             assert!(
                 reach.contains(&Action::Sheet(Hit::Section(i))),
                 "{width} columns: section {i} cannot be reached"
@@ -887,29 +886,29 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
             );
         }
     }
-    draw(&c, &n, &s, &mut u, 80, 30);
-    let tuning = 6;
+    draw(&c, &n, &s, &mut u, 50, 30);
+    let advanced = 4;
     let fold = u
         .geometry
         .hits
         .iter()
         .find_map(|(_, a)| {
-            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(tuning))))
+            matches!(a, Action::More(folded) if folded.iter().any(|(_, f)| *f == Action::Sheet(Hit::Section(advanced))))
                 .then(|| a.clone())
         })
-        .expect("Tuning is folded at 80 columns");
+        .expect("Advanced is folded at 50 columns");
     click(&mut u, &mut s, &n, fold);
-    draw(&c, &n, &s, &mut u, 80, 30);
+    draw(&c, &n, &s, &mut u, 50, 30);
     let row = u
         .top()
         .unwrap()
         .sheet
         .items
         .iter()
-        .position(|item| item.title == "Tuning")
-        .expect("the fold lists Tuning");
+        .position(|item| item.title == "Advanced")
+        .expect("the fold lists Advanced");
     click(&mut u, &mut s, &n, Action::Sheet(Hit::Item(row)));
-    assert_eq!(u.preferences().unwrap().category, tuning);
+    assert_eq!(u.preferences().unwrap().category, advanced);
 }
 #[test]
 fn escape_does_not_undo_saved_settings_or_unrelated_session_overrides() {
@@ -1019,7 +1018,8 @@ fn concurrent_file_edits_are_not_overwritten() {
 #[test]
 fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
     let (_t, _, mut p) = prefs();
-    for category in 0..5 {
+    // Every section but Advanced fits one screen.
+    for category in 0..4 {
         p.category = category;
         assert!(p.rows().len() <= 8, "category {category}");
     }
@@ -2981,7 +2981,7 @@ fn subagent_modes_without_a_model_open_where_one_is_chosen() {
         (2, "/subagents", None),
     ] {
         let (_t, mut s, mut p) = prefs();
-        p.category = 4;
+        p.category = 1;
         let mut u = Workbench::default();
         u.open(Source::Settings(Box::new(p)));
         draw(&c, &n, &s, &mut u, 110, 40);
@@ -3166,7 +3166,7 @@ fn a_setting_named_after_the_command_is_where_settings_opens() {
     let mut u = Workbench::default();
     assert!(u.local_command("/settings theme", &mut s, &n));
     let p = u.preferences().unwrap();
-    assert_eq!(p.category, 1, "Display");
+    assert_eq!(p.category, 3, "Display");
     assert_eq!(
         u.top().unwrap().sheet.prefer.as_deref(),
         Some("setting:ui.theme")
@@ -3191,7 +3191,7 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
     let (_t, mut s, mut p) = prefs();
     p.save("web.allow_domains", Some("old.example".into()), &mut s)
         .unwrap();
-    p.category = 5;
+    p.category = 4;
     let row = p
         .rows()
         .iter()
@@ -3236,11 +3236,11 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
 fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
     let (_t, _, mut p) = prefs();
     let mut elsewhere = std::collections::BTreeSet::new();
-    for category in [0, 1, 2, 3, 4, 6] {
+    for category in [0, 1, 2, 3] {
         p.category = category;
         elsewhere.extend(p.rows().iter().map(|spec| spec.key));
     }
-    p.category = 5;
+    p.category = 4;
     let advanced: Vec<_> = p.rows().iter().map(|spec| spec.key).collect();
     for key in &advanced {
         assert!(!elsewhere.contains(key), "{key} is repeated");
@@ -3251,17 +3251,17 @@ fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
             "{key}"
         );
     }
-    p.category = 6;
-    assert!(
-        p.rows()
-            .iter()
-            .all(|spec| spec.kind == sterna::settings::Kind::Float)
-    );
-    assert!(
-        p.rows()
-            .iter()
-            .any(|spec| spec.key == "decisions.hold_above")
-    );
+    // The confidence thresholds are Advanced's last rows, together.
+    let floats = advanced
+        .iter()
+        .position(|key| *key == "decisions.hold_above")
+        .expect("the thresholds are in Advanced");
+    let kinds: Vec<bool> = p
+        .rows()
+        .iter()
+        .map(|spec| spec.kind == sterna::settings::Kind::Float)
+        .collect();
+    assert!(kinds[floats..].iter().all(|float| *float), "{advanced:?}");
 }
 
 /// One undo list for the session: a level chosen on the Sandbox sheet comes
@@ -3309,7 +3309,7 @@ fn a_global_save_the_project_overrides_says_so() {
         p.notice,
         "Theme is saved globally; this project sets rose, which wins here."
     );
-    p.category = 1;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -3638,15 +3638,23 @@ fn a_locked_account_offers_its_sign_in_as_one_row() {
     );
 }
 
-/// Settings › Subagents is whether subagents run, and the way to the
-/// picker where the favourites are chosen.
+/// Settings › Models is which model does which job -- Main and its
+/// effort, helpers, whether subagents run, Jev -- and the way to the picker
+/// where the favourites are chosen.
 #[test]
-fn settings_subagents_links_to_the_picker() {
+fn settings_models_links_to_the_picker() {
     let (_t, s, mut p) = prefs();
-    p.category = 4;
+    p.category = 1;
     assert_eq!(
         p.rows().iter().map(|spec| spec.key).collect::<Vec<_>>(),
-        ["agents.mode"]
+        [
+            "model.parent",
+            "session.effort",
+            "helpers.model",
+            "agents.mode",
+            "decisions.model",
+            "decisions.mode"
+        ]
     );
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
@@ -4579,7 +4587,7 @@ fn a_disabled_ask_reads_as_where_to_turn_it_on() {
 fn the_active_theme_chip_is_always_drawn() {
     let (_t, mut s, mut p) = prefs();
     p.save("ui.theme", Some("cockatoo".into()), &mut s).unwrap();
-    p.category = 1;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -5285,7 +5293,7 @@ fn page_down_never_passes_a_row_it_did_not_show() {
     u.open(Source::Settings(Box::new(p)));
     draw(&c, &n, &s, &mut u, 110, 40);
     // Advanced: the long section.
-    for _ in 0..5 {
+    for _ in 0..4 {
         key(&mut u, &mut s, &n, KeyCode::Tab);
     }
     draw(&c, &n, &s, &mut u, 110, 40);

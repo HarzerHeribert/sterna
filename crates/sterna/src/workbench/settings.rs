@@ -6,15 +6,24 @@ use crate::tui::ScreenState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const CATEGORIES: [&str; 7] = [
+/// Five sections, in the order a person reaches for them.
+pub const CATEGORIES: [&str; 5] = [
     "Everyday",
-    "Display",
+    "Models",
     "Little helpers",
-    "Models & accounts",
-    "Subagents",
+    "Display",
     "Advanced",
-    "Tuning",
 ];
+
+/// Each section's place in [`CATEGORIES`], by name, for every route that
+/// opens the sheet on one.
+pub mod section {
+    pub const EVERYDAY: usize = 0;
+    pub const MODELS: usize = 1;
+    pub const HELPERS: usize = 2;
+    pub const DISPLAY: usize = 3;
+    pub const ADVANCED: usize = 4;
+}
 
 /// The first category, and the only one chosen by how often a person reaches
 /// for the thing rather than by which table it lives under.
@@ -33,6 +42,8 @@ const EVERYDAY: [&str; 6] = [
     "ui.theme",
     "ui.motion",
 ];
+/// What the little helpers do, and how hard each job works. Every other
+/// helper key is a number or a switch tuned rarely, in Advanced.
 const HELPERS: [&str; 8] = [
     "helpers.enabled",
     "helpers.completion",
@@ -43,7 +54,17 @@ const HELPERS: [&str; 8] = [
     "helpers.effort.reduce",
     "helpers.effort.check",
 ];
-const MODELS: [&str; 2] = ["model.parent", "helpers.model"];
+
+/// Which model does which job, and how hard Main works: the models, their
+/// effort, whether subagents run, and Jev.
+const MODELS: [&str; 6] = [
+    "model.parent",
+    "session.effort",
+    "helpers.model",
+    "agents.mode",
+    "decisions.model",
+    "decisions.mode",
+];
 
 /// The category a key is listed under. Everyday repeats keys on purpose;
 /// no other category repeats one, and Advanced holds only what no other
@@ -51,20 +72,15 @@ const MODELS: [&str; 2] = ["model.parent", "helpers.model"];
 pub(super) fn category_of(spec: &SettingSpec) -> usize {
     let k = spec.key;
     if k.starts_with("ui.") {
-        1
-    } else if HELPERS.contains(&k) {
-        2
+        section::DISPLAY
     } else if MODELS.contains(&k) {
-        3
-    } else if k.starts_with("agents.") && !k.ends_with(".effort") {
-        4
+        section::MODELS
+    } else if HELPERS.contains(&k) {
+        section::HELPERS
     } else if EVERYDAY.contains(&k) {
-        0
-    } else if spec.kind == Kind::Float {
-        // Confidence thresholds: numbers a person tunes, rarely, together.
-        6
+        section::EVERYDAY
     } else {
-        5
+        section::ADVANCED
     }
 }
 pub struct Preferences {
@@ -181,23 +197,31 @@ impl Preferences {
                         .contains(&q);
                 }
                 match self.category {
-                    0 => EVERYDAY.contains(&spec.key),
-                    // The favourites and the pinned model are chosen in the
-                    // picker; here is only whether subagents run at all.
-                    4 => spec.key == "agents.mode",
+                    section::EVERYDAY => EVERYDAY.contains(&spec.key),
                     category => category_of(spec) == category,
                 }
             })
             .collect();
-        // The everyday list is in the order a person reaches for the things,
-        // which is not the order the registry happens to declare them in.
-        if self.query.is_empty() && self.category == 0 {
-            found.sort_by_key(|spec| {
-                EVERYDAY
-                    .iter()
-                    .position(|k| *k == spec.key)
-                    .unwrap_or(usize::MAX)
-            });
+        // Everyday and Models are in the order a person reaches for the
+        // things, which is not the order the registry declares them in.
+        // Advanced keeps the confidence thresholds together, last.
+        if self.query.is_empty() {
+            match self.category {
+                section::EVERYDAY => found.sort_by_key(|spec| {
+                    EVERYDAY
+                        .iter()
+                        .position(|k| *k == spec.key)
+                        .unwrap_or(usize::MAX)
+                }),
+                section::MODELS => found.sort_by_key(|spec| {
+                    MODELS
+                        .iter()
+                        .position(|k| *k == spec.key)
+                        .unwrap_or(usize::MAX)
+                }),
+                section::ADVANCED => found.sort_by_key(|spec| spec.kind == Kind::Float),
+                _ => {}
+            }
         }
         found
     }
@@ -488,6 +512,15 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
         .tone(super::Tone::Muted),
     ];
     for (i, spec) in rows.iter().enumerate() {
+        // Advanced ends with the confidence thresholds, together under
+        // their own heading: numbers a person tunes rarely, and together.
+        if p.category == section::ADVANCED
+            && p.query.is_empty()
+            && spec.kind == Kind::Float
+            && (i == 0 || rows[i - 1].kind != Kind::Float)
+        {
+            items.push(Item::heading("Confidence thresholds"));
+        }
         let id = format!("setting:{}", spec.key);
         let effective = p.effective(spec.key);
         let when = if crate::settings::applies_now(spec.key) {
@@ -601,7 +634,7 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                 Item::run(
                     "setting:helpers.enabled:choose",
                     "choose a helper model",
-                    Action::SettingsAt(3),
+                    Action::SettingsAt(section::MODELS),
                 )
                 .inline(),
             );
@@ -619,11 +652,18 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             );
         }
     }
-    if p.category == 4 && p.query.is_empty() {
+    // The Models section ends where the models come from, and where each
+    // subagent's model is chosen.
+    if p.category == section::MODELS && p.query.is_empty() {
         items.push(Item::open(
             "setting:agents:picker",
-            "Favourites and the pinned model",
+            "Subagent favourites and the pinned model",
             Action::Command("/subagents".into()),
+        ));
+        items.push(Item::open(
+            "setting:accounts",
+            "Accounts · sign in, or add an API key",
+            Action::Command("/login".into()),
         ));
     }
     if rows.is_empty() {

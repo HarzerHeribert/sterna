@@ -2468,8 +2468,9 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.send(b"keep this draft");
     app.send(b"\x1bOQ"); // F2
     app.contains("SETTINGS");
-    app.send(b"\t");
-    app.contains("Display");
+    // Everyday, Models, Little helpers, then Display.
+    app.send(b"\t\t\t");
+    app.contains("SETTINGS › Display");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();

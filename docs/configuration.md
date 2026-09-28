@@ -25,9 +25,11 @@ is ignored and says so.
 
 ## Changing a setting
 
-- **`/settings`** (or F2) opens the settings sheet: Everyday, Display,
-  Little helpers, Models & accounts, Subagents, Advanced and Tuning (the
-  decision thresholds). It opens on Global; a choice is written to the
+- **`/settings`** (or F2) opens the settings sheet in five sections:
+  Everyday (what you change most), Models (which model does which job,
+  Main's effort, subagents, Jev and accounts), Little helpers, Display and
+  Advanced (limits, the web, permissions, and the confidence thresholds
+  last). It opens on Global; a choice is written to the
   project only when the Project tab (F6) is chosen, and a row the project
   overrides says so. Each row shows what the running session uses now. A
   choice validates and saves at once; Ctrl-Z, or the undo chip beside the

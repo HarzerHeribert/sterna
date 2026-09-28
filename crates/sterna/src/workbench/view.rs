@@ -880,7 +880,7 @@ fn session_card(
         (
             format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
             Tone::Muted,
-            Some(Action::SettingsAt(2)),
+            Some(Action::SettingsAt(super::settings::section::HELPERS)),
         ),
     ]);
     if let Some(word) = &s.subagents {
@@ -957,7 +957,7 @@ fn session_card(
         (true, None) => lines.push((
             if s.helpers_on { "none yet" } else { "off" }.into(),
             Tone::Muted,
-            Some(Action::SettingsAt(2)),
+            Some(Action::SettingsAt(super::settings::section::HELPERS)),
         )),
         _ => {}
     }
@@ -1232,7 +1232,7 @@ fn dock_bottom(
                 } else {
                     String::new()
                 },
-                Action::SettingsAt(2),
+                Action::SettingsAt(super::settings::section::HELPERS),
             ),
             (
                 s.subagents

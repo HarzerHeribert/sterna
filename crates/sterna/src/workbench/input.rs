@@ -200,7 +200,7 @@ impl Workbench {
                 true
             }
             ["/config"] => {
-                self.open_settings_at(s, 5, None);
+                self.open_settings_at(s, super::settings::section::ADVANCED, None);
                 true
             }
             // A word after /settings or /config is a setting to open on.
@@ -210,18 +210,18 @@ impl Workbench {
             }
             // Bare, each of these opens on its own row.
             ["/motion"] => {
-                self.open_settings_at(s, 1, Some("ui.motion"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.motion"));
                 true
             }
             ["/stream"] => {
-                self.open_settings_at(s, 1, Some("ui.stream"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.stream"));
                 true
             }
             // A command that names one setting opens where that setting is.
             // Bare `/statusline` used to land on the everyday category with
             // the status line nowhere in sight.
             ["/statusline"] => {
-                self.open_settings_at(s, 1, Some("ui.statusline"));
+                self.open_settings_at(s, super::settings::section::DISPLAY, Some("ui.statusline"));
                 true
             }
             ["/diff"] => {
