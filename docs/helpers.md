@@ -76,8 +76,21 @@ environment) is returned marked `reused` instead of run again.
 ### The completion gate
 
 When a task claims to be finished, the checker compares the answer with the
-request, the diff and the evidence (`helpers.completion_check`, on). It runs
-behind the answer, so it costs no wait. A checker called inside the same
+request, the diff and the evidence. It runs behind the answer, so it costs no
+wait, and its note says what it used: `checked after the answer: holds ·
+9.8k tokens`, with its reasons folded under that line. When it runs is
+`helpers.completion_check`:
+
+| value | checks |
+|---|---|
+| `auto` (default) | after big work: a list the Scout wrote, or 4 files, 150 lines or 10 cells (`completion::BIG_*`) |
+| `always` | every answer that changed something |
+| `off` | never |
+
+A turn that changed no file is never checked: a question has nothing in the
+files to check, and the checker used to spend its turns finding that out. A
+saved `true` or `false` from before is rewritten once as `auto` or `off`.
+A checker called inside the same
 cell as a completion turns that completion into a candidate: the parent sees
 the checker's verdict in a further turn before the task may end.
 

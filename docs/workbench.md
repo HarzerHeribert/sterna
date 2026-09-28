@@ -21,10 +21,17 @@ bottom.
 - **The Scout sits under the request it read**, above the work, as one
   line once it has answered (`◇ PREFLIGHT · SCOUT  named 2 files  2.1s ▸`);
   a click opens its report.
-- **Prose reads at 100 columns.** Your turn, the answers and the words
-  around a cell wrap at `READING_WIDTH`; code, tables, cards and output keep
+- **Every line ends where the cards end.** Your turn, the answers, the words
+  around a cell and the notes stop at the cards' right corner, so the text
+  keeps the same padding on both sides at every width; tables and code keep
   the whole width. Two empty columns keep the conversation off the
-  sidebar's rule.
+  sidebar's rule, and one empty row keeps it off the composer.
+- **Nothing is cut with "…".** A cell's intent is normal text that wraps
+  under its first word, the state word on the first line; your turn wraps
+  between words, as the composer showed it.
+- **A check's note is one line**, `checked after the answer: cannot tell ·
+  11.2k tokens ▸`: the verdict and what the check used. A click opens its
+  reasons.
 - **The acceptance list** (`helpers.acceptance_list`) is one line of
   progress, `≡ 4 of 7 met · 1 failed ▸`: under SO FAR in the session card,
   or without the card as one chip at the far end of the dock's top edge.
