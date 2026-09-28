@@ -76,7 +76,6 @@ machine or container you trust; the machine is then the boundary.
 | `/rollback` | preview and undo what the session changed, keeping your own edits |
 | `/memory` | read or save this project's notes |
 | `/subagents` | subagent favourites: `on`, `off`, `SLOT MODEL [EFFORT]` |
-| `/handlers` | standing event handlers; `/handlers off <name>` |
 | `/status` | the Session sheet: models, sandbox, helpers, and how much of each subscription's limits is used |
 | `/context` | what fills the context window: system prompt, project instructions, tools, conversation and free space |
 | `/telemetry` | live requests and execution (Ctrl-T) |

@@ -33,7 +33,6 @@ pub enum Effect {
     PasteCallback,
     CancelSignIn,
     ReopenSignIn,
-    HandlerOff(String),
 }
 /// A control that may change while a turn runs: a model or effort named in
 /// full applies from the turn's next request (decision 9). A bare one opens
@@ -1269,12 +1268,6 @@ impl Workbench {
             Action::ReopenSignIn => return Effect::ReopenSignIn,
             Action::Copy(text) => return Effect::Copy(text),
             Action::PasteCallback => return Effect::PasteCallback,
-            Action::HandlerOff(name) => {
-                if self.turning_off.insert(name.clone()) {
-                    return Effect::HandlerOff(name);
-                }
-                self.say(format!("{name} is already turning off."));
-            }
             Action::Forget(id) => {
                 let label = s.memory.as_ref().and_then(|memory| {
                     let label = memory

@@ -2692,36 +2692,30 @@ fn a_redrawn_panel_keeps_the_focused_row() {
     let (c, n, mut s) = fixture();
     let rows = |runs: usize| {
         vec![
-            PanelRow::info("Task-scoped"),
+            PanelRow::info("Signing in"),
             PanelRow::run(
-                format!("first · {runs} runs"),
-                Action::HandlerOff("first".into()),
+                format!("first · {runs} seconds"),
+                Action::Command("/first".into()),
             )
-            .with_id("handler:first"),
+            .with_id("row:first"),
             PanelRow::run(
-                format!("second · {runs} runs"),
-                Action::HandlerOff("second".into()),
+                format!("second · {runs} seconds"),
+                Action::Command("/second".into()),
             )
-            .with_id("handler:second"),
+            .with_id("row:second"),
         ]
     };
-    s.panel = Some(Panel::rows("Standing handlers", rows(0)));
+    s.panel = Some(Panel::rows("Sign in", rows(0)));
     let mut u = Workbench::default();
     u.absorb_panel(&mut s);
     draw(&c, &n, &s, &mut u, 120, 40);
     key(&mut u, &mut s, &n, KeyCode::Down);
-    assert_eq!(
-        u.top().unwrap().sheet.focused().unwrap().id,
-        "handler:second"
-    );
-    s.panel = Some(Panel::rows("Standing handlers", rows(3)));
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "row:second");
+    s.panel = Some(Panel::rows("Sign in", rows(3)));
     u.absorb_panel(&mut s);
     draw(&c, &n, &s, &mut u, 120, 40);
     assert_eq!(u.sheets.len(), 1, "the same panel replaced itself");
-    assert_eq!(
-        u.top().unwrap().sheet.focused().unwrap().id,
-        "handler:second"
-    );
+    assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, "row:second");
 }
 
 /// The keys sheet is drawn from the one keymap table: every key in it is on

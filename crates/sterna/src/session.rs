@@ -959,7 +959,6 @@ fn is_session_control(name: &str) -> bool {
             | "effort"
             | "plan"
             | "sandbox"
-            | "handlers"
             | "context"
             | "status"
             | "config"
@@ -1075,7 +1074,6 @@ fn run_task(
         notices::at_task_end();
     }
     if let Some(ui) = session.ui {
-        ui.handler_cancellations();
         ui.publish(transcript, &ServedBy::default(), activity);
     }
     result
@@ -1351,15 +1349,6 @@ fn run_task_inner(
         // sees the events on the very next turn. **No event ever gets a turn
         // of its own** (line 2481): a turn is composed for a user message,
         // and a batch rides the one that was already going to happen.
-        if let Some(ui) = session.ui {
-            for name in ui.handler_cancellations() {
-                let found = runtime.off_handler(&name);
-                session_println!(
-                    "handler {name}: {}",
-                    if found { "off" } else { "not found" }
-                );
-            }
-        }
         if let Some(previous) = runtime.take_batch() {
             window.carry_forward(previous.roll());
         }

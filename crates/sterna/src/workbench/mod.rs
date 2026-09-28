@@ -150,8 +150,6 @@ pub enum Action {
     Copy(String),
     /// The form that takes the address a browser ended on.
     PasteCallback,
-    /// Turn a standing handler off.
-    HandlerOff(String),
     /// A click on one of the top sheet's own targets.
     Sheet(sheet::Hit),
     /// An answer on a decision prompt.
@@ -338,8 +336,6 @@ pub struct Workbench {
     pub reopening: bool,
     /// A settings row asked for the model picker: the setting it fills.
     pub browsing: Option<String>,
-    /// Handlers a person turned off whose turning-off has not shown yet.
-    pub turning_off: BTreeSet<String>,
 }
 /// How long a notice rides the dock's edge before it fades. It is still in
 /// the transcript and on the Activity surface after that.

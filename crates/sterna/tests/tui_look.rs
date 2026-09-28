@@ -303,8 +303,8 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     // (2026-09-27) opens the resume sheet from inside a session.
     // `/supervisor` went with the supervisor on 2026-09-28, and with it
     // `/budget`, `/usage` (the Session sheet shows the limits), `/handles`,
-    // `/entitlements`, `/activity` and `/sidebar` (Ctrl-B).
-    assert_eq!(slash_matches("/").len(), 31);
+    // `/entitlements`, `/activity`, `/sidebar` (Ctrl-B) and `/handlers`.
+    assert_eq!(slash_matches("/").len(), 30);
     let offered = slash_matches("/");
     let mut unique: Vec<&str> = offered.iter().map(|(n, _)| n.as_str()).collect();
     unique.sort_unstable();

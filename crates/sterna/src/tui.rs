@@ -542,10 +542,6 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
                     "/subagents".to_string(),
                     "configure explicit favorite slots · on|off|SLOT MODEL [EFFORT]",
                 ),
-                (
-                    "/handlers".to_string(),
-                    "inspect standing handlers · /handlers off <name>",
-                ),
                 ("/help".to_string(), "show available commands"),
                 ("/theme".to_string(), "choose a bird or a classic palette"),
                 (
@@ -850,37 +846,6 @@ pub struct Notebook {
     /// (`decide::summary_line`), `None` only when no decision model is
     /// configured at all.
     pub decision: Option<String>,
-}
-
-pub fn handlers_panel(handlers: &[crate::runtime::handlers::HandlerInfo]) -> Panel {
-    let mut panel = Panel::text(
-        "Standing handlers",
-        if handlers.is_empty() {
-            "No handlers in this task."
-        } else {
-            "Task-scoped · turn one off here or with /handlers off <name>"
-        },
-    );
-    for h in handlers {
-        let text = format!(
-            "{} · {} · {} runs · {} drained{}",
-            h.name,
-            if h.active { "active" } else { "stale" },
-            h.runs,
-            h.drained,
-            h.error
-                .as_ref()
-                .map(|e| format!(" · {e}"))
-                .unwrap_or_default()
-        );
-        let row = if h.active {
-            PanelRow::run(text, crate::workbench::Action::HandlerOff(h.name.clone()))
-        } else {
-            PanelRow::info(text)
-        };
-        panel.rows.push(row.with_id(format!("handler:{}", h.name)));
-    }
-    panel
 }
 
 impl Notebook {
