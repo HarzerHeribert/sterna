@@ -64,7 +64,7 @@ fn python_pack_has_complete_definition_helpers_and_ranked_tests() {
     assert!(
         got.supporting
             .iter()
-            .any(|e| e.role == ContextRole::NearbyIndex && e.text.contains("4-5: def helper(x):"))
+            .any(|e| e.role == ContextRole::NearbyDefinition && e.text.contains("def helper"))
     );
     let refs: Vec<_> = got
         .supporting
@@ -90,7 +90,7 @@ fn rust_braces_in_strings_and_comments_do_not_clip_definition() {
     assert!(
         got.supporting
             .iter()
-            .any(|e| e.role == ContextRole::NearbyIndex && e.text.contains("fn helper"))
+            .any(|e| e.role == ContextRole::NearbyDefinition && e.text.contains("fn helper"))
     );
 }
 
@@ -123,7 +123,7 @@ fn typescript_parser_packs_decorated_target_and_ranks_tests() {
     assert!(got.target.text.contains("/[}]/u"));
     assert!(!got.target.text.contains("function after"));
     assert!(got.supporting.iter().any(|excerpt| {
-        excerpt.role == ContextRole::NearbyIndex && excerpt.text.contains("function nearby")
+        excerpt.role == ContextRole::NearbyDefinition && excerpt.text.contains("function nearby")
     }));
     let references: Vec<_> = got
         .supporting
@@ -194,7 +194,7 @@ fn go_scanner_packs_documented_target_and_ranks_tests() {
     assert!(got.target.text.contains("return \"empty\""));
     assert!(!got.target.text.contains("func after"));
     assert!(got.supporting.iter().any(|excerpt| {
-        excerpt.role == ContextRole::NearbyIndex && excerpt.text.contains("func helper")
+        excerpt.role == ContextRole::NearbyDefinition && excerpt.text.contains("func helper")
     }));
     let references: Vec<_> = got
         .supporting
@@ -233,7 +233,7 @@ fn java_scanner_packs_annotated_target_and_ranks_tests() {
     assert!(got.target.text.contains("return block.length()"));
     assert!(!got.target.text.contains("class After"));
     assert!(got.supporting.iter().any(|excerpt| {
-        excerpt.role == ContextRole::NearbyIndex && excerpt.text.contains("class Helpers")
+        excerpt.role == ContextRole::NearbyDefinition && excerpt.text.contains("class Helpers")
     }));
     let references: Vec<_> = got
         .supporting
@@ -727,61 +727,6 @@ fn padding() -> String {
     "# padding padding padding padding\n".repeat(600)
 }
 
-/// A class too long to read whole is its head, one line per member with its
-/// line range, and the bodies of its setup and last members -- with a cursor
-/// that names how to get one member or all of it.
-#[test]
-fn a_long_class_is_delivered_as_its_skeleton() {
-    let f = Fixture::new("skeleton");
-    let source = format!("{}\n{}", long_test_class("BigTests", 20), padding());
-    let p = f.put("tests/test_big.py", &source);
-    let got = pack(&f.profile(), &p, Some("BigTests")).unwrap();
-
-    assert!(!got.complete, "a skeleton certifies no version");
-    assert!(got.is_skeleton());
-    assert!(got.target.text.starts_with("class BigTests(TestCase):"));
-    assert!(got.target.text.contains("fixtures = ['data']"));
-    assert!(
-        !got.target.text.contains("def test_"),
-        "{}",
-        got.target.text
-    );
-    let index = got
-        .supporting
-        .iter()
-        .find(|e| e.role == ContextRole::MemberIndex)
-        .expect("a member index");
-    assert_eq!(index.text.lines().count(), 21, "{}", index.text);
-    assert!(
-        index.text.contains("5-7: def setUpTestData(cls):"),
-        "{}",
-        index.text
-    );
-    assert!(
-        index.text.contains("19-27: def test_01(self):"),
-        "{}",
-        index.text
-    );
-    let bodies: Vec<_> = got
-        .supporting
-        .iter()
-        .filter(|e| e.role == ContextRole::MemberBody)
-        .collect();
-    assert_eq!(bodies.len(), 2, "{bodies:?}");
-    assert!(bodies[0].text.contains("cls.value = 1"));
-    assert!(bodies[1].text.starts_with("    def test_19(self):"));
-    assert!(!bodies[1].text.ends_with('\n'));
-    let rendered = got.render();
-    assert!(
-        rendered.contains("\n19-27: def test_01(self):\n"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("name one member as `symbol: \"BigTests.<member>\"`"),
-        "{rendered}"
-    );
-}
-
 /// `Class.member` names one member, even when another class has a member of
 /// the same name first.
 #[test]
@@ -812,38 +757,12 @@ fn a_member_is_named_as_class_dot_member() {
     );
     let missing = pack(&f.profile(), &p, Some("BigTests.test_99")).unwrap();
     assert!(!missing.complete);
-}
-
-/// Only a long class is shaped: a short class and a long function are
-/// delivered whole, and so is a long class asked for whole.
-#[test]
-fn a_short_class_a_long_function_and_a_class_asked_for_whole_stay_whole() {
-    let f = Fixture::new("whole");
-    let long_function = format!(
-        "def long_function():\n    def first():\n        return 1\n\n    def second():\n        return 2\n\n{}",
-        "    value = first() + second()\n".repeat(200)
+    // The outline a miss answers with numbers its lines itself, once.
+    let rendered = missing.render();
+    assert!(
+        rendered.contains("\n1: class FirstTests(TestCase):\n"),
+        "{rendered}"
     );
-    let one_member = format!(
-        "class OneMember:\n    def only(self):\n{}",
-        "        self.value = 1\n".repeat(200)
-    );
-    let source = format!(
-        "{}\n{long_function}\n{one_member}\n{}\n{}",
-        long_test_class("SmallTests", 4),
-        long_test_class("BigTests", 20),
-        padding()
-    );
-    let p = f.put("tests/test_big.py", &source);
-    let small = pack(&f.profile(), &p, Some("SmallTests")).unwrap();
-    assert!(small.complete && !small.is_skeleton());
-    let function = pack(&f.profile(), &p, Some("long_function")).unwrap();
-    assert!(function.complete && !function.is_skeleton());
-    let one = pack(&f.profile(), &p, Some("OneMember")).unwrap();
-    assert!(one.complete && !one.is_skeleton());
-    let whole =
-        sterna::project::source_context::pack_whole(&f.profile(), &p, Some("BigTests")).unwrap();
-    assert!(whole.complete && !whole.is_skeleton());
-    assert!(whole.target.text.contains("def test_07(self):"));
 }
 
 /// A nearby definition is the one declared near the target, never the
@@ -859,42 +778,12 @@ fn nearby_definitions_are_the_ones_near_the_target_not_the_first_of_their_name()
     );
     let p = f.put("tests/test_big.py", &source);
     let got = pack(&f.profile(), &p, Some("BigTests.test_00")).unwrap();
-    let nearby = got
+    let setup: Vec<_> = got
         .supporting
         .iter()
-        .find(|e| e.role == ContextRole::NearbyIndex)
-        .expect("a nearby index");
-    assert!(
-        nearby.text.contains(": def setUpTestData(cls):"),
-        "{}",
-        nearby.text
-    );
-    assert!(
-        !nearby.text.contains("5-7: def setUpTestData"),
-        "{}",
-        nearby.text
-    );
-}
-
-/// A class whose attributes run long before its first member shows the
-/// first of them, and says how many it left out.
-#[test]
-fn a_skeleton_head_is_capped_and_says_so() {
-    let f = Fixture::new("skeleton-head");
-    let attributes = "    field = models.CharField(max_length=10)\n".repeat(80);
-    let methods =
-        "    def method_a(self):\n        return 1\n\n    def method_b(self):\n        return 2\n\n"
-            .to_string() + &"        # filler\n".repeat(100);
-    let source = format!("class Model:\n{attributes}{methods}\n{}", padding());
-    let p = f.put("app/models.py", &source);
-    let got = pack(&f.profile(), &p, Some("Model")).unwrap();
-    assert!(got.is_skeleton(), "{:?}", got.omissions);
-    assert_eq!(got.target.text.lines().count(), 60);
-    assert!(
-        got.omissions
-            .iter()
-            .any(|o| o.contains("shown as the first 60 of the 81 lines before its first member")),
-        "{:?}",
-        got.omissions
-    );
+        .filter(|e| e.role == ContextRole::NearbyDefinition && e.text.contains("def setUpTestData"))
+        .collect();
+    let first_class = long_test_class("FirstTests", 20).lines().count();
+    assert_eq!(setup.len(), 1, "{:?}", got.supporting);
+    assert!(setup[0].range.start > first_class, "{:?}", setup[0].range);
 }

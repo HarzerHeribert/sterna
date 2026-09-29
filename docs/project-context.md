@@ -94,14 +94,13 @@ excerpts.
 
 `symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
 walked member by member, so a method name two classes share is not
-ambiguous. A class longer than 150 lines is delivered as its skeleton: its
-head (up to 60 lines before the first member), one line per member with its
-line range, and the bodies of its setup members (`setUp`, `setUpTestData`,
-`__init__`, `constructor` and the like) and its last member. The skeleton
-certifies no version; asking for the same class again, unchanged, returns
-it whole. Definitions near the target come as one line each with their line
-ranges, the nearest eight, never as bodies. `STERNA_CONTEXT_WHOLE=1` turns
-both off for the measured comparison and goes when that is decided.
+ambiguous. A nearby definition is the one declared near the target, never
+the file's first definition of the same name.
+
+A long class is delivered whole (to the byte cap), not as a skeleton. A
+skeleton -- head, one line per member, setup and last bodies -- was measured
+against it on the SWE-bench subset on 2026-09-29 and resolved fewer tasks
+for 14% less cost, so it was taken out.
 
 The conversation is append-only, so a context whose exact rendering an
 earlier result already carries is not printed again: it arrives as its

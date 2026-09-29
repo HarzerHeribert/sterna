@@ -964,19 +964,6 @@ impl RuntimeState {
             .contains_key(&rendering_key(&packed.render()))
     }
 
-    /// A skeleton asked for again, unchanged, is answered with the whole
-    /// target: the model has the outline and is asking for more, and a
-    /// pointer back to the outline would answer it with what it already
-    /// has.
-    pub(crate) fn expand_repeated_skeleton(&self, packed: SourceContext) -> SourceContext {
-        if !packed.is_skeleton() || !self.context_shown(&packed) {
-            return packed;
-        }
-        let path = self.absolute_source_path(Path::new(&packed.path));
-        crate::project::source_context::pack_whole(&self.profile, &path, packed.symbol.as_deref())
-            .unwrap_or(packed)
-    }
-
     /// Forgets which contexts the conversation carries, for when it stops
     /// carrying them.
     pub(crate) fn forget_shown_contexts(&self) {

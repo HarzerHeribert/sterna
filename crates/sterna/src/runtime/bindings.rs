@@ -1022,7 +1022,6 @@ fn tool_callback(
             serde_json::from_str::<crate::project::source_context::SourceContext>(&result.stdout)
                 .ok()
         })
-        .map(|packed| state.expand_repeated_skeleton(packed))
         .map(|mut packed| {
             let budget = state.remaining_context_budget();
             let delivered = state.context_shown(&packed) || packed.narrow_to(budget);
