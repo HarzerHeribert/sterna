@@ -201,3 +201,31 @@ fn symlink_escape_is_not_followed_or_reported_as_project_content() {
     assert!(!text.contains("secret marker"), "{text}");
     let _ = std::fs::remove_dir_all(outside);
 }
+
+/// The project's MCP servers the grant admits are named, without starting
+/// any, so the model knows there are tools behind `mcp.list()`; a server
+/// the grant does not admit is not named, and no server means no line.
+#[test]
+fn admitted_mcp_servers_are_named_and_nothing_else() {
+    let fixture = Fixture::new("mcp-names");
+    std::fs::write(
+        fixture.root.join(".mcp.json"),
+        r#"{"mcpServers": {
+            "alpha": {"command": "alpha-server"},
+            "beta": {"command": "beta-server"}
+        }}"#,
+    )
+    .unwrap();
+    let facts =
+        orientation::collect(&fixture.profile(r#"{"permissions":{"allow":["mcp__alpha__*"]}}"#));
+    assert!(
+        facts.contains("MCP servers (their tools and schemas come from `mcp.list()`): alpha\n")
+            || facts
+                .ends_with("MCP servers (their tools and schemas come from `mcp.list()`): alpha"),
+        "{facts}"
+    );
+    assert!(!facts.contains("beta"), "{facts}");
+
+    let none = orientation::collect(&fixture.profile(r#"{"permissions":{"allow":[]}}"#));
+    assert!(!none.contains("MCP servers"), "{none}");
+}

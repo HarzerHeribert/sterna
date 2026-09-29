@@ -13,6 +13,11 @@ const MAX_DETECTED: usize = 48;
 const MAX_VISITED: usize = 4096;
 const MAX_METADATA: u64 = 4096;
 const MAX_OUTPUT: usize = 8192;
+/// The most MCP servers the orientation names; the rest are counted.
+const MAX_MCP_NAMED: usize = 16;
+/// The largest `.mcp.json` read for its server names -- the same bound
+/// discovery reads it under.
+const MAX_MCP_CONFIG: u64 = 1024 * 1024;
 const SKIP_DIRS: &[&str] = &[
     ".git",
     ".sterna",
@@ -75,6 +80,10 @@ pub fn collect(profile: &Profile) -> String {
         MAX_DETECTED,
         detected,
     );
+    if let Some(servers) = mcp_servers(profile) {
+        out.push('\n');
+        out.push_str(&servers);
+    }
     if out.len() > MAX_OUTPUT {
         out.truncate(floor_char_boundary(&out, MAX_OUTPUT - 24));
         out.push_str("\n… orientation truncated");
@@ -351,6 +360,45 @@ fn read_bounded(profile: &Profile, path: &Path) -> MetadataRead {
     String::from_utf8(bytes)
         .map(MetadataRead::Content)
         .unwrap_or(MetadataRead::Refused)
+}
+
+/// The project's MCP servers the grant admits, by name, so the model knows
+/// there are tools behind `mcp.list()` before it starts any of them.
+///
+/// Read from `.mcp.json` alone: no server starts here, and no tool schema
+/// enters the prompt -- those arrive in a cell's result when the model asks,
+/// so the prompt stays one fixed block for the whole session. `None` for a
+/// project with no admitted server, which then gets no line at all.
+fn mcp_servers(profile: &Profile) -> Option<String> {
+    let path = profile
+        .check("Read", Access::Read, &profile.root().join(".mcp.json"))
+        .ok()?;
+    let metadata = fs::metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_MCP_CONFIG {
+        return None;
+    }
+    let raw = fs::read_to_string(&path).ok()?;
+    let servers = crate::project::mcp::parse(Some(&raw)).ok()?;
+    let admitted: Vec<String> = servers
+        .keys()
+        .filter(|name| profile.admits_mcp_server(name))
+        .filter_map(|name| safe_name(name))
+        .collect();
+    if admitted.is_empty() {
+        return None;
+    }
+    let mut named = admitted
+        .iter()
+        .take(MAX_MCP_NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if admitted.len() > MAX_MCP_NAMED {
+        named.push_str(&format!(", and {} more", admitted.len() - MAX_MCP_NAMED));
+    }
+    Some(format!(
+        "MCP servers (their tools and schemas come from `mcp.list()`): {named}"
+    ))
 }
 
 fn utc_now() -> String {

@@ -62,6 +62,10 @@ const out = mcp.call(tools[0].name, {query: "…"}); // content stays a handle
 }}
 ```
 
+- The environment orientation names the servers the grant admits, read
+  from `.mcp.json` without starting one, so the model knows to look. No tool
+  schema is ever in the system prompt: `mcp.list()` delivers them in a
+  cell's result when asked, so the prompt stays one fixed, cached block.
 - A server's tools need `mcp__<server>__<tool>` allow rules before
   discovery starts it; denies win. Every advertised tool and every call is
   checked against the session's profile.
