@@ -1204,7 +1204,7 @@ fn run_task_inner(
     let mut swept_at_messages: Option<usize> = None;
     let mut last_cell_threw = false;
     let mut task_state = TaskState::new(task, &request_profile, &session.config())
-        .with_brief(system::start_brief(task, session), session.id)
+        .with_session(session.id)
         .with_acceptance(acceptance_items, acceptance_from)
         .with_decision(
             decision,
@@ -1417,7 +1417,6 @@ fn run_task_inner(
                 .as_ref()
                 .map(|(before, after)| (before, after));
             observed = task_state.observe(record, error, &runtime.plan(), snapshots);
-            budget.add_helpers(&observed.helpers);
             step.view.capsule = Some(task_state.capsule.to_json());
         }
         task_state.previous_failed = step.view.error.is_some();

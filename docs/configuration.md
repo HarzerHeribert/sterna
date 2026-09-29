@@ -62,7 +62,6 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |
 | `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
-| `helpers.brief` (off) | restate a longer request as a brief beside the first turn ([helpers](helpers.md)); needs `helpers.model`, and runs with `helpers.enabled` off too, since the model never calls it; its effort is `helpers.effort.brief` (low) |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |

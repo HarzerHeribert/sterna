@@ -327,11 +327,10 @@ fn inert_settings(
             "helpers.preflight_scope",
             "helpers.completion_check",
             "helpers.acceptance_list",
-            "helpers.brief",
         ])
     {
         inert.push(
-            "[helpers] is enabled but names no model, so preflight, completion_check, acceptance_list, brief and every helper.* call are inert; set `helpers.model`"
+            "[helpers] is enabled but names no model, so preflight, completion_check, acceptance_list and every helper.* call are inert; set `helpers.model`"
                 .into(),
         );
     }

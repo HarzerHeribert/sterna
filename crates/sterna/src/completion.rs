@@ -112,9 +112,6 @@ pub enum FindingKind {
     NoVerification,
     /// An item of the request-derived acceptance list was not met.
     AcceptanceUnmet,
-    /// Test files that use a definition the task changed, and that no
-    /// command of the task ran (`session::test_check::related_tests`).
-    RelatedTestsUnrun,
     /// The decision model reads the task's diff or answer as not satisfying
     /// the request, at or below `[decisions] completion_no_below` (2616).
     RequestNotSatisfied,
@@ -148,7 +145,6 @@ impl FindingKind {
                 | Self::UnexpectedArtifact
                 | Self::CoverageOutsideTree
                 | Self::VerificationFailed
-                | Self::RelatedTestsUnrun
         )
     }
 }

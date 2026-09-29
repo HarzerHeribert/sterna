@@ -1,18 +1,15 @@
-//! Two checks that a task's tests exercise what it changed, run by the host
-//! and costing the model nothing unless they find something.
+//! Whether a task's tests exercise what it changed, checked by the host and
+//! costing the model nothing unless the answer is no.
 //!
-//! - **Red to green** ([`RedCheck`]): when a test command passes and the task
-//!   has changed both test files and code, the same command runs again on a
-//!   copy of the tree with the code put back as it was and the tests kept. A
-//!   test that passes there does not exercise the change, and the model is
-//!   told so. It runs on its own thread in the system's temp folder, so no
-//!   turn waits for it.
-//! - **Related tests** ([`related_tests`]): at the first completion, the test
-//!   files that name a definition the task changed and that no command of the
-//!   task ran.
+//! When a test command passes and the task has changed both test files and
+//! code, the same command runs again on a copy of the tree with the code put
+//! back as it was and the tests kept ([`RedCheck`]). A test that passes there
+//! too does not exercise the change, and the model is told so; a test that
+//! fails there is what a test should do, and nothing is said. It runs on its
+//! own thread in the system's temp folder, so no turn waits for it.
 //!
-//! Neither knows a language or a test runner: a test file is recognised by
-//! its path, the command is the model's own, and the verdict is an exit code.
+//! It knows no language or test runner: a test file is recognised by its
+//! path, the command is the model's own, and the verdict is an exit code.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -26,15 +23,6 @@ use crate::tools::invoke::{self, Args, CancellationToken, ToolContext};
 const RED_DEADLINE: Duration = Duration::from_secs(600);
 /// The largest file copied into a red run's tree.
 const COPY_CAP: u64 = 64 * 1024 * 1024;
-/// The most related test files one completion names.
-const RELATED_NAMED: usize = 6;
-/// The most changed definitions searched for.
-const SYMBOLS_SEARCHED: usize = 24;
-/// Names too common to say anything about which tests use a change.
-const COMMON: &[&str] = &[
-    "self", "this", "main", "init", "test", "tests", "call", "fn", "get", "set", "run", "new",
-    "from", "into", "default", "setup", "teardown", "value", "data", "name", "type", "args",
-];
 
 /// Whether `path` (relative, `/`-separated) is a test file by the
 /// conventions most ecosystems share.
@@ -153,16 +141,11 @@ fn red_run(
     let exit = result?;
     let shown: String = command.chars().take(160).collect();
     let files = code.len();
-    Some(if exit == 0 {
+    (exit == 0).then(|| {
         format!(
             "## Test check\n`{shown}` also passes on the code as it was before your changes to \
              {files} non-test file(s), with your test changes in place: those tests do not \
              exercise what you changed. Make a test that fails on the old behaviour."
-        )
-    } else {
-        format!(
-            "## Test check\n`{shown}` fails on the code as it was before your changes and passes \
-             with them: your tests exercise the change."
         )
     })
 }
@@ -244,84 +227,6 @@ fn run_bounded(profile: &Profile, session: &SessionId, command: &str) -> Option<
     );
     finished.store(true, std::sync::atomic::Ordering::Relaxed);
     outcome.ok()?.exit_code
-}
-
-/// One changed code file for [`related_tests`]: its path relative to the
-/// root, and what it held at task start and holds now.
-pub(super) struct Changed {
-    pub(super) path: PathBuf,
-    pub(super) before: String,
-    pub(super) now: String,
-}
-
-/// The test files that name a definition `changed` touched and that none of
-/// `commands` named, the most-referencing first, with the definitions
-/// searched for; empty when there are none or git cannot search.
-pub(super) fn related_tests(
-    root: &Path,
-    changed: &[Changed],
-    commands: &[String],
-) -> (Vec<String>, Vec<String>) {
-    let mut symbols: Vec<String> = Vec::new();
-    for file in changed {
-        let Some(delta) = crate::runtime::rewrites::delta(
-            &file.before,
-            &file.now,
-            crate::runtime::rewrites::MAX_CHANGES,
-        ) else {
-            continue;
-        };
-        let mut lines: Vec<usize> = delta.added.iter().map(|(line, _)| *line).collect();
-        // A run of removed lines touched the line now in their place.
-        for (old, new) in delta.map.iter().enumerate() {
-            if new.is_none()
-                && let Some(next) = delta.map[old..].iter().flatten().next()
-            {
-                lines.push(*next);
-            }
-        }
-        for name in
-            crate::project::source_context::enclosing_definitions(&file.path, &file.now, &lines)
-        {
-            let specific = name.len() >= 4
-                && !name.starts_with("__")
-                && !name.starts_with("test")
-                && !COMMON.contains(&name.to_lowercase().as_str());
-            if specific && !symbols.contains(&name) {
-                symbols.push(name);
-            }
-        }
-    }
-    symbols.truncate(SYMBOLS_SEARCHED);
-    if symbols.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-    let mut grep = std::process::Command::new("git");
-    grep.arg("-C").arg(root).args(["grep", "-c", "-w", "-F"]);
-    for symbol in &symbols {
-        grep.arg("-e").arg(symbol);
-    }
-    let Some(output) = grep.output().ok() else {
-        return (Vec::new(), symbols);
-    };
-    let mut found: Vec<(String, usize)> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (path, count) = line.rsplit_once(':')?;
-            Some((path.to_string(), count.parse().ok()?))
-        })
-        .filter(|(path, _)| is_test_path(path))
-        .filter(|(path, _)| !commands.iter().any(|command| command_names(command, path)))
-        .collect();
-    found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    (
-        found
-            .into_iter()
-            .take(RELATED_NAMED)
-            .map(|(path, _)| path)
-            .collect(),
-        symbols,
-    )
 }
 
 #[cfg(test)]
@@ -415,10 +320,11 @@ mod tests {
     }
 
     /// The red run puts the code back and keeps the tests: a test that
-    /// fails there exercises the change, one that passes there does not.
+    /// passes there does not exercise the change, and is the one reported;
+    /// a test that fails there says nothing.
     #[cfg(unix)]
     #[test]
-    fn a_red_run_tells_a_test_that_exercises_the_change_from_one_that_does_not() {
+    fn a_red_run_reports_only_a_test_that_passes_without_the_change() {
         let root = repo(
             "red",
             &[("src/value.txt", "value = 1\n"), ("tests/README", "t\n")],
@@ -443,12 +349,7 @@ mod tests {
             "sh tests/check.sh",
             code.clone(),
         ));
-        assert!(
-            exercised
-                .as_deref()
-                .is_some_and(|n| n.contains("fails on the code as it was before")),
-            "{exercised:?}"
-        );
+        assert_eq!(exercised, None);
         let idle = wait(&start_red_check(
             &profile,
             &session,
@@ -464,42 +365,6 @@ mod tests {
             std::fs::read_to_string(root.join("src/value.txt")).unwrap(),
             "value = 2\n"
         );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// Related tests are the test files naming a definition the change
-    /// touched, less those a command already ran.
-    #[cfg(unix)]
-    #[test]
-    fn related_tests_name_a_changed_definition_and_skip_what_ran() {
-        let root = repo(
-            "related",
-            &[
-                (
-                    "src/calc.py",
-                    "def compute_total(items):\n    return sum(items)\n\ndef untouched_helper():\n    return 1\n",
-                ),
-                ("tests/test_calc.py", "from src.calc import compute_total\n"),
-                (
-                    "tests/test_helper.py",
-                    "from src.calc import untouched_helper\n",
-                ),
-            ],
-        );
-        let changed = vec![Changed {
-            path: PathBuf::from("src/calc.py"),
-            before: "def compute_total(items):\n    return sum(items)\n\ndef untouched_helper():\n    return 1\n".into(),
-            now: "def compute_total(items):\n    return sum(items) + 0\n\ndef untouched_helper():\n    return 1\n".into(),
-        }];
-        let (files, symbols) = related_tests(&root, &changed, &[]);
-        assert_eq!(files, vec!["tests/test_calc.py".to_string()], "{symbols:?}");
-        assert_eq!(symbols, vec!["compute_total".to_string()]);
-        let (ran, _) = related_tests(
-            &root,
-            &changed,
-            &["pytest tests/test_calc.py -q".to_string()],
-        );
-        assert!(ran.is_empty(), "{ran:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 

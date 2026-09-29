@@ -89,8 +89,6 @@ pub enum CallSite {
     Cell,
     /// Deriving the acceptance list from the request, before the first turn.
     Acceptance,
-    /// Restating the request as a brief, beside the first turn.
-    Brief,
     /// A cell that did not parse, before its failure reaches the parent.
     ///
     /// Its own site rather than [`CallSite::PostResult`]: there is no result
@@ -319,48 +317,6 @@ pub const ACCEPTANCE: HelperSpec = HelperSpec {
     call_sites: &[CallSite::Acceptance],
 };
 
-/// Restate a request as the brief the task model works from: what the
-/// outcome is, what done means in checkable terms, what must not change,
-/// what is out of scope, and the order to establish and do things.
-///
-/// **Beside the request, never instead of it.** The helper sees only the
-/// request, so it cannot know the code; its job is the shape modern models
-/// work best from -- an explicit goal, success criteria, constraints and
-/// scope, as model makers' prompting guides advise -- and what it may not
-/// do is decide anything the request left open.
-pub const BRIEF: HelperSpec = HelperSpec {
-    name: "brief",
-    summary: "Restate a request as a brief -- goal, what done means, constraints, scope and steps -- never the work.",
-    verb: "briefing",
-    preamble: BRIEF_PREAMBLE,
-    tools: &[],
-    max_tokens: 900,
-    max_turns: 1,
-    input: InputKind::Request,
-    output: OutputKind::Reduction,
-    call_sites: &[CallSite::Brief],
-};
-
-/// The brief helper's whole instruction.
-pub const BRIEF_PREAMBLE: &str = "You turn a person's request to a coding agent into the brief the agent \
-     works from. You do not do the work and you have not seen the code. Never propose a fix, a \
-     cause or a design, and never name a file, function or command the request does not name: \
-     you are returning evidence of what the request asks, never a conclusion about the code. \
-     Keep every requirement, name, number, case and constraint the request states, in its own \
-     words where they matter, and add nothing it does not state or clearly imply. Answer with \
-     exactly these five sections, in this order:\n\
-     Goal: one or two sentences -- the outcome the person wants, and why if the request says.\n\
-     Done when:\n- 2 to 6 lines, each an observable condition a reviewer can check: a behaviour, \
-     an output, a test that passes. Together they cover every part of the request, including \
-     each case, input and edge it names.\n\
-     Constraints:\n- what must keep working or must not change, as the request states or clearly \
-     implies; `- none stated` if nothing is.\n\
-     Out of scope:\n- what the request excludes; `- none stated` if nothing is.\n\
-     Steps:\n1. 3 to 6 numbered steps in order: find what is involved, confirm how it behaves \
-     now, make the change, check each Done-when item. Name no fix.\n\
-     If the request leaves something open that the brief cannot settle, say so in one line \
-     beginning `unclear:` as your last line.";
-
 /// Repair a cell that failed to parse, and change nothing about what it
 /// means.
 ///
@@ -415,7 +371,7 @@ pub const MENDER: HelperSpec = HelperSpec {
 };
 
 /// The roster. **This array is the whole extension point.**
-pub const HELPERS: &[HelperSpec] = &[SCOUT, REDUCER, CHECKER, ACCEPTANCE, MENDER, BRIEF];
+pub const HELPERS: &[HelperSpec] = &[SCOUT, REDUCER, CHECKER, ACCEPTANCE, MENDER];
 
 /// Find a helper by the name the model calls it with.
 pub fn lookup(name: &str) -> Option<&'static HelperSpec> {
@@ -1184,30 +1140,6 @@ pub fn acceptance_list(
     })
 }
 
-/// BRIEF at `CallSite::Brief`: the request restated in the five sections of
-/// [`BRIEF_PREAMBLE`], one toolless request.
-pub fn brief(
-    request: &str,
-    route: HelperRoute<'_>,
-    profile: &crate::sandbox::profile::Profile,
-    session: &crate::contract::SessionId,
-    token: &crate::tools::invoke::CancellationToken,
-) -> Option<HelperRecord> {
-    let spec = HELPERS
-        .iter()
-        .find(|spec| spec.call_sites.contains(&CallSite::Brief))?;
-    let call = run(spec, route, request, profile, session, token);
-    Some(HelperRecord {
-        helper: spec.name.to_string(),
-        verb: spec.verb.to_string(),
-        asked: bounded_ask(request),
-        outcome: call.outcome,
-        turns: call.turns,
-        looked: call.looked,
-        usage: call.usage,
-    })
-}
-
 /// CHECKER at `CallSite::CompletionGate` -- before a completion is accepted
 /// -- plus the result judge (2645) on the checker's own return: the same
 /// one `noul` the preflight Scout's own result is judged with, never
@@ -1804,13 +1736,9 @@ mod tests {
         // rather than reports: it is reached only from a parse failure, where
         // nothing ran and so nothing can be undone.
         assert!(lookup("mend").is_some());
-        // The brief (2026-09-29) is the sixth: pushed beside the first turn,
-        // never offered to a cell.
-        assert!(lookup("brief").is_some());
-        assert!(!BRIEF.call_sites.contains(&CallSite::Cell));
         assert_eq!(
             HELPERS.len(),
-            6,
+            5,
             "the roster is the whole extension point; nothing else may be in it"
         );
     }

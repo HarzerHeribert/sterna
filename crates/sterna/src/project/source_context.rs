@@ -1524,31 +1524,6 @@ fn make(
         complete,
     }
 }
-/// The definitions in `text` -- the file at `path` -- whose lines include one
-/// of `changed` (0-based lines): the functions, methods and classes a change
-/// touched, outer and inner alike, in file order.
-pub(crate) fn enclosing_definitions(path: &Path, text: &str, changed: &[usize]) -> Vec<String> {
-    let lang = Lang::of(path);
-    let lines: Vec<&str> = text.lines().collect();
-    let Some(&last) = changed.iter().max() else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = Vec::new();
-    for (i, line) in lines.iter().enumerate().take(last + 1) {
-        let Some(n) = name(line, lang) else {
-            continue;
-        };
-        let Some((start, end)) = definition(&lines[i..], n, lang) else {
-            continue;
-        };
-        let (start, end) = (start + i, end + i);
-        if changed.iter().any(|&c| c >= start && c < end) && !names.iter().any(|seen| seen == n) {
-            names.push(n.to_string());
-        }
-    }
-    names
-}
-
 /// A resolved `symbol`: a name [`definition`] finds, or a dotted path
 /// (`Class.member`, `Outer.Inner.member`) walked member by member.
 fn locate(lines: &[&str], symbol: &str, lang: Lang) -> Option<(usize, usize)> {

@@ -214,38 +214,6 @@ pub(super) fn start_acceptance<'s>(
     })
 }
 
-/// The brief for this task (`helpers::BRIEF`), written on its own thread
-/// so the first turn does not wait for it: the receiver answers once, and
-/// `TaskState::observe` delivers the brief with the first cell result it is
-/// ready for. `None` when no brief is written -- `brief` off, no helper
-/// model, or a request too short to need one.
-pub(super) fn start_brief(
-    task: &str,
-    session: &Session<'_>,
-) -> Option<std::sync::mpsc::Receiver<Option<crate::helpers::HelperRecord>>> {
-    let helpers = session.config().helpers.clone();
-    // Not gated on `helpers.enabled`: that switch is the model's own
-    // `helper.*` calls, and the model never calls the brief. `brief = true`
-    // and a helper model are the whole opt-in.
-    if !helpers.brief || !request_may_need_the_repository(task) {
-        return None;
-    }
-    let model = helpers.model.clone()?;
-    let effort = helpers.effort.for_helper("brief")?;
-    let (task, profile, id) = (
-        task.to_string(),
-        session.profile.clone(),
-        session.id.clone(),
-    );
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let token = invoke::CancellationToken::new();
-        let route = crate::helpers::HelperRoute::new(&model, effort);
-        let _ = sender.send(crate::helpers::brief(&task, route, &profile, &id, &token));
-    });
-    Some(receiver)
-}
-
 /// "1 check" or "3 checks": the acceptance list's items, as the person
 /// reads them.
 fn checks(count: usize) -> String {
