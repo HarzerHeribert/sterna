@@ -7189,3 +7189,312 @@ fn a_custom_endpoint_is_one_form_and_its_key_goes_on_stdin() {
         String::from_utf8_lossy(&output.stdout)
     );
 }
+
+/// A git repository at `root` with everything in it committed.
+#[cfg(unix)]
+fn committed_repo(root: &Path) {
+    for args in [
+        &["init", "-q"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "start",
+        ],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+}
+
+/// A JavaScript cell that waits `ms` milliseconds of wall time, so work
+/// beside the task can finish before the cell does.
+fn waiting_cell(ms: u64) -> String {
+    assistant_reply(&format!(
+        "```sterna\nconst t0 = Date.now(); while (Date.now() - t0 < {ms}) {{}}\nreturn 1;\n```"
+    ))
+}
+
+/// The brief is written beside the first turn -- no request waits for it --
+/// and arrives with a cell result, never in the request it was written for.
+#[test]
+fn a_brief_is_written_beside_the_first_turn_and_arrives_with_a_cell_result() {
+    let root = scratch_dir("brief-beside");
+    fs::create_dir_all(root.join(".sterna")).unwrap();
+    fs::write(
+        root.join(".sterna/config.toml"),
+        "[helpers]\nacceptance_list = false\npreflight = false\nmodel = \"helper-tier\"\nbrief = true\n",
+    )
+    .unwrap();
+    let main = std::sync::atomic::AtomicUsize::new(0);
+    let (base, bodies) = start_answering_provider(3, move |body| {
+        let request: serde_json::Value = serde_json::from_str(body).unwrap();
+        if request["model"] == "helper-tier" {
+            return assistant_reply(
+                "Goal: the value reads two.\nDone when:\n- the file says two\nConstraints:\n- none stated\nOut of scope:\n- none stated\nSteps:\n1. find it\n2. change it\n3. check it",
+            );
+        }
+        match main.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => waiting_cell(800),
+            _ => ending_reply(),
+        }
+    });
+    let output = run_session(
+        &root,
+        &root.join("rollout.jsonl"),
+        "brief-beside",
+        "please change the value in the file to two",
+        &base,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    let main: Vec<&String> = bodies
+        .iter()
+        .filter(|body| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["model"] != "helper-tier"
+        })
+        .collect();
+    assert_eq!(main.len(), 2, "{bodies:?}");
+    assert!(
+        !main[0].contains("## Brief"),
+        "the first request waited for the brief"
+    );
+    assert!(main[1].contains("## Brief"), "{}", main[1]);
+    assert!(main[1].contains("Done when:"), "{}", main[1]);
+}
+
+/// A test the task wrote, passing, that fails on the code as it was before
+/// the change: Sterna runs it there on its own and says the test exercises
+/// the change.
+#[cfg(unix)]
+#[test]
+fn a_passing_test_is_run_on_the_old_code_and_said_to_exercise_the_change() {
+    let root = scratch_dir("red-check");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(root.join("src/value.txt"), "value = 1\n").unwrap();
+    fs::write(root.join("tests/README"), "tests live here\n").unwrap();
+    committed_repo(&root);
+    let replies = [
+        assistant_reply(
+            "```sterna\nawait bash({command: \"printf 'value = 2\\\\n' > src/value.txt && printf \\\"grep -q 'value = 2' src/value.txt\\\\n\\\" > tests/check_value.sh\"});\n```",
+        ),
+        assistant_reply(
+            "```sterna\nconst r = await bash({command: 'sh tests/check_value.sh'});\nreturn r.exit_code;\n```",
+        ),
+        waiting_cell(2500),
+        ending_reply(),
+    ];
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let (base, bodies) = start_answering_provider(4, move |_| {
+        replies[turn
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .min(3)]
+        .clone()
+    });
+    let output = run_session(
+        &root,
+        &root.with_extension("rollout.jsonl"),
+        "red-check",
+        "change the value",
+        &base,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    assert!(
+        bodies.iter().any(|body| body.contains("## Test check")
+            && body.contains("fails on the code as it was before your changes")),
+        "{bodies:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/value.txt")).unwrap(),
+        "value = 2\n"
+    );
+}
+
+/// At the first completion, test files that use a definition the task
+/// changed and that no command ran hold the answer once; the same answer
+/// again finishes.
+#[cfg(unix)]
+#[test]
+fn tests_that_use_a_changed_definition_and_never_ran_hold_the_first_answer() {
+    let root = scratch_dir("related-tests");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(
+        root.join("src/calc.py"),
+        "def compute_total(items):\n    return sum(items)\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tests/test_calc.py"),
+        "from src.calc import compute_total\n\ndef test_total():\n    assert compute_total([1, 2]) == 3\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tests/test_other.py"),
+        "def test_other():\n    assert True\n",
+    )
+    .unwrap();
+    committed_repo(&root);
+    let replies = [
+        assistant_reply("```sterna\nawait context({path:'src/calc.py'});\n```"),
+        assistant_reply(
+            "```sterna\nawait edit({path:'src/calc.py', old:'return sum(items)', replacement:'return sum(items) + 0'});\nanswer(\"done\");\n```",
+        ),
+        ending_reply(),
+    ];
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let (base, bodies) = start_answering_provider(3, move |_| {
+        replies[turn
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .min(2)]
+        .clone()
+    });
+    let output = run_session(
+        &root,
+        &root.join("rollout.jsonl"),
+        "related-tests",
+        "make the total exact",
+        &base,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 3, "the answer was not held once: {bodies:?}");
+    assert!(
+        bodies[2].contains("Tests that use what you changed were not run: `tests/test_calc.py`"),
+        "{}",
+        bodies[2]
+    );
+    assert!(!bodies[2].contains("test_other.py"), "{}", bodies[2]);
+}
+
+/// With `brief` off, a request long enough for one is sent no brief.
+#[test]
+fn no_brief_is_written_unless_asked_for() {
+    let root = scratch_dir("no-brief");
+    fs::create_dir_all(root.join(".sterna")).unwrap();
+    fs::write(
+        root.join(".sterna/config.toml"),
+        "[helpers]\nacceptance_list = false\npreflight = false\nmodel = \"helper-tier\"\n",
+    )
+    .unwrap();
+    let (base, bodies) = start_answering_provider(2, |_| ending_reply());
+    let output = run_session(
+        &root,
+        &root.join("rollout.jsonl"),
+        "no-brief",
+        "please change the value in the file to two",
+        &base,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    assert!(
+        bodies.iter().all(
+            |body| serde_json::from_str::<serde_json::Value>(body).unwrap()["model"]
+                != "helper-tier"
+        ),
+        "a brief was written with `brief` off"
+    );
+}
+
+/// The replies of one red-check task: set up, run the test, wait, answer.
+#[cfg(unix)]
+fn red_check_run(label: &str, setup: &str, test: &str, rollout_inside: bool) -> Vec<String> {
+    let root = scratch_dir(label);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(root.join("src/value.txt"), "value = 1\n").unwrap();
+    fs::write(root.join("tests/README"), "tests live here\n").unwrap();
+    committed_repo(&root);
+    let replies = [
+        assistant_reply(&format!(
+            "```sterna\nawait bash({{command: {setup:?}}});\n```"
+        )),
+        assistant_reply(&format!(
+            "```sterna\nconst r = await bash({{command: {test:?}}});\nreturn r.exit_code;\n```"
+        )),
+        waiting_cell(2500),
+        ending_reply(),
+    ];
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let (base, bodies) = start_answering_provider(4, move |_| {
+        replies[turn
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .min(3)]
+        .clone()
+    });
+    // Where a real session keeps its rollout, under `.sterna/`, or outside
+    // the project: in the root it would count as code the task changed.
+    let rollout = if rollout_inside {
+        fs::create_dir_all(root.join(".sterna")).unwrap();
+        root.join(".sterna/rollout.jsonl")
+    } else {
+        root.with_extension("rollout.jsonl")
+    };
+    let output = run_session(&root, &rollout, label, "change the value", &base);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    bodies.lock().unwrap().clone()
+}
+
+/// A test run that failed, or one with no code changed beside it, is not
+/// run again on the old code: there is nothing it could show.
+#[cfg(unix)]
+#[test]
+fn a_failing_run_or_one_with_no_code_changed_is_not_run_on_the_old_code() {
+    // The code changes in the same cell the failing test runs, so the cell
+    // has its own snapshot and only the exit code can keep it unchecked.
+    let failing = red_check_run(
+        "red-check-failing",
+        "printf \"grep -q 'value = 3' src/value.txt\\n\" > tests/check_value.sh",
+        "printf 'value = 2\\n' > src/value.txt && sh tests/check_value.sh",
+        false,
+    );
+    assert!(
+        failing.iter().all(|body| !body.contains("## Test check")),
+        "{failing:?}"
+    );
+    // Sterna's own state -- the rollout under `.sterna/` -- is not code.
+    let tests_only = red_check_run(
+        "red-check-tests-only",
+        "printf \"grep -q 'value = 1' src/value.txt\\n\" > tests/check_value.sh",
+        "sh tests/check_value.sh",
+        true,
+    );
+    assert!(
+        tests_only
+            .iter()
+            .all(|body| !body.contains("## Test check")),
+        "{tests_only:?}"
+    );
+}

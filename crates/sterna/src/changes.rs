@@ -489,6 +489,17 @@ impl Snapshot {
         }
     }
 
+    /// What `path` (relative to the root) held at this snapshot: `Some(None)`
+    /// when it did not exist, `None` when that cannot be known -- a walked
+    /// snapshot keeps no contents, and a file past `limit` none either.
+    pub fn content(&self, path: &Path, limit: u64) -> Option<Option<Vec<u8>>> {
+        match self.resolved(path, limit) {
+            Some(state) => state.bytes.map(Some),
+            None if self.origin == Origin::Derived => Some(None),
+            None => None,
+        }
+    }
+
     /// The file's state at this snapshot with its bytes filled in where they
     /// can be had: from what was kept, or -- for a path git called clean --
     /// from its `HEAD` blob, which is what that file held.

@@ -502,6 +502,15 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
+        key: "helpers.brief",
+        label: "Brief from the request",
+        description: "Restate a longer request as a brief -- goal, what done means, constraints, scope, steps -- beside the first turn, delivered with the first cell result it is ready for. The request stays the authority.",
+        kind: Kind::Bool,
+        choices: &[],
+        basic: false,
+        restart: true,
+    },
+    SettingSpec {
         key: "helpers.reduce_returns",
         label: "Reduce returned logs",
         description: "Ask the decision model what kind of text a large returned field is, and send a log to the reducer before the model reads it. Needs a decisions model.",
@@ -1325,6 +1334,7 @@ pub fn shown_default(key: &str) -> Option<String> {
             .to_string(),
         "helpers.completion_check" => helpers.completion_check.as_str().into(),
         "helpers.acceptance_list" => helpers.acceptance_list.to_string(),
+        "helpers.brief" => helpers.brief.to_string(),
         "helpers.preflight_scope" => "auto".into(),
         "helpers.reduce_above_tokens" => helpers.reduce_above_tokens.to_string(),
         "helpers.reduce_returns" => helpers.reduce_returns.to_string(),

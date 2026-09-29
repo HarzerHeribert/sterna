@@ -29,6 +29,7 @@ that executes them all, so a new helper cannot add a new failure mode.
 | **checker** (`check`) | whether a claim holds, as a verdict plus its evidence | `read`, `grep` | in a cell; at the completion gate |
 | **acceptance** | the request turned into a checklist of verifiable items | none | before the first turn, when `helpers.acceptance_list` is on and no dissection writes the list (its `## Accept` section, after a look at the project); after a dissection that named none |
 | **mender** | the syntax of a cell that failed to parse, repaired without changing its meaning | none | when a cell does not parse |
+| **brief** | the request restated as a brief: goal, what done means as checkable items, constraints, scope, steps | none | beside the first turn when `helpers.brief` is on; delivered with the first cell result it is ready for, added beside the request and never in its place |
 
 Inside a cell a helper call is an ordinary `await`, so it can sit in a
 `catch` or a branch and costs no turn:
@@ -98,6 +99,27 @@ saved `true` or `false` from before is rewritten once as `auto` or `off`.
 A checker called inside the same
 cell as a completion turns that completion into a candidate: the parent sees
 the checker's verdict in a further turn before the task may end.
+
+### Tests that exercise the change
+
+Two checks need no model and cost the model nothing unless they find
+something. Neither knows a language or a test runner: a test file is
+recognised by its path (`tests/`, `test_`, `_test.`, `.test.`, `.spec.`,
+`…Test.java`), the command is the model's own, and the verdict is an exit
+code.
+
+- **Red to green.** When a command that runs a changed test file passes and
+  the task has changed code too, Sterna copies the project into a temp
+  folder, puts the changed code back as it was when the task started, keeps
+  the tests, and runs the same command there on its own thread. The next
+  cell result says whether the tests fail on the old code -- they exercise
+  the change -- or pass there too, and then do not. A command that writes
+  the test file (a `>` into it, `tee`, `cp`) is not a run. Git projects
+  only; one run at a time.
+- **Related tests.** At the first completion, test files that name a
+  function, method or class the task changed, and that no command of the
+  task named, hold the answer once, the way a final-state finding does. The
+  same answer again finishes.
 
 After a task that had to search, Sterna notes where things live in
 `.sterna/learned.md` and reads those notes into the next task

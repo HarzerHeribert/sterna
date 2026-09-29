@@ -73,6 +73,7 @@ mod startup;
 mod system;
 use system::{estimate_request_tokens, estimate_task_request_tokens};
 mod task;
+mod test_check;
 mod usage;
 
 pub use system::{MANIFEST_PROBE, session_facts, session_facts_with, system_manifest};
@@ -1203,6 +1204,7 @@ fn run_task_inner(
     let mut swept_at_messages: Option<usize> = None;
     let mut last_cell_threw = false;
     let mut task_state = TaskState::new(task, &request_profile, &session.config())
+        .with_brief(system::start_brief(task, session), session.id)
         .with_acceptance(acceptance_items, acceptance_from)
         .with_decision(
             decision,
@@ -1403,10 +1405,7 @@ fn run_task_inner(
         transcript.notebook.handlers = runtime.handlers();
         transcript.notebook.inbox_depth = window.depth() + runtime.batch_rolling_depth();
         transcript.notebook.decision = task_state.decision_line(&session.config().decisions);
-        let mut observed = Observed {
-            notices: Vec::new(),
-            capsule_block: None,
-        };
+        let mut observed = Observed::default();
         if let Some(record) = &step.record {
             let error = step
                 .view
@@ -1418,6 +1417,7 @@ fn run_task_inner(
                 .as_ref()
                 .map(|(before, after)| (before, after));
             observed = task_state.observe(record, error, &runtime.plan(), snapshots);
+            budget.add_helpers(&observed.helpers);
             step.view.capsule = Some(task_state.capsule.to_json());
         }
         task_state.previous_failed = step.view.error.is_some();

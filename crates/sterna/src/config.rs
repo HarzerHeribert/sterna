@@ -282,6 +282,12 @@ pub struct HelpersConfig {
     /// check it when the model claims completion (`acceptance.rs`). One
     /// cheap toolless request per task; the list is shown to the model.
     pub acceptance_list: bool,
+    /// Restate the request as a brief -- goal, what done means, constraints,
+    /// scope, steps -- in a cheap request beside the first turn, delivered
+    /// with the first cell result it is ready for (`session::system`'s
+    /// `start_brief`). The request stays the authority; the brief is added
+    /// beside it, never in its place.
+    pub brief: bool,
     pub enabled: bool,
     /// The most helper calls one cell may make, so a loop cannot issue three
     /// hundred requests inside a single program.
@@ -394,6 +400,8 @@ pub struct HelperEfforts {
     pub accept: crate::wire::Effort,
     /// The mender: the punctuation of a cell that did not parse.
     pub mend: crate::wire::Effort,
+    /// The brief: a request restated in fixed sections.
+    pub brief: crate::wire::Effort,
 }
 
 impl HelperEfforts {
@@ -404,6 +412,7 @@ impl HelperEfforts {
             "check" => Some(self.check),
             "accept" => Some(self.accept),
             "mend" => Some(self.mend),
+            "brief" => Some(self.brief),
             // No silent provider-default fallback: a new helper must choose a
             // hard policy and become a config key before it can run.
             _ => None,
@@ -428,6 +437,8 @@ impl Default for HelperEfforts {
             // deliberate about, and a model reasoning at length over a
             // missing brace is spending the turn this exists to save.
             mend: crate::wire::Effort::Low,
+            // Restating a request is reading, not deciding.
+            brief: crate::wire::Effort::Low,
         }
     }
 }
@@ -474,6 +485,7 @@ impl Default for HelpersConfig {
             // Off: its derived items were the false alarms measured that day
             // (a prose "contains" item, a command the machine lacks).
             acceptance_list: false,
+            brief: false,
             enabled: true,
             calls_per_cell: 8,
             reduce_above_tokens: 2048,
@@ -1228,6 +1240,7 @@ fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {
             "completion",
             "completion_check",
             "acceptance_list",
+            "brief",
             "reduce_above_tokens",
             "reduce_returns",
             "prefetch_returns",
@@ -1293,6 +1306,12 @@ fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {
             .as_bool()
             .ok_or_else(|| "config.toml: `acceptance_list` must be true or false".to_string())?,
     };
+    let brief = match table.get("brief") {
+        None => defaults.brief,
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| "config.toml: `brief` must be true or false".to_string())?,
+    };
     let completion_check = match table.get("completion_check") {
         None => defaults.completion_check,
         Some(value) => CompletionCheck::parse(value.as_str().ok_or_else(|| {
@@ -1338,6 +1357,7 @@ fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {
         completion,
         completion_check,
         acceptance_list,
+        brief,
         enabled,
         calls_per_cell,
         reduce_above_tokens,
@@ -1353,9 +1373,9 @@ fn parse_helpers(value: &toml::Value) -> Result<HelpersConfig, String> {
 fn parse_helper_efforts(value: &toml::Value) -> Result<HelperEfforts, String> {
     let table = table_of(value, "helpers.effort")?;
     for key in table.keys() {
-        if !["find", "reduce", "check", "accept", "mend"].contains(&key.as_str()) {
+        if !["find", "reduce", "check", "accept", "mend", "brief"].contains(&key.as_str()) {
             return Err(format!(
-                "config.toml: unknown key `{key}` in [helpers.effort]; only `find`, `reduce`, `check`, `accept` and `mend` are recognised"
+                "config.toml: unknown key `{key}` in [helpers.effort]; only `find`, `reduce`, `check`, `accept`, `mend` and `brief` are recognised"
             ));
         }
     }
@@ -1385,6 +1405,7 @@ fn parse_helper_efforts(value: &toml::Value) -> Result<HelperEfforts, String> {
         accept: read("accept", defaults.accept)?,
         check: read("check", defaults.check)?,
         mend: read("mend", defaults.mend)?,
+        brief: read("brief", defaults.brief)?,
     })
 }
 

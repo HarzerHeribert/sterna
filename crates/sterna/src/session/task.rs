@@ -260,12 +260,16 @@ impl TaskSpend {
 }
 
 /// What one cell's observation added to the next turn's feedback.
+#[derive(Default)]
 pub(super) struct Observed {
     /// Lines every form of the feedback carries — a no-progress notice.
     pub(super) notices: Vec<String>,
     /// The `## Task` block for the live feedback only: state the next
     /// request replaces, never history.
     pub(super) capsule_block: Option<String>,
+    /// Helper calls that finished beside the cell -- the brief -- for the
+    /// task's spend.
+    pub(super) helpers: Vec<crate::helpers::HelperRecord>,
 }
 
 /// Everything the task loop learns across cells that a terminal return is
@@ -387,6 +391,19 @@ pub(super) struct TaskState {
     pub(super) approval_hints: u32,
     /// This task's approval-hint requests that failed or timed out.
     pub(super) approval_hint_failures: u32,
+    /// The brief being written beside the first turn, until it arrives.
+    brief: Option<std::sync::mpsc::Receiver<Option<crate::helpers::HelperRecord>>>,
+    /// Every command the task's `bash` calls ran, for what the test checks
+    /// count as run.
+    commands: Vec<String>,
+    /// The profile and session a red run executes under.
+    profile: Profile,
+    session_id: Option<crate::contract::SessionId>,
+    /// The red run in flight, and the command and tree it was asked of.
+    red_check: Option<super::test_check::RedCheck>,
+    red_checked: std::collections::BTreeSet<String>,
+    /// Whether the first completion has been searched for related tests.
+    related_checked: bool,
 }
 
 /// One `gate` call's completion-question telemetry (2616): the cached wire
@@ -411,6 +428,24 @@ pub(super) struct CompletionTelemetry {
     /// How many acceptance `judge` items this call's answer settled, `{yes,
     /// no, undecided}` (2642).
     pub(super) judged: serde_json::Value,
+}
+
+/// The largest file a red run puts back to its task-start bytes.
+const RED_FILE_CAP: u64 = 16 * 1024 * 1024;
+
+/// The brief as the model is shown it, when the helper answered in its
+/// sections; a malformed answer is dropped rather than shown.
+fn brief_notice(outcome: &crate::helpers::HelperOutcome) -> Option<String> {
+    let text = outcome.text.trim();
+    if !outcome.ok || !text.contains("Goal:") || !text.contains("Done when:") {
+        return None;
+    }
+    let text: String = text.chars().take(3_000).collect();
+    Some(format!(
+        "## Brief\nA helper restated the request as goals and checks. The request is the \
+         authority: where they differ, follow it. Before you answer, confirm each Done-when \
+         item against the code or a check you ran.\n\n{text}"
+    ))
 }
 
 impl TaskState {
@@ -468,7 +503,26 @@ impl TaskState {
             completion_decision: None,
             approval_hints: 0,
             approval_hint_failures: 0,
+            brief: None,
+            commands: Vec::new(),
+            profile: profile.clone(),
+            session_id: None,
+            red_check: None,
+            red_checked: std::collections::BTreeSet::new(),
+            related_checked: false,
         }
+    }
+
+    /// The brief being written for this task, and the session a red run
+    /// executes under.
+    pub(super) fn with_brief(
+        mut self,
+        brief: Option<std::sync::mpsc::Receiver<Option<crate::helpers::HelperRecord>>>,
+        session: &crate::contract::SessionId,
+    ) -> Self {
+        self.brief = brief;
+        self.session_id = Some(session.clone());
+        self
     }
 
     /// The request-derived acceptance list this task is checked against.
@@ -716,10 +770,114 @@ impl TaskState {
             rendered
         });
         self.previous_frame = Some(record.clone());
+        let mut helpers = Vec::new();
+        if let Some(receiver) = &self.brief {
+            match receiver.try_recv() {
+                Ok(record) => {
+                    self.brief = None;
+                    if let Some(record) = record {
+                        notices.extend(brief_notice(&record.outcome));
+                        helpers.push(record);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.brief = None,
+            }
+        }
+        self.consider_red_check(record, snapshots.map(|(_, after)| after));
+        if let Some(finished) = self.red_check.as_ref().and_then(|check| check.poll()) {
+            self.red_check = None;
+            notices.extend(finished);
+        }
         Observed {
             notices,
             capsule_block,
+            helpers,
         }
+    }
+
+    /// Starts a red run when this cell ran a test command that passed and
+    /// named a test file the task changed, the task changed code too, and
+    /// neither that command on this tree nor another red run is under way
+    /// (`test_check`). Commands are recorded here for the related-tests
+    /// search whatever they did.
+    fn consider_red_check(&mut self, record: &CellRecord, now: Option<&crate::changes::Snapshot>) {
+        for call in &record.calls {
+            if call.tool == "bash"
+                && let Some(command) = call.args.get("command")
+            {
+                self.commands.push(command.clone());
+            }
+        }
+        if self.red_check.is_some() || self.last_mutation_cell.is_none() {
+            return;
+        }
+        // A cell that only ran tests changed nothing, so the session kept no
+        // snapshot of it; one is taken only when a command passed.
+        let captured;
+        let now = match now {
+            Some(now) => now,
+            None if record
+                .calls
+                .iter()
+                .any(|call| call.tool == "bash" && call.exit_code == Some(0)) =>
+            {
+                captured = crate::changes::Snapshot::capture(&self.profile);
+                &captured
+            }
+            None => return,
+        };
+        let Some(session) = self.session_id.as_ref() else {
+            return;
+        };
+        // Sterna's own state is not the project's code.
+        let changed: Vec<_> = self
+            .task_start
+            .changed_paths(now)
+            .into_iter()
+            .filter(|(path, _)| !path.starts_with(".sterna"))
+            .collect();
+        let (tests, code): (Vec<_>, Vec<_>) = changed.iter().partition(|(path, _)| {
+            super::test_check::is_test_path(&path.to_string_lossy().replace('\\', "/"))
+        });
+        if tests.is_empty() || code.is_empty() {
+            return;
+        }
+        let digest = now.digest();
+        let Some(command) = record
+            .calls
+            .iter()
+            .filter(|call| call.tool == "bash" && call.exit_code == Some(0))
+            .filter_map(|call| call.args.get("command"))
+            .find(|command| {
+                tests.iter().any(|(path, _)| {
+                    super::test_check::runs_test(
+                        command,
+                        &path.to_string_lossy().replace('\\', "/"),
+                    )
+                })
+            })
+        else {
+            return;
+        };
+        if !self.red_checked.insert(format!("{digest}\n{command}")) {
+            return;
+        }
+        let mut before = Vec::new();
+        for (path, _) in &code {
+            match self.task_start.content(path, RED_FILE_CAP) {
+                Some(bytes) => before.push((path.clone(), bytes)),
+                // What the file held is not known, so the old code cannot
+                // be rebuilt and there is nothing honest to run.
+                None => return,
+            }
+        }
+        self.red_check = Some(super::test_check::start_red_check(
+            &self.profile,
+            session,
+            command,
+            before,
+        ));
     }
 
     /// The evidence gate on a terminal candidate: the deterministic
@@ -777,6 +935,10 @@ impl TaskState {
                     verification.exit_code.unwrap_or_default()
                 ),
             });
+        }
+        if !self.related_checked {
+            self.related_checked = true;
+            findings.extend(self.related_tests_finding(root, after));
         }
         let has_acceptance = !self.acceptance.is_empty();
         if has_acceptance {
@@ -1048,6 +1210,56 @@ impl TaskState {
         (Some(text), None)
     }
 
+    /// The test files that use a definition this task changed and that none
+    /// of its commands ran, as one finding (`test_check::related_tests`).
+    fn related_tests_finding(
+        &self,
+        root: &std::path::Path,
+        now: &crate::changes::Snapshot,
+    ) -> Option<crate::completion::Finding> {
+        let mut changed = Vec::new();
+        for (path, kind) in self.task_start.changed_paths(now) {
+            let relative = path.to_string_lossy().replace('\\', "/");
+            if kind != crate::changes::ChangeKind::Modified
+                || super::test_check::is_test_path(&relative)
+            {
+                continue;
+            }
+            let Some(Some(before)) = self.task_start.content(&path, RED_FILE_CAP) else {
+                continue;
+            };
+            let (Ok(before), Ok(now)) = (
+                String::from_utf8(before),
+                std::fs::read_to_string(root.join(&path)),
+            ) else {
+                continue;
+            };
+            changed.push(super::test_check::Changed { path, before, now });
+        }
+        let (files, symbols) = super::test_check::related_tests(root, &changed, &self.commands);
+        if files.is_empty() {
+            return None;
+        }
+        let quoted = |items: &[String]| {
+            items
+                .iter()
+                .take(6)
+                .map(|item| format!("`{item}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        Some(crate::completion::Finding {
+            kind: crate::completion::FindingKind::RelatedTestsUnrun,
+            path: None,
+            sentence: format!(
+                "Tests that use what you changed were not run: {} (they use {}). Run them with the \
+                 project's test runner.",
+                quoted(&files),
+                quoted(&symbols)
+            ),
+        })
+    }
+
     /// Once the answer stands: the notes the gate did not hold on, shown to
     /// the person, and the fresh checker started behind the answer
     /// (`after.rs`), once per task.
@@ -1243,4 +1455,32 @@ pub(super) fn partial_effects(record: &CellRecord, threw: bool) -> Option<String
          throw did not run.",
         lines.join("; ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outcome(text: &str) -> crate::helpers::HelperOutcome {
+        crate::helpers::HelperOutcome {
+            text: text.into(),
+            ok: true,
+            cancelled: false,
+            elapsed_ms: 1,
+        }
+    }
+
+    /// A brief that is not in its sections is dropped, never shown as one.
+    #[test]
+    fn only_a_brief_in_its_sections_is_shown() {
+        let shown = brief_notice(&outcome("Goal: two.\nDone when:\n- it reads two"));
+        assert!(
+            shown
+                .as_deref()
+                .is_some_and(|text| text.starts_with("## Brief\n"))
+        );
+        assert!(shown.unwrap().contains("The request is the authority"));
+        assert!(brief_notice(&outcome("Just change the value.")).is_none());
+        assert!(brief_notice(&outcome("Goal: two, and nothing else")).is_none());
+    }
 }

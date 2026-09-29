@@ -317,7 +317,12 @@ fn agents_take_their_own_model_from_configuration() {
     )
     .unwrap();
 
-    let config = sterna::config::SternaConfig::load(&root).expect("the file parses");
+    // Without the person's own global file: a global `[agents] mode` would
+    // decide this test for whoever runs it.
+    let config = sterna::settings::Store::with_global(&root, None)
+        .and_then(|store| store.load(None))
+        .map(|loaded| loaded.config)
+        .expect("the file parses");
     assert_eq!(config.helpers.model.as_deref(), Some("gpt-5.6-luna"));
     assert_eq!(config.agents.model.as_deref(), Some("claude-sonnet-5"));
 }
