@@ -6798,8 +6798,8 @@ fn the_event_stream_announces_a_cell_before_it_runs() {
     );
 }
 
-/// The main model's effort, as one task's first request asks for it.
-fn first_request_effort(config: Option<&str>, model_flag: bool) -> serde_json::Value {
+/// One task's first request to the main model, as the provider received it.
+fn first_request(config: Option<&str>, model_flag: bool) -> serde_json::Value {
     let root = scratch_dir("turn-effort");
     if let Some(config) = config {
         fs::create_dir_all(root.join(".sterna")).unwrap();
@@ -6827,8 +6827,23 @@ fn first_request_effort(config: Option<&str>, model_flag: bool) -> serde_json::V
         String::from_utf8_lossy(&output.stderr)
     );
     let bodies = bodies.lock().unwrap();
-    let first: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
-    first["output_config"]["effort"].clone()
+    serde_json::from_str(&bodies[0]).unwrap()
+}
+
+/// The main model's effort, as one task's first request asks for it.
+fn first_request_effort(config: Option<&str>, model_flag: bool) -> serde_json::Value {
+    first_request(config, model_flag)["output_config"]["effort"].clone()
+}
+
+/// A one-task run has nobody watching it live, so its GPT requests never
+/// ask for a reasoning summary: one cost 1.7 s a request (2026-09-29).
+#[test]
+fn a_run_nobody_watches_asks_for_no_reasoning_summary() {
+    let first = first_request(Some("[model]\nparent = \"gpt-6-sol\"\n"), false);
+    assert!(
+        first["thinking"]["display"].is_null(),
+        "a headless request asked for a summary: {first}"
+    );
 }
 
 /// Left at `default`, a GPT main model asks for `low` -- what the ruler's

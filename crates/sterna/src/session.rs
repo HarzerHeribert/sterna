@@ -2346,6 +2346,9 @@ fn send_task_turn(
     prompt::keep_recent_results(&mut request, session.config().limits.keep_results);
     let conversation = &request;
     let surface = session.surface();
+    // A reasoning summary only where a person watches the work live, and
+    // there only now and then (`wire::SUMMARY_EVERY`).
+    session.routing.plan_summary(session.ui.is_some());
     if let Some(ui) = session.ui {
         wire::send_turn_streaming_cancellable(
             conversation.clone(),

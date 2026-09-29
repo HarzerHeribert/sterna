@@ -216,7 +216,8 @@ pub fn set_cache_key(session: &str) {
     let _ = CACHE_KEY.set(session.to_string());
 }
 
-/// The main model's request asks for a readable summary of its reasoning.
+/// A main-model request the session chose to summarise
+/// ([`TurnRouting::plan_summary`]) asks for a readable summary of its reasoning.
 ///
 /// Behind the subscription broker a GPT model's reasoning otherwise arrives
 /// encrypted only; `thinking.display = "summarized"` is what CLIProxyAPI turns
@@ -282,19 +283,58 @@ pub const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 /// whole turn and never carry it into the next one ([`TurnRouting::clear`]
 /// at each task start). Only the main model's requests carry it.
 #[derive(Debug, Default)]
-pub struct TurnRouting(std::sync::Mutex<Option<String>>);
+pub struct TurnRouting {
+    token: std::sync::Mutex<Option<String>>,
+    /// When this task last asked for a reasoning summary ([`Self::plan_summary`]).
+    summarized: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Whether the next main-model request asks for one.
+    summary_next: std::sync::atomic::AtomicBool,
+}
+
+/// How often, at most, a watched session asks the main model for a readable
+/// summary of its reasoning after the task's first request.
+///
+/// A summary costs time, not tokens: 16 paired requests through the gateway
+/// (gpt-6-sol, low effort, 2026-09-29) took 5.1 s with one and 3.4 s without,
+/// slower in every pair at the same output. Asked on every request it was a
+/// third of a turn's latency; the person watching needs it only often enough
+/// to stay in the loop, and a run nobody watches needs none.
+pub const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl TurnRouting {
+    /// A new task: a new routing token, and the task's first request is
+    /// summarised again.
     pub fn clear(&self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.summarized.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     pub fn token(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Decides whether the next main-model request asks for a reasoning
+    /// summary: never when nobody watches the session live; otherwise the
+    /// task's first request, and then one every [`SUMMARY_EVERY`].
+    pub fn plan_summary(&self, watched: bool) {
+        let due = watched && {
+            let mut last = self.summarized.lock().unwrap_or_else(|e| e.into_inner());
+            let due = last.is_none_or(|at| at.elapsed() >= SUMMARY_EVERY);
+            if due {
+                *last = Some(std::time::Instant::now());
+            }
+            due
+        };
+        self.summary_next
+            .store(due, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn wants_summary(&self) -> bool {
+        self.summary_next.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn observe(&self, headers: &ureq::http::HeaderMap) {
-        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.token.lock().unwrap_or_else(|e| e.into_inner());
         if held.is_none()
             && let Some(value) = headers.get(TURN_STATE_HEADER).and_then(|v| v.to_str().ok())
         {
@@ -1029,8 +1069,11 @@ pub fn send_turn_bounded_routed(
 ) -> Result<Turn, WireError> {
     let url = format!("{}{MESSAGES_PATH}", base_url());
     let mut body = request_body_for_surface(conversation, model, effort, surface);
-    if routing.is_some() {
-        body = with_history_breakpoint(with_reasoning_summary(body, model), model);
+    if let Some(routing) = routing {
+        if routing.wants_summary() {
+            body = with_reasoning_summary(body, model);
+        }
+        body = with_history_breakpoint(body, model);
     }
 
     let mut builder = ureq::post(&url).config().http_status_as_error(false);
@@ -1998,10 +2041,12 @@ fn send_turn_streaming_while(
         effort,
         Allowance::Model(max_tokens),
     );
-    let body = if routing.is_some() {
-        with_history_breakpoint(with_reasoning_summary(body, model), model)
-    } else {
-        body
+    let body = match routing {
+        Some(routing) if routing.wants_summary() => {
+            with_history_breakpoint(with_reasoning_summary(body, model), model)
+        }
+        Some(_) => with_history_breakpoint(body, model),
+        None => body,
     };
 
     let mut request = ureq::post(&url)
@@ -2434,6 +2479,41 @@ mod tests {
     /// The main model asks for readable reasoning on a GPT route, at the
     /// effort GPT-6 applies anyway when none is named; Claude routes and every
     /// other caller's requests are left as they were.
+    /// Nobody watching gets no summary; a watched task gets one on its
+    /// first request and then no more than one per [`SUMMARY_EVERY`]; a new
+    /// task starts the count again.
+    #[test]
+    fn a_reasoning_summary_is_asked_for_only_now_and_then_and_only_when_watched() {
+        let routing = TurnRouting::default();
+        routing.plan_summary(false);
+        assert!(
+            !routing.wants_summary(),
+            "a run nobody watches asks for none"
+        );
+        routing.plan_summary(true);
+        assert!(
+            routing.wants_summary(),
+            "the task's first watched request asks"
+        );
+        routing.plan_summary(true);
+        assert!(
+            !routing.wants_summary(),
+            "the next one, seconds later, does not"
+        );
+        *routing.summarized.lock().unwrap() =
+            Some(std::time::Instant::now() - SUMMARY_EVERY - std::time::Duration::from_secs(1));
+        routing.plan_summary(true);
+        assert!(routing.wants_summary(), "one per interval after that");
+        routing.plan_summary(true);
+        assert!(!routing.wants_summary());
+        routing.clear();
+        routing.plan_summary(true);
+        assert!(
+            routing.wants_summary(),
+            "a new task's first request asks again"
+        );
+    }
+
     #[test]
     fn the_main_models_gpt_request_asks_for_a_reasoning_summary() {
         let body = |model: &str| {

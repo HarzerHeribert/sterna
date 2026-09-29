@@ -46,6 +46,10 @@ bottom.
   and its helpers. While a cell is still being written, each action gets a
   row with a live character count (`ui.stream = actions | code | raw`).
   Every cell carries the model's one-line description of what it is for.
+  A summary of the model's reasoning is asked for on a task's first turn
+  and then at most every 30 seconds: each one costs the provider about
+  1.7 s, and the cell descriptions already say what every turn does. A run
+  nobody watches (`--task`, `-p`, `exec`) asks for none.
 - **The dock** carries the live status, a notice for a few seconds, an undo
   chip for the last change, the everyday chips, one hint and the context
   reading.
