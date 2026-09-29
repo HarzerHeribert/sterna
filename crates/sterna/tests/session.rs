@@ -4898,7 +4898,13 @@ fn nested_instructions_reach_the_provider_before_a_write_can_execute() {
                 )
             }
             _ => {
-                assert!(system.contains("NESTED_GUIDANCE: write the word verified."));
+                // The system prompt is never edited mid-task: a changed
+                // prompt makes every later request miss the provider's
+                // cache. The guidance rides the stopped cell's result.
+                assert!(
+                    !system.contains("NESTED_GUIDANCE:"),
+                    "the delivery edited the system prompt"
+                );
                 let result = request["messages"]
                     .as_array()
                     .unwrap()
@@ -4906,7 +4912,12 @@ fn nested_instructions_reach_the_provider_before_a_write_can_execute() {
                     .flat_map(|m| m["content"].as_array().into_iter().flatten())
                     .find(|b| b["type"] == "tool_result" && b["tool_use_id"] == "blocked")
                     .unwrap();
-                assert!(result["content"].as_str().unwrap().contains("did not run"));
+                let content = result["content"].as_str().unwrap();
+                assert!(content.contains("did not run"), "{content}");
+                assert!(
+                    content.contains("NESTED_GUIDANCE: write the word verified."),
+                    "the guidance reaches the model before the write can run: {content}"
+                );
                 native_cell_reply(
                     "allowed",
                     "await write({path: 'nested/result.txt', content: 'verified'}); answer('done');",
@@ -4924,7 +4935,11 @@ fn nested_instructions_reach_the_provider_before_a_write_can_execute() {
     assert_eq!(bodies.lock().unwrap().len(), 2);
     assert_eq!(fs::read_to_string(target).unwrap(), "verified");
     let resumed = sterna::rollout::resume(&log).unwrap();
-    assert!(resumed.system.contains("NESTED_GUIDANCE:"));
+    assert!(!resumed.system.contains("NESTED_GUIDANCE:"));
+    assert!(
+        format!("{:?}", resumed.messages).contains("NESTED_GUIDANCE:"),
+        "a resumed session still holds the delivered guidance"
+    );
     let rows = rollout_lines(&log);
     let calls: usize = rows
         .iter()

@@ -1,11 +1,15 @@
 //! Task-scoped gate between path discovery and side effects.
 //!
-//! The gate is task-scoped; what it delivers is not. A delivery is appended
-//! to the system prompt, which outlives the task whenever nothing it is built
-//! from changed (`session::system::keep_session_system`). So a task's gate is
-//! seeded with that prompt ([`InstructionContext::seed_delivered`]) and does
-//! not deliver a document the prompt already carries word for word: session
-//! tm3hb2-1k3n (2026-09-29) carried the same 48 KB twice in one context.
+//! The gate is task-scoped; what it delivers is not. **A delivery rides the
+//! result of the cell it stopped**, in the conversation, and never edits the
+//! system prompt: the prompt is the start of every request, and editing it
+//! mid-task made every later request miss the provider's cache -- one full
+//! re-send per django session on the 2026-09-29 SWE-bench runs, where the
+//! index's scan budget alone triggered it. A task's gate is seeded with
+//! everything the model already holds, the prompt and the conversation
+//! ([`InstructionContext::seed_delivered`]), and does not deliver a document
+//! that text already carries word for word: session tm3hb2-1k3n (2026-09-29)
+//! carried the same 48 KB twice in one context.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,6 +24,10 @@ pub struct PendingInstructions {
     /// The applicable policy could not be loaded completely. The blocked
     /// call must remain blocked; acknowledging this does not make it safe.
     pub fatal: bool,
+    /// Whether the call that raised this was stopped. Instructions that
+    /// newly apply stop it, so the model reads them before the step runs; the
+    /// index's scan-budget notice stops nothing and only rides the result.
+    pub blocking: bool,
 }
 
 #[derive(Debug, Default)]
@@ -31,7 +39,8 @@ pub(crate) struct InstructionContext {
     /// The index's scan budget ran out once this task and the model was told;
     /// the notice is delivered once, never as a stop (see `gate`).
     budget_noticed: bool,
-    /// The system prompt this task started with, earlier deliveries included.
+    /// What the model already holds when this task starts: the system prompt
+    /// and the conversation, earlier deliveries included.
     delivered: String,
     /// The scopes the pending delivery covers, relative to the project root,
     /// for the sentence that tells the model why its cell stopped.
@@ -52,6 +61,7 @@ impl InstructionContext {
             self.pending = Some(PendingInstructions {
                 text: render_omissions(&root.omissions),
                 fatal: true,
+                blocking: true,
             });
         }
     }
@@ -83,8 +93,8 @@ impl InstructionContext {
         }
         if self.pending_scopes.is_empty() {
             return format!(
-                "Stopped before {before}: the instruction index reached its scan budget, and the \
-                 notice is now in your system prompt. {not_done}; run the step again."
+                "Stopped before {before}: the instruction index reached its scan budget; the \
+                 notice follows below. {not_done}; run the step again."
             );
         }
         let scopes = self
@@ -95,8 +105,8 @@ impl InstructionContext {
             .join(", ");
         format!(
             "Stopped before {before}: new project instructions apply to it (scope {scopes}). They \
-             are now in your system prompt under \"Newly applicable project instructions\"; read \
-             them, then run the step again. {not_done}."
+             follow below under \"Newly applicable project instructions\"; read them, then run \
+             the step again. {not_done}."
         )
     }
 
@@ -104,7 +114,11 @@ impl InstructionContext {
         if !self.enabled {
             return false;
         }
-        if self.pending.is_some() {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.blocking)
+        {
             return true;
         }
 
@@ -122,6 +136,7 @@ impl InstructionContext {
                 self.pending = Some(PendingInstructions {
                     text: render_omissions(&index.omissions),
                     fatal: true,
+                    blocking: true,
                 });
                 return true;
             }
@@ -131,7 +146,7 @@ impl InstructionContext {
                 notice.push_str(
                     "\nThe instruction index stopped at its scan budget, shallow directories \
                      first; instruction files deeper than the scanned set are not loaded. \
-                     The blocked call did not run; it may be repeated.\n",
+                     Nothing was stopped.\n",
                 );
                 budget_notice = Some(notice);
             }
@@ -157,7 +172,18 @@ impl InstructionContext {
             })
             .collect();
         let fatal = !load.complete;
-        if fresh.is_empty() && !fatal && budget_notice.is_none() {
+        if fresh.is_empty() && !fatal {
+            // Nothing new applies. A scan-budget notice has nothing for the
+            // model to obey before the call runs, so it stops nothing and
+            // only rides this cell's result -- stopping a cell for it cost a
+            // turn per django session on the 2026-09-29 SWE-bench runs.
+            if let Some(notice) = budget_notice {
+                self.pending = Some(PendingInstructions {
+                    text: format!("## Instruction index\n{notice}"),
+                    fatal: false,
+                    blocking: false,
+                });
+            }
             return false;
         }
         self.pending_documents = if fatal {
@@ -205,7 +231,15 @@ impl InstructionContext {
         if let Some(notice) = budget_notice {
             text.push_str(&notice);
         }
-        self.pending = Some(PendingInstructions { text, fatal });
+        // A notice already riding this cell's result goes with the delivery.
+        if let Some(note) = self.pending.take() {
+            text = format!("{}\n\n{text}", note.text.trim_end());
+        }
+        self.pending = Some(PendingInstructions {
+            text,
+            fatal,
+            blocking: true,
+        });
         true
     }
 

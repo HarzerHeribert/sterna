@@ -305,9 +305,11 @@ fn create_file_cell(path: &std::path::Path) -> String {
 /// The 2026-09-13 full-suite run: a downloaded dataset of tens of thousands
 /// of files exhausted the instruction index's entry budget and ended a
 /// 32-cell task as "could not be loaded completely". A scan budget is a
-/// notice, delivered once: the first shell call is blocked to deliver it and
-/// runs when repeated; a document that exists and cannot be read (the
-/// oversized test above) still stops the task.
+/// notice, delivered once and never a stop: until 2026-09-29 the first shell
+/// call was blocked to deliver it, which on the SWE-bench runs cost a turn
+/// and a full prompt-cache miss in every django session. The call now runs,
+/// and the notice rides that cell's result; a document that exists and
+/// cannot be read (the oversized test above) still stops the task.
 #[test]
 fn an_exhausted_index_budget_is_a_notice_once_and_never_a_stop() {
     let fixture = Fixture::new("index-budget");
@@ -319,27 +321,28 @@ fn an_exhausted_index_budget_is_a_notice_once_and_never_a_stop() {
     let mut runtime = fixture.runtime(true);
     let marker = fixture.root.join("ran.txt");
     let source = create_file_cell(&marker);
-    assert!(matches!(
-        runtime.run_cell(&source),
-        CellOutcome::Yielded { .. }
-    ));
+    let _ = runtime.run_cell(&source);
+    assert!(marker.exists(), "a scan budget stops nothing: the call ran");
     let pending = runtime.pending_instructions().unwrap();
     assert!(!pending.fatal, "a budget is not a stop: {}", pending.text);
+    assert!(
+        !pending.blocking,
+        "a budget is not a stop: {}",
+        pending.text
+    );
     assert!(pending.text.contains("scan budget"), "{}", pending.text);
     assert!(
         pending.text.contains("directory entry limit"),
         "{}",
         pending.text
     );
-    assert!(!marker.exists(), "the blocked call did not run");
     runtime.acknowledge_instructions();
     assert!(runtime.pending_instructions().is_none());
-    // A cell without a `return` yields; what matters is that nothing is
-    // pending and the command ran.
+    std::fs::remove_file(&marker).unwrap();
     let _ = runtime.run_cell(&source);
     assert!(
         runtime.pending_instructions().is_none(),
-        "the repeated call must not block again: {:?}",
+        "the notice is delivered once: {:?}",
         runtime.pending_instructions().map(|pending| pending.text)
     );
     assert!(marker.exists(), "the repeated call ran");

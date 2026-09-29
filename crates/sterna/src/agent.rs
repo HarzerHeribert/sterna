@@ -629,11 +629,13 @@ pub(crate) fn run_narrowed_metered(
                 .map(|call| call.tool.clone()),
         );
         note_progress(progress, turn, &trajectory);
+        // Instructions the gate raised ride this cell's result, never the
+        // system prompt (`runtime::instructions`).
         let instruction_boundary = runtime.pending_instructions();
-        if let Some(pending) = &instruction_boundary {
-            conversation.system.push_str("\n\n");
-            conversation.system.push_str(&pending.text);
-        }
+        let delivery = instruction_boundary
+            .as_ref()
+            .map(|pending| format!("\n\n{}", pending.text.trim()))
+            .unwrap_or_default();
         // A subagent ends the same way the person's task does: by saying so
         // with `answer(text)`. Reading the ending off a returned value's type
         // is the mistake `outcome.rs::ends_the_task` records.
@@ -652,8 +654,10 @@ pub(crate) fn run_narrowed_metered(
                 let result = result_message(&outcome, turn, described.clone());
                 let mut full = prompt::render_result(&result);
                 full.push_str(&handoff);
+                full.push_str(&delivery);
                 let mut historical = prompt::render_result_history(&result);
                 historical.push_str(&handoff);
+                historical.push_str(&delivery);
                 if let Some((id, _, _)) = &native {
                     conversation.messages.push(Message::runtime_tool_result(
                         id.clone(),
@@ -698,6 +702,8 @@ pub(crate) fn run_narrowed_metered(
                 text.push_str(&failed.hint());
             }
         }
+        full.push_str(&delivery);
+        historical.push_str(&delivery);
         if let Some((id, _, _)) = &native {
             let message = Message::runtime_tool_result(
                 id.clone(),

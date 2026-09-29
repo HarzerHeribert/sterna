@@ -1170,7 +1170,7 @@ fn run_task_inner(
     )
     .with_response_byte_cap(session.config().limits.response_bytes)
     .with_instruction_context()
-    .with_delivered_instructions(&transcript.conversation.system)
+    .with_delivered_instructions(&held_text(&transcript.conversation))
     .with_config(session.config().clone())?;
     // The approval hint's own `asked`/`failed` counts are session-wide (the
     // gate outlives one task); this task's telemetry reports the delta from
@@ -1467,14 +1467,29 @@ fn run_task_inner(
             });
             session.rollback_pending.set(None);
         }
+        // Instructions the gate raised ride this cell's result, never the
+        // system prompt: history is append-only, and a prompt edited mid-task
+        // made every later request miss the provider's cache
+        // (`runtime::instructions`).
         let instruction_boundary = runtime.pending_instructions();
         if let Some(pending) = &instruction_boundary {
-            transcript.conversation.system.push_str("\n\n");
-            transcript.conversation.system.push_str(&pending.text);
-            let _line = session.interrupt.writing();
-            rollout
-                .record_context(&transcript.conversation.system)
-                .map_err(|e| format!("could not record directory instructions: {e}"))?;
+            let delivery = format!("\n\n{}", pending.text.trim());
+            if let Some(answer) = &mut step.answer {
+                answer.push_str(&delivery);
+            }
+            if let Some(history) = &mut step.historical {
+                history.push_str(&delivery);
+            }
+            if let Some(result) = &mut step.native_result {
+                for block in &mut result.content {
+                    if let Block::ToolResult { content, .. } = block {
+                        content.push_str(&delivery);
+                    }
+                }
+                if let Some(history) = &mut result.historical {
+                    history.push_str(&delivery);
+                }
+            }
         }
         // A prose turn runs no cell, so `task_state.observe` never sees it and
         // the stall would sit at zero however long a model talked. It is
@@ -2276,6 +2291,21 @@ fn act_on(
     })
 }
 
+/// Everything the model already holds as text -- the system prompt and every
+/// message -- which is what the instruction gate must not deliver again.
+fn held_text(conversation: &Conversation) -> String {
+    let mut text = conversation.system.clone();
+    for message in &conversation.messages {
+        for block in &message.content {
+            if let Block::Text(body) | Block::ToolResult { content: body, .. } = block {
+                text.push('\n');
+                text.push_str(body);
+            }
+        }
+    }
+    text
+}
+
 /// The message of a frame that threw, for a direct call's own error result.
 fn cell_error_text(outcome: &CellOutcome) -> String {
     match outcome {
@@ -2677,6 +2707,30 @@ fn answer_tool(rest: &str, session: &Session<'_>) {
 mod tests {
 
     use super::*;
+
+    /// Instructions are delivered in cell results now, so the next task's
+    /// gate must see the conversation as well as the prompt, or it delivers
+    /// the same document again and stops a cell for it.
+    #[test]
+    fn the_instruction_gate_is_seeded_with_the_conversation_and_the_prompt() {
+        let conversation = Conversation {
+            system: "SYSTEM PROMPT".into(),
+            messages: vec![
+                Message::text(Role::User, "THE TASK"),
+                Message::runtime_tool_result("call", "DELIVERED IN A RESULT", false, "history"),
+                Message::runtime("DELIVERED IN FEEDBACK", "history"),
+            ],
+        };
+        let held = held_text(&conversation);
+        for part in [
+            "SYSTEM PROMPT",
+            "THE TASK",
+            "DELIVERED IN A RESULT",
+            "DELIVERED IN FEEDBACK",
+        ] {
+            assert!(held.contains(part), "{part} missing from {held}");
+        }
+    }
 
     /// `sterna` started in a project names that project, not `.`.
     #[test]

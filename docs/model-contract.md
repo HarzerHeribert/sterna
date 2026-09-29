@@ -10,8 +10,10 @@ together with `prompt::PREAMBLE`.
 
 One request per turn, in Anthropic Messages form (the gateway translates it
 for other providers). The system block is built at task start and stays
-stable between requests, so the provider can cache it. Newly applicable
-directory instructions are appended only at an execution boundary.
+stable between requests, so the provider can cache it, and the messages
+after it are append-only. Newly applicable directory instructions are
+delivered in the result of the cell they stopped, never by editing the
+system block.
 
     system    : preamble · tool declarations · runtime globals · session facts · project instructions
     user[0]   : the task

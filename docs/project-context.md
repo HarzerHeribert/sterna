@@ -15,10 +15,14 @@ the model's input like everything else. Code:
   file and directory scope.
 - **Nested ones** (`AGENTS.md`/`CLAUDE.md` in subdirectories) are listed in a
   path-only index. Before a path tool first touches an unseen scope, the
-  runtime stops that cell, delivers the complete applicable documents and
-  asks the model to continue; the blocked call and the rest of that cell
-  did not run, and nothing is replayed automatically. A shell command is
-  opaque, so its first call loads all indexed guidance before spawning.
+  runtime stops that cell, delivers the complete applicable documents in
+  that cell's result and asks the model to continue; the blocked call and
+  the rest of that cell did not run, and nothing is replayed automatically.
+  The system prompt is never edited mid-task, so the provider's prompt cache
+  keeps holding the conversation. A shell command is opaque, so its first
+  call loads all indexed guidance before spawning. An index that ran out of
+  its scan budget stops nothing: the cell runs and its result says once that
+  deeper folders were not indexed.
   Generated directories (`.git`, `.sterna`, `target`, `node_modules`, …) are
   not indexed; guidance outside the project root is not loaded.
 
