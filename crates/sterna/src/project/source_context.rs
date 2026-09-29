@@ -1178,8 +1178,13 @@ impl Lexer {
         (a, z, semi)
     }
 }
+/// The file's first six import lines, as one excerpt per run: import lines
+/// with nothing but blank lines between them share a header. A header per
+/// line was most of what imports cost, and each run is still a true slice
+/// of the file, so every line in it binds an `edit` as any excerpt does.
 fn imports(l: &[&str], p: &str, g: Lang) -> Vec<SourceExcerpt> {
-    l.iter()
+    let picked = l
+        .iter()
         .enumerate()
         .filter(|(_, x)| {
             let t = x.trim_start();
@@ -1198,15 +1203,24 @@ fn imports(l: &[&str], p: &str, g: Lang) -> Vec<SourceExcerpt> {
                 _ => false,
             }
         })
-        .take(6)
-        // This deliberately does not claim a one-line excerpt is a complete
-        // multi-line import declaration.
-        .map(|(i, x)| {
+        .map(|(i, _)| i)
+        .take(6);
+    let mut runs: Vec<(usize, usize)> = vec![];
+    for i in picked {
+        match runs.last_mut() {
+            Some((_, end)) if l[*end..i].iter().all(|x| x.trim().is_empty()) => *end = i + 1,
+            _ => runs.push((i, i + 1)),
+        }
+    }
+    // This deliberately does not claim a run is a complete multi-line
+    // import declaration.
+    runs.into_iter()
+        .map(|(a, z)| {
             make(
                 ContextRole::Import,
                 p.into(),
-                (i, i + 1),
-                (*x).into(),
+                (a, z),
+                l[a..z].join("\n"),
                 false,
             )
         })

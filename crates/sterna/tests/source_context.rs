@@ -75,6 +75,34 @@ fn python_pack_has_complete_definition_helpers_and_ranked_tests() {
     assert!(got.render().contains("omission: reference index visited"));
 }
 
+/// Import lines with only blank lines between them arrive as one excerpt
+/// under one header, a true slice of the file; an import after other code
+/// starts another.
+#[test]
+fn contiguous_imports_share_one_excerpt() {
+    let f = Fixture::new("imports");
+    let padding = "# padding padding padding padding\n".repeat(600);
+    let source = format!(
+        "import os\nfrom lib import Thing\n\nimport sys\n\nFLAG = 1\nimport late\n\ndef target(value):\n    return value\n{padding}"
+    );
+    let path = f.put("src/mod.py", &source);
+    let got = pack(&f.profile(), &path, Some("target")).unwrap();
+    let imports: Vec<_> = got
+        .supporting
+        .iter()
+        .filter(|e| e.role == ContextRole::Import)
+        .collect();
+    assert_eq!(imports.len(), 2, "{imports:?}");
+    assert_eq!((imports[0].range.start, imports[0].range.end), (1, 4));
+    assert_eq!(
+        imports[0].text,
+        "import os\nfrom lib import Thing\n\nimport sys"
+    );
+    assert_eq!((imports[1].range.start, imports[1].range.end), (7, 7));
+    assert_eq!(imports[1].text, "import late");
+    assert_eq!(got.render().matches("### Import:").count(), 2);
+}
+
 #[test]
 fn rust_braces_in_strings_and_comments_do_not_clip_definition() {
     let f = Fixture::new("rust");
