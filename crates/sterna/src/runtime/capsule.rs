@@ -335,9 +335,89 @@ fn verification_command(
         ),
         "bash" => {
             let command = args.get("command")?;
-            matches!(lift::classify(command), Some(Family::Verification)).then(|| command.clone())
+            (matches!(lift::classify(command), Some(Family::Verification)) || runs_tests(command))
+                .then(|| command.clone())
         }
         _ => None,
+    }
+}
+
+/// Whether a shell line's exit status is a test or check run's, read the way
+/// projects run their own: `lift::classify` refuses an environment prefix, a
+/// program path and `&&`, and `PYTHONPATH=. .venv/bin/python
+/// tests/runtests.py` has all three -- every SWE-bench test run on
+/// 2026-09-29 left this block saying `verified: never`. Each `&&` part is
+/// read. A pipe, `;`, `||` or a background `&` makes the exit status another
+/// command's, so such a line never verifies anything.
+fn runs_tests(command: &str) -> bool {
+    let unjoined = command
+        .replace("&&", " ")
+        .replace(">&", " ")
+        .replace("&>", " ");
+    if command.contains(['|', ';', '\n']) || unjoined.contains('&') {
+        return false;
+    }
+    command.split("&&").any(|part| {
+        let words: Vec<&str> = part
+            .split_whitespace()
+            .map(|word| word.trim_matches(['\'', '"']))
+            .skip_while(|word| word.contains('=') && !word.starts_with('-'))
+            .collect();
+        part_runs_tests(&words)
+    })
+}
+
+/// [`runs_tests`] for one simple command's words.
+fn part_runs_tests(words: &[&str]) -> bool {
+    let Some((&first, rest)) = words.split_first() else {
+        return false;
+    };
+    // A bare `test` is the shell's condition command, not a test runner.
+    if first == "test" {
+        return false;
+    }
+    let program = first.rsplit('/').next().unwrap_or(first);
+    let positional: Vec<&str> = rest
+        .iter()
+        .copied()
+        .filter(|word| !word.starts_with('-'))
+        .collect();
+    let named_test = |word: &str| {
+        let name = word.rsplit('/').next().unwrap_or(word);
+        name.contains("test") || name.contains("spec")
+    };
+    match program {
+        "env" | "time" => part_runs_tests(rest),
+        "uv" | "poetry" | "pipenv" | "pdm" | "hatch" | "bundle" if rest.len() > 1 => {
+            matches!(rest[0], "run" | "exec") && part_runs_tests(&rest[1..])
+        }
+        "npx" | "pnpx" | "bunx" => part_runs_tests(rest),
+        "jest" | "mocha" | "phpunit" | "tox" | "nox" | "tsc" | "mypy" | "pyright" => true,
+        "cargo" | "go" | "npm" | "pnpm" | "yarn" | "bun" | "deno" | "make" | "mvn" | "gradle"
+        | "gradlew" | "dotnet" | "swift" | "mix" | "sbt" | "zig" | "flutter" | "dart" | "rake"
+        | "just" => positional.first().is_some_and(|sub| {
+            matches!(*sub, "test" | "tests" | "check" | "spec" | "clippy" | "vet")
+        }),
+        interpreter
+            if interpreter.starts_with("python")
+                || matches!(
+                    interpreter,
+                    "node" | "ruby" | "php" | "perl" | "bash" | "sh"
+                ) =>
+        {
+            // Inline code is not a test file, and `-m` names a module.
+            if rest.iter().any(|word| matches!(*word, "-c" | "-e")) {
+                return false;
+            }
+            if let Some(at) = rest.iter().position(|word| *word == "-m") {
+                return rest.get(at + 1).is_some_and(|module| named_test(module));
+            }
+            positional
+                .iter()
+                .take(2)
+                .any(|word| *word == "test" || named_test(word))
+        }
+        _ => named_test(program),
     }
 }
 
@@ -381,6 +461,63 @@ mod tests {
             handles: Vec::new(),
             calls,
         }
+    }
+
+    /// A project's own runner verifies, however it is spelled; a line whose
+    /// exit status belongs to another command, or that only mentions tests,
+    /// does not.
+    #[test]
+    fn a_projects_own_test_runner_verifies_and_a_masked_exit_does_not() {
+        for runner in [
+            "PYTHONPATH=. /env/bin/python tests/runtests.py schema --parallel 1",
+            "cd django && python -W ignore tests/runtests.py migrations",
+            "python manage.py test app",
+            "python3 -m pytest -q tests/test_x.py",
+            "uv run pytest -q",
+            "RUST_LOG=off cargo test -p sterna",
+            "go test ./...",
+            "make check",
+            "npx vitest run",
+            "./bin/test spec/models",
+            "bundle exec rspec",
+            "pytest -q 2>&1 > out.txt",
+        ] {
+            assert!(runs_tests(runner), "{runner}");
+        }
+        for other in [
+            "PYTHONPATH=. python tests/runtests.py schema | tail -30",
+            "pytest -q; echo done",
+            "pytest -q || true",
+            "pytest -q &",
+            "FOO=1 rg test src",
+            "python -c 'import tests'",
+            "python -m pip install -e .",
+            "test -f tests/runtests.py",
+            "sed -n 1,20p tests/test_x.py",
+            "git diff tests/",
+            "python setup.py build",
+        ] {
+            assert!(!runs_tests(other), "{other}");
+        }
+        let mut capsule = Capsule::new("fix the collation");
+        capsule.observe_cell(
+            &cell(
+                1,
+                vec![call(
+                    "bash",
+                    &[(
+                        "command",
+                        "PYTHONPATH=. /env/bin/python tests/runtests.py schema",
+                    )],
+                    Ended::Ok,
+                    Some(0),
+                )],
+            ),
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(capsule.state(), &State::Verified { cell: 1 });
     }
 
     #[test]
