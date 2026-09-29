@@ -719,7 +719,9 @@ fn after_a_checkpoint_every_context_is_printed_in_full_again() {
 
 /// A command that rewrites a file the model has read -- a formatter -- is
 /// delivered as its changed lines with that cell's result, and the next
-/// `edit` binds to the new bytes with no new `context`.
+/// `edit` binds to the new bytes with no new `context`. The rewrite is a
+/// `printf`, so this runs where the shell has one.
+#[cfg(unix)]
 #[test]
 fn a_file_a_command_rewrote_arrives_as_its_changes_and_an_edit_needs_no_new_context() {
     let root = fixture("rewritten-by-command");

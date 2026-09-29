@@ -3592,6 +3592,10 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
 /// `job.result()` collects it where the program needs it -- the shape
 /// `bash` answers with. A result the program waited for is not delivered a
 /// second time as a `bg.done` event.
+///
+/// This and the two job tests after it run `bash` loops, which the Windows
+/// shell does not, so they run where the cancellation test above does.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_job_result_is_collected_where_the_program_needs_it_and_not_delivered_twice() {
     let fixture = Fixture::new("job-result");
@@ -3619,6 +3623,7 @@ fn a_job_result_is_collected_where_the_program_needs_it_and_not_delivered_twice(
 
 /// An interrupt stops the wait, never the job, and the wait does not
 /// outlast it.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_interrupt_stops_waiting_for_a_job_and_leaves_it_running() {
     let fixture = Fixture::new("job-wait-stop");
@@ -3654,6 +3659,7 @@ fn an_interrupt_stops_waiting_for_a_job_and_leaves_it_running() {
 /// Waiting for a job is not the cell's own computing: a wait longer than the
 /// cell's wall-clock limit ends with the job's result -- here its timeout's
 /// `cancelled` -- not with the cell killed for computing too long.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn waiting_for_a_job_is_not_the_cells_own_computing() {
     let fixture = Fixture::new("job-wait-clock");
