@@ -123,30 +123,112 @@ pub const MODEL: &str = "claude-opus-5";
 
 /// The `max_tokens` sterna asks for when nothing published says otherwise.
 ///
-/// **A documented fallback, not a policy, and no longer the common case.**
-/// It bounds what the model may say *and* write in one turn, so a large file
-/// plus its reasoning has to fit in it. The right figure is the model's own,
-/// which [`max_tokens_for`] uses whenever the gateway published one --
-/// measured 2026-09-19, `inference-gateway models --json` carries
-/// `max_output_tokens` for 170 of 647 entries, including every model this
-/// project actually runs (`gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-6-astra` and
-/// `claude-opus-5` each publish 128,000), and `session.rs` asks for them
-/// unconditionally at startup. An earlier revision of this comment said no
-/// catalogue publishes it; that was true when it was written and is not now.
+/// **A documented fallback, not a policy, and not the common case.** The
+/// right figure is the model's own, which [`max_tokens_for`] uses whenever
+/// the gateway published one -- measured 2026-09-19, `inference-gateway
+/// models --json` carries `max_output_tokens` for 170 of 647 entries,
+/// including every GPT and Claude model this project runs (128,000 each).
 ///
-/// So this number is reached only where there is nothing to read: no
-/// gateway, or a model absent from its catalogue. It stays deliberately
-/// conservative, because the two ways to be wrong are not symmetric -- above
-/// what a provider accepts is a rejected request and the turn is refused,
-/// while below it is a truncation the turn now survives (see
-/// [`Turn::truncated`]).
-pub const MAX_TOKENS: u32 = 8192;
+/// This is for a model the catalogue does not name. It was 8,192, chosen so
+/// no provider would refuse the request, on the reasoning that a truncation
+/// is survivable -- and for a reasoning model it is not: the thinking spends
+/// the allowance before the program is written, nothing finished survives,
+/// and the task ends. DeepSeek V4.1 Flash, which its API names
+/// `deepseek-flash`, ended 11 of 18 SWE tasks that way on 2026-09-29. So the
+/// fallback is what current models accept, a turn still cut off is given
+/// more ([`raise_output_room`]), and a provider that refuses this much is
+/// asked for less ([`lower_output_room`]).
+pub const MAX_TOKENS: u32 = 32_768;
 
-/// What one turn of `model` may produce: the model's own published maximum,
-/// or [`MAX_TOKENS`].
+/// The most room [`raise_output_room`] gives a model with no published limit.
+pub const MAX_RAISED_TOKENS: u32 = 131_072;
+
+/// What a model whose provider refused [`MAX_TOKENS`] is asked for instead.
+pub const REFUSED_SIZE_TOKENS: u32 = 8_192;
+
+/// A model's room after a cut-off or a refusal, for the rest of the process.
+#[derive(Clone, Copy)]
+struct Room {
+    tokens: u32,
+    /// The provider refused a larger request, so this is never raised again.
+    refused: bool,
+}
+
+static OUTPUT_ROOM: std::sync::Mutex<BTreeMap<String, Room>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn room_for(model: &str) -> Option<Room> {
+    OUTPUT_ROOM.lock().ok()?.get(model).copied()
+}
+
+fn set_room(model: &str, room: Room) {
+    if let Ok(mut rooms) = OUTPUT_ROOM.lock() {
+        rooms.insert(model.to_string(), room);
+    }
+}
+
+/// What one turn of `model` may produce: the model's own published maximum;
+/// otherwise the room a cut-off or a refusal left it, or [`MAX_TOKENS`].
 #[must_use]
 pub fn max_tokens_for(model: &str) -> u32 {
-    max_tokens_from(crate::models::limits_for(model))
+    let limits = crate::models::limits_for(model);
+    if limits.max_output_tokens.is_some() {
+        return max_tokens_from(limits);
+    }
+    room_for(model).map_or(MAX_TOKENS, |room| room.tokens)
+}
+
+/// Gives `model` four times its room, up to [`MAX_RAISED_TOKENS`], after a
+/// turn was cut off before anything in it could run. `false` -- send nothing
+/// again -- for a model with a published limit, one already at the most, and
+/// one whose provider refused a larger request.
+pub fn raise_output_room(model: &str) -> bool {
+    if crate::models::limits_for(model).max_output_tokens.is_some()
+        || room_for(model).is_some_and(|room| room.refused)
+    {
+        return false;
+    }
+    let current = max_tokens_for(model);
+    if current >= MAX_RAISED_TOKENS {
+        return false;
+    }
+    set_room(
+        model,
+        Room {
+            tokens: current.saturating_mul(4).min(MAX_RAISED_TOKENS),
+            refused: false,
+        },
+    );
+    true
+}
+
+/// Asks [`REFUSED_SIZE_TOKENS`] of `model` from now on, after its provider
+/// refused the size asked for. `false` when it already asks no more than that
+/// or publishes its own limit.
+pub fn lower_output_room(model: &str) -> bool {
+    if crate::models::limits_for(model).max_output_tokens.is_some()
+        || max_tokens_for(model) <= REFUSED_SIZE_TOKENS
+    {
+        return false;
+    }
+    set_room(
+        model,
+        Room {
+            tokens: REFUSED_SIZE_TOKENS,
+            refused: true,
+        },
+    );
+    true
+}
+
+/// Whether `error` is a provider refusing the output size asked for: a 400
+/// whose body names the output-token field.
+#[must_use]
+pub fn refused_size(error: &WireError) -> bool {
+    matches!(error, WireError::Status { status: 400, body_head }
+        if ["max_tokens", "max_completion_tokens", "max_output_tokens"]
+            .iter()
+            .any(|field| body_head.contains(field)))
 }
 
 /// [`max_tokens_for`]'s decision, with the lookup already done -- the seam a
@@ -2027,7 +2109,7 @@ fn send_turn_streaming_while(
 ) -> Result<Turn, WireError> {
     let url = format!("{}{MESSAGES_PATH}", base_url());
     // **The same allowance the whole-response path asks for.** This read
-    // `MAX_TOKENS` — the 8,192-token documented fallback — while
+    // `MAX_TOKENS` — the documented fallback — while
     // [`request_body_for_surface`] beside it asked `max_tokens_for(model)`,
     // so turning streaming on silently cut a turn to a sixteenth of what
     // every model this project runs publishes (128,000), and the truncation
@@ -2138,6 +2220,50 @@ fn read_sse_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each model starts at the fallback, is raised fourfold to a ceiling
+    /// and no further.
+    #[test]
+    fn output_room_is_raised_fourfold_to_a_ceiling() {
+        let model = "room-test-raise";
+        assert_eq!(max_tokens_for(model), MAX_TOKENS);
+        assert!(raise_output_room(model));
+        assert_eq!(max_tokens_for(model), MAX_RAISED_TOKENS);
+        assert!(!raise_output_room(model), "already at the most");
+    }
+
+    /// Once a provider refused a size, raising again would ask for it again,
+    /// so a refused model is never raised: a refusal and a cut-off cannot
+    /// alternate forever.
+    #[test]
+    fn a_model_whose_provider_refused_a_size_is_never_raised_again() {
+        let model = "room-test-refused";
+        assert!(lower_output_room(model));
+        assert_eq!(max_tokens_for(model), REFUSED_SIZE_TOKENS);
+        assert!(!raise_output_room(model));
+        assert!(!lower_output_room(model), "already asks no more than that");
+    }
+
+    #[test]
+    fn a_size_refusal_is_a_400_naming_the_output_field() {
+        let status = |status, body: &str| WireError::Status {
+            status,
+            body_head: body.to_string(),
+        };
+        assert!(refused_size(&status(400, "max_tokens: 32768 > 8192")));
+        assert!(refused_size(&status(
+            400,
+            "max_completion_tokens is too large"
+        )));
+        assert!(!refused_size(&status(
+            400,
+            "messages: roles must alternate"
+        )));
+        assert!(!refused_size(&status(
+            500,
+            "max_tokens overflow in upstream"
+        )));
+    }
 
     /// `ANTHROPIC_BASE_URL` is process-global, so the tests here that point
     /// it at a fixture serialise against each other exactly as `turns.rs`

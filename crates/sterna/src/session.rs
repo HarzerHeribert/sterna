@@ -2335,7 +2335,30 @@ fn timed_send_task_turn(
     Ok((turn, elapsed))
 }
 
+/// A turn cut off before anything in it could run is sent again with more
+/// room, and a provider that refused the room asked for is asked for less:
+/// neither changed the conversation. Each changes the model's room for the
+/// rest of the session and has a floor or a ceiling, so this ends.
 fn send_task_turn(
+    conversation: &Conversation,
+    session: &Session<'_>,
+    task: &str,
+) -> Result<wire::Turn, wire::WireError> {
+    loop {
+        let sent = send_task_turn_once(conversation, session, task);
+        let model = session.model.borrow().clone();
+        let again = match &sent {
+            Err(wire::WireError::IncompleteResponse { .. }) => wire::raise_output_room(&model),
+            Err(error) if wire::refused_size(error) => wire::lower_output_room(&model),
+            _ => false,
+        };
+        if !again {
+            return sent;
+        }
+    }
+}
+
+fn send_task_turn_once(
     conversation: &Conversation,
     session: &Session<'_>,
     task: &str,
