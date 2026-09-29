@@ -349,66 +349,49 @@ pub fn render_table(table: &HandleTable, entry_cap: usize, table_cap: usize) -> 
 /// One turn's rendering of the table, and what it cost — the roadmap's
 /// *Observation delta*. An entry declared, replaced or changed in the
 /// table's current cell, or pinned, renders in full exactly as
-/// [`render_table`] would; every other live entry is one line in the same
-/// name column: `name  Type  (unchanged since cell N)`, annotated
-/// `(replaced at cell M)` as the full form is. Over `table_cap`, full
-/// entries are dropped oldest-first before any one-liner is, and the drop
-/// note is [`render_table`]'s. Nothing here can free a handle: `&HandleTable`.
+/// [`render_table`] would. Every other live entry is only named, on one
+/// closing line: [`UNCHANGED_PREFIX`], how many, then the names. A line per
+/// unchanged handle was three quarters of the table's bytes in a measured
+/// SWE-bench run (2026-09-29), re-sent as fresh input every turn to say
+/// nothing new. Over `table_cap`, full entries are dropped oldest-first with
+/// [`render_table`]'s drop note; the closing line is bounded and stays.
+/// Nothing here can free a handle: `&HandleTable`.
 pub fn render_table_delta(
     table: &HandleTable,
     entry_cap: usize,
     table_cap: usize,
 ) -> (String, ObservationStats) {
-    let name_width = name_column_width(table);
-    let blocks: Vec<(bool, String)> = table
-        .entries
+    // A producer-rendered entry (the `batch` row) is delivered anew every
+    // turn it exists, so it is always news; its producer already bounded it.
+    let (full, unchanged): (Vec<&HandleEntry>, Vec<&HandleEntry>) =
+        table.entries.iter().partition(|entry| {
+            entry.pinned || entry.rendered.is_some() || entry.changed_at_cell == table.current_cell
+        });
+    let name_width = full
         .iter()
-        .map(|entry| {
-            // A producer-rendered entry (the `batch` row) is delivered anew
-            // every turn it exists, so it is always news and never a
-            // one-liner; its producer already bounded it.
-            if entry.pinned
-                || entry.rendered.is_some()
-                || entry.changed_at_cell == table.current_cell
-            {
-                (true, render_entry(entry, entry_cap, name_width))
-            } else {
-                (false, render_reference(entry, name_width))
-            }
-        })
+        .map(|entry| entry.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + NAME_COLUMN_GAP;
+    let blocks: Vec<String> = full
+        .iter()
+        .map(|entry| render_entry(entry, entry_cap, name_width))
         .collect();
-
-    // Drop order: every full entry oldest-first, then every one-liner
-    // oldest-first -- a one-liner is a few tokens, and it is the only thing
-    // still telling the model the name is live.
-    let drop_order: Vec<usize> = (0..blocks.len())
-        .filter(|&i| blocks[i].0)
-        .chain((0..blocks.len()).filter(|&i| !blocks[i].0))
-        .collect();
+    let closing = unchanged_line(&unchanged);
     let bytes_full_inventory = render_table(table, entry_cap, table_cap).len();
 
     for dropped in 0..=blocks.len() {
-        let mut hidden = vec![false; blocks.len()];
-        for &i in &drop_order[..dropped] {
-            hidden[i] = true;
-        }
-        let visible: Vec<&(bool, String)> = blocks
-            .iter()
-            .zip(&hidden)
-            .filter(|(_, hidden)| !**hidden)
-            .map(|(block, _)| block)
-            .collect();
-        let joined = join_blocks(&visible);
+        let mut visible: Vec<&str> = blocks[dropped..].iter().map(String::as_str).collect();
+        visible.extend(closing.as_deref());
+        let joined = visible.join("\n\n");
         if dropped == blocks.len() || preview::estimate_tokens(&joined) <= table_cap {
             let text = with_drop_note(dropped, &joined);
-            let rows_rendered = visible.iter().filter(|(full, _)| *full).count();
-            let rows_suppressed = visible.len() - rows_rendered;
             let stats = ObservationStats {
-                rows_rendered,
-                rows_suppressed,
+                rows_rendered: blocks.len() - dropped,
+                rows_suppressed: unchanged.len(),
                 bytes_rendered: text.len(),
                 bytes_full_inventory,
-                full_inventory: !blocks.is_empty() && dropped == 0 && rows_suppressed == 0,
+                full_inventory: !blocks.is_empty() && dropped == 0 && unchanged.is_empty(),
                 repeated_observations: 0,
             };
             return (text, stats);
@@ -417,37 +400,32 @@ pub fn render_table_delta(
     unreachable!("the loop always returns at dropped == blocks.len()")
 }
 
-/// Full entries are separated by a blank line as in [`render_table`];
-/// consecutive one-liners sit on adjacent lines, so a turn with nothing new
-/// is a short list rather than a page of blank lines. A table whose every
-/// block is full therefore joins exactly as the full inventory does.
-fn join_blocks(blocks: &[&(bool, String)]) -> String {
-    let mut out = String::new();
-    for (i, (full, text)) in blocks.iter().enumerate() {
-        if i > 0 {
-            let previous_full = blocks[i - 1].0;
-            out.push_str(if previous_full || *full { "\n\n" } else { "\n" });
-        }
-        out.push_str(text);
-    }
-    out
-}
+/// How [`render_table_delta`]'s closing line starts: `Unchanged from
+/// earlier cells (N): a, b, c`. The TUI reads the count back from it.
+pub const UNCHANGED_PREFIX: &str = "Unchanged from earlier cells (";
 
-/// The one-line reference [`render_table_delta`] renders for a live handle
-/// this turn did not change: the header's name and type fields, then the
-/// cell it last changed in, then the same replacement annotation the full
-/// header carries.
-fn render_reference(entry: &HandleEntry, name_width: usize) -> String {
-    let name = preview::escape_line(&entry.name);
-    let type_name = preview::escape_line(type_label(entry));
-    let mut line = format!(
-        "{name:<name_width$}{type_name}  (unchanged since cell {})",
-        entry.changed_at_cell
-    );
-    if let Some(cell) = entry.replaced_at_cell {
-        line.push_str(&format!("  (replaced at cell {cell})"));
+/// The most names the closing line lists; older ones are only counted.
+const UNCHANGED_NAMES: usize = 24;
+
+/// The closing line naming the live handles this cell did not change, or
+/// `None` when there are none. Past [`UNCHANGED_NAMES`] the newest are named
+/// and the older ones counted.
+fn unchanged_line(entries: &[&HandleEntry]) -> Option<String> {
+    if entries.is_empty() {
+        return None;
     }
-    line
+    let older = entries.len().saturating_sub(UNCHANGED_NAMES);
+    let names: Vec<String> = entries[older..]
+        .iter()
+        .map(|entry| preview::escape_line(&entry.name).to_string())
+        .collect();
+    let mut line = format!("{UNCHANGED_PREFIX}{}): {}", entries.len(), names.join(", "));
+    if older > 0 {
+        line.push_str(&format!(
+            " and {older} older; call handles() for the full list"
+        ));
+    }
+    Some(line)
 }
 
 /// The widest live name plus [`NAME_COLUMN_GAP`] — one column shared by
@@ -754,21 +732,17 @@ mod tests {
 
         let (delta, stats) =
             render_table_delta(&table, preview::PREVIEW_TOKEN_CAP, preview::TABLE_TOKEN_CAP);
+        assert!(delta.starts_with("b  number   inline cost"), "{delta}");
         assert!(
-            delta.contains("a  number  (unchanged since cell 1)"),
+            delta.ends_with("\n\nUnchanged from earlier cells (2): a, c"),
             "{delta}"
         );
-        assert!(
-            delta.contains("c  number  (unchanged since cell 2)"),
-            "{delta}"
-        );
-        assert!(delta.contains("b  number   inline cost"), "{delta}");
         assert_eq!((stats.rows_rendered, stats.rows_suppressed), (1, 2));
         assert!(!stats.full_inventory);
     }
 
     /// A refresh stamps the entry only when the rendered entry differs; a
-    /// recapture of the same binding leaves it "unchanged since" its cell.
+    /// recapture of the same binding leaves it on the unchanged line.
     #[test]
     fn a_refresh_is_a_change_only_when_the_rendered_entry_differs() {
         let mut table = HandleTable::new();
@@ -777,7 +751,7 @@ mod tests {
         table.refresh("n", Value::Number(1.0), HandleMeta::default());
         let (delta, _) =
             render_table_delta(&table, preview::PREVIEW_TOKEN_CAP, preview::TABLE_TOKEN_CAP);
-        assert_eq!(delta, "n  number  (unchanged since cell 1)");
+        assert_eq!(delta, "Unchanged from earlier cells (1): n");
 
         table.refresh("n", Value::Number(2.0), HandleMeta::default());
         let (delta, stats) =

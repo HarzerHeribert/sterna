@@ -23,6 +23,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{MUTED, Theme};
+use crate::runtime::handles::UNCHANGED_PREFIX;
 
 /// The glyph a filled header's runs are made of.
 const FIELD: char = '█';
@@ -346,12 +347,6 @@ pub(super) struct Row {
     pub name: String,
     pub type_label: String,
     pub count: Option<String>,
-    /// Whether an earlier cell produced this binding and this one only
-    /// carried it. `render_table_delta` decides it, not this module: an
-    /// entry declared, replaced or changed in the current cell renders in
-    /// full, and every other live entry renders as one line saying which
-    /// cell it last changed in.
-    pub carried: bool,
 }
 
 /// Reads the handle table's own rendering back into rows.
@@ -369,7 +364,11 @@ pub(super) struct Row {
 pub(super) fn rows_of(table: &str) -> Vec<Row> {
     table
         .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with(char::is_whitespace))
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with(char::is_whitespace)
+                && !line.starts_with(UNCHANGED_PREFIX)
+        })
         .filter_map(|line| {
             let mut fields = line.split("  ").filter(|f| !f.trim().is_empty());
             let name = fields.next()?.trim().to_string();
@@ -384,7 +383,6 @@ pub(super) fn rows_of(table: &str) -> Vec<Row> {
                 name,
                 type_label,
                 count,
-                carried: line.contains(CARRIED),
             })
         })
         .collect()
@@ -458,10 +456,19 @@ pub(super) fn value_rows(
 /// How many bindings a compact cell shows before it says how many are left.
 const BINDING_ROWS: usize = 8;
 
-/// The marker `render_table_delta` writes on a live binding the current cell
-/// did not change. Matching on the rendering rather than on a value is the
-/// same deliberate choice [`rows_of`] documents: one renderer, one answer.
-const CARRIED: &str = "(unchanged since cell ";
+/// How many live bindings earlier cells left and this one did not change.
+/// `render_table_delta` decides it, not this module, and says it on its
+/// closing line; reading that line rather than a value is the same
+/// deliberate choice [`rows_of`] documents: one renderer, one answer.
+fn carried_count(table: &str) -> usize {
+    table
+        .lines()
+        .find_map(|line| {
+            let rest = line.strip_prefix(UNCHANGED_PREFIX)?;
+            rest.split_once(')')?.0.parse().ok()
+        })
+        .unwrap_or(0)
+}
 
 /// The cell's bindings, as rows — or its raw stdout when it has no table.
 ///
@@ -476,11 +483,10 @@ pub(super) fn push_bindings(
     width: usize,
     theme: Theme,
 ) {
-    let rows = table
-        .filter(|table| !table.starts_with("Planning mode"))
-        .map(rows_of)
-        .unwrap_or_default();
-    if !rows.is_empty() {
+    let table = table.filter(|table| !table.starts_with("Planning mode"));
+    let produced = table.map(rows_of).unwrap_or_default();
+    let carried = table.map(carried_count).unwrap_or(0);
+    if !produced.is_empty() || carried > 0 {
         // **A cell shows what it produced, not the task's whole table.** The
         // accumulation grows every cell, so by cell ten a reader was looking
         // at a list that was almost entirely earlier cells' work -- the user,
@@ -488,15 +494,12 @@ pub(super) fn push_bindings(
         // schlimm"* (2026-09-19). The carried ones are history and Ctrl-O
         // has them; the count stays, because a reader who wonders where a
         // binding went must not have to guess that it still exists.
-        let (produced, carried): (Vec<Row>, Vec<Row>) =
-            rows.into_iter().partition(|row| !row.carried);
         lines.extend(value_rows(&produced, width, BINDING_ROWS, theme));
-        if !carried.is_empty() {
+        if carried > 0 {
             lines.push(Line::styled(
                 format!(
-                    "   {} binding{} carried from earlier cells · Ctrl-O expands",
-                    carried.len(),
-                    if carried.len() == 1 { "" } else { "s" }
+                    "   {carried} binding{} carried from earlier cells · Ctrl-O expands",
+                    if carried == 1 { "" } else { "s" }
                 ),
                 Style::default().fg(MUTED),
             ));
@@ -837,16 +840,16 @@ mod tests {
         let table = concat!(
             "fresh         Array         n=3   inline cost ~12 tok\n",
             "    [0] 1\n",
-            "architecture  File          (unchanged since cell 1)\n",
-            "exactHits     Grep.Match[]  (unchanged since cell 1)\n",
+            "\n",
+            "Unchanged from earlier cells (2): architecture, exactHits\n",
         );
         let rows = rows_of(table);
-        assert_eq!(rows.len(), 3, "{rows:?}");
         assert_eq!(
-            rows.iter().filter(|row| row.carried).count(),
-            2,
-            "the carried marker was not read: {rows:?}"
+            rows.len(),
+            1,
+            "the closing line was read as a row: {rows:?}"
         );
+        assert_eq!(carried_count(table), 2, "the carried count was not read");
         let mut lines = Vec::new();
         push_bindings(&mut lines, Some(table), None, 80, Theme::Neon);
         let drawn: Vec<String> = lines.iter().map(text).collect();
@@ -943,7 +946,6 @@ mod tests {
                 name: format!("binding{i}"),
                 type_label: "Array".into(),
                 count: Some("3".into()),
-                carried: false,
             })
             .collect();
         let rendered: Vec<String> = value_rows(&rows, 80, 4, Theme::Neon)

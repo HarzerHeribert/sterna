@@ -34,19 +34,15 @@ fn the_first_rendering_is_the_full_inventory() {
     assert_eq!(stats.repeated_observations, 0);
 }
 
-/// (a) A cell that changed nothing renders every live handle as one line in
-/// the shared name column, and the stats say what that saved.
+/// (a) A cell that changed nothing renders one line naming every live
+/// handle, and the stats say what that saved.
 #[test]
-fn an_unchanged_table_renders_every_handle_as_one_line() {
+fn an_unchanged_table_is_one_line_naming_its_handles() {
     let mut table = two_handles_declared_in_cell_one();
     table.begin_cell(2);
 
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert_eq!(
-        delta,
-        "hits     Array  (unchanged since cell 1)\n\
-         adapter  string  (unchanged since cell 1)"
-    );
+    assert_eq!(delta, "Unchanged from earlier cells (2): hits, adapter");
     assert_eq!(stats.rows_rendered, 0);
     assert_eq!(stats.rows_suppressed, 2);
     assert!(!stats.full_inventory);
@@ -61,7 +57,7 @@ fn an_unchanged_table_renders_every_handle_as_one_line() {
 }
 
 /// (b) A name redeclared this cell renders in full, with its replacement
-/// annotation; the untouched one stays a one-liner.
+/// annotation, in a name column of its own; the untouched one is only named.
 #[test]
 fn a_redeclared_handle_renders_in_full_and_the_rest_do_not() {
     let mut table = two_handles_declared_in_cell_one();
@@ -69,22 +65,16 @@ fn a_redeclared_handle_renders_in_full_and_the_rest_do_not() {
     table.declare("adapter", Value::string("claude-code"), 2);
 
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    let mut lines = delta.lines();
-    assert_eq!(
-        lines.next(),
-        Some("hits     Array  (unchanged since cell 1)")
-    );
-    assert_eq!(
-        lines.next(),
-        Some(""),
-        "a full entry is set off by a blank line"
-    );
-    let header = lines.next().unwrap();
+    let header = delta.lines().next().unwrap();
     assert!(
         header.starts_with("adapter  string  (replaced at cell 2)   inline cost"),
         "{header}"
     );
     assert!(delta.contains("\"claude-code\""), "{delta}");
+    assert!(
+        delta.ends_with("\n\nUnchanged from earlier cells (1): hits"),
+        "the closing line is set off by a blank line:\n{delta}"
+    );
     assert_eq!((stats.rows_rendered, stats.rows_suppressed), (1, 1));
     assert!(!stats.full_inventory);
 }
@@ -101,9 +91,9 @@ fn a_refresh_re_renders_only_when_the_preview_differs() {
         HandleMeta::default(),
     );
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert!(
-        delta.starts_with("hits     Array  (unchanged since cell 1)"),
-        "an identical recapture re-rendered the entry:\n{delta}"
+    assert_eq!(
+        delta, "Unchanged from earlier cells (2): hits, adapter",
+        "an identical recapture re-rendered the entry"
     );
     assert_eq!(stats.rows_rendered, 0);
 
@@ -118,10 +108,10 @@ fn a_refresh_re_renders_only_when_the_preview_differs() {
         HandleMeta::default(),
     );
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert!(delta.starts_with("hits     Array   n=3   "), "{delta}");
+    assert!(delta.starts_with("hits  Array   n=3   "), "{delta}");
     assert!(delta.contains("[2] 3"), "{delta}");
     assert!(
-        delta.contains("adapter  string  (unchanged since cell 1)"),
+        delta.ends_with("Unchanged from earlier cells (1): adapter"),
         "{delta}"
     );
     assert_eq!((stats.rows_rendered, stats.rows_suppressed), (1, 1));
@@ -129,13 +119,10 @@ fn a_refresh_re_renders_only_when_the_preview_differs() {
     assert_eq!(table.names(), vec!["hits", "adapter"]);
     assert!(!delta.contains("replaced at cell"), "{delta}");
 
-    // The next cell: the refreshed entry is unchanged since cell 3.
+    // The next cell: the refreshed entry is unchanged again.
     table.begin_cell(4);
     let (delta, _) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert!(
-        delta.starts_with("hits     Array  (unchanged since cell 3)"),
-        "{delta}"
-    );
+    assert_eq!(delta, "Unchanged from earlier cells (2): hits, adapter");
 }
 
 /// (d) A pinned entry renders in full every cell until it is unpinned.
@@ -147,12 +134,12 @@ fn a_pinned_handle_renders_in_full_every_cell() {
         table.begin_cell(cell);
         let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
         assert!(
-            delta.contains("adapter  string   inline cost"),
+            delta.starts_with("adapter  string   inline cost"),
             "cell {cell}: the pinned entry was not rendered in full:\n{delta}"
         );
         assert!(delta.contains("\"codex\""), "{delta}");
         assert!(
-            delta.starts_with("hits     Array  (unchanged since cell 1)"),
+            delta.ends_with("Unchanged from earlier cells (1): hits"),
             "{delta}"
         );
         assert_eq!((stats.rows_rendered, stats.rows_suppressed), (1, 1));
@@ -160,17 +147,14 @@ fn a_pinned_handle_renders_in_full_every_cell() {
     assert!(table.unpin("adapter"));
     table.begin_cell(5);
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert!(
-        delta.ends_with("adapter  string  (unchanged since cell 1)"),
-        "{delta}"
-    );
+    assert_eq!(delta, "Unchanged from earlier cells (2): hits, adapter");
     assert_eq!(stats.rows_suppressed, 2);
 }
 
-/// (e) Over the table cap, full entries are dropped oldest-first before any
-/// one-liner is, the note keeps its wording, and nothing is freed.
+/// (e) Over the table cap, full entries are dropped oldest-first, the note
+/// keeps its wording, the unchanged line stays, and nothing is freed.
 #[test]
-fn the_cap_drops_full_entries_before_one_liners_and_keeps_the_note() {
+fn the_cap_drops_full_entries_and_keeps_the_unchanged_line() {
     let mut table = HandleTable::new();
     table.begin_cell(1);
     table.declare("old0", Value::Number(0.0), 1);
@@ -192,11 +176,7 @@ fn the_cap_drops_full_entries_before_one_liners_and_keeps_the_note() {
         "{delta}"
     );
     assert!(
-        delta.contains("old0  number  (unchanged since cell 1)"),
-        "{delta}"
-    );
-    assert!(
-        delta.contains("old1  number  (unchanged since cell 1)"),
+        delta.ends_with("Unchanged from earlier cells (2): old0, old1"),
         "{delta}"
     );
     assert!(
@@ -215,26 +195,33 @@ fn the_cap_drops_full_entries_before_one_liners_and_keeps_the_note() {
     }
 }
 
-/// A one-liner keeps the replacement annotation the full header would carry.
+/// Past 24 unchanged handles the line names the newest and counts the
+/// older ones, so a long task's table stays one bounded line.
 #[test]
-fn a_one_liner_keeps_the_replacement_annotation() {
+fn the_unchanged_line_names_the_newest_and_counts_the_rest() {
     let mut table = HandleTable::new();
     table.begin_cell(1);
-    table.declare("x", Value::Number(1.0), 1);
-    table.begin_cell(3);
-    table.declare("x", Value::Number(2.0), 3);
-    table.begin_cell(4);
-    let (delta, _) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
-    assert_eq!(
-        delta,
-        "x  number  (unchanged since cell 3)  (replaced at cell 3)"
+    for i in 0..30u64 {
+        table.declare(format!("h{i}"), Value::Number(i as f64), 1);
+    }
+    table.begin_cell(2);
+    let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
+    assert!(
+        delta.starts_with("Unchanged from earlier cells (30): h6, h7, "),
+        "{delta}"
     );
+    assert!(
+        delta.ends_with(", h29 and 6 older; call handles() for the full list"),
+        "{delta}"
+    );
+    assert!(!delta.contains("h5,"), "{delta}");
+    assert_eq!(stats.rows_suppressed, 30);
 }
 
 /// The `batch` row is delivered anew every turn it exists, so it is news
 /// every time: a producer-rendered entry stays in full while an ordinary
-/// old handle collapses to one line beside it. A refresh that carries no
-/// label keeps the producer's (`Events.Batch`, never `Object`).
+/// old handle is only named beside it. A refresh that carries no label
+/// keeps the producer's (`Events.Batch`, never `Object`).
 #[test]
 fn the_batch_row_stays_in_full_while_old_handles_collapse() {
     let entry = "batch  Events.Batch   1 event\n  bg.done  the build finished".to_string();
@@ -259,12 +246,11 @@ fn the_batch_row_stays_in_full_while_old_handles_collapse() {
     // The epilogue recaptures every live name with a label-less meta.
     table.refresh("batch", Value::string(&entry), HandleMeta::default());
     let (delta, stats) = render_table_delta(&table, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP);
+    assert!(delta.starts_with(&entry), "{delta}");
     assert!(
-        delta.starts_with("hits   number  (unchanged since cell 1)"),
+        delta.ends_with("Unchanged from earlier cells (1): hits"),
         "{delta}"
     );
-    assert!(delta.contains("the build finished"), "{delta}");
-    assert!(delta.contains("Events.Batch"), "{delta}");
     assert!(!delta.contains("Object"), "{delta}");
     assert_eq!(stats.rows_suppressed, 1);
     assert_eq!(stats.rows_rendered, 1);
