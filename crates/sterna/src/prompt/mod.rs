@@ -688,7 +688,7 @@ pub fn render_system_reaching(
         preamble_for(facts.interface),
         rendered.join("\n\n"),
         render_runtime_reaching(globals, reach),
-        render_abi_for(globals),
+        render_abi_for(globals, facts.interface),
         render_session_facts(facts)
     );
     // The manifest is its own block, directly after *This session*: both
@@ -714,7 +714,7 @@ pub fn render_system_reaching(
 /// capability. `tool-abi.md` §23 and the `improvement-register.md` prompt
 /// boundary both say a rule expressible as a type does not belong in prose,
 /// and the completeness fields in [`types::PRELUDE`] are that rule.
-pub fn render_abi_for(globals: HostGlobals) -> String {
+pub fn render_abi_for(globals: HostGlobals, interface: abi::Interface) -> String {
     let mut declarations = Vec::new();
     for dialect in abi::dialect::ALL {
         for shape in dialect.shapes() {
@@ -739,11 +739,17 @@ pub fn render_abi_for(globals: HostGlobals) -> String {
         return String::new();
     }
     let bodies: Vec<String> = declarations.into_iter().map(|(_, body)| body).collect();
+    // Cells mode has no direct call to prefer: its guidance asks for a whole
+    // step per turn, as the preamble does, instead of the smallest cell.
+    let guidance = match interface {
+        abi::Interface::Cells => types::CELLS_GUIDANCE,
+        abi::Interface::Hybrid | abi::Interface::Tools => types::GUIDANCE,
+    };
     format!(
         "## Familiar tools\n\n{}\n\n{}\n\n{}\n\n{}",
         types::PRELUDE,
         bodies.join("\n\n"),
-        types::GUIDANCE,
+        guidance,
         types::REPORTING
     )
 }
@@ -1391,6 +1397,18 @@ mod tests {
     /// runtime's preview module, which `prompt_bytes.rs` scans for.
     fn preview_tokens(text: &str) -> usize {
         text.chars().count().div_ceil(4)
+    }
+
+    #[test]
+    fn cells_mode_asks_for_whole_steps_and_hybrid_keeps_direct_calls() {
+        let cells = render_abi_for(HostGlobals::Every, abi::Interface::Cells);
+        assert!(cells.contains(types::CELLS_GUIDANCE));
+        assert!(
+            !cells.contains("smallest cell"),
+            "cells mode must not ask for small cells"
+        );
+        let hybrid = render_abi_for(HostGlobals::Every, abi::Interface::Hybrid);
+        assert!(hybrid.contains(types::GUIDANCE));
     }
 
     #[test]

@@ -76,6 +76,33 @@ escalation. Do not reproduce those mechanisms yourself.
     }
     return tests;";
 
+/// [`GUIDANCE`] for the cells interface, where `execute_cell` is the only
+/// provider-native tool.
+///
+/// The general text says the familiar tools are "available directly" and asks
+/// for "the smallest cell that expresses the dependency": both are false or
+/// harmful when there is no direct call to prefer, and they contradicted the
+/// preamble's "spend the turn on a whole step". On six SWE-bench tasks
+/// (2026-09-29) cells-only sessions wrote ~300-character programs, one look
+/// per turn -- 47 requests where Codex used 32 on the same task.
+pub const CELLS_GUIDANCE: &str = "\
+The familiar tools above are typed async functions inside `execute_cell`,
+with the arguments and results their declarations name. A turn is one
+program, so spend it on a whole step: fetch every independent file, symbol,
+search and check the step needs together, act on what comes back in the same
+program, and yield only at a decision that needs evidence you do not have yet.
+Several small cells cost several turns.
+
+Sterna decides execution strategy, output sizing, evidence storage and helper
+escalation. Do not reproduce those mechanisms yourself.
+
+    const [tests, uses] = await Promise.all([
+      Bash({ command: \"cargo test\" }),
+      Grep({ pattern: \"SomeError\", path: \"src\" }),
+    ]);
+    if (!tests.ok) return { tests, uses };
+    return tests;";
+
 /// How the model reports and how it asks — a user ruling of 2026-09-10.
 ///
 /// It is in the prompt rather than in a type because it governs prose, which
@@ -166,6 +193,30 @@ mod tests {
         // The rule is only useful if it is short enough to apply every turn.
         let words = REPORTING.split_whitespace().count();
         assert!(words < 140, "the reporting rule is {words} words");
+    }
+
+    /// Cells mode has no direct call to prefer, so its guidance may neither
+    /// promise one nor ask for small cells; the preamble asks for a whole
+    /// step per turn and the two must agree.
+    #[test]
+    fn the_cells_guidance_asks_for_whole_steps_and_promises_no_direct_call() {
+        for contradiction in [
+            "smallest cell",
+            "available directly",
+            "Prefer ordinary tool calls",
+            "direct call",
+        ] {
+            assert!(
+                !CELLS_GUIDANCE.contains(contradiction),
+                "the cells guidance says `{contradiction}`"
+            );
+        }
+        assert!(CELLS_GUIDANCE.contains("whole step"));
+        assert!(CELLS_GUIDANCE.contains("Promise.all"));
+        assert!(CELLS_GUIDANCE.split_whitespace().count() < 200);
+        for leaked in ["lowering", "reducer", "ledger", "router"] {
+            assert!(!CELLS_GUIDANCE.contains(leaked));
+        }
     }
 
     #[test]
