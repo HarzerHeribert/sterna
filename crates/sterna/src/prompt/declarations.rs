@@ -550,6 +550,15 @@ pub const RUNTIME: &[Binding] = &[
                       // decision, and do not poll or sleep for a job.",
     },
     Binding {
+        global: "speculate",
+        declaration: "declare function speculate(check: string, candidates: {name: string; edits: {path: string; old: string; replacement: string}[]}[]): Promise<{name: string; applied: boolean; error: string | null; exit_code: number | null; stdout: string; stderr: string}[]>;\n\
+                      // Try one to four candidate changes against one check in a single turn: each\n\
+                      // candidate's edits are written, `check` runs, and every file it touched is put\n\
+                      // back byte for byte before the next. Nothing stays changed -- apply the one\n\
+                      // that passed with `edit`. For choosing between plausible fixes, not for making\n\
+                      // one; each `old` must occur exactly once, as in `edit`.",
+    },
+    Binding {
         global: "batch",
         declaration: "declare const batch: {\n  \
                       n: number;\n  \

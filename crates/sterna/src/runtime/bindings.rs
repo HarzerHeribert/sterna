@@ -40,6 +40,7 @@ mod console;
 mod decide;
 pub(super) mod helper;
 mod job;
+mod speculate;
 use helper::helper_callback;
 mod search;
 use search::{build_glob, build_grep};
@@ -320,8 +321,16 @@ impl HostGlobals {
     /// by the subagent depth check, but a capability absent from the binding
     /// surface cannot be reached by a helper talked into trying, which is the
     /// standard `little-helpers.md` sets for the toolset.
-    pub const WITHHELD_FROM_A_HELPER: [&'static str; 7] =
-        ["bg", "mcp", "checks", "helper", "agent", "web", "decide"];
+    pub const WITHHELD_FROM_A_HELPER: [&'static str; 8] = [
+        "bg",
+        "mcp",
+        "checks",
+        "helper",
+        "agent",
+        "web",
+        "decide",
+        "speculate",
+    ];
 
     /// Whether `global` is installed under this narrowing — the one predicate
     /// [`install`] and [`crate::prompt::render_runtime_for`] both read, so
@@ -466,6 +475,7 @@ pub(crate) fn install(scope: &mut v8::PinScope, globals: HostGlobals) {
     // fixed object for the same reason every host function above is fixed: a
     // program that replaced `bg` would lose the only way it has to stop what
     // it started, and nothing could put it back.
+    speculate::install(scope, global, globals);
     if globals.installs("bg") {
         let background = v8::Object::new(scope);
         if let Some(function) = v8::Function::builder(bg_run_callback).build(scope) {

@@ -36,7 +36,8 @@ prompt's Runtime block only where the session binds them:
 | `helper.find`, `helper.reduce`, `helper.check` | cheap-model errands from inside the cell ([helpers](helpers.md)) |
 | `decide.choice` | a typed question to Jev, answered in about two seconds ([decisions](decisions.md)) |
 | `agent.run` | start a subagent; returns a handle at once ([events](events.md#subagents)) |
-| `bg.run`, `bg.watch`, `bg.cancel` | background commands ([events](events.md#background-jobs)) |
+| `bg.run`, `bg.watch`, `bg.cancel`, `job.result()` | background commands, collected where they are needed ([events](events.md#background-jobs)) |
+| `speculate(check, candidates)` | one to four candidate changes tried against one check in one cell; each is written, the check runs, and every file is put back before the next, through the same checked `write` and `bash` calls and approval gate. Nothing stays changed. Withheld from helpers |
 | `batch` | the events that arrived while the model was not looking |
 | `on`, `off` | standing handlers over future batches |
 | `web.fetch`, `web.search` | the host web broker, when `[web]` is configured ([web](web.md)) |

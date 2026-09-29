@@ -923,3 +923,55 @@ fn a_line_ending_change_is_named_as_one() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Two candidate fixes tried against one check in one cell: each is written,
+/// the check runs, the file is put back before the next, and nothing stays
+/// changed.
+#[cfg(unix)]
+#[test]
+fn speculate_tries_each_candidate_against_the_check_and_leaves_the_file_as_it_was() {
+    let root = fixture("speculate");
+    let path = root.join("src/value.py");
+    std::fs::write(&path, "value = 1\nother = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("speculate"));
+
+    let tried = runtime.run_cell(
+        "const r = await speculate(\"grep -q 'value = 3' src/value.py\", [\n\
+           {name: 'two', edits: [{path: 'src/value.py', old: 'value = 1', replacement: 'value = 2'}]},\n\
+           {name: 'three', edits: [{path: 'src/value.py', old: 'value = 1', replacement: 'value = 3'}]},\n\
+           {name: 'missing', edits: [{path: 'src/value.py', old: 'value = 9', replacement: 'value = 3'}]},\n\
+         ]);\n\
+         return r.map(t => `${t.name}:${t.applied}:${t.exit_code}:${t.error === null ? '' : t.error}`).join('|');",
+    );
+    let said = format!("{tried:?}");
+    assert!(said.contains("two:true:1:"), "{said}");
+    assert!(said.contains("three:true:0:"), "{said}");
+    assert!(
+        said.contains("missing:false:null:an `old` in `src/value.py` occurs 0 times"),
+        "{said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "value = 1\nother = 1\n"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn speculate_refuses_what_is_not_a_list_of_candidates() {
+    let root = fixture("speculate-args");
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("speculate-args"));
+    let refused = runtime.run_cell(
+        "try { await speculate('true', []); return 'ran'; } catch (e) { return e.name + ':' + e.message; }",
+    );
+    let said = format!("{refused:?}");
+    assert!(said.contains("ToolError:"), "{said}");
+    assert!(
+        said.contains("`candidates` is an array of 1 to 4"),
+        "{said}"
+    );
+    assert!(!sterna::runtime::bindings::HostGlobals::Helper(&[]).installs("speculate"));
+    let _ = std::fs::remove_dir_all(root);
+}
