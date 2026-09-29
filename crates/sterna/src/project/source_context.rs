@@ -24,6 +24,23 @@ const RENDER_CAP: usize = 30_000;
 const SUPPORT_CAP: usize = 18;
 const VISIT_CAP: usize = 2_048;
 const OUTLINE_CAP: usize = 40;
+/// A class target longer than this many lines is delivered as its skeleton
+/// ([`skeleton`]) rather than whole.
+const SKELETON_ABOVE: usize = 150;
+/// The most lines of a skeleton's head -- what comes before its first
+/// member: the declaration, a docstring, class attributes.
+const HEAD_CAP: usize = 60;
+/// Members whose bodies a skeleton carries whole besides the last: what
+/// every other member of the class is built on.
+const SETUP: &[&str] = &[
+    "setUp",
+    "setUpClass",
+    "setUpTestData",
+    "__init__",
+    "constructor",
+];
+/// How many nearby definitions are named, one line each.
+const NEARBY_SHOWN: usize = 8;
 const SCAN_CAP: u64 = 131_072;
 /// How many unscanned files the reference note names before counting the
 /// rest: enough to recognise the shape of what was skipped, bounded so the
@@ -58,6 +75,21 @@ pub enum ContextRole {
     NearbyDefinition,
     Caller,
     Test,
+    /// A long class's members, one line each with its own line range.
+    MemberIndex,
+    /// One member of a class delivered as a skeleton, whole.
+    MemberBody,
+    /// Definitions near the target, one line each with its own line range.
+    NearbyIndex,
+}
+
+impl ContextRole {
+    /// Whether the excerpt is a list of declarations rather than a slice of
+    /// the file: each line carries its own number, and none is source text
+    /// an `edit` could bind to.
+    pub fn is_index(&self) -> bool {
+        matches!(self, Self::Outline | Self::MemberIndex | Self::NearbyIndex)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceExcerpt {
@@ -88,6 +120,13 @@ impl fmt::Display for ContextError {
 impl std::error::Error for ContextError {}
 
 impl SourceContext {
+    /// Whether the target is a long class delivered as its skeleton.
+    pub fn is_skeleton(&self) -> bool {
+        self.supporting
+            .iter()
+            .any(|excerpt| excerpt.role == ContextRole::MemberIndex)
+    }
+
     pub fn render(&self) -> String {
         let mut o = format!("{}complete: {}\n", self.header(), self.complete);
         render_one(&mut o, &self.target);
@@ -176,6 +215,28 @@ pub fn pack(
     path: &Path,
     symbol: Option<&str>,
 ) -> Result<SourceContext, ContextError> {
+    // The measured control arm: set, every target is delivered whole and
+    // nearby definitions as bodies. It goes once the two arms are measured.
+    let whole = std::env::var_os("STERNA_CONTEXT_WHOLE").is_some();
+    pack_shaped(profile, path, symbol, whole)
+}
+
+/// [`pack`] with the target whole however long it is: the answer to a
+/// skeleton asked for a second time.
+pub fn pack_whole(
+    profile: &Profile,
+    path: &Path,
+    symbol: Option<&str>,
+) -> Result<SourceContext, ContextError> {
+    pack_shaped(profile, path, symbol, true)
+}
+
+fn pack_shaped(
+    profile: &Profile,
+    path: &Path,
+    symbol: Option<&str>,
+    whole: bool,
+) -> Result<SourceContext, ContextError> {
     let path = profile
         .check("source context", Access::Read, path)
         .map_err(|e| ContextError(format!("refused: {}", e.rule)))?;
@@ -198,7 +259,7 @@ pub fn pack(
     let (role, range, complete) = if text.len() <= SMALL {
         (ContextRole::CompleteFile, (0, lines.len()), true)
     } else if let Some(name) = selected_symbol {
-        if let Some(r) = definition(&lines, name, lang) {
+        if let Some(r) = locate(&lines, name, lang) {
             (ContextRole::TargetDefinition, r, true)
         } else if let Some(i) = lines.iter().position(|l| has_ident(l, name)) {
             omissions.push(
@@ -257,29 +318,50 @@ pub fn pack(
     // at all. What is given back instead is the head of it, `complete: false`
     // so nothing certifies it for an `expected_sha256` edit, and an omission
     // carrying both numbers so the next request can be aimed.
-    let sliced = drawn.is_none();
-    let mut body = drawn.unwrap_or_else(|| slice(&lines, range));
-    let mut range = range;
+    //
+    // **A long class is delivered as its skeleton instead.** Its head, one
+    // line per member with that member's line range, and the members every
+    // other one is built on: the class is understood from that, and the one
+    // member a change needs is a second, exact request away. The whole of a
+    // 600-line test class re-read for each edit was the largest single cost
+    // measured against a reader that takes line windows.
+    let shape = (!whole && drawn.is_none() && role == ContextRole::TargetDefinition && complete)
+        .then(|| skeleton(&lines, &rel, range, lang, selected_symbol.unwrap_or("")))
+        .flatten();
     let mut complete = complete;
-    if body.len() > DEF_CAP {
-        let total = body.lines().count();
-        let kept = bounded_body_lines(&body, DEF_CAP);
-        omissions.push(format!(
-            "target is {} bytes and the {DEF_CAP} byte cap holds {kept} of its {total} lines; it is delivered incomplete, so no edit binds to it -- name an inner symbol for a complete target",
-            body.len()
-        ));
-        body = body.lines().take(kept).collect::<Vec<_>>().join("\n");
-        if sliced {
-            range = (range.0, range.0 + kept);
-        }
-        complete = false;
-    }
-    let target = make(role, rel.clone(), range, body, complete);
     let mut supporting = vec![];
+    let target = match shape {
+        Some(shape) => {
+            omissions.push(shape.note);
+            complete = false;
+            supporting.push(shape.index);
+            supporting.extend(shape.bodies);
+            shape.head
+        }
+        None => {
+            let sliced = drawn.is_none();
+            let mut body = drawn.unwrap_or_else(|| slice(&lines, range));
+            let mut range = range;
+            if body.len() > DEF_CAP {
+                let total = body.lines().count();
+                let kept = bounded_body_lines(&body, DEF_CAP);
+                omissions.push(format!(
+                    "target is {} bytes and the {DEF_CAP} byte cap holds {kept} of its {total} lines; it is delivered incomplete, so no edit binds to it -- name an inner symbol for a complete target",
+                    body.len()
+                ));
+                body = body.lines().take(kept).collect::<Vec<_>>().join("\n");
+                if sliced {
+                    range = (range.0, range.0 + kept);
+                }
+                complete = false;
+            }
+            make(role, rel.clone(), range, body, complete)
+        }
+    };
     if text.len() > SMALL {
         supporting.extend(imports(&lines, &rel, lang));
         if complete {
-            supporting.extend(nearby(&lines, &rel, range, lang))
+            supporting.extend(nearby(&lines, &rel, range, lang, whole))
         }
     }
     if let Some(name) = selected_symbol {
@@ -1367,14 +1449,23 @@ fn java_name(line: &str) -> Option<&str> {
     let candidate = &prefix[start..];
     (!candidate.is_empty() && java_decl(code, candidate).is_some()).then_some(candidate)
 }
-fn nearby(l: &[&str], p: &str, target: (usize, usize), g: Lang) -> Vec<SourceExcerpt> {
+/// Definitions near the target. Whole, the four nearest as bodies; otherwise
+/// the nearest [`NEARBY_SHOWN`] as one line each, in file order, which names
+/// them for a request without spending a body on each: measured, a nearby
+/// body was the next edit's site in one context out of fourteen.
+fn nearby(l: &[&str], p: &str, target: (usize, usize), g: Lang, whole: bool) -> Vec<SourceExcerpt> {
     let mut v = vec![];
     for i in target.0.saturating_sub(120)..(target.1 + 120).min(l.len()) {
         if i >= target.0 && i < target.1 {
             continue;
         }
+        // The definition declared on this line, never merely the file's
+        // first of the same name: a second class's `setUp` is not the first
+        // class's.
         if let Some(n) = name(l[i], g)
             && let Some(r) = definition(l, n, g)
+                .filter(|r| r.0 <= i && i < r.1)
+                .or_else(|| definition(&l[i..], n, g).map(|r| (r.0 + i, r.1 + i)))
             && (r.1 <= target.0 || r.0 >= target.1)
         {
             v.push((i.abs_diff(target.0), r))
@@ -1382,6 +1473,22 @@ fn nearby(l: &[&str], p: &str, target: (usize, usize), g: Lang) -> Vec<SourceExc
     }
     v.sort();
     v.dedup_by_key(|x| x.1);
+    if !whole {
+        let mut shown: Vec<(usize, usize)> =
+            v.into_iter().take(NEARBY_SHOWN).map(|(_, r)| r).collect();
+        shown.sort();
+        let (Some(first), Some(last)) = (shown.first(), shown.iter().map(|r| r.1).max()) else {
+            return vec![];
+        };
+        let rows: Vec<String> = shown.iter().map(|r| index_row(l, *r)).collect();
+        return vec![make(
+            ContextRole::NearbyIndex,
+            p.into(),
+            (first.0, last),
+            rows.join("\n"),
+            false,
+        )];
+    }
     v.into_iter()
         .take(4)
         .map(|(_, r)| {
@@ -1519,6 +1626,190 @@ fn make(
         complete,
     }
 }
+/// A resolved `symbol`: a name [`definition`] finds, or a dotted path
+/// (`Class.member`, `Outer.Inner.member`) walked member by member.
+fn locate(lines: &[&str], symbol: &str, lang: Lang) -> Option<(usize, usize)> {
+    definition(lines, symbol, lang).or_else(|| {
+        let mut parts = symbol.split('.');
+        let mut found = definition(lines, parts.next()?, lang)?;
+        let mut nested = false;
+        for part in parts {
+            found = members(lines, found, lang)
+                .into_iter()
+                .find(|(name, _)| *name == part)?
+                .1;
+            nested = true;
+        }
+        nested.then_some(found)
+    })
+}
+
+/// The members directly inside the container definition spanning `range`,
+/// each with its own span: the declarations [`name`] recognises at the
+/// shallowest indent below the container's own declaration line. A member
+/// starts at its decorators and ends before the next one starts, less
+/// trailing blank lines and the container's own closing line.
+fn members<'a>(
+    lines: &[&'a str],
+    range: (usize, usize),
+    lang: Lang,
+) -> Vec<(&'a str, (usize, usize))> {
+    let Some(declaration) = (range.0..range.1).find(|&i| name(lines[i], lang).is_some()) else {
+        return vec![];
+    };
+    let found: Vec<(usize, &str)> = (declaration + 1..range.1)
+        .filter_map(|i| name(lines[i], lang).map(|n| (i, n)))
+        .collect();
+    let Some(depth) = found.iter().map(|(i, _)| indent(lines[*i])).min() else {
+        return vec![];
+    };
+    let starts: Vec<(usize, &str)> = found
+        .into_iter()
+        .filter(|(i, _)| indent(lines[*i]) == depth)
+        .map(|(i, n)| {
+            (
+                leading_definition_start(lines, i, true).max(declaration + 1),
+                n,
+            )
+        })
+        .collect();
+    let mut spans = Vec::with_capacity(starts.len());
+    for (k, &(start, member)) in starts.iter().enumerate() {
+        let mut end = starts.get(k + 1).map_or(range.1, |next| next.0);
+        while end > start + 1
+            && (lines[end - 1].trim().is_empty() || indent(lines[end - 1]) < depth)
+        {
+            end -= 1;
+        }
+        spans.push((member, (start, end)));
+    }
+    spans
+}
+
+/// Whether the definition spanning `range` is a class, interface or trait:
+/// its declaration line's first word past the modifiers.
+fn is_container(lines: &[&str], range: (usize, usize), lang: Lang) -> bool {
+    const MODIFIERS: &[&str] = &[
+        "export",
+        "default",
+        "public",
+        "private",
+        "protected",
+        "abstract",
+        "final",
+        "static",
+        "sealed",
+        "pub",
+    ];
+    (range.0..range.1)
+        .find(|&i| name(lines[i], lang).is_some())
+        .and_then(|i| {
+            lines[i]
+                .split_whitespace()
+                .find(|word| !MODIFIERS.contains(word))
+        })
+        .is_some_and(|word| matches!(word, "class" | "interface" | "trait"))
+}
+
+/// One declaration named as its line range and its declaration line.
+fn index_row(lines: &[&str], r: (usize, usize)) -> String {
+    let declaration = (r.0..r.1)
+        .map(|i| lines[i].trim())
+        .find(|t| {
+            !t.is_empty()
+                && !t.starts_with('@')
+                && !t.starts_with('#')
+                && !t.starts_with("//")
+                && !t.starts_with("/*")
+                && !t.starts_with('*')
+        })
+        .unwrap_or_else(|| lines[r.0].trim());
+    let mut end = r.1;
+    while end > r.0 + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    format!("{}-{end}: {declaration}", r.0 + 1)
+}
+
+/// A long class as the model is first shown it.
+struct Skeleton {
+    head: SourceExcerpt,
+    index: SourceExcerpt,
+    bodies: Vec<SourceExcerpt>,
+    note: String,
+}
+
+/// The skeleton of the class spanning `range`, or `None` when it is not a
+/// class, is not longer than [`SKELETON_ABOVE`] lines, or has fewer than two
+/// members -- a skeleton of one member is the member.
+fn skeleton(
+    lines: &[&str],
+    path: &str,
+    range: (usize, usize),
+    lang: Lang,
+    symbol: &str,
+) -> Option<Skeleton> {
+    if range.1 - range.0 <= SKELETON_ABOVE || !is_container(lines, range, lang) {
+        return None;
+    }
+    let members = members(lines, range, lang);
+    if members.len() < 2 {
+        return None;
+    }
+    let before_first = members[0].1.0;
+    let head_end = before_first.min(range.0 + HEAD_CAP);
+    let head = make(
+        ContextRole::TargetDefinition,
+        path.into(),
+        (range.0, head_end),
+        slice(lines, (range.0, head_end)),
+        false,
+    );
+    let rows: Vec<String> = members.iter().map(|(_, r)| index_row(lines, *r)).collect();
+    let index = make(
+        ContextRole::MemberIndex,
+        path.into(),
+        range,
+        rows.join("\n"),
+        false,
+    );
+    let last = members.len() - 1;
+    let bodies: Vec<SourceExcerpt> = members
+        .iter()
+        .enumerate()
+        .filter(|(k, (member, _))| *k == last || SETUP.contains(member))
+        .map(|(_, (_, r))| {
+            make(
+                ContextRole::MemberBody,
+                path.into(),
+                *r,
+                slice(lines, *r),
+                true,
+            )
+        })
+        .collect();
+    let head_note = if head_end < before_first {
+        format!(
+            "the first {} of the {} lines before its first member",
+            head_end - range.0,
+            before_first - range.0
+        )
+    } else {
+        "its head".to_string()
+    };
+    let note = format!(
+        "target is a class of {} lines, shown as {head_note}, its {} members one line each with their line ranges, and the bodies of its setup and last members; name one member as `symbol: \"{symbol}.<member>\"`, and asking for `{symbol}` again returns all of it",
+        range.1 - range.0,
+        members.len()
+    );
+    Some(Skeleton {
+        head,
+        index,
+        bodies,
+        note,
+    })
+}
+
 fn slice(l: &[&str], r: (usize, usize)) -> String {
     l[r.0..r.1].join("\n")
 }
@@ -1641,6 +1932,10 @@ fn render_one(o: &mut String, e: &SourceExcerpt) {
         if e.complete { "complete" } else { "excerpt" }
     ));
     for (i, l) in e.text.lines().enumerate() {
-        o.push_str(&format!("{:>5} | {l}\n", e.range.start + i))
+        if e.role.is_index() {
+            o.push_str(&format!("{l}\n"))
+        } else {
+            o.push_str(&format!("{:>5} | {l}\n", e.range.start + i))
+        }
     }
 }

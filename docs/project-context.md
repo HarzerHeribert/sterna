@@ -92,6 +92,17 @@ ambiguous syntax falls back to a bounded window and names the omission.
 A definition is capped at 24,000 bytes and a result at 18 supporting
 excerpts.
 
+`symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
+walked member by member, so a method name two classes share is not
+ambiguous. A class longer than 150 lines is delivered as its skeleton: its
+head (up to 60 lines before the first member), one line per member with its
+line range, and the bodies of its setup members (`setUp`, `setUpTestData`,
+`__init__`, `constructor` and the like) and its last member. The skeleton
+certifies no version; asking for the same class again, unchanged, returns
+it whole. Definitions near the target come as one line each with their line
+ranges, the nearest eight, never as bodies. `STERNA_CONTEXT_WHOLE=1` turns
+both off for the measured comparison and goes when that is decided.
+
 The conversation is append-only, so a context whose exact rendering an
 earlier result already carries is not printed again: it arrives as its
 header (path, symbol, version) and one line naming the cell whose result

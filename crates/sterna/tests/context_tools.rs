@@ -717,3 +717,35 @@ fn after_a_checkpoint_every_context_is_printed_in_full_again() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A skeleton asked for again, unchanged, is answered with the whole class,
+/// which binds an edit; never with a pointer back to the skeleton.
+#[test]
+fn a_skeleton_asked_for_again_returns_the_whole_class() {
+    let root = fixture("skeleton-again");
+    let mut class = String::from("class BigTests:\n    def setUp(self):\n        self.v = 1\n\n");
+    for n in 0..20 {
+        class.push_str(&format!("    def test_{n:02}(self):\n"));
+        class.push_str(&"        self.v += 1\n".repeat(8));
+        class.push('\n');
+    }
+    let padding = "# padding padding padding padding\n".repeat(600);
+    std::fs::write(root.join("src/big.py"), format!("{class}\n{padding}")).unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("skeleton-again"));
+
+    let first = runtime.run_cell("await context({path:'src/big.py', symbol:'BigTests'});");
+    let first = &first.turn().stdout_tail;
+    assert!(first.contains("### MemberIndex"), "{first}");
+    assert!(!first.contains("\n   76 | "), "{first}");
+    let again = runtime.run_cell("await context({path:'src/big.py', symbol:'BigTests'});");
+    let again = &again.turn().stdout_tail;
+    assert!(!again.contains("identical to the context"), "{again}");
+    assert!(!again.contains("### MemberIndex"), "{again}");
+    assert!(again.contains("\n   76 | "), "{again}");
+    let edited = runtime.run_cell(
+        "await edit({path:'src/big.py', old:'    def test_07(self):', replacement:'    def test_seven(self):'});",
+    );
+    assert_eq!(edited.turn().record.calls[0].ended, Ended::Ok, "{edited:?}");
+    let _ = std::fs::remove_dir_all(root);
+}

@@ -1010,9 +1010,8 @@ fn tool_callback(
     // trip to learn what is already in hand.
     //
     // The cell keeps running either way. A context nobody could deliver is
-    // an omission on its own record -- carrying the two numbers, so the next
-    // request can be aimed instead of repeated -- and never the end of a
-    // turn that had eight other contexts in it.
+    // an omission on its own record carrying the two numbers, so the next
+    // request is aimed, never the end of a turn with other contexts in it.
     let evidence = traced
         .outcome
         .as_ref()
@@ -1022,6 +1021,7 @@ fn tool_callback(
             serde_json::from_str::<crate::project::source_context::SourceContext>(&result.stdout)
                 .ok()
         })
+        .map(|packed| state.expand_repeated_skeleton(packed))
         .map(|mut packed| {
             let budget = state.remaining_context_budget();
             let delivered = state.context_shown(&packed) || packed.narrow_to(budget);

@@ -97,7 +97,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         name: "context",
         return_type: "{path: string; sha256: string; symbol: string | null; text: string; complete: boolean; ranges: {path: string; start: number; end: number; role: string}[]; omissions: string[]}",
-        summary: "Load the editing surface for one file or symbol. For a large source file, supply the target `symbol`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
+        summary: "Load the editing surface for one file or symbol. For a large source file, supply the target `symbol`; a member is named `Class.member`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
     },
     Entry {
         name: "edit",
