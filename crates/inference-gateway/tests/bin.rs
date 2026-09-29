@@ -231,6 +231,12 @@ subscription_broker = "cliproxyapi"
 kind = "api-key"
 provider = "fixture"
 credential = { env = "GATEWAY_BIN_TEST_KEY" }
+
+[accounts.beta]
+kind = "api-key"
+provider = "fixture"
+credential = { env = "GATEWAY_BIN_TEST_KEY" }
+models = ["fixture-flash"]
 "#,
     )
     .expect("the configuration is written");
@@ -250,12 +256,12 @@ credential = { env = "GATEWAY_BIN_TEST_KEY" }
     let accounts = document["accounts"]
         .as_array()
         .expect("`accounts` is an array");
-    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts.len(), 3);
     assert_eq!(
         accounts[0]["account"], "alpha",
         "accounts are sorted by name"
     );
-    assert_eq!(accounts[1]["account"], "zeta");
+    assert_eq!(accounts[2]["account"], "zeta");
 
     for account in accounts {
         let object = account.as_object().expect("each account is an object");
@@ -283,13 +289,107 @@ credential = { env = "GATEWAY_BIN_TEST_KEY" }
     assert_eq!(accounts[0]["connect_with"], serde_json::Value::Null);
     assert_eq!(accounts[0]["authenticated"], serde_json::Value::Null);
 
+    // An account that names its own models reports them: they are what
+    // routing uses.
+    assert_eq!(accounts[1]["scope"], "account-declared");
+    assert_eq!(accounts[1]["models"], serde_json::json!(["fixture-flash"]));
+
     // The subscription row names the flow that would connect it, and says
     // out loud that nothing has. Its `provider` is the broker's own slug
     // because this account states no `vendor`: a stated vendor names it
     // instead, and that fallback order is the host's, copied.
-    assert_eq!(accounts[1]["provider"], "cliproxyapi");
-    assert_eq!(accounts[1]["connect_with"], "anthropic");
-    assert_eq!(accounts[1]["authenticated"], false);
+    assert_eq!(accounts[2]["provider"], "cliproxyapi");
+    assert_eq!(accounts[2]["connect_with"], "anthropic");
+    assert_eq!(accounts[2]["authenticated"], false);
+}
+
+/// `--refresh` reads an api-key account's list from its provider the known
+/// way, says so, and the listing then reports it.
+#[test]
+fn refresh_reads_an_api_key_accounts_model_list() {
+    let provider = FakeProvider::answering(
+        "HTTP/1.1 200 OK",
+        "content-type: application/json\r\n",
+        r#"{"object":"list","data":[{"id":"fixture-flash"},{"id":"fixture-pro"}]}"#,
+    );
+    // Beta names its own models, so its provider is never asked.
+    let declared = FakeProvider::answering("HTTP/1.1 200 OK", "", r#"{"data":[]}"#);
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let config_path = scratch.path().join("gateway.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[providers.fixture]
+base_url = "{}"
+protocol = "openai-chat"
+credential_env = ["GATEWAY_BIN_REFRESH_KEY"]
+
+[providers.declared]
+base_url = "{}"
+protocol = "openai-chat"
+credential_env = ["GATEWAY_BIN_REFRESH_KEY"]
+
+[accounts.alpha]
+kind = "api-key"
+provider = "fixture"
+credential = {{ env = "GATEWAY_BIN_REFRESH_KEY" }}
+
+[accounts.beta]
+kind = "api-key"
+provider = "declared"
+credential = {{ env = "GATEWAY_BIN_REFRESH_KEY" }}
+models = ["fixture-flash"]
+"#,
+            provider.base_url(),
+            declared.base_url()
+        ),
+    )
+    .expect("the configuration is written");
+
+    let output = gateway(&config_path, scratch.path())
+        .args(["entitlements", "--json", "--refresh"])
+        .env("GATEWAY_BIN_REFRESH_KEY", "listing-key")
+        .output()
+        .expect("the built binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "account `alpha`: read 2 model(s) from GET {}/models",
+            provider.base_url()
+        )),
+        "{stderr}"
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON document on stdout");
+    assert_eq!(document["accounts"][0]["scope"], "provider-declared");
+    assert_eq!(
+        document["accounts"][0]["models"],
+        serde_json::json!(["fixture-flash", "fixture-pro"])
+    );
+    assert!(
+        !stderr.contains("account `beta`") && declared.requests(0).is_empty(),
+        "an account naming its own models is not read: {stderr}"
+    );
+    let seen = provider.requests(1);
+    assert_eq!(seen.len(), 1, "one list read, for alpha only");
+    assert_eq!(seen[0].header("authorization"), Some("Bearer listing-key"));
+
+    // A list read today is not read again: the model picker refreshes on
+    // every open.
+    let again = gateway(&config_path, scratch.path())
+        .args(["entitlements", "--json", "--refresh"])
+        .env("GATEWAY_BIN_REFRESH_KEY", "listing-key")
+        .output()
+        .expect("the built binary runs");
+    assert!(again.status.success());
+    // The command has exited, so any request it made has already arrived.
+    assert_eq!(
+        provider.requests(1).len(),
+        1,
+        "the fresh list was read again"
+    );
 }
 
 /// A `--config` naming a file that does not exist is an empty catalogue and
@@ -438,6 +538,20 @@ credential = {{ env = "GATEWAY_BIN_DEFERRED_KEY" }}
         serde_json::from_slice(&set.stdout).expect("one JSON object on stdout");
     assert_eq!(stored["provider"], "fixture");
     assert_eq!(stored["variable"], "GATEWAY_BIN_DEFERRED_KEY");
+    // Storing the key read the account's model list the known way at once;
+    // this provider answers every request with a message, so the line says
+    // what came back and how to name the models by hand.
+    let lists = stored["model_lists"]
+        .as_array()
+        .expect("model_lists is an array");
+    assert_eq!(lists.len(), 1, "{stored}");
+    let line = lists[0].as_str().unwrap_or_default();
+    assert!(
+        line.starts_with("account `local`: could not read a model list (GET ")
+            && line.contains("/v1/models: answered 200")
+            && line.ends_with("under [accounts.local]: models = [\"<model id>\", …]"),
+        "{line}"
+    );
 
     // A refused rebuild stands for a second before a request tries again.
     std::thread::sleep(Duration::from_millis(1100));
@@ -446,10 +560,16 @@ credential = {{ env = "GATEWAY_BIN_DEFERRED_KEY" }}
         status.contains("200"),
         "the running gateway picked the stored key up: {status} {answer}"
     );
-    let seen = provider.requests(1);
-    assert_eq!(seen.len(), 1);
+    let seen = provider.requests(2);
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[0].request_line.starts_with("GET /v1/models "),
+        "{}",
+        seen[0].request_line
+    );
+    assert_eq!(seen[0].header("x-api-key"), Some("stored-through-stdin"));
     assert_eq!(
-        seen[0].header("authorization"),
+        seen[1].header("authorization"),
         Some("Bearer stored-through-stdin"),
         "the provider was given the key that was stored, and nothing else"
     );

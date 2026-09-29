@@ -48,6 +48,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use inference_gateway::config::{self, GatewayConfig};
+use inference_gateway::entitlement::AccountEntry;
 use inference_gateway::entitlement::{EntitlementKind, EntitlementVendor};
 use inference_gateway::gateway::subscription_broker::{
     RunningSubscriptionBroker, credential_present,
@@ -57,6 +58,7 @@ use inference_gateway::pool::{self, Pool};
 use inference_gateway::provider::cache::{
     ModelCache, ModelCatalogue, ModelEntry, now_unix_seconds,
 };
+use inference_gateway::provider::discovery::{self, ProbeTimeouts};
 use inference_gateway::secret::file::FileSecretStore;
 use inference_gateway::secret::native::{PreferNativeSecretStore, Presence, SourceKind};
 use inference_gateway::secret::{SecretRef, SecretStore};
@@ -94,7 +96,8 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Read a model catalogue for every connected subscription account
-        /// that has none cached.
+        /// that has none cached, and every api-key account's model list from
+        /// its provider.
         #[arg(long)]
         refresh: bool,
     },
@@ -699,8 +702,18 @@ fn serve(
                 None => startup.clone(),
             };
             let providers = config::providers(&current);
+            let cache = ModelCache::at(config::model_cache_dir(&data_dir));
+            let accounts = pool::with_listed_models(&current.accounts, &|provider| {
+                cache.load(provider).map(|catalogue| {
+                    catalogue
+                        .models()
+                        .iter()
+                        .map(|model| model.id().to_owned())
+                        .collect()
+                })
+            });
             pool::pool_from_catalogue(
-                &current.accounts,
+                &accounts,
                 &providers,
                 &secrets,
                 &|entitlement| config::broker_paths(&data_dir, entitlement),
@@ -994,23 +1007,30 @@ fn entitlements(config: &GatewayConfig, data_dir: &Path, json: bool, refresh: bo
             ),
             None => entry.provider().map(str::to_owned),
         };
-        let (cached, scope) = if entry.subscription_broker().is_some() {
-            (cache.load(name), "account-declared")
-        } else if let Some(provider_name) = entry.provider() {
-            (cache.load(provider_name), "provider-declared")
-        } else {
-            (None, "unknown")
-        };
-        let (mut models, scope) = match cached {
-            Some(catalogue) => (
-                catalogue
-                    .models()
-                    .iter()
-                    .map(|model| model.id().to_owned())
-                    .collect::<Vec<_>>(),
-                scope,
-            ),
-            None => (Vec::new(), "unknown"),
+        // Models the account names itself come first: they are what routing
+        // uses. Otherwise what a catalogue read said, if one was read.
+        let (mut models, scope) = match (entry.subscription_broker(), entry.models()) {
+            (None, Some(declared)) => (declared.to_vec(), "account-declared"),
+            _ => {
+                let (cached, scope) = if entry.subscription_broker().is_some() {
+                    (cache.load(name), "account-declared")
+                } else if let Some(provider_name) = entry.provider() {
+                    (cache.load(provider_name), "provider-declared")
+                } else {
+                    (None, "unknown")
+                };
+                match cached {
+                    Some(catalogue) => (
+                        catalogue
+                            .models()
+                            .iter()
+                            .map(|model| model.id().to_owned())
+                            .collect::<Vec<_>>(),
+                        scope,
+                    ),
+                    None => (Vec::new(), "unknown"),
+                }
+            }
         };
         models.sort();
         models.dedup();
@@ -1064,11 +1084,16 @@ fn entitlements(config: &GatewayConfig, data_dir: &Path, json: bool, refresh: bo
 }
 
 /// Read a model catalogue for every connected subscription account that has
-/// none cached.
+/// none cached, then every api-key account's list (see [`read_api_catalogue`]).
 ///
-/// **Missing, not stale** — the same rule a host applies: `--refresh` fills
-/// a gap, it does not re-fetch what is already known, so asking twice costs
-/// one sidecar start rather than two. Sequentially rather than in parallel:
+/// **Missing, not stale** for a subscription — the same rule a host applies:
+/// `--refresh` fills a gap, it does not re-fetch what is already known, so
+/// asking twice costs one sidecar start rather than two. An api-key list is
+/// read when none is cached or the cached one is older than
+/// [`API_LIST_MAX_AGE_SECONDS`]: Sterna's model picker refreshes on every
+/// open, and a provider that stalls would hold it for the whole probe
+/// timeout each time, while a list never read again would never route a
+/// model the provider added later. Sequentially rather than in parallel:
 /// a standalone catalogue is a handful of accounts, and starting several
 /// CLIProxyAPI processes at once to save a second is not a trade worth the
 /// moving parts.
@@ -1114,6 +1139,90 @@ fn refresh_catalogues(config: &GatewayConfig, data_dir: &Path, cache: &ModelCach
             eprintln!("account `{name}`: its catalogue could not be cached: {error}");
         }
     }
+    let providers = config::providers(config);
+    let secrets = secret_store(data_dir);
+    for (name, entry) in &config.accounts {
+        let fresh = entry
+            .provider()
+            .and_then(|provider| cache.load(provider))
+            .is_some_and(|catalogue| {
+                now_unix_seconds() - catalogue.fetched_at() < API_LIST_MAX_AGE_SECONDS
+            });
+        if fresh {
+            continue;
+        }
+        if let Some(line) = read_api_catalogue(&providers, &secrets, cache, name, entry) {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// How old a cached api-key model list may be before `--refresh` reads it
+/// again: a day.
+const API_LIST_MAX_AGE_SECONDS: i64 = 24 * 60 * 60;
+
+/// Reads an api-key account's model list every known way
+/// ([`discovery::read_model_list`]) and caches it under its provider, which
+/// is the list routing then narrows the account to. `None` -- nothing to
+/// read -- for a subscription, an account that names its own `models`, and
+/// one whose key is not stored. Otherwise the line to show: how many models
+/// were read and from where, or what each way answered and how to name the
+/// models by hand.
+fn read_api_catalogue(
+    providers: &[inference_gateway::provider::Provider],
+    secrets: &dyn SecretStore,
+    cache: &ModelCache,
+    name: &str,
+    entry: &AccountEntry,
+) -> Option<String> {
+    if entry.subscription_broker().is_some() || entry.models().is_some() {
+        return None;
+    }
+    let provider = providers
+        .iter()
+        .find(|provider| Some(provider.name.as_str()) == entry.provider())?;
+    let references = match entry.credential() {
+        Some(credential) => vec![credential.secret_ref().clone()],
+        None => provider.secret_refs(),
+    };
+    let reference = references
+        .into_iter()
+        .find(|reference| secrets.is_present(reference))?;
+    let by_hand = format!(
+        "name its models in gateway.toml under [accounts.{name}]: models = [\"<model id>\", …]"
+    );
+    let credential = || secrets.resolve(&reference);
+    Some(
+        match discovery::read_model_list(provider, &credential, ProbeTimeouts::default()) {
+            Ok(list) => {
+                let count = list.models.len();
+                let url = list.url.clone();
+                let catalogue = ModelCatalogue::new(
+                    &provider.name,
+                    list.base_url,
+                    list.url,
+                    now_unix_seconds(),
+                    list.models,
+                );
+                match cache.store(&catalogue) {
+                    Ok(_) => format!("account `{name}`: read {count} model(s) from GET {url}"),
+                    Err(error) => format!(
+                        "account `{name}`: read {count} model(s) from GET {url}, but they could \
+                         not be cached ({error}), so {by_hand}"
+                    ),
+                }
+            }
+            Err(tried) if tried.is_empty() => format!(
+                "account `{name}`: `{}` publishes no model list this gateway can read, so \
+                 {by_hand}",
+                provider.name
+            ),
+            Err(tried) => format!(
+                "account `{name}`: could not read a model list ({}), so {by_hand}",
+                tried.join("; ")
+            ),
+        },
+    )
 }
 
 /// `subscriptions usage`: every subscription account (or one), read from the
@@ -1708,6 +1817,23 @@ fn credentials_set(
     }
     let store = FileSecretStore::at(config::credentials_path(data_dir));
     store.store(&variable, key)?;
+    // The moment a key arrives is the moment its accounts' model lists can
+    // first be read, so they are read now rather than left for a refresh.
+    let providers = config::providers(config);
+    let secrets = secret_store(data_dir);
+    let cache = ModelCache::at(config::model_cache_dir(data_dir));
+    let model_lists: Vec<String> = config
+        .accounts
+        .iter()
+        .filter(|(_, entry)| {
+            entry.provider() == Some(provider)
+                || entry.credential().map(|credential| credential.secret_ref())
+                    == Some(&SecretRef::Environment {
+                        var: variable.clone(),
+                    })
+        })
+        .filter_map(|(name, entry)| read_api_catalogue(&providers, &secrets, &cache, name, entry))
+        .collect();
     let mut stdout = std::io::stdout();
     if json {
         writeln!(
@@ -1717,6 +1843,7 @@ fn credentials_set(
                 "provider": provider,
                 "variable": variable,
                 "stored_in": store.path().display().to_string(),
+                "model_lists": model_lists,
             })
         )?;
     } else {
@@ -1725,6 +1852,9 @@ fn credentials_set(
             "stored {variable} for {provider} in {}",
             store.path().display()
         )?;
+        for line in &model_lists {
+            writeln!(stdout, "{line}")?;
+        }
     }
     Ok(())
 }

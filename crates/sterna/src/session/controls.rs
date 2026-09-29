@@ -651,17 +651,16 @@ fn custom_endpoint(session: &Session<'_>) {
             );
             return;
         }
-        if crate::gateway::store_credential(session.gateway, &name, &key).is_none() {
+        let Some(stored) = crate::gateway::store_credential(session.gateway, &name, &key) else {
             form = form.with_error(2, "the gateway did not store the key; try again");
             continue;
+        };
+        let mut text = format!("Connected {name} ({url}). Pick one of its models with /models.");
+        for line in &stored.model_lists {
+            text.push('\n');
+            text.push_str(line);
         }
-        show(
-            session,
-            Panel::text(
-                "Your own endpoint",
-                format!("Connected {name} ({url}). Pick one of its models with /models."),
-            ),
-        );
+        show(session, Panel::text("Your own endpoint", text));
         return;
     }
 }
@@ -980,9 +979,14 @@ pub(super) fn key(session: &Session<'_>, provider: Option<&str>) {
             session_println!("No key was pasted, so nothing was stored for {provider}.");
             return;
         }
-        if let Some(variable) = crate::gateway::store_credential(session.gateway, provider, &value)
-        {
-            session_println!("Stored the {variable} for {provider} in the gateway.");
+        if let Some(stored) = crate::gateway::store_credential(session.gateway, provider, &value) {
+            session_println!(
+                "Stored the {} for {provider} in the gateway.",
+                stored.variable
+            );
+            for line in &stored.model_lists {
+                session_println!("{line}");
+            }
             return;
         }
         // Refused: the same form again, saying so, rather than a sentence

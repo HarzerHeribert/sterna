@@ -436,6 +436,100 @@ pub fn model_catalogue(request: &ProbeRequest, timeouts: ProbeTimeouts) -> Model
     }
 }
 
+/// A model list read from one of a provider's own endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelList {
+    /// The base URL the list was read under, as a cached catalogue records it.
+    pub base_url: String,
+    /// The exact URL that answered.
+    pub url: String,
+    pub models: Vec<ModelEntry>,
+}
+
+/// Every known way to read an api-key provider's model list, in the order
+/// its routes are declared, until one answers with models: `GET
+/// <base>/models` on an OpenAI-style route, and `GET <base>/v1/models` with
+/// an `anthropic-version` on an Anthropic-style one -- Anthropic's own
+/// listing, which the compatible endpoints vendors publish copy. A URL two
+/// routes share is asked once.
+///
+/// `credential` resolves the key afresh for each request, because a
+/// [`Secret`] is never cloned. `Err` is one line per URL tried, saying what
+/// came back; it is empty only when the provider declares no route either
+/// form applies to, or says it publishes no list.
+pub fn read_model_list(
+    provider: &crate::provider::Provider,
+    credential: &dyn Fn() -> Option<Secret>,
+    timeouts: ProbeTimeouts,
+) -> Result<ModelList, Vec<String>> {
+    use crate::routing::wire::Declared;
+    let mut tried: Vec<String> = Vec::new();
+    if matches!(
+        provider.model_list_endpoint,
+        Declared::Verified { value: false, .. }
+    ) {
+        return Err(tried);
+    }
+    let mut asked: Vec<String> = Vec::new();
+    for support in &provider.protocols {
+        let base = support.base_url.trim_end_matches('/');
+        let (base_url, mut headers) = match support.protocol {
+            WireProtocol::OpenAiChat | WireProtocol::OpenAiResponses => {
+                (base.to_owned(), Vec::new())
+            }
+            WireProtocol::AnthropicMessages => (
+                format!("{base}/v1"),
+                vec![("anthropic-version".to_owned(), "2023-06-01".to_owned())],
+            ),
+            WireProtocol::GeminiGenerateContent | WireProtocol::TypesafeSystemOne => continue,
+        };
+        if base.is_empty() {
+            continue;
+        }
+        headers.extend(provider.headers.iter().cloned());
+        let request = ProbeRequest::new(
+            provider.name.clone(),
+            support.protocol,
+            base_url.clone(),
+            ProbeTarget::ModelList,
+            headers,
+            credential(),
+        );
+        let url = request.url();
+        if asked.contains(&url) {
+            continue;
+        }
+        asked.push(url.clone());
+        match model_catalogue(&request, timeouts) {
+            ModelFetch::Catalogue(models) if !models.is_empty() => {
+                return Ok(ModelList {
+                    base_url,
+                    url,
+                    models,
+                });
+            }
+            ModelFetch::Catalogue(_) => tried.push(format!("GET {url}: listed no models")),
+            ModelFetch::NotACatalogue { status, reason } => {
+                tried.push(format!("GET {url}: answered {status}, but {reason}"));
+            }
+            ModelFetch::Probe(outcome) => tried.push(format!(
+                "GET {url}: {}",
+                match outcome {
+                    ProbeOutcome::Reached { status } | ProbeOutcome::Unexpected { status } => {
+                        format!("answered {status}")
+                    }
+                    ProbeOutcome::Rejected { status } => format!("refused the key ({status})"),
+                    ProbeOutcome::TimedOut { waited_ms } => {
+                        format!("no answer after {waited_ms} ms")
+                    }
+                    ProbeOutcome::Unreachable { reason } => reason,
+                }
+            )),
+        }
+    }
+    Err(tried)
+}
+
 /// Read a model catalogue out of a `GET /models` response body.
 ///
 /// # The shape, as actually read

@@ -717,3 +717,97 @@ fn a_json_object_with_no_data_array_is_refused_by_name() {
 fn entries_without_an_id_do_not_silently_become_an_empty_catalogue() {
     assert!(parse_catalogue(r#"{"data":[{"name":"no id here"}]}"#).is_err());
 }
+
+// --- every known way to read an api-key provider's list ---------------
+
+fn provider_with(routes: &[(WireProtocol, String)]) -> crate::provider::Provider {
+    use crate::routing::wire::Declared;
+    crate::provider::Provider {
+        name: "vendor".into(),
+        protocols: routes
+            .iter()
+            .map(|(protocol, base_url)| crate::provider::ProtocolSupport {
+                protocol: *protocol,
+                base_url: base_url.clone(),
+                streaming: Declared::Unverified,
+                tool_calls: Declared::Unverified,
+                reasoning: Declared::Unverified,
+            })
+            .collect(),
+        model_list_endpoint: Declared::Unverified,
+        usage_telemetry: Declared::Unverified,
+        credential_env: Vec::new(),
+        headers: Vec::new(),
+    }
+}
+
+fn key() -> Option<Secret> {
+    Some(Secret::mint_for_test("listing-probe-key"))
+}
+
+/// An OpenAI-style route that has no list does not end the search: the
+/// Anthropic-style route is asked at `/v1/models`, with its own key header
+/// and version, and its list is the answer.
+#[test]
+fn a_route_without_a_list_falls_through_to_the_next_known_way() {
+    let openai = FixtureProvider::answering("HTTP/1.1 404 Not Found", "", "{}");
+    let anthropic = FixtureProvider::answering(
+        "HTTP/1.1 200 OK",
+        "",
+        r#"{"data":[{"id":"vendor-flash"},{"id":"vendor-pro"}]}"#,
+    );
+    let provider = provider_with(&[
+        (WireProtocol::OpenAiChat, openai.base_url()),
+        (WireProtocol::AnthropicMessages, anthropic.base_url()),
+    ]);
+    let list = read_model_list(&provider, &key, quick()).expect("the second route lists models");
+    assert_eq!(list.url, format!("{}/v1/models", anthropic.base_url()));
+    assert_eq!(
+        list.models,
+        vec![
+            ModelEntry::new("vendor-flash"),
+            ModelEntry::new("vendor-pro")
+        ]
+    );
+    assert_eq!(openai.requests()[0].target, "/models");
+    let asked = &anthropic.requests()[0];
+    assert_eq!(asked.target, "/v1/models");
+    assert_eq!(asked.header("x-api-key"), Some("listing-probe-key"));
+    assert_eq!(asked.header("anthropic-version"), Some("2023-06-01"));
+}
+
+/// When no known way answers with a list, every URL tried is named with
+/// what came back, so the person knows it was tried and why it failed.
+#[test]
+fn every_way_failing_names_each_url_and_what_came_back() {
+    let openai = FixtureProvider::answering("HTTP/1.1 404 Not Found", "", "{}");
+    let anthropic = FixtureProvider::answering("HTTP/1.1 401 Unauthorized", "", "{}");
+    let provider = provider_with(&[
+        (WireProtocol::OpenAiChat, openai.base_url()),
+        (WireProtocol::AnthropicMessages, anthropic.base_url()),
+    ]);
+    let tried = read_model_list(&provider, &key, quick()).expect_err("nothing lists models");
+    assert_eq!(
+        tried,
+        vec![
+            format!("GET {}/models: answered 404", openai.base_url()),
+            format!(
+                "GET {}/v1/models: refused the key (401)",
+                anthropic.base_url()
+            ),
+        ]
+    );
+}
+
+/// Two routes under one base URL share one listing URL, and it is asked once.
+#[test]
+fn a_listing_url_two_routes_share_is_asked_once() {
+    let fixture = FixtureProvider::answering("HTTP/1.1 404 Not Found", "", "{}");
+    let provider = provider_with(&[
+        (WireProtocol::OpenAiChat, fixture.base_url()),
+        (WireProtocol::OpenAiResponses, fixture.base_url()),
+    ]);
+    let tried = read_model_list(&provider, &key, quick()).expect_err("nothing lists models");
+    assert_eq!(tried.len(), 1, "{tried:?}");
+    assert_eq!(fixture.requests().len(), 1);
+}

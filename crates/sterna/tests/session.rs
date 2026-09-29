@@ -5387,7 +5387,7 @@ case "$1" in
         ;;
       set)
         cat > "@RECORD@.stdin"
-        echo '{"provider":"'"$3"'","variable":"ANTHROPIC_API_KEY","stored_in":"/dev/null/credentials.toml"}'
+        echo '{"provider":"'"$3"'","variable":"ANTHROPIC_API_KEY","stored_in":"/dev/null/credentials.toml","model_lists":["account `work`: could not read a model list (GET https://example.invalid/v1/models: answered 404), so name its models in gateway.toml under [accounts.work]: models = [\"<model id>\", …]"]}'
         ;;
     esac
     ;;
@@ -5916,7 +5916,8 @@ fn a_key_typed_at_the_prompt_reaches_the_gateway_on_stdin_and_nothing_else() {
         );
     }
     assert!(
-        stdout.contains("Stored the ANTHROPIC_API_KEY for anthropic in the gateway."),
+        stdout.contains("Stored the ANTHROPIC_API_KEY for anthropic in the gateway.")
+            && stdout.contains("account `work`: could not read a model list (GET "),
         "the variable it was stored under is what the session reports:\n{stdout}"
     );
 }

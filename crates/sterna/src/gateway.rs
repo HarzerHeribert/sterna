@@ -501,28 +501,41 @@ pub fn nothing_resolves(gateway: &Gateway) -> bool {
         .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|row| row.source.is_none()))
 }
 
-/// Hands `key` to the gateway to store, and reports the variable it was
-/// stored under. `None` is a gateway that refused or could not be run.
+/// What the gateway said when it stored a key.
+pub struct StoredKey {
+    /// The variable it was stored under.
+    pub variable: String,
+    /// One line per account the key serves: the models the gateway then read
+    /// from the provider, or why it could not and how to name them by hand.
+    pub model_lists: Vec<String>,
+}
+
+/// Hands `key` to the gateway to store. `None` is a gateway that refused or
+/// could not be run.
 ///
 /// **The key travels on the child's stdin and never in `args`.** A command
 /// line is readable by every process on the machine; a pipe is not.
 #[must_use]
-pub fn store_credential(gateway: &Gateway, provider: &str, key: &str) -> Option<String> {
+pub fn store_credential(gateway: &Gateway, provider: &str, key: &str) -> Option<StoredKey> {
     #[derive(Deserialize)]
     struct Stored {
         #[serde(default)]
         variable: Option<String>,
+        #[serde(default)]
+        model_lists: Vec<String>,
     }
     let stdout = gateway.run(
         &["credentials", "set", provider, "--json"],
         Some(key.as_bytes()),
     )?;
-    Some(
-        serde_json::from_slice::<Stored>(&stdout)
-            .ok()
-            .and_then(|stored| stored.variable)
+    let stored = serde_json::from_slice::<Stored>(&stdout).ok();
+    Some(StoredKey {
+        variable: stored
+            .as_ref()
+            .and_then(|stored| stored.variable.clone())
             .unwrap_or_else(|| "API key".to_string()),
-    )
+        model_lists: stored.map(|stored| stored.model_lists).unwrap_or_default(),
+    })
 }
 
 // ---------------------------------------------------------------------

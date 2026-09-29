@@ -315,6 +315,35 @@ pub fn pool_from_catalogue(
     })
 }
 
+/// `accounts`, with every api-key account that names no `models` given the
+/// list its provider was last read as (`listed`, by provider name), so that
+/// list narrows its backend as a declaration would. Without one the account
+/// is a candidate for every model, and a vendor whose endpoint serves an
+/// unknown name as its own default -- DeepSeek's Anthropic endpoint does,
+/// 2026-09-29 -- would silently answer a failover meant for another model.
+/// A declared list always wins; an empty or absent read changes nothing.
+pub fn with_listed_models(
+    accounts: &BTreeMap<String, AccountEntry>,
+    listed: &dyn Fn(&str) -> Option<Vec<String>>,
+) -> BTreeMap<String, AccountEntry> {
+    accounts
+        .iter()
+        .map(|(name, entry)| {
+            let mut entry = entry.clone();
+            if entry.subscription_broker().is_none()
+                && entry.models().is_none()
+                && let Some(models) = entry
+                    .provider()
+                    .and_then(listed)
+                    .filter(|models| !models.is_empty())
+            {
+                entry.set_models(Some(models));
+            }
+            (name.clone(), entry)
+        })
+        .collect()
+}
+
 /// Which configured providers this gateway may forward to when no account
 /// catalogue narrows the question: every provider that serves an ingress
 /// protocol with a base URL, once per credential variable that resolves.
@@ -604,6 +633,37 @@ mod tests {
             auth_dir: std::path::PathBuf::from("/nonexistent/e/auth"),
             executable: std::path::PathBuf::from("/nonexistent/cliproxyapi"),
         }
+    }
+
+    /// A provider's read list narrows an api-key account that names none; a
+    /// declared list, a subscription and an empty read are left alone.
+    #[test]
+    fn a_read_model_list_narrows_only_an_account_that_names_none() {
+        let mut accounts = BTreeMap::new();
+        let mut bare = AccountEntry::default();
+        bare.set_provider(Some("vendor".to_owned()));
+        accounts.insert("bare".to_owned(), bare.clone());
+        let mut declared = bare.clone();
+        declared.set_models(Some(vec!["chosen".to_owned()]));
+        accounts.insert("declared".to_owned(), declared);
+        let mut empty = AccountEntry::default();
+        empty.set_provider(Some("silent".to_owned()));
+        accounts.insert("empty".to_owned(), empty);
+        let listed = |provider: &str| match provider {
+            "vendor" => Some(vec!["vendor-flash".to_owned(), "vendor-pro".to_owned()]),
+            "silent" => Some(Vec::new()),
+            _ => None,
+        };
+        let narrowed = with_listed_models(&accounts, &listed);
+        assert_eq!(
+            narrowed["bare"].models(),
+            Some(&["vendor-flash".to_owned(), "vendor-pro".to_owned()][..])
+        );
+        assert_eq!(
+            narrowed["declared"].models(),
+            Some(&["chosen".to_owned()][..])
+        );
+        assert_eq!(narrowed["empty"].models(), None);
     }
 
     /// An account naming a provider and a credential that resolves becomes
