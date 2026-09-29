@@ -39,6 +39,7 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
     sheet.undo = undo;
     sheet.aside = 0;
     sheet.tools.clear();
+    sheet.status.clear();
     sheet.total = None;
     sheet.matched = None;
     let items = match source {
@@ -83,43 +84,35 @@ fn between_turns(item: Item) -> Item {
 /// The sandbox: its level, how it is enforced, and what was answered for
 /// the session, on one sheet the level chip opens.
 fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
-    // Each level is one line; what it lets run is on the card.
-    sheet.card = true;
     sheet.title = "Sandbox".into();
-    sheet.crumbs = vec!["how much runs without asking".into()];
+    sheet.crumbs.clear();
+    sheet.status = "Saved for every project; a project's own settings cannot change it.".into();
     let now = s.level.level();
-    let mut items: Vec<Item> = Level::ALL
-        .into_iter()
-        .map(|level| {
-            let id = format!("level:{}", level.name());
-            let action = Action::Level(level.name().into());
-            let item = if level == Level::Full && now != Level::Full {
-                Item::danger(id, level.label(), action)
-            } else {
-                Item::choice(id, level.label(), level == now, action)
-            };
-            item.detail(level.sentence())
-        })
-        .collect();
-    items.push(
-        Item::info("Saved for every project. A project's own settings cannot change this.")
-            .tone(Tone::Muted),
-    );
+    // Each level is one line; what it lets run is in the strip.
+    let mut items = vec![Item::heading("Level")];
+    items.extend(Level::ALL.into_iter().map(|level| {
+        let id = format!("level:{}", level.name());
+        let action = Action::Level(level.name().into());
+        let item = if level == Level::Full && now != Level::Full {
+            Item::danger(id, level.label(), action)
+        } else {
+            Item::choice(id, level.label(), level == now, action)
+        };
+        item.detail(level.sentence())
+    }));
     let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".into());
     items.push(Item::heading("How it is enforced"));
-    items.push(
-        Item::info(format!("Child processes   {}", unknown(&s.confinement))).tone(Tone::Muted),
-    );
-    items.push(Item::info(format!("Pre-approved      {}", unknown(&s.sandbox))).tone(Tone::Muted));
+    items.push(Item::info("Child processes").shows(unknown(&s.confinement)));
+    items.push(Item::info("Pre-approved").shows(unknown(&s.sandbox)));
     let web = match s.network.as_deref() {
         Some("web") => "on · fetch and search run in Sterna, outside the sandbox".to_string(),
         Some("off") => "off".to_string(),
         other => unknown(&other.map(str::to_string)),
     };
-    items.push(Item::info(format!("Web tools         {web}")).tone(Tone::Muted));
+    items.push(Item::info("Web tools").shows(web));
     items.push(
         Item::open("sandbox:hosts", "Allowed hosts", Action::Hosts)
-            .detail("the registries and hosts commands may reach"),
+            .detail("The registries and hosts commands may reach."),
     );
     // What was answered for the whole session is on this sheet too, where it
     // can be taken back: a refusal that stays must stay visibly.
@@ -138,25 +131,22 @@ fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         }
         items.push(Item::heading(heading));
         for row in rows {
+            items.push(Item::info(row.label.clone()));
             items.push(
                 Item::run(
                     format!("forget:{}", row.id),
-                    format!("Forget · {}", row.label),
+                    "Forget",
                     Action::Forget(row.id.clone()),
                 )
                 .detail(if allowed {
-                    "runs without asking until you forget it"
+                    "Runs without asking until you forget it."
                 } else {
-                    "refused without asking until you forget it"
-                }),
+                    "Refused without asking until you forget it."
+                })
+                .trail(),
             );
         }
     }
-    items.push(Item::open(
-        "sandbox:settings",
-        "Open settings",
-        Action::Settings,
-    ));
     items
 }
 
@@ -188,7 +178,6 @@ fn confirm(sheet: &mut Sheet, what: &str) -> Vec<Item> {
     sheet.crumbs = vec![label.clone()];
     vec![
         Item::info(warning).tone(Tone::Warning),
-        Item::info("Nothing is confirmed until you choose it below; Esc goes back unchanged."),
         Item::run("confirm:cancel", "Cancel", Action::Close).inline(),
         Item::danger("confirm:yes", format!("Yes · {label}"), yes).inline(),
     ]
@@ -231,7 +220,7 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         (
             "F2",
-            "settings · a choice saves itself; its card says when it applies",
+            "settings · a choice saves itself",
             Some(Action::Settings),
         ),
         ("F3", "which model answers", Some(Action::Models)),
@@ -274,30 +263,19 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
 
 fn keys(sheet: &mut Sheet) -> Vec<Item> {
     sheet.title = "Keys".into();
-    sheet.crumbs = vec!["every key, and what it does".into()];
-    let keys = keymap();
-    let column = keys
-        .iter()
-        .map(|(key, _, _)| key.chars().count())
-        .max()
-        .unwrap_or(0)
-        + 2;
-    keys.into_iter()
-        .map(|(key, what, action)| {
-            let text = format!("{key:<column$}{what}");
-            match action {
-                Some(action) => Item::open(format!("key:{key}"), text, action),
-                // A row that only says something starts where a row that
-                // opens something starts, after its focus mark.
-                None => Item::info(format!("  {text}")),
-            }
+    sheet.crumbs.clear();
+    keymap()
+        .into_iter()
+        .map(|(key, what, action)| match action {
+            Some(action) => Item::open(format!("key:{key}"), key, action).shows(what),
+            None => Item::info(key).shows(what),
         })
         .collect()
 }
 
 fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     sheet.title = "Activity".into();
-    sheet.crumbs = vec!["local notices, newest last".into()];
+    sheet.crumbs.clear();
     let lines: Vec<Item> = s
         .history
         .iter()
@@ -364,13 +342,9 @@ fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
             items.push(Item::info(format!("↳ {found}")).tone(Tone::Muted));
         }
     }
-    items.push(
-        Item::info(
-            "Files are read after every cell. Commands and judged items are checked \
-             when the model says it is done; only that check marks an item met.",
-        )
-        .tone(Tone::Muted),
-    );
+    sheet.status = "Files are read after every cell; commands and judged items when the \
+                    model says it is done."
+        .into();
     items
 }
 
@@ -394,11 +368,7 @@ fn themes(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     for theme in Theme::by_family() {
         if family != Some(theme.family()) {
             family = Some(theme.family());
-            items.push(Item::heading(format!(
-                "{} · {}",
-                theme.family().label(),
-                theme.family().blurb()
-            )));
+            items.push(Item::heading(theme.family().label()));
         }
         let item = Item::choice(
             format!("theme:{}", theme.name()),
@@ -417,7 +387,7 @@ fn fold_items(sheet: &mut Sheet, parent: Option<Item>) -> Vec<Item> {
         return vec![Item::info("That list is no longer open.")];
     };
     sheet.title = parent.title.clone();
-    sheet.crumbs = vec!["every value".into()];
+    sheet.crumbs.clear();
     let Kind::Value { values, current } = parent.kind else {
         return Vec::new();
     };
@@ -465,19 +435,24 @@ fn panel_items(sheet: &mut Sheet, panel: &crate::tui::Panel) -> Vec<Item> {
             .id
             .clone()
             .unwrap_or_else(|| format!("row:{}", row.text));
-        let (title, detail) = match row.text.split_once(" · ") {
-            Some((head, rest)) if row.acts() => (head.to_string(), rest.to_string()),
-            _ => (row.text.clone(), String::new()),
+        // The words after a row's name stand in the value column, on its
+        // own line: an account's state, what a step does.
+        let (title, value) = match (&row.value, row.text.split_once(" · ")) {
+            (Some(value), _) => (row.text.clone(), Some(value.clone())),
+            (None, Some((head, rest))) if row.acts() => (head.to_string(), Some(rest.to_string())),
+            _ => (row.text.clone(), None),
         };
         let item = match &row.kind {
-            Kind::Info => Item::info(row.text.clone()),
             Kind::Heading => Item::heading(row.text.clone()),
             kind => {
                 let mut item = Item::info(title);
                 item.kind = kind.clone();
-                item.id = id;
-                item.action = row.action.clone();
-                item.detail(detail)
+                if *kind != Kind::Info {
+                    item.id = id;
+                    item.action = row.action.clone();
+                }
+                item.value = value;
+                item
             }
         };
         if i == panel.selected && row.acts() {
@@ -623,6 +598,7 @@ pub fn render_form(
     f: &mut Frame<'_>,
     form: &crate::tui::Form,
     theme: Theme,
+    hover: Option<(u16, u16)>,
 ) -> Vec<(Rect, FormHit)> {
     let mut hits = Vec::new();
     use crate::tui::form::Kind;
@@ -676,9 +652,9 @@ pub fn render_form(
         }
         let focused = index == form.focus;
         let name = if field.optional {
-            format!("{} · optional", field.label.to_uppercase())
+            format!("{} · optional", field.label)
         } else {
-            field.label.to_uppercase()
+            field.label.clone()
         };
         // The label, the value and the line under it are one target.
         hits.push((Rect::new(inner.x, y, inner.width, 3), FormHit::Field(index)));
@@ -687,29 +663,32 @@ pub fn render_form(
             inner,
             y,
             &name,
-            if focused { Tone::Accent } else { Tone::Muted },
+            if focused { Tone::Accent } else { Tone::Strong },
             theme,
         );
         y += 1;
         match &field.kind {
+            // The chosen word is the one filled chip; the others are words.
             Kind::Choice(words) => {
                 let mut x = inner.x;
                 for (i, word) in words.iter().enumerate() {
-                    let text = format!(" {word} ");
-                    let w = chrome::width(&text).min(inner.right().saturating_sub(x));
-                    let tone = if i == field.chosen() {
-                        Tone::Accent
+                    let w = chrome::width(word) + 4;
+                    if x + w > inner.right() {
+                        break;
+                    }
+                    let r = Rect::new(x, y, w, 1);
+                    if i == field.chosen() {
+                        f.render_widget(
+                            ratatui::widgets::Paragraph::new(format!("⟨ {word} ⟩"))
+                                .style(super::theme::chip_on(theme)),
+                            r,
+                        );
                     } else {
-                        Tone::Muted
-                    };
-                    let text = if i == field.chosen() {
-                        format!("[{word}]")
-                    } else {
-                        text
-                    };
-                    row(f, Rect::new(x, y, w + 1, 1), &text, tone, theme);
-                    hits.push((Rect::new(x, y, w + 1, 1), FormHit::Word(index, i)));
-                    x += w + 2;
+                        let tone = if focused { Tone::Normal } else { Tone::Muted };
+                        row(f, r, &format!("  {word}  "), tone, theme);
+                    }
+                    hits.push((r, FormHit::Word(index, i)));
+                    x += w + 1;
                 }
             }
             _ => {
@@ -794,5 +773,15 @@ pub fn render_form(
         Tone::Muted,
         theme,
     );
+    // Hover lights the target under the pointer; a field lights its name.
+    if let Some((px, py)) = hover
+        && let Some((r, hit)) = hits.iter().rev().find(|(r, _)| super::contains(*r, px, py))
+    {
+        let r = match hit {
+            FormHit::Field(_) => Rect::new(r.x, r.y, r.width, 1),
+            _ => *r,
+        };
+        chrome::light(f, r, theme);
+    }
     hits
 }

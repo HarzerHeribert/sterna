@@ -609,6 +609,7 @@ pub fn render(
         let room = Rect::new(a.x, a.y + header, a.width, body_height + queue_height);
         surface(f, &mut g, a, room, s, ui);
     }
+    chrome::glow(f, &g.hits, ui.hover, s.theme);
     g.screen = Some(f.buffer_mut().clone());
     if let Some(sel) = s.selection {
         g.copied = crate::tui::draw_selection(f.buffer_mut(), a, sel, g.start);
@@ -1363,6 +1364,9 @@ fn surface(
         return;
     };
     let drawn = super::sheet::draw(f, g, inner, &mut layer.sheet, t, press, hover);
+    if let (true, Some(scroll)) = (framed, drawn.scroll) {
+        super::sheet::scrollbar(f, area.right() - 1, scroll, t);
+    }
     if let (super::Source::Themes { .. }, Some(aside)) = (&layer.source, drawn.aside) {
         let chosen = layer
             .sheet

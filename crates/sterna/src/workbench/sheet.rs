@@ -9,6 +9,12 @@
 //! says, and what shows when something does not fit. A surface that needs a
 //! different answer to one of those questions is a surface that has left the
 //! interaction model.
+//!
+//! **One grid, and only rows in the list.** Every row is one line: its label
+//! in one column and its value in the next, the same column for every row on
+//! the sheet. Groups are a bold name and a rule with an empty line above.
+//! What the focused row means is said once, in the strip under the list;
+//! nothing is drawn between two rows.
 use super::{Action, Geometry, Tone, chrome, document::clip, theme};
 use crate::tui::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -22,24 +28,26 @@ pub const ARMING: Duration = Duration::from_millis(500);
 /// What one row is. Every row is exactly one kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    /// Plain text. Not focusable; focus skips it.
+    /// Plain text, or with a value a fact: `Child processes   Seatbelt`.
+    /// Not focusable; focus skips it.
     Info,
     /// A group's name. Not focusable.
     Heading,
     /// One choice of a setting, as a whole row: a click applies it and the
-    /// sheet stays open. The current one is marked `● now`.
+    /// sheet stays open. The current one is marked `●` before its name.
     Choice { current: bool },
-    /// A setting's values as chips in one row; the current one is filled and
-    /// marked `●`. ←→ step through them, and each step applies.
+    /// A setting's values in one row; the current one is filled. ←→ step
+    /// through them, and each step applies.
     Value {
         values: Vec<(String, Action)>,
         current: Option<usize>,
     },
     /// On or off; a click flips it.
     Toggle(bool),
-    /// Goes somewhere: another sheet, a step, a longer list. `title ›`.
+    /// Goes somewhere: another sheet, a step, a longer list. `title ›`, or
+    /// its value and `›`.
     Open,
-    /// A one-shot action: `⏎ title`.
+    /// A one-shot action.
     Run,
     /// An action that cannot be taken back; it opens a confirmation that
     /// starts on Cancel.
@@ -69,12 +77,17 @@ pub struct Item {
     /// Stable across rebuilds: focus is kept by id, not by index.
     pub id: String,
     pub title: String,
-    /// The line under the title, muted; a disabled row's reason goes here.
+    /// What the row means, said in the strip under the list while the row
+    /// has the focus.
     pub detail: String,
+    /// What stands in the value column on the row's own line: a setting's
+    /// value, a fact, a few words on what the row does.
+    pub value: Option<String>,
     pub kind: Kind,
     pub action: Option<Action>,
-    /// Why this row cannot be used now. It stays visible and muted, and
-    /// activating it puts the reason in the notice and does nothing else.
+    /// Why this row cannot be used now. It stays visible and muted, the
+    /// strip says why, and activating it puts the reason in the notice and
+    /// does nothing else.
     pub disabled: Option<String>,
     /// A letter or digit that acts on this row from anywhere on the sheet,
     /// printed on it. Decision prompts use these.
@@ -82,20 +95,22 @@ pub struct Item {
     /// Drawn as a chip beside the inline rows next to it, rather than as a
     /// line of its own: the answers of a decision prompt, a pair of buttons.
     pub inline: bool,
-    /// The tone of an Info row's text.
+    /// A chip at the end of the line above it -- the row or group it acts
+    /// on -- instead of on a line of its own: `⟨ Use default ⟩`, `⟨ Forget ⟩`.
+    pub trail: bool,
+    /// The tone of an Info row's text, and of a chip.
     pub tone: Tone,
     /// A swatch drawn before the title, part of the row's target: a theme's
     /// accent, or the terminal's own ink for one with none (mono), so every
     /// name in the list starts in one column.
     pub swatch: Option<Tone>,
-    /// What the card says on its edges when this row has the focus, on a
-    /// sheet that draws one ([`Sheet::card`]).
+    /// What the strip says on its first line, beside the name, while this
+    /// row has the focus.
     pub card: Option<Card>,
 }
 
-/// The edges of the card a focused row is explained in: when a change
-/// applies on the top edge, where the value comes from on the bottom one.
-/// The card's body is the row's detail.
+/// When a change on the focused row applies and where its value comes from,
+/// said beside its name in the strip.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Card {
     pub when: String,
@@ -108,11 +123,13 @@ impl Item {
             id: id.into(),
             title: title.into(),
             detail: String::new(),
+            value: None,
             kind,
             action: None,
             disabled: None,
             key: None,
             inline: false,
+            trail: false,
             tone: Tone::Normal,
             swatch: None,
             card: None,
@@ -168,8 +185,8 @@ impl Item {
         self.action = Some(action);
         self
     }
-    /// The card's edges for this row: when a change applies, and where the
-    /// value comes from.
+    /// What the strip says beside the row's name: when a change applies,
+    /// and where the value comes from.
     #[must_use]
     pub fn card(mut self, when: impl Into<String>, source: impl Into<String>) -> Self {
         self.card = Some(Card {
@@ -181,6 +198,12 @@ impl Item {
     #[must_use]
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
+        self
+    }
+    /// The words in the value column.
+    #[must_use]
+    pub fn shows(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
         self
     }
     #[must_use]
@@ -196,6 +219,13 @@ impl Item {
     #[must_use]
     pub fn inline(mut self) -> Self {
         self.inline = true;
+        self
+    }
+    /// A chip at the end of the line above: see [`Item::trail`].
+    #[must_use]
+    pub fn trail(mut self) -> Self {
+        self.inline = true;
+        self.trail = true;
         self
     }
     #[must_use]
@@ -220,6 +250,14 @@ impl Item {
     }
 }
 
+/// A switch over the whole list, on the title line: its choices in a row,
+/// the current one filled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+    pub options: Vec<(String, Action)>,
+    pub current: Option<usize>,
+}
+
 /// What a key or a click on a sheet asks its owner to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -231,11 +269,12 @@ pub enum Outcome {
     Act(Action),
     /// Esc with nothing left to undo on this sheet: go back one layer.
     Back,
-    /// A section chip was chosen; the owner rebuilds the rows.
+    /// A section was chosen; the owner rebuilds the rows.
     Section(usize),
     /// Ctrl-Z: take back the last change, wherever it was made.
     Undo,
-    /// `⟨ +N ▾ ⟩` on a Value row: open the whole list of its values.
+    /// `current ▾` on a Value row whose values do not fit: open the whole
+    /// list of its values.
     Fold(usize),
 }
 
@@ -245,12 +284,11 @@ pub enum Outcome {
 pub struct Sheet {
     pub title: String,
     pub crumbs: Vec<String>,
-    /// Section chips under the header; Tab and Shift-Tab step through them.
+    /// Section names under the title; Tab and Shift-Tab step through them.
     pub sections: Vec<String>,
     pub section: usize,
-    /// Chips under the sections: a scope, a switch that applies to the whole
-    /// list. Each is `(label, action, on)`.
-    pub tools: Vec<(String, Action, bool)>,
+    /// Switches over the whole list, on the title line.
+    pub tools: Vec<Tool>,
     pub items: Vec<Item>,
     pub focus: usize,
     /// First body line shown.
@@ -260,6 +298,9 @@ pub struct Sheet {
     /// What just happened, on the left of the foot. A new sheet starts with
     /// none: a notice never carries over from the control that opened it.
     pub notice: String,
+    /// What the foot says when nothing just happened: where a choice is
+    /// saved, what Esc answers.
+    pub status: String,
     /// The action the notice's `⟨ Undo ⟩` chip takes, while it is up.
     pub undo: Option<Action>,
     /// Whether this is the bottom of the stack: Esc then closes, and the
@@ -281,11 +322,6 @@ pub struct Sheet {
     /// Columns kept free on the right for the owner to draw into (the
     /// theme preview).
     pub aside: u16,
-    /// **One line per row, and one card for the row the focus is on.** The
-    /// rows keep no detail lines; the focused row's meaning, when a change
-    /// applies and where its value comes from are in a card above the foot,
-    /// so a long list reads as a list and nothing is said twice.
-    pub card: bool,
     /// Body lines shown at the last draw; PgUp and PgDn move this far.
     pub page: usize,
     /// Body lines in all at the last draw, which bounds the wheel.
@@ -821,7 +857,8 @@ impl Sheet {
     }
 
     /// A click on one of this sheet's targets. One click acts: it focuses
-    /// the row and does what Enter does.
+    /// the row and does what Enter does. A click on the value that is
+    /// already chosen changes nothing.
     pub fn click(&mut self, hit: &Hit) -> Outcome {
         match hit {
             Hit::Item(i) => self.activate(*i),
@@ -839,28 +876,19 @@ impl Sheet {
                     Kind::Value { values, .. } => values
                         .get(*v)
                         .map_or(Outcome::Nothing, |(_, action)| Outcome::Act(action.clone())),
-                    _ => Outcome::Nothing,
+                    Kind::Toggle(on) if (*v == 1) != *on => {
+                        item.action.clone().map_or(Outcome::Nothing, Outcome::Act)
+                    }
+                    _ => Outcome::Redraw,
                 }
             }
             Hit::Section(s) => self.choose_section(*s),
-            Hit::SectionStep(forward) => {
-                let n = self.sections.len();
-                if n < 2 {
-                    return Outcome::Nothing;
-                }
-                let next = if *forward {
-                    (self.section + 1) % n
-                } else {
-                    (self.section + n - 1) % n
-                };
-                self.choose_section(next)
-            }
-            Hit::Tool(t) => self
+            Hit::Tool(t, o) => self
                 .tools
                 .get(*t)
-                .map_or(Outcome::Nothing, |(_, action, _)| {
-                    Outcome::Act(action.clone())
-                }),
+                .filter(|tool| tool.current != Some(*o))
+                .and_then(|tool| tool.options.get(*o))
+                .map_or(Outcome::Nothing, |(_, action)| Outcome::Act(action.clone())),
             Hit::Back => Outcome::Back,
             Hit::Fold(i) => {
                 self.focus = *i;
@@ -956,26 +984,252 @@ pub enum Hit {
     Item(usize),
     Value(usize, usize),
     Section(usize),
-    /// `‹` (false) or `›` (true) beside the section chips.
-    SectionStep(bool),
-    Tool(usize),
+    /// One choice of one of the title line's switches.
+    Tool(usize, usize),
     Back,
     Undo,
-    /// The `⟨ +N ▾ ⟩` chip of the Value row at this index.
+    /// The `current ▾` of the Value row at this index.
     Fold(usize),
 }
 
 /// Where a sheet was drawn: the body and, when it keeps one, the room on
-/// the right its owner draws into.
+/// the right its owner draws into, and where a list longer than the body
+/// stands.
 pub struct Drawn {
     pub body: Rect,
     pub aside: Option<Rect>,
+    pub scroll: Option<Scroll>,
 }
 
-/// Draws a sheet into `area`: the header and its Esc chip, the sections and
-/// the search, the tools, the rows with a more-cue wherever something is
-/// hidden, and the foot -- the notice on the left, cut before it reaches the
-/// hint on the right.
+/// A list that does not fit its body: the rows the body covers on screen,
+/// the first line in view and how many lines there are.
+#[derive(Debug, Clone, Copy)]
+pub struct Scroll {
+    pub y: u16,
+    pub height: u16,
+    pub first: usize,
+    pub total: usize,
+}
+
+/// The scroll thumb in column `x` -- the frame's right edge -- where the
+/// lines in view sit among all of them. It takes no line of the list.
+pub fn scrollbar(f: &mut Frame<'_>, x: u16, s: Scroll, t: Theme) {
+    let height = s.height as usize;
+    if height == 0 || s.total <= height {
+        return;
+    }
+    let thumb = (height * height / s.total).max(1);
+    let top = s.first.min(s.total - height) * (height - thumb) / (s.total - height);
+    for dy in top..(top + thumb).min(height) {
+        chrome::text(f, Rect::new(x, s.y + dy as u16, 1, 1), "┃", Tone::Muted, t);
+    }
+}
+
+/// Columns before a row's label: the focus bar and a space.
+const BAR: u16 = 2;
+/// Columns between the longest label and the value column.
+const GAP: u16 = 3;
+/// The widest a label column grows; a longer label is cut.
+const LABEL_MAX: u16 = 32;
+/// Columns between two section names, and between two switches.
+const SPREAD: u16 = 3;
+
+/// Where a sheet's columns stand, worked out from all its rows at once so
+/// every value on the sheet starts in one column.
+struct Grid {
+    /// Columns for the `●` of the current choice, when the sheet has
+    /// choices.
+    mark: u16,
+    /// The value column, from the row's left edge, when any row has a value.
+    value: Option<u16>,
+    /// Where a value's words start inside the value column: past a chip's
+    /// bracket, when the sheet has rows of values, so words and chips line up.
+    pad: u16,
+}
+
+/// Whether a row puts something in the value column.
+fn valued(item: &Item) -> bool {
+    matches!(
+        item.kind,
+        Kind::Value { .. } | Kind::Toggle(_) | Kind::Field(_)
+    ) || item.value.is_some()
+}
+
+/// A row's label as drawn: its key, its name, and `›` or `▲` after it.
+fn label_text(item: &Item) -> String {
+    let mut label = match item.key {
+        Some(k) => format!("{k} · {}", item.title),
+        None => item.title.clone(),
+    };
+    match item.kind {
+        Kind::Open if item.value.is_none() => label.push_str(" ›"),
+        Kind::Danger => label.push_str(" ▲"),
+        _ => {}
+    }
+    label
+}
+
+fn swatch_width(item: &Item) -> u16 {
+    if item.swatch.is_some() { 3 } else { 0 }
+}
+
+fn grid(sheet: &Sheet) -> Grid {
+    let rows = || {
+        sheet
+            .items
+            .iter()
+            .filter(|item| !item.inline && item.kind != Kind::Heading)
+    };
+    let mark = if rows().any(|item| matches!(item.kind, Kind::Choice { .. })) {
+        2
+    } else {
+        0
+    };
+    let widest = rows()
+        .filter(|item| valued(item))
+        .map(|item| (chrome::width(&label_text(item)) + swatch_width(item)).min(LABEL_MAX))
+        .max();
+    let pad = if rows().any(|item| matches!(item.kind, Kind::Value { .. } | Kind::Toggle(_))) {
+        2
+    } else {
+        0
+    };
+    Grid {
+        mark,
+        value: widest.map(|w| BAR + mark + w + GAP),
+        pad,
+    }
+}
+
+/// Where plain text starts: in the label column when the sheet has rows, so
+/// a sentence lines up with the names above and below it.
+fn text_indent(sheet: &Sheet, grid: &Grid) -> u16 {
+    if sheet.items.iter().any(Item::focusable) {
+        BAR + grid.mark
+    } else {
+        0
+    }
+}
+
+/// The title line: `TITLE › crumb`.
+fn heading_text(sheet: &Sheet) -> String {
+    let mut heading = sheet.title.to_uppercase();
+    for crumb in &sheet.crumbs {
+        heading.push_str(" › ");
+        heading.push_str(crumb);
+    }
+    heading
+}
+
+fn esc_text(sheet: &Sheet) -> String {
+    match &sheet.esc {
+        Some(esc) => format!("Esc · {esc}"),
+        None if sheet.root => "Esc · Close".to_string(),
+        None => "Esc · Back".to_string(),
+    }
+}
+
+/// The columns a row of words takes, each as wide as its chip and one
+/// apart.
+fn words_width<'a>(words: impl Iterator<Item = &'a String>) -> u16 {
+    words
+        .map(|word| chrome::width(word) + 5)
+        .sum::<u16>()
+        .saturating_sub(1)
+}
+
+fn tools_width(sheet: &Sheet) -> u16 {
+    let each: Vec<u16> = sheet
+        .tools
+        .iter()
+        .map(|tool| words_width(tool.options.iter().map(|(label, _)| label)))
+        .collect();
+    each.iter().sum::<u16>() + SPREAD * (each.len() as u16).saturating_sub(1)
+}
+
+/// Whether the switches fit on the title line, between the title and the
+/// Esc chip; otherwise they take a line of their own under it.
+fn tools_on_title(sheet: &Sheet, width: u16) -> bool {
+    !sheet.tools.is_empty()
+        && chrome::width(&heading_text(sheet))
+            + SPREAD
+            + tools_width(sheet)
+            + SPREAD
+            + chrome::width(&esc_text(sheet))
+            + 4
+            <= width
+}
+
+/// How a row of words shows the current one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Current {
+    /// A value: the one filled chip on the row.
+    Filled,
+    /// A switch over the whole sheet, read like a section: in the accent.
+    Accent,
+}
+
+/// A row of words, the current one marked and the others plain, quiet
+/// unless the row has the focus. The one under the pointer or a finger is a
+/// chip. `false`, and nothing drawn, when they do not fit.
+#[allow(clippy::too_many_arguments)]
+fn words(
+    f: &mut Frame<'_>,
+    g: &mut Geometry,
+    x: u16,
+    y: u16,
+    limit: u16,
+    words: &[String],
+    (current, shown): (Option<usize>, Current),
+    quiet: bool,
+    hit: impl Fn(usize) -> Action,
+    t: Theme,
+    press: Option<(u16, u16)>,
+    hover: Option<(u16, u16)>,
+) -> bool {
+    if x + words_width(words.iter()) > limit {
+        return false;
+    }
+    let mut x = x;
+    for (i, word) in words.iter().enumerate() {
+        let w = chrome::width(word) + 4;
+        let r = Rect::new(x, y, w, 1);
+        let under = |at: Option<(u16, u16)>| at.is_some_and(|(px, py)| super::contains(r, px, py));
+        let filled = Some(i) == current && shown == Current::Filled;
+        if filled || under(hover) || under(press) {
+            chrome::chip(
+                f,
+                g,
+                x,
+                y,
+                limit,
+                word,
+                hit(i),
+                filled,
+                Tone::Normal,
+                press,
+                t,
+            );
+        } else {
+            let tone = if Some(i) == current {
+                Tone::Accent
+            } else if quiet {
+                Tone::Muted
+            } else {
+                Tone::Normal
+            };
+            chrome::text(f, r, &format!("  {word}  "), tone, t);
+            g.hits.push((r, hit(i)));
+        }
+        x += w + 1;
+    }
+    true
+}
+
+/// Draws a sheet into `area`: the title line with its switches and its Esc
+/// chip, the sections and the search, the list, the strip that says what the
+/// focused row means, and the foot -- the notice on the left, cut before it
+/// reaches the hint on the right.
 pub fn draw(
     f: &mut Frame<'_>,
     g: &mut Geometry,
@@ -996,61 +1250,81 @@ pub fn draw(
         return Drawn {
             body: area,
             aside: None,
+            scroll: None,
         };
     }
-    // Header: TITLE › crumb › crumb, and the chip that says what Esc does.
-    let back = match &sheet.esc {
-        Some(esc) => format!("Esc · {esc}"),
-        None if sheet.root => "Esc · Close".to_string(),
-        None => "Esc · Back".to_string(),
-    };
-    let back = back.as_str();
-    let back_w = chrome::width(back) + 4;
-    let mut heading = sheet.title.to_uppercase();
-    for crumb in &sheet.crumbs {
-        heading.push_str(" › ");
-        heading.push_str(crumb);
-    }
-    let room = area.width.saturating_sub(back_w + 1);
+    // The title line: TITLE › crumb, the switches, and the chip that says
+    // what Esc does.
+    let back = esc_text(sheet);
+    let back_w = chrome::width(&back) + 4;
+    let inline_tools = tools_on_title(sheet, area.width);
+    let tools_w = tools_width(sheet);
+    let room = area
+        .width
+        .saturating_sub(back_w + 1)
+        .saturating_sub(if inline_tools { tools_w + SPREAD } else { 0 });
     chrome::text(
         f,
         Rect::new(area.x, y, room, 1),
-        &clip(&heading, room as usize),
+        &clip(&heading_text(sheet), room as usize),
         Tone::Accent,
         t,
     );
     if area.width > back_w + 8 {
-        let w = chrome::chip(
+        chrome::chip(
             f,
             g,
             area.right().saturating_sub(back_w),
             y,
             area.right(),
-            back,
+            &back,
             Action::Sheet(Hit::Back),
             false,
             Tone::Normal,
             press,
             t,
         );
-        let _ = w;
+    }
+    let draw_tools = |f: &mut Frame<'_>, g: &mut Geometry, x: u16, y: u16, limit: u16| {
+        let mut x = x;
+        for (ti, tool) in sheet.tools.iter().enumerate() {
+            let labels: Vec<String> = tool.options.iter().map(|(l, _)| l.clone()).collect();
+            let w = words_width(labels.iter());
+            if !words(
+                f,
+                g,
+                x,
+                y,
+                limit,
+                &labels,
+                (tool.current, Current::Accent),
+                false,
+                |o| Action::Sheet(Hit::Tool(ti, o)),
+                t,
+                press,
+                hover,
+            ) {
+                break;
+            }
+            x += w + SPREAD;
+        }
+    };
+    if inline_tools {
+        let x = area.right().saturating_sub(back_w + SPREAD + tools_w);
+        draw_tools(f, g, x, y, area.right().saturating_sub(back_w + 1));
     }
     y += 1;
-    // Sections, with `‹` and `›` as targets of their own, and the search at
-    // the right end of the same line.
-    // The least the section strip needs: its arrows, the open section and
-    // the `⟨ +N ▾ ⟩` that holds the rest. The search's words give way
-    // before the strip loses its fold.
-    let strip = match sheet.sections.get(sheet.section) {
-        Some(open) if sheet.sections.len() > 1 => {
-            chrome::width(open) + chrome::width(" ●") + chrome::width("+99 ▾") + 14
-        }
-        _ => 0,
-    };
+    if !sheet.tools.is_empty() && !inline_tools && y < bottom {
+        draw_tools(f, g, area.x, y, area.right());
+        y += 1;
+    }
+    // The sections as words, the open one in the accent, and the search at
+    // the right end of the same line. Sections that do not fit fold into
+    // `+N ▾`, never the open one.
     let search = sheet.query.as_ref().map(|query| {
         let count = match sheet.total {
             Some(total) => format!(
-                "{} of {total}",
+                " · {} of {total}",
                 sheet.matched.unwrap_or_else(|| sheet
                     .items
                     .iter()
@@ -1059,47 +1333,54 @@ pub fn draw(
             ),
             None => String::new(),
         };
-        let said = match (query.is_empty(), count.is_empty()) {
-            (true, true) => "⌕ type to filter".to_string(),
-            (true, false) => format!("⌕ type to filter · {count}"),
-            (false, true) => format!("⌕ {query}▏"),
-            (false, false) => format!("⌕ {query}▏ · {count}"),
-        };
-        if chrome::width(&said) + 2 + strip <= area.width {
-            said
-        } else if query.is_empty() {
-            format!("⌕ {count}")
+        if query.is_empty() {
+            format!("⌕ type to filter{count}")
         } else {
-            format!("⌕ {query}▏")
+            format!("⌕ {query}▏{count}")
         }
     });
+    let mut open: Option<(u16, u16)> = None;
     if !sheet.sections.is_empty() || search.is_some() {
         let search_w = search.as_deref().map_or(0, chrome::width);
         let limit = area.right().saturating_sub(search_w + 2);
-        let mut x = area.x;
         if sheet.sections.len() > 1 {
-            chrome::text(f, Rect::new(x, y, 1, 1), "‹", Tone::Accent, t);
-            hit(g, Rect::new(x, y, 1, 1), Hit::SectionStep(false));
-            x += 2;
-            // The sections that do not fit fold into `⟨ +N ▾ ⟩`, never the
-            // open one.
-            let sections: Vec<(String, Action, bool)> = sheet
+            let widths: Vec<u16> = sheet
                 .sections
                 .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    let label = if i == sheet.section {
-                        format!("{name} ●")
-                    } else {
-                        name.clone()
-                    };
-                    (label, Action::Sheet(Hit::Section(i)), i == sheet.section)
-                })
+                .map(|name| chrome::width(name) + SPREAD)
                 .collect();
-            x = chrome::chips(f, g, x, y, limit.saturating_sub(2), &sections, press, t);
-            if x < limit {
-                chrome::text(f, Rect::new(x, y, 1, 1), "›", Tone::Accent, t);
-                hit(g, Rect::new(x, y, 1, 1), Hit::SectionStep(true));
+            let room = limit.saturating_sub(area.x) + SPREAD;
+            let shown = chrome::fitting(&widths, room, &[sheet.section]);
+            let mut x = area.x;
+            for i in shown.iter().copied() {
+                let name = &sheet.sections[i];
+                let w = chrome::width(name);
+                if x + w > limit {
+                    break;
+                }
+                let tone = if i == sheet.section {
+                    Tone::Accent
+                } else {
+                    Tone::Normal
+                };
+                chrome::text(f, Rect::new(x, y, w, 1), name, tone, t);
+                hit(g, Rect::new(x, y, w, 1), Hit::Section(i));
+                if i == sheet.section {
+                    open = Some((x, w));
+                }
+                x += w + SPREAD;
+            }
+            let folded: Vec<(String, Action)> = (0..sheet.sections.len())
+                .filter(|i| !shown.contains(i))
+                .map(|i| (sheet.sections[i].clone(), Action::Sheet(Hit::Section(i))))
+                .collect();
+            if !folded.is_empty() {
+                let more = format!("+{} ▾", folded.len());
+                let w = chrome::width(&more);
+                if x + w <= limit {
+                    chrome::text(f, Rect::new(x, y, w, 1), &more, Tone::Normal, t);
+                    g.hits.push((Rect::new(x, y, w, 1), Action::More(folded)));
+                }
             }
         }
         if let Some(search) = &search {
@@ -1118,37 +1399,36 @@ pub fn draw(
         }
         y += 1;
     }
-    if !sheet.tools.is_empty() && y < bottom {
-        let tools: Vec<(String, Action, bool)> = sheet
-            .tools
-            .iter()
-            .enumerate()
-            .map(|(i, (label, _, on))| (label.clone(), Action::Sheet(Hit::Tool(i)), *on))
-            .collect();
-        chrome::chips(f, g, area.x, y, area.right(), &tools, press, t);
-        y += 1;
-    }
+    // The rule under the head, drawn heavy in the accent under the open
+    // section.
     if y < bottom {
         chrome::rule(f, Rect::new(area.x, y, area.width, 1), &[], Tone::Line, t);
+        if let Some((x, w)) = open {
+            chrome::text(
+                f,
+                Rect::new(x, y, w, 1),
+                &"━".repeat(w as usize),
+                Tone::Accent,
+                t,
+            );
+        }
         y += 1;
     }
     // The foot takes the last two lines when there is room for them.
     let foot = bottom.saturating_sub(2);
     let has_foot = foot > y + 1;
     let mut body_bottom = if has_foot { foot } else { bottom };
-    // The card keeps one height whichever row is focused, so the list never
+    // The strip keeps one height whichever row is focused, so the list never
     // jumps as the focus moves; it gives way to the list on a short screen.
-    let card_h = card_height(sheet, area.width).min(body_bottom.saturating_sub(y + 3));
-    if card_h >= 3 {
-        body_bottom -= card_h;
-        if let Some(item) = sheet.focused() {
-            draw_card(
-                f,
-                Rect::new(area.x, body_bottom, area.width, card_h),
-                item,
-                t,
-            );
-        }
+    let strip_h = strip_height(sheet, area.width).min(body_bottom.saturating_sub(y + 3));
+    if strip_h >= 3 {
+        body_bottom -= strip_h;
+        draw_strip(
+            f,
+            Rect::new(area.x, body_bottom, area.width, strip_h),
+            sheet.focused(),
+            t,
+        );
     }
     let list_width = area.width.saturating_sub(sheet.aside);
     let body = Rect::new(area.x, y, list_width, body_bottom.saturating_sub(y));
@@ -1160,7 +1440,7 @@ pub fn draw(
             body.height,
         )
     });
-    draw_body(f, g, body, sheet, t, press, hover);
+    let scroll = draw_body(f, g, body, sheet, t, press, hover);
     if has_foot {
         chrome::rule(
             f,
@@ -1194,16 +1474,15 @@ pub fn draw(
             0
         };
         let room = area.width.saturating_sub(hint_w + 2 + undo_w) as usize;
-        if !sheet.notice.is_empty() && room > 1 {
-            let notice = clip(&sheet.notice, room);
-            let w = chrome::width(&notice);
-            chrome::text(
-                f,
-                Rect::new(area.x, foot + 1, w, 1),
-                &notice,
-                Tone::Accent,
-                t,
-            );
+        let (said, tone) = if sheet.notice.is_empty() {
+            (&sheet.status, Tone::Muted)
+        } else {
+            (&sheet.notice, Tone::Accent)
+        };
+        if !said.is_empty() && room > 1 {
+            let said = clip(said, room);
+            let w = chrome::width(&said);
+            chrome::text(f, Rect::new(area.x, foot + 1, w, 1), &said, tone, t);
             if undo_w > 0 {
                 chrome::chip(
                     f,
@@ -1221,148 +1500,156 @@ pub fn draw(
             }
         }
     }
-    Drawn { body, aside }
+    Drawn {
+        body,
+        aside,
+        scroll,
+    }
 }
 
 /// The rows a sheet needs to show everything without scrolling, `width`
-/// wide inside its frame: the head, its sections and tools, every body line,
-/// the card and the foot. The surface is made no taller than this.
+/// wide inside its frame: the head, every body line, the strip and the
+/// foot. The surface is made no taller than this.
 #[must_use]
 pub fn wanted_height(sheet: &Sheet, width: u16) -> u16 {
     let head = 1
+        + u16::from(!sheet.tools.is_empty() && !tools_on_title(sheet, width))
         + u16::from(!sheet.sections.is_empty() || sheet.query.is_some())
-        + u16::from(!sheet.tools.is_empty())
         + 1;
     let list_width = width.saturating_sub(sheet.aside);
     let body = layout_lines(sheet, list_width as usize).len() as u16;
-    head + body.max(1) + card_height(sheet, width) + 2
+    head + body.max(1) + strip_height(sheet, width) + 2
 }
 
-/// The card's body: the focused row's detail, then why it cannot be used.
-fn card_lines(item: &Item, width: u16) -> Vec<String> {
-    let room = (width as usize).saturating_sub(4).max(8);
-    let mut lines = super::view::wrap_words(&item.detail, room);
-    lines.retain(|line| !line.is_empty());
+/// The strip's words for a row: what it means, then why it cannot be used.
+fn strip_lines(item: &Item, width: u16) -> Vec<(String, Tone)> {
+    let room = (width as usize).max(8);
+    let mut lines: Vec<(String, Tone)> = super::view::wrap_words(&item.detail, room)
+        .into_iter()
+        .map(|line| (line, Tone::Normal))
+        .collect();
     if let Some(reason) = &item.disabled {
-        lines.extend(super::view::wrap_words(reason, room));
+        lines.extend(
+            super::view::wrap_words(reason, room)
+                .into_iter()
+                .map(|line| (line, Tone::Warning)),
+        );
     }
     lines
 }
 
-/// The card's height on this sheet: the most any focusable row needs, up to
-/// five lines of text between its edges; nothing when no row says anything.
-fn card_height(sheet: &Sheet, width: u16) -> u16 {
-    if !sheet.card {
-        return 0;
-    }
-    let most = sheet
-        .items
-        .iter()
-        .filter(|item| item.focusable())
-        .map(|item| card_lines(item, width).len())
+/// The strip's height on this sheet: its rule and the name line, and the
+/// most words any focusable row has, up to four lines; nothing when no row
+/// says anything.
+fn strip_height(sheet: &Sheet, width: u16) -> u16 {
+    let rows = || sheet.items.iter().filter(|item| item.focusable());
+    let most = rows()
+        .map(|item| strip_lines(item, width).len())
         .max()
         .unwrap_or(0);
-    if most == 0 { 0 } else { most.min(5) as u16 + 2 }
+    if most == 0 && !rows().any(|item| item.card.is_some()) {
+        0
+    } else {
+        most.min(4) as u16 + 2
+    }
 }
 
-/// The focused row's card: its name and when a change applies on the top
-/// edge, what it means inside, and where its value comes from on the bottom
-/// edge.
-fn draw_card(f: &mut Frame<'_>, r: Rect, item: &Item, t: Theme) {
-    let width = r.width as usize;
-    if width < 12 || r.height < 3 {
+/// The strip under the list: the focused row's name, when a change applies
+/// and where its value comes from on the same line, and what it means under
+/// them.
+fn draw_strip(f: &mut Frame<'_>, r: Rect, item: Option<&Item>, t: Theme) {
+    chrome::rule(f, Rect::new(r.x, r.y, r.width, 1), &[], Tone::Line, t);
+    let Some(item) = item else {
         return;
-    }
-    let edges = item.card.clone().unwrap_or_default();
-    let edge = |f: &mut Frame<'_>, y: u16, left: &str, words: &str, right: &str, tone: Tone| {
-        let words = clip(words, width.saturating_sub(8));
-        let said = if words.is_empty() {
-            String::new()
-        } else {
-            format!(" {words} ")
-        };
-        let fill = width.saturating_sub(2 + chrome::width(&said) as usize + 1);
-        chrome::text(f, Rect::new(r.x, y, 2, 1), left, Tone::Line, t);
-        let x = r.x + 2;
-        chrome::text(f, Rect::new(x, y, chrome::width(&said), 1), &said, tone, t);
-        let x = x + chrome::width(&said);
+    };
+    let edges = item
+        .card
+        .as_ref()
+        .map(|card| {
+            [card.when.as_str(), card.source.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+        .unwrap_or_default();
+    let edges = clip(&edges, (r.width / 2) as usize);
+    let edges_w = chrome::width(&edges);
+    if r.height > 1 {
+        let name_room = r.width.saturating_sub(edges_w + 2);
         chrome::text(
             f,
-            Rect::new(x, y, fill as u16, 1),
-            &"─".repeat(fill),
-            Tone::Line,
+            Rect::new(r.x, r.y + 1, name_room, 1),
+            &clip(&item.title, name_room as usize),
+            Tone::Strong,
             t,
         );
-        chrome::text(f, Rect::new(r.right() - 1, y, 1, 1), right, Tone::Line, t);
-    };
-    // The name on the left of the top edge; when it applies on the right.
-    edge(f, r.y, "╭─", &item.title, "╮", Tone::Strong);
-    if !edges.when.is_empty() {
-        let when = format!(" {} ", clip(&edges.when, width / 3));
-        let w = chrome::width(&when);
         chrome::text(
             f,
-            Rect::new(r.right().saturating_sub(w + 2), r.y, w, 1),
-            &when,
+            Rect::new(r.right().saturating_sub(edges_w), r.y + 1, edges_w, 1),
+            &edges,
             Tone::Muted,
             t,
         );
     }
-    let body: Vec<String> = card_lines(item, r.width);
-    let inside = r.height.saturating_sub(2) as usize;
-    for row in 0..inside {
-        let y = r.y + 1 + row as u16;
-        chrome::text(f, Rect::new(r.x, y, 1, 1), "│", Tone::Line, t);
-        chrome::text(f, Rect::new(r.right() - 1, y, 1, 1), "│", Tone::Line, t);
-        if let Some(line) = body.get(row) {
-            let tone = if item.disabled.is_some() && row + 1 == body.len() {
-                Tone::Warning
-            } else {
-                Tone::Normal
-            };
-            chrome::text(
-                f,
-                Rect::new(r.x + 2, y, r.width.saturating_sub(4), 1),
-                line,
-                tone,
-                t,
-            );
-        }
+    for (row, (line, tone)) in strip_lines(item, r.width)
+        .into_iter()
+        .take(r.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
+        chrome::text(
+            f,
+            Rect::new(r.x, r.y + 2 + row as u16, r.width, 1),
+            &line,
+            tone,
+            t,
+        );
     }
-    edge(f, r.bottom() - 1, "╰─", &edges.source, "╯", Tone::Muted);
 }
 
-/// One drawn line of the body: which item it belongs to, and whether it is
-/// the item's title line or one of its detail lines.
+/// One drawn line of the body.
 enum Line {
-    Title(usize),
+    /// The empty line above a group.
+    Blank,
+    /// A group's name and the chips at the end of its line.
+    Heading(usize, Vec<usize>),
+    /// A row and the chips at the end of its line.
+    Row(usize, Vec<usize>),
     /// A run of inline items drawn as chips on one line.
     Chips(Vec<usize>),
-    Detail(usize, String),
-    /// Wrapped continuation of an Info or Heading row.
+    /// A line of an Info row's text.
     Text(usize, String),
 }
 
 fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
-    let mut lines = Vec::new();
+    let grid = grid(sheet);
+    let indent = text_indent(sheet, &grid) as usize;
+    let mut lines: Vec<Line> = Vec::new();
     let mut i = 0;
     while i < sheet.items.len() {
         let item = &sheet.items[i];
+        if item.trail
+            && let Some(Line::Row(_, run) | Line::Heading(_, run)) = lines.last_mut()
+        {
+            run.push(i);
+            i += 1;
+            continue;
+        }
         if item.inline {
             // A run of chips wraps to as many lines as it needs: an answer
             // pushed past the edge is an answer nobody can see.
             let chip_width = |item: &Item| {
                 let key = item.key.map_or(0, |_| 4);
                 // Room for the focus mark too, so focus never rewraps.
-                super::chrome::width(&item.title) as usize + key + 2 + 5
+                chrome::width(&item.title) as usize + key + 2 + 5
             };
             let mut run = Vec::new();
-            let mut used = 2;
+            let mut used = BAR as usize;
             while i < sheet.items.len() && sheet.items[i].inline {
                 let w = chip_width(&sheet.items[i]);
                 if !run.is_empty() && used + w > width {
                     lines.push(Line::Chips(std::mem::take(&mut run)));
-                    used = 2;
+                    used = BAR as usize;
                 }
                 run.push(i);
                 used += w;
@@ -1372,19 +1659,26 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
             continue;
         }
         match item.kind {
-            Kind::Info | Kind::Heading => {
-                let text = if item.kind == Kind::Heading {
-                    item.title.to_uppercase()
-                } else {
-                    item.title.clone()
-                };
+            Kind::Heading => {
+                if !matches!(lines.last(), Some(Line::Blank)) {
+                    lines.push(Line::Blank);
+                }
+                lines.push(Line::Heading(i, Vec::new()));
+            }
+            // Text with a chip after it is one line: the name the chip acts
+            // on, `api.example.com   ⟨ Remove ⟩`.
+            Kind::Info
+                if item.value.is_none()
+                    && !sheet.items.get(i + 1).is_some_and(|next| next.trail) =>
+            {
                 // What a person approves is shown exactly: code keeps every
                 // character, and other text keeps the spaces it was laid
                 // out with.
+                let room = width.saturating_sub(indent).max(8);
                 let wrapped = if item.tone == Tone::Code {
-                    super::view::wrap_exact(&text, width.max(8))
+                    super::view::wrap_exact(&item.title, room)
                 } else {
-                    super::view::wrap_spaced(&text, width.max(8))
+                    super::view::wrap_spaced(&item.title, room)
                 };
                 if wrapped.is_empty() {
                     lines.push(Line::Text(i, String::new()));
@@ -1393,43 +1687,22 @@ fn layout_lines(sheet: &Sheet, width: usize) -> Vec<Line> {
                     lines.push(Line::Text(i, line));
                 }
             }
-            _ if sheet.card => lines.push(Line::Title(i)),
-            _ => {
-                lines.push(Line::Title(i));
-                // A reason shared by a run of rows -- a locked account's
-                // models -- is said under the first of them only.
-                let repeated = item.detail.is_empty()
-                    && item.disabled.is_some()
-                    && i > 0
-                    && sheet.items[i - 1].disabled == item.disabled;
-                if !repeated && (!item.detail.is_empty() || item.disabled.is_some()) {
-                    let detail = match &item.disabled {
-                        Some(reason) if item.detail.is_empty() => reason.clone(),
-                        Some(reason) => format!("{} · {reason}", item.detail),
-                        None => item.detail.clone(),
-                    };
-                    for line in super::view::wrap_words(&detail, width.saturating_sub(4).max(8)) {
-                        lines.push(Line::Detail(i, line));
-                    }
-                }
-            }
+            _ => lines.push(Line::Row(i, Vec::new())),
         }
         i += 1;
     }
     lines
 }
 
-fn line_item(line: &Line) -> Option<usize> {
+/// Every row a line holds: its own and the chips at its end.
+fn line_items(line: &Line) -> Vec<usize> {
     match line {
-        Line::Title(i) | Line::Detail(i, _) | Line::Text(i, _) => Some(*i),
-        Line::Chips(run) => run.first().copied(),
-    }
-}
-
-fn contains_focus(line: &Line, focus: usize) -> bool {
-    match line {
-        Line::Chips(run) => run.contains(&focus),
-        other => line_item(other) == Some(focus),
+        Line::Blank => Vec::new(),
+        Line::Text(i, _) => vec![*i],
+        Line::Chips(run) => run.clone(),
+        Line::Row(i, trail) | Line::Heading(i, trail) => {
+            std::iter::once(*i).chain(trail.iter().copied()).collect()
+        }
     }
 }
 
@@ -1442,96 +1715,127 @@ fn draw_body(
     t: Theme,
     press: Option<(u16, u16)>,
     hover: Option<(u16, u16)>,
-) {
+) -> Option<Scroll> {
     let lines = layout_lines(sheet, body.width as usize);
     let height = body.height as usize;
     sheet.lines = lines.len();
     let mut starts = vec![None; sheet.items.len()];
     for (n, line) in lines.iter().enumerate() {
-        let rows = match line {
-            Line::Chips(run) => run.clone(),
-            other => line_item(other).into_iter().collect(),
-        };
-        for i in rows {
+        for i in line_items(line) {
             if let Some(start) = starts.get_mut(i) {
                 start.get_or_insert(n);
             }
         }
     }
     sheet.item_lines = starts;
-    // One line each for the cues when they are needed.
-    let page = height.max(1);
-    sheet.page = page.saturating_sub(2).max(1);
+    sheet.page = height.max(1);
     if sheet.refocus_on_search {
         sheet.refocus_on_search = false;
         sheet.focus = sheet.items.iter().position(Item::focusable).unwrap_or(0);
         sheet.follow = true;
     }
-    // Keep the focused row in view after a key moved it; the wheel alone
-    // leaves it wherever it went.
+    // Keep the focused row in view after a key moved it, with the group
+    // name above it; the wheel alone leaves it wherever it went.
     if sheet.follow {
         sheet.follow = false;
-        let first = lines.iter().position(|l| contains_focus(l, sheet.focus));
-        let last = lines.iter().rposition(|l| contains_focus(l, sheet.focus));
+        let holds = |l: &Line| line_items(l).contains(&sheet.focus);
+        let first = lines.iter().position(holds);
+        let last = lines.iter().rposition(holds);
         if let (Some(first), Some(last)) = (first, last) {
-            let visible = page.saturating_sub(2).max(1);
-            if first < sheet.scroll + usize::from(sheet.scroll > 0) {
-                sheet.scroll = first.saturating_sub(1);
+            let visible = height.max(1);
+            if first < sheet.scroll {
+                let lead = lines[..first]
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .take_while(|l| matches!(l, Line::Blank | Line::Heading(..)))
+                    .count();
+                sheet.scroll = first - lead;
             } else if last >= sheet.scroll + visible {
                 sheet.scroll = (last + 1).saturating_sub(visible);
             }
         }
     }
-    sheet.scroll = sheet
-        .scroll
-        .min(lines.len().saturating_sub(page.saturating_sub(1)));
-    // Everything fits: nothing scrolls, and no cue takes a line.
-    if lines.len() <= page {
-        sheet.scroll = 0;
+    sheet.scroll = sheet.scroll.min(lines.len().saturating_sub(height));
+    let grid = grid(sheet);
+    for (j, line) in lines.iter().skip(sheet.scroll).take(height).enumerate() {
+        let r = Rect::new(body.x, body.y + j as u16, body.width, 1);
+        draw_line(f, g, r, line, sheet, &grid, t, press, hover);
     }
-    let above = sheet.scroll;
-    let mut room = height;
-    let mut y = body.y;
-    if above > 0 && room > 0 {
-        chrome::text(
-            f,
-            Rect::new(body.x, y, body.width, 1),
-            &format!("↑ {above} more"),
-            Tone::Muted,
-            t,
-        );
-        y += 1;
-        room -= 1;
-    }
-    let remaining = lines.len().saturating_sub(above);
-    let shown = if remaining > room {
-        room.saturating_sub(1)
-    } else {
-        remaining
+    (lines.len() > height).then_some(Scroll {
+        y: body.y,
+        height: body.height,
+        first: sheet.scroll,
+        total: lines.len(),
+    })
+}
+
+/// A chip's words and tone: its letter, and `›` while it has the focus.
+fn chip_of(item: &Item, focused: bool) -> (String, Tone) {
+    let label = match item.key {
+        Some(k) => format!("{k} · {}", item.title),
+        None => item.title.clone(),
     };
-    for line in lines.iter().skip(above).take(shown) {
-        draw_line(
+    let label = if focused {
+        format!("› {label}")
+    } else {
+        label
+    };
+    let tone = if item.disabled.is_some() {
+        Tone::Muted
+    } else if item.kind == Kind::Danger || item.tone == Tone::Warning {
+        Tone::Warning
+    } else {
+        Tone::Normal
+    };
+    (label, tone)
+}
+
+/// The chips at the end of a line, right-aligned; returns the column they
+/// start at.
+fn draw_trail(
+    f: &mut Frame<'_>,
+    g: &mut Geometry,
+    r: Rect,
+    trail: &[usize],
+    sheet: &Sheet,
+    t: Theme,
+    press: Option<(u16, u16)>,
+) -> u16 {
+    let chips: Vec<(String, Tone, usize)> = trail
+        .iter()
+        .map(|i| {
+            let (label, tone) = chip_of(&sheet.items[*i], *i == sheet.focus);
+            (label, tone, *i)
+        })
+        .collect();
+    let total: u16 = chips
+        .iter()
+        .map(|(label, ..)| chrome::width(label) + 5)
+        .sum::<u16>()
+        .saturating_sub(1);
+    if chips.is_empty() || total + 8 > r.width {
+        return r.right();
+    }
+    let start = r.right() - total;
+    let mut x = start;
+    for (label, tone, i) in chips {
+        let w = chrome::chip(
             f,
             g,
-            Rect::new(body.x, y, body.width, 1),
-            line,
-            sheet,
-            t,
+            x,
+            r.y,
+            r.right(),
+            &label,
+            Action::Sheet(Hit::Item(i)),
+            i == sheet.focus,
+            tone,
             press,
-            hover,
-        );
-        y += 1;
-    }
-    let below = remaining.saturating_sub(shown);
-    if below > 0 && y < body.bottom() {
-        chrome::text(
-            f,
-            Rect::new(body.x, y, body.width, 1),
-            &format!("↓ {below} more"),
-            Tone::Muted,
             t,
         );
+        x += w + 1;
     }
+    start
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1541,58 +1845,45 @@ fn draw_line(
     r: Rect,
     line: &Line,
     sheet: &Sheet,
+    grid: &Grid,
     t: Theme,
     press: Option<(u16, u16)>,
     hover: Option<(u16, u16)>,
 ) {
-    let hovered = |r: Rect| hover.is_some_and(|(x, y)| super::contains(r, x, y));
     match line {
+        Line::Blank => {}
         Line::Text(i, text) => {
+            let x = r.x + text_indent(sheet, grid);
             let item = &sheet.items[*i];
-            let tone = if item.kind == Kind::Heading {
-                Tone::Muted
-            } else {
-                item.tone
-            };
-            chrome::text(f, r, text, tone, t);
-        }
-        Line::Detail(i, text) => {
-            let item = &sheet.items[*i];
-            let tone = if item.disabled.is_some() {
-                Tone::Warning
-            } else {
-                Tone::Muted
-            };
             chrome::text(
                 f,
-                Rect::new(r.x + 4, r.y, r.width.saturating_sub(4), 1),
+                Rect::new(x, r.y, r.right().saturating_sub(x), 1),
                 text,
-                tone,
+                item.tone,
                 t,
             );
-            g.hits.push((r, Action::Sheet(Hit::Item(*i))));
+        }
+        Line::Heading(i, trail) => {
+            let end = draw_trail(f, g, r, trail, sheet, t, press);
+            let name = &sheet.items[*i].title;
+            let room = end.saturating_sub(r.x + 1);
+            let name = clip(name, room as usize);
+            let w = chrome::width(&name);
+            chrome::text(f, Rect::new(r.x, r.y, w, 1), &name, Tone::Strong, t);
+            let x = r.x + w + 1;
+            let fill = end.saturating_sub(x + u16::from(end < r.right()));
+            chrome::text(
+                f,
+                Rect::new(x, r.y, fill, 1),
+                &"─".repeat(fill as usize),
+                Tone::Line,
+                t,
+            );
         }
         Line::Chips(run) => {
-            let mut x = r.x + 2;
+            let mut x = r.x + BAR;
             for i in run {
-                let item = &sheet.items[*i];
-                let focused = *i == sheet.focus;
-                let label = match item.key {
-                    Some(k) => format!("{k} · {}", item.title),
-                    None => item.title.clone(),
-                };
-                let label = if focused {
-                    format!("› {label}")
-                } else {
-                    label
-                };
-                let tone = if item.disabled.is_some() {
-                    Tone::Muted
-                } else if item.kind == Kind::Danger {
-                    Tone::Warning
-                } else {
-                    Tone::Normal
-                };
+                let (label, tone) = chip_of(&sheet.items[*i], *i == sheet.focus);
                 let w = chrome::chip(
                     f,
                     g,
@@ -1601,7 +1892,7 @@ fn draw_line(
                     r.right(),
                     &label,
                     Action::Sheet(Hit::Item(*i)),
-                    focused,
+                    *i == sheet.focus,
                     tone,
                     press,
                     t,
@@ -1612,206 +1903,208 @@ fn draw_line(
                 x += w + 1;
             }
         }
-        Line::Title(i) => {
-            let item = &sheet.items[*i];
-            let focused = *i == sheet.focus;
-            let hot = hovered(r);
-            let mark = if focused { "›" } else { " " };
-            let tone = if item.disabled.is_some() {
-                Tone::Muted
-            } else if focused {
-                Tone::Accent
-            } else if item.kind == Kind::Danger {
-                Tone::Warning
-            } else if hot {
-                Tone::Strong
+        Line::Row(i, trail) => {
+            let end = draw_trail(f, g, r, trail, sheet, t, press);
+            let width = if end < r.right() {
+                end.saturating_sub(r.x + 1)
             } else {
-                Tone::Normal
+                r.width
             };
-            let title = match (&item.kind, item.key) {
-                (_, Some(k)) => format!("{k} · {}", item.title),
-                (Kind::Open, _) => format!("{} ›", item.title),
-                (Kind::Run, _) => format!("⏎ {}", item.title),
-                (Kind::Danger, _) => format!("▲ {}", item.title),
-                (Kind::Choice { current: true }, _) => format!("{}  ● now", item.title),
-                _ => item.title.clone(),
-            };
-            match &item.kind {
-                Kind::Value { values, current } => {
-                    let label_w = (r.width / 3).clamp(12, 30);
-                    chrome::text(
-                        f,
-                        Rect::new(r.x, r.y, label_w, 1),
-                        &clip(&format!("{mark} {title}"), label_w as usize),
-                        tone,
-                        t,
-                    );
-                    g.hits.push((
-                        Rect::new(r.x, r.y, label_w, 1),
-                        Action::Sheet(Hit::Item(*i)),
-                    ));
-                    chips_in_row(
-                        f,
-                        g,
-                        Rect::new(r.x + label_w, r.y, r.width.saturating_sub(label_w), 1),
-                        *i,
-                        values,
-                        *current,
-                        t,
-                        press,
-                    );
-                }
-                Kind::Toggle(on) => {
-                    let text = format!("{mark} {title}");
-                    let w = chrome::width(&text).min(r.width);
-                    chrome::text(f, Rect::new(r.x, r.y, w, 1), &text, tone, t);
-                    chrome::chip(
-                        f,
-                        g,
-                        r.x + w + 2,
-                        r.y,
-                        r.right(),
-                        if *on { "on ●" } else { "off" },
-                        Action::Sheet(Hit::Item(*i)),
-                        *on,
-                        Tone::Normal,
-                        press,
-                        t,
-                    );
-                    g.hits.push((r, Action::Sheet(Hit::Item(*i))));
-                }
-                Kind::Field(field) => {
-                    let label_w = (chrome::width(&item.title) + 3).min(r.width / 2);
-                    chrome::text(
-                        f,
-                        Rect::new(r.x, r.y, label_w, 1),
-                        &format!("{mark} {}", item.title.to_uppercase()),
-                        tone,
-                        t,
-                    );
-                    let shown = if field.secret {
-                        "•".repeat(field.text.chars().count())
-                    } else {
-                        field.text.clone()
-                    };
-                    let x = r.x + label_w + 1;
-                    let room = r.right().saturating_sub(x + 2) as usize;
-                    let tone = if focused { Tone::Strong } else { Tone::Normal };
-                    chrome::text(f, Rect::new(x, r.y, 1, 1), "┃", tone, t);
-                    let shown = clip(&shown, room);
-                    if focused && field.fresh && !shown.is_empty() {
-                        // Selected: the next key or paste replaces all of it.
-                        f.render_widget(
-                            ratatui::widgets::Paragraph::new(shown.clone())
-                                .style(super::theme::chip_on(t)),
-                            Rect::new(x + 1, r.y, chrome::width(&shown), 1).intersection(f.area()),
-                        );
-                    } else {
-                        // The caret stands where the next letter goes.
-                        let at = field.text[..field.cursor.min(field.text.len())]
-                            .chars()
-                            .count();
-                        let before: String = shown.chars().take(at).collect();
-                        let after: String = shown.chars().skip(at).collect();
-                        let caret = if focused { "▏" } else { "" };
-                        chrome::text(
-                            f,
-                            Rect::new(x + 1, r.y, r.right().saturating_sub(x + 1), 1),
-                            &format!("{before}{caret}{after}"),
-                            tone,
-                            t,
-                        );
-                    }
-                    g.hits.push((r, Action::Sheet(Hit::Item(*i))));
-                }
-                _ => {
-                    // `› ██ name`: the mark, the swatch, then the name alone,
-                    // so the mark is drawn once and never over the swatch.
-                    let (r, shown) = match item.swatch {
-                        Some(ink) => {
-                            chrome::text(f, Rect::new(r.x, r.y, 2, 1), mark, tone, t);
-                            chrome::text(f, Rect::new(r.x + 2, r.y, 2, 1), "██", ink, t);
-                            g.hits
-                                .push((Rect::new(r.x, r.y, 5, 1), Action::Sheet(Hit::Item(*i))));
-                            let r = Rect::new(r.x + 5, r.y, r.width.saturating_sub(5), 1);
-                            (r, title.to_string())
-                        }
-                        None => (r, format!("{mark} {title}")),
-                    };
-                    chrome::text(f, r, &clip(&shown, r.width as usize), tone, t);
-                    if item.focusable() {
-                        g.hits.push((r, Action::Sheet(Hit::Item(*i))));
-                    }
-                }
-            }
-            if hot && item.focusable() && !focused {
-                f.buffer_mut()
-                    .set_style(Rect::new(r.x, r.y, 1, 1), theme::style(Tone::Accent, t));
-            }
+            draw_row(
+                f,
+                g,
+                Rect::new(r.x, r.y, width, 1),
+                *i,
+                sheet,
+                grid,
+                t,
+                press,
+                hover,
+            );
         }
     }
 }
 
-/// A Value row's chips. When they do not all fit, the current one is kept
-/// and the rest fold into `⟨ +N ▾ ⟩`, which opens the whole list: the active
-/// value is never the one that is dropped.
+/// One row on the grid: the focus bar, the `●` of the current choice, the
+/// label, and in the value column what the row holds.
 #[allow(clippy::too_many_arguments)]
-fn chips_in_row(
+fn draw_row(
     f: &mut Frame<'_>,
     g: &mut Geometry,
     r: Rect,
-    item: usize,
-    values: &[(String, Action)],
-    current: Option<usize>,
+    i: usize,
+    sheet: &Sheet,
+    grid: &Grid,
     t: Theme,
     press: Option<(u16, u16)>,
+    hover: Option<(u16, u16)>,
 ) {
-    let label = |i: usize| {
-        if Some(i) == current {
-            format!("{} ●", values[i].0)
-        } else {
-            values[i].0.clone()
-        }
-    };
-    let widths: Vec<u16> = (0..values.len())
-        .map(|i| chrome::width(&label(i)) + 4 + 1)
-        .collect();
-    let shown = chrome::fitting(&widths, r.width, &current.into_iter().collect::<Vec<_>>());
-    let folded = values.len() - shown.len();
-    let mut x = r.x;
-    for i in shown {
-        let w = chrome::chip(
-            f,
-            g,
-            x,
-            r.y,
-            r.right(),
-            &label(i),
-            Action::Sheet(Hit::Value(item, i)),
-            Some(i) == current,
-            Tone::Normal,
-            press,
-            t,
-        );
-        if w == 0 {
-            break;
-        }
-        x += w + 1;
+    let item = &sheet.items[i];
+    let focused = i == sheet.focus && item.focusable();
+    if focused {
+        chrome::text(f, Rect::new(r.x, r.y, 1, 1), "▌", Tone::Accent, t);
     }
-    if folded > 0 {
-        chrome::chip(
-            f,
-            g,
-            x,
-            r.y,
-            r.right(),
-            &format!("+{folded} ▾"),
-            Action::Sheet(Hit::Fold(item)),
-            false,
-            Tone::Normal,
-            press,
-            t,
-        );
+    let mut x = r.x + BAR;
+    if grid.mark > 0 && item.is_current() {
+        chrome::text(f, Rect::new(x, r.y, 1, 1), "●", Tone::Accent, t);
+    }
+    x += grid.mark;
+    if let Some(ink) = item.swatch {
+        chrome::text(f, Rect::new(x, r.y, 2, 1), "██", ink, t);
+        x += 3;
+    }
+    let tone = if item.disabled.is_some() {
+        Tone::Muted
+    } else if focused {
+        Tone::Accent
+    } else if item.kind == Kind::Danger {
+        Tone::Warning
+    } else if item.kind == Kind::Info {
+        Tone::Normal
+    } else {
+        item.tone
+    };
+    let value_x = grid
+        .value
+        .filter(|_| valued(item))
+        .map(|v| r.x + v)
+        .filter(|v| *v < r.right());
+    let label_end = value_x.map_or(r.right(), |v| v.saturating_sub(1));
+    let label = clip(&label_text(item), label_end.saturating_sub(x) as usize);
+    chrome::text(
+        f,
+        Rect::new(x, r.y, label_end.saturating_sub(x), 1),
+        &label,
+        tone,
+        t,
+    );
+    // The label is the row's target; a row whose value column holds its own
+    // targets keeps them, and a row with only words there is one target.
+    let own_targets = matches!(item.kind, Kind::Value { .. } | Kind::Toggle(_));
+    if item.focusable() {
+        let end = if own_targets {
+            value_x.unwrap_or(r.right())
+        } else {
+            r.right()
+        };
+        g.hits.push((
+            Rect::new(r.x, r.y, end.saturating_sub(r.x), 1),
+            Action::Sheet(Hit::Item(i)),
+        ));
+    }
+    let Some(vx) = value_x else {
+        return;
+    };
+    let quiet = !focused || item.disabled.is_some();
+    match &item.kind {
+        Kind::Value { values, current } => {
+            let labels: Vec<String> = values.iter().map(|(label, _)| label.clone()).collect();
+            let fits = words(
+                f,
+                g,
+                vx,
+                r.y,
+                r.right(),
+                &labels,
+                (*current, Current::Filled),
+                quiet,
+                |v| Action::Sheet(Hit::Value(i, v)),
+                t,
+                press,
+                hover,
+            );
+            if !fits {
+                // Too many to show in a row: the current one, and the whole
+                // list one click away.
+                let shown = current
+                    .and_then(|at| labels.get(at).cloned())
+                    .unwrap_or_else(|| "choose".into());
+                let said = format!("{shown} ▾");
+                let x = vx + grid.pad;
+                let w = chrome::width(&said).min(r.right().saturating_sub(x));
+                chrome::text(f, Rect::new(x, r.y, w, 1), &said, Tone::Normal, t);
+                g.hits
+                    .push((Rect::new(x, r.y, w, 1), Action::Sheet(Hit::Fold(i))));
+            }
+        }
+        Kind::Toggle(on) => {
+            words(
+                f,
+                g,
+                vx,
+                r.y,
+                r.right(),
+                &["Off".to_string(), "On".to_string()],
+                (Some(usize::from(*on)), Current::Filled),
+                quiet,
+                |v| Action::Sheet(Hit::Value(i, v)),
+                t,
+                press,
+                hover,
+            );
+        }
+        Kind::Field(field) => {
+            let shown = if field.secret {
+                "•".repeat(field.text.chars().count())
+            } else {
+                field.text.clone()
+            };
+            let x = vx + 2;
+            let room = r.right().saturating_sub(x + 1) as usize;
+            let ink = if focused { Tone::Accent } else { Tone::Line };
+            chrome::text(f, Rect::new(vx, r.y, 1, 1), "┃", ink, t);
+            let shown = clip(&shown, room);
+            if focused && field.fresh && !shown.is_empty() {
+                // Selected: the next key or paste replaces all of it.
+                f.render_widget(
+                    ratatui::widgets::Paragraph::new(shown.clone()).style(theme::chip_on(t)),
+                    Rect::new(x, r.y, chrome::width(&shown), 1).intersection(f.area()),
+                );
+            } else {
+                // The caret stands where the next letter goes.
+                let at = field.text[..field.cursor.min(field.text.len())]
+                    .chars()
+                    .count();
+                let before: String = shown.chars().take(at).collect();
+                let after: String = shown.chars().skip(at).collect();
+                let caret = if focused { "▏" } else { "" };
+                chrome::text(
+                    f,
+                    Rect::new(x, r.y, r.right().saturating_sub(x), 1),
+                    &format!("{before}{caret}{after}"),
+                    if focused { Tone::Strong } else { Tone::Normal },
+                    t,
+                );
+            }
+        }
+        kind => {
+            let Some(value) = &item.value else {
+                return;
+            };
+            let said = if *kind == Kind::Open {
+                format!("{value} ›")
+            } else {
+                value.clone()
+            };
+            let x = vx + grid.pad;
+            let room = r.right().saturating_sub(x);
+            // A value is what the row holds; words beside a choice or an
+            // action say what it does, and stay quiet.
+            let tone = match kind {
+                _ if item.disabled.is_some() => Tone::Muted,
+                Kind::Info => item.tone,
+                Kind::Open => Tone::Normal,
+                _ if focused => Tone::Normal,
+                _ => Tone::Muted,
+            };
+            chrome::text(
+                f,
+                Rect::new(x, r.y, room, 1),
+                &clip(&said, room as usize),
+                tone,
+                t,
+            );
+        }
     }
 }
 

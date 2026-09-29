@@ -1125,7 +1125,7 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
             >= 2
     });
     app.send(b"/context\r");
-    app.contains("IN THE NEXT REQUEST");
+    app.contains("in the next request");
     app.send(b"\x1b");
     // Closed means the panel's frame is gone, not only its text: a redraw
     // caught halfway has already cleared the heading while the frame
@@ -1137,7 +1137,7 @@ fn slash_plan_runs_one_read_only_request_and_the_next_one_works() {
     // the header was on screen all along and waited for nothing.
     app.wait("context panel closes", |screen| {
         let screen = screen.contents();
-        !screen.contains("IN THE NEXT REQUEST") && !screen.contains("Esc · Close")
+        !screen.contains("in the next request") && !screen.contains("Esc · Close")
     });
     app.send(b"/statusline compact\r");
     app.contains("Status line");
@@ -1221,7 +1221,7 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     app.contains("signing in to Grok ▸");
     // The session is free: a command answers while the sign-in waits.
     app.send(b"/status\r");
-    app.contains("SUBSCRIPTION LIMITS");
+    app.contains("Subscription limits");
     app.settle(200);
     app.send(b"\x1b");
     app.wait("the status sheet closes", |screen| {
@@ -1280,14 +1280,14 @@ fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     app.send(b"/models\r");
     // The agent tabs make every tier directly accessible.
-    app.contains("⟨ Helper ⟩");
+    app.contains("Helper   Subagents");
     app.contains("a-model");
     app.contains("z-model");
     // The list's last header, so the snapshot is of a whole frame, not one
     // the pty is still delivering.
-    app.contains("Z-ACCOUNT");
+    app.contains("z-account");
     let content = app.screen.screen().contents();
-    assert!(content.find("A-ACCOUNT").unwrap() < content.find("Z-ACCOUNT").unwrap());
+    assert!(content.find("a-account").unwrap() < content.find("z-account").unwrap());
     assert!(content.find("a-model").unwrap() < content.find("b-model").unwrap());
     // The picker stays open on a choice and names it; Esc leaves it.
     app.send(b"\r");
@@ -1344,14 +1344,13 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     app.send(b"\x01");
     app.contains("308 of 308");
     app.contains("claude/exact");
-    // The row says locked, and the line under the list gives the reason in
-    // full.
+    // The row says locked; its account's way in is on the account's line.
     app.contains("locked");
-    app.contains("Pinned to another entitlement");
-    // The locked account's first row is its way in; the locked model under
-    // it, chosen, says why it is locked and chooses nothing.
     app.contains("Sign in to anthropic");
-    app.send(b"\x1b[H\x1b[B\r");
+    // The locked model, chosen, says why it is locked and chooses nothing:
+    // Home is Main's effort, then the account's Sign in, then the model.
+    app.send(b"\x1b[H\x1b[B\x1b[B\r");
+    app.contains("Pinned to another entitlement");
     app.settle(120);
     assert!(requests.try_recv().is_err());
     // Back to the routes this session can actually use: the locked account
@@ -1362,7 +1361,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     assert!(!app.screen.screen().contents().contains("claude/exact"));
     // One list, each account under its own header: no carousel to step
     // through to reach a provider.
-    app.contains("OPENROUTER");
+    app.contains("openrouter");
     app.contains("gemini/exact");
     // `+` rather than a space: `Space` stages a choice for the active tier
     // now, so it no longer reaches the filter. Three terms still AND, and
@@ -1370,7 +1369,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     // carry `vendor/model-303`, so one term cannot pick between them.
     app.send(b"OPENROUTER+work+303");
     app.contains("1 of 307");
-    app.contains("OPENROUTER · WORK");
+    app.contains("openrouter · work");
     app.contains("vendor/model-303");
     // `contains` stops pumping the moment it is satisfied, so an absence is
     // only true of a screen that has been brought up to date first.
@@ -1399,7 +1398,7 @@ fn model_picker_searches_a_large_catalogue_and_applies_the_filtered_selection() 
     app.contains("vendor/model-302");
     app.send(b"\r");
     // Forty columns leave the notice no room; the row's mark moves.
-    app.contains("vendor/model-302  ● now");
+    app.contains("● vendor/model-302");
     // The picker stays open: Esc clears the search, a second leaves.
     app.settle(120);
     app.send(b"\x1b");
@@ -1788,13 +1787,11 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     app.contains("Global");
     app.contains("Project");
     // It opens on Global (decision 6): a project file is written only when
-    // Project is chosen here.
-    app.contains("Your settings, for every project");
+    // Project is chosen here, and the foot names the file.
+    app.contains("Saves to");
     app.contains("config.toml");
-    // Both values are chips, and the one in force carries its mark.
-    app.contains("⟨ Off");
-    app.contains("⟨ On");
-    app.contains(" ● ⟩");
+    // The value in force is the one chip on its row.
+    app.contains("⟨ auto ⟩");
     assert!(
         !app.screen
             .screen()
@@ -1808,10 +1805,10 @@ fn settings_tabs_name_their_destinations_and_escape_creates_nothing() {
     // write (or vice versa). The platform's own separator:
     // `.sterna\config.toml` on Windows.
     app.send(b"\x1b[17~");
-    app.contains("This project only · .sterna");
+    app.contains("Saves to .sterna");
     app.send(b"\x1b");
     app.wait("settings editor closes", |screen| {
-        !screen.contents().contains("This project only")
+        !screen.contents().contains("Saves to .sterna")
     });
     assert!(!project.exists(), "viewing/cancelling created {project:?}");
     assert!(!global.exists(), "viewing/cancelling created {global:?}");
@@ -2063,7 +2060,7 @@ fn a_bare_resume_opens_the_resume_sheet_inside_the_session() {
     app.contains("RESUME A SESSION");
     app.contains("this session · 1 prompt");
     app.contains("fix the flaky test");
-    app.contains("build a habit tracker ›");
+    app.contains("build a habit tracker");
     assert!(
         !app.screen.screen().contents().contains(".events"),
         "an event log is listed as a session"
@@ -2406,7 +2403,7 @@ fn a_rollback_marks_its_cell_and_says_so_in_one_line() {
     );
     app.send(b"/rollback\r");
     app.contains("Roll back cell 001");
-    app.contains("This cannot be undone");
+    app.contains("These files go back");
     app.settle(600);
     // Cancel is first; the rollback is the row under it.
     app.send(b"\x1b[B");
@@ -2478,7 +2475,7 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.contains("SETTINGS");
     // Everyday, Models, Little helpers, then Display.
     app.send(b"\t\t\t");
-    app.contains("SETTINGS › Display");
+    app.contains("Colour ─");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
     let saved = std::fs::read_to_string(app.global_settings()).unwrap();

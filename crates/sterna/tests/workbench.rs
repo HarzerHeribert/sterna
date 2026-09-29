@@ -808,7 +808,7 @@ fn picker_never_offers_implicit_subagent_inheritance() {
     u.open(Source::Models(Box::new(m)));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(
-        screen.contains("PINNED") && screen.contains("QUICK"),
+        screen.contains("Pinned") && screen.contains("Quick"),
         "{screen}"
     );
     assert!(!u.geometry.hits.iter().any(
@@ -881,7 +881,7 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
         }
         for i in 0..2 {
             assert!(
-                reach.contains(&Action::Sheet(Hit::Tool(i))),
+                reach.contains(&Action::Sheet(Hit::Tool(0, i))),
                 "{width} columns: tool {i} cannot be reached"
             );
         }
@@ -962,8 +962,8 @@ fn a_lifted_boundary_is_never_the_control_a_narrow_terminal_drops() {
 /// **A list of choices that does not mark the current one is a quiz.** Both
 /// pickers highlighted the row under the cursor and nothing else, so opening
 /// one to check what the session was doing told you only where the cursor had
-/// stopped. The mark is a glyph and the word `now`, so it survives a
-/// monochrome terminal.
+/// stopped. The mark is a glyph before the name, so it survives a monochrome
+/// terminal.
 #[test]
 fn a_picker_marks_the_option_the_session_is_on() {
     let (c, n, s) = fixture();
@@ -971,9 +971,9 @@ fn a_picker_marks_the_option_the_session_is_on() {
     let mut u = Workbench::default();
     u.open(Source::Sandbox);
     let sheet = text(&draw(&c, &n, &s, &mut u, 120, 24));
-    assert!(sheet.contains("Ask  ● now"), "{sheet}");
+    assert!(sheet.contains("● Ask"), "{sheet}");
     assert!(
-        !sheet.contains("Sandboxed  ● now"),
+        !sheet.contains("● Sandboxed"),
         "only one is current:\n{sheet}"
     );
 }
@@ -1160,7 +1160,11 @@ fn the_picker_shows_what_its_own_commands_did() {
         Effect::Command("/model helper off".into())
     );
     let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
-    assert!(screen.contains("Now: off"), "{screen}");
+    assert!(screen.contains("Helpers are off"), "{screen}");
+    assert!(
+        !screen.contains("● fixture"),
+        "no model is marked:\n{screen}"
+    );
 }
 
 /// A locked account's models share one reason, and it is said once under
@@ -1394,10 +1398,9 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
     let screen = text(&b);
     assert!(screen.contains("fixture-helper"), "{screen}");
     // The *list* holds one row, and the model the query excluded is not
-    // among them: `fixture-main` is on the sheet once, in the line saying
-    // what Main runs on now. (The session bar above the sheet names it too.)
+    // among them. (The session bar above the sheet names it.)
     let sheet: String = sheet_rows(&screen, "MODELS").join("\n");
-    assert_eq!(sheet.matches("fixture-main").count(), 1, "{screen}");
+    assert_eq!(sheet.matches("fixture-main").count(), 0, "{screen}");
     assert!(!screen.contains("unavailable-model"), "{screen}");
 }
 
@@ -1720,16 +1723,16 @@ fn the_acceptance_list_is_one_line_that_opens_a_grouped_panel() {
     let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
     for line in [
         "ACCEPTANCE › 1 of 3 met · from your request only",
-        "OPEN · 2",
+        "Open · 2",
         "○ cargo test exits 0",
         "↳ checked when the task finishes",
-        "MET · 1",
+        "Met · 1",
         "↳ present, 12 bytes",
     ] {
         assert!(panel.contains(line), "{line}: {panel}");
     }
-    assert!(!panel.contains("NOT MET"), "{panel}");
-    assert!(panel.find("OPEN · 2") < panel.find("MET · 1"), "{panel}");
+    assert!(!panel.contains("Not met"), "{panel}");
+    assert!(panel.find("Open · 2") < panel.find("Met · 1"), "{panel}");
 
     // After a check found `cargo test` failing: the line says so, and the
     // failure heads the panel.
@@ -1744,9 +1747,9 @@ fn the_acceptance_list_is_one_line_that_opens_a_grouped_panel() {
     assert!(panel.contains("from the Scout's look"), "{panel}");
     assert!(panel.contains("↳ exit 101: 2 failed"), "{panel}");
     let failed = panel
-        .find("NOT MET · 1")
+        .find("Not met · 1")
         .expect("the failure has its group");
-    assert!(failed < panel.find("OPEN · 1").unwrap(), "{panel}");
+    assert!(failed < panel.find("Open · 1").unwrap(), "{panel}");
 }
 
 /// Every control in the top bar is a chip, and every chip is a click target
@@ -2417,7 +2420,7 @@ fn the_theme_sheet_groups_themes_under_their_family() {
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} is missing:\n{screen}"))
     };
-    let (classic, parrots) = (line("CLASSIC · "), line("PARROTS · "));
+    let (classic, parrots) = (line("Classic ─"), line("Parrots ─"));
     assert!(classic < line("neon") && line("rose") < parrots, "{screen}");
     assert!(parrots < line("Amazon") && parrots < line("Sulphur-crested Cockatoo"));
     // The last classic theme steps straight onto the first parrot, over
@@ -2457,9 +2460,9 @@ fn every_theme_name_starts_in_one_column_and_the_mark_is_drawn_once() {
     assert!(screen.contains("██ Arctic Tern"), "{screen}");
     let focused = screen
         .lines()
-        .find(|l| l.contains("● now"))
+        .find(|l| l.contains("● ██"))
         .unwrap_or_else(|| panic!("no current row:\n{screen}"));
-    assert_eq!(focused.matches('›').count(), 1, "{focused}");
+    assert_eq!(focused.matches('▌').count(), 1, "{focused}");
 }
 
 /// **A key pasted into a form is bullets on the screen, never the key**, and
@@ -2476,7 +2479,7 @@ fn a_key_form_shows_bullets_where_the_paste_went_and_never_the_key() {
     form.push(KEY);
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
     t.draw(|f| {
-        workbench::render_form(f, &form, Theme::default());
+        workbench::render_form(f, &form, Theme::default(), None);
     })
     .unwrap();
     let screen = text(t.backend().buffer());
@@ -2486,7 +2489,7 @@ fn a_key_form_shows_bullets_where_the_paste_went_and_never_the_key() {
     );
     assert!(!screen.contains("sk-ant"), "the key rendered:\n{screen}");
     assert!(
-        screen.contains("API KEY"),
+        screen.contains("API key"),
         "the field is labelled:\n{screen}"
     );
     assert!(screen.contains("looks like an Anthropic key"), "{screen}");
@@ -2508,7 +2511,7 @@ fn a_key_form_carries_its_warning_on_the_sheet() {
     .warn("Google's terms do not allow a subscription here.");
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
     t.draw(|f| {
-        workbench::render_form(f, &form, Theme::default());
+        workbench::render_form(f, &form, Theme::default(), None);
     })
     .unwrap();
     let screen = text(t.backend().buffer());
@@ -2806,7 +2809,7 @@ fn a_form_is_clickable_field_by_field() {
     );
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut hits = Vec::new();
-    t.draw(|f| hits = workbench::render_form(f, &form, Theme::default()))
+    t.draw(|f| hits = workbench::render_form(f, &form, Theme::default(), None))
         .unwrap();
     let has = |hit: workbench::FormHit| hits.iter().any(|(_, h)| *h == hit);
     assert!(has(workbench::FormHit::Field(0)) && has(workbench::FormHit::Field(1)));
@@ -2848,6 +2851,180 @@ fn hover_redraws_only_when_the_target_changes() {
         Effect::Consumed
     );
     assert_eq!(u.top().unwrap().sheet.focused().unwrap().id, focused);
+}
+
+/// **Hover lights what a click would press, on every surface.** A plain
+/// value word becomes a chip under the pointer and takes the accent; the
+/// value already chosen keeps its fill; the composer, where a person types,
+/// is never lit.
+#[test]
+fn hover_lights_the_target_and_never_the_composer() {
+    let (_t, mut s, p) = prefs();
+    let (c, n, _) = fixture();
+    s.truecolor = true;
+    let accent = theme_accent(s.theme);
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    draw(&c, &n, &s, &mut u, 110, 40);
+    let effort = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "setting:session.effort")
+        .unwrap();
+    let rect = |u: &Workbench, v: usize| {
+        u.geometry
+            .hits
+            .iter()
+            .find(|(_, a)| *a == Action::Sheet(Hit::Value(effort, v)))
+            .map(|(r, _)| *r)
+            .unwrap()
+    };
+    // `low`, not chosen: plain, then a lit chip under the pointer.
+    let low = rect(&u, 1);
+    let cells = |b: &Buffer, r: ratatui::layout::Rect| -> String {
+        (r.x..r.right()).map(|x| b[(x, r.y)].symbol()).collect()
+    };
+    let b = draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(cells(&b, low), "  low  ");
+    mouse(&mut u, &mut s, &n, MouseEventKind::Moved, low.x + 2, low.y);
+    let b = draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(cells(&b, low), "⟨ low ⟩");
+    assert_eq!(b[(low.x + 2, low.y)].fg, accent, "the word is lit");
+    // `auto`, chosen: its fill and its ink stay.
+    let auto = rect(&u, 0);
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Moved,
+        auto.x + 2,
+        auto.y,
+    );
+    let b = draw(&c, &n, &s, &mut u, 110, 40);
+    assert_eq!(b[(auto.x + 2, auto.y)].bg, accent);
+    assert_ne!(b[(auto.x + 2, auto.y)].fg, accent, "accent on accent");
+    // The composer is a place to type: nothing on it is lit.
+    u.close_all();
+    let b = draw(&c, &n, &s, &mut u, 110, 40);
+    let composer = u.geometry.composer;
+    let before: Vec<Color> = (composer.x..composer.right())
+        .map(|x| b[(x, composer.y)].fg)
+        .collect();
+    mouse(
+        &mut u,
+        &mut s,
+        &n,
+        MouseEventKind::Moved,
+        composer.x + 3,
+        composer.y,
+    );
+    let b = draw(&c, &n, &s, &mut u, 110, 40);
+    let after: Vec<Color> = (composer.x..composer.right())
+        .map(|x| b[(x, composer.y)].fg)
+        .collect();
+    assert_eq!(before, after);
+}
+
+/// **One value column per sheet**: every setting's value starts in the same
+/// column, whatever kind of row it is -- a row of words, a switch, a model
+/// that opens a picker -- and each group has an empty line above its name.
+#[test]
+fn every_value_on_a_settings_page_starts_in_one_column() {
+    let (_t, s, p) = prefs();
+    let (c, n, _) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
+    let sheet = sheet_rows(&screen, "SETTINGS");
+    let value_column = |label: &str| {
+        let row = sheet
+            .iter()
+            .find(|row| row.contains(&format!(" {label} ")) && !row.contains('─'))
+            .unwrap_or_else(|| panic!("{label} is missing:\n{screen}"));
+        let chars: Vec<char> = row.chars().collect();
+        let start = row[..row.find(label).unwrap()].chars().count() + label.chars().count();
+        (start..chars.len())
+            .find(|at| !matches!(chars[*at], ' ' | '⟨'))
+            .unwrap()
+    };
+    let main = value_column("Main model");
+    for label in ["Reasoning effort", "Sandbox", "Helpers", "Theme", "Motion"] {
+        assert_eq!(value_column(label), main, "{label}:\n{screen}");
+    }
+    for group in ["Model ─", "Sandbox and helpers ─", "Look ─"] {
+        let at = sheet
+            .iter()
+            .position(|row| row.contains(group))
+            .unwrap_or_else(|| panic!("{group} is missing:\n{screen}"));
+        assert!(
+            sheet[at - 1]
+                .trim_matches(|c| c == '│' || c == ' ')
+                .is_empty(),
+            "no space above {group}:\n{screen}"
+        );
+    }
+    // Where a choice is saved is on the title line, not a line of its own.
+    assert!(
+        sheet[1].contains("SETTINGS") && sheet[1].contains("Global"),
+        "{screen}"
+    );
+    // A list longer than its sheet says how far it goes on the frame's
+    // edge, not in a line of the list.
+    let (_t, s, mut p) = prefs();
+    p.category = 4;
+    let mut u = Workbench::default();
+    u.open(Source::Settings(Box::new(p)));
+    let screen = text(&draw(&c, &n, &s, &mut u, 110, 30));
+    let sheet = sheet_rows(&screen, "SETTINGS");
+    assert!(
+        sheet.iter().any(|row| row.trim_end().ends_with('┃')),
+        "{screen}"
+    );
+    assert!(!screen.contains(" more"), "{screen}");
+}
+
+/// A switch on the title line acts only when a choice other than the
+/// current one is clicked: the account filter flips a setting, and a click
+/// on the word already chosen must not flip it back.
+#[test]
+fn a_click_on_the_switch_already_chosen_changes_nothing() {
+    let (c, n, mut s) = fixture();
+    let mut u = Workbench::default();
+    u.open(Source::Models(Box::new(navigator())));
+    draw(&c, &n, &s, &mut u, 120, 40);
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0, 0)));
+    assert!(!u.models().unwrap().all_sources);
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0, 1)));
+    assert!(u.models().unwrap().all_sources);
+    // A switch row is the same: Off, already chosen, sends nothing.
+    u.models_mut().unwrap().role = 2;
+    u.models_mut().unwrap().assignment.slots.insert(
+        "quick".into(),
+        sterna::config::AgentSlot {
+            model: "fixture-main".into(),
+            effort: sterna::wire::Effort::Low,
+        },
+    );
+    draw(&c, &n, &s, &mut u, 120, 40);
+    let favourites = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .position(|item| item.id == "favourites")
+        .unwrap();
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(favourites, 0))),
+        Effect::Consumed
+    );
+    assert_eq!(
+        click(&mut u, &mut s, &n, Action::Sheet(Hit::Value(favourites, 1))),
+        Effect::Command("/subagents on".into())
+    );
 }
 
 /// The session card names the level in force now -- after the Sandbox
@@ -3173,7 +3350,7 @@ fn the_sandbox_level_is_global_only_and_full_access_is_confirmed() {
         u.top().unwrap().sheet.items[item].disabled.as_deref(),
         Some("Global only · F6 switches to Global")
     );
-    click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0)));
+    click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0, 0)));
     draw(&c, &n, &s, &mut u, 110, 60);
     let item = at(&u);
     assert!(u.top().unwrap().sheet.items[item].disabled.is_none());
@@ -3508,10 +3685,10 @@ fn an_account_heading_says_subscription_or_api_key() {
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
     assert!(!screen.to_lowercase().contains("declared"), "{screen}");
     assert!(
-        screen.contains("A · A-SUBSCRIPTION · SUBSCRIPTION"),
+        screen.contains("A · A-subscription · subscription"),
         "{screen}"
     );
-    assert!(screen.contains("· API KEY"), "{screen}");
+    assert!(screen.contains("· API key"), "{screen}");
     // The rows keep their identity: a click still chooses the model.
     let id = {
         let m = u.models().unwrap();
@@ -3528,9 +3705,9 @@ fn an_account_heading_says_subscription_or_api_key() {
     );
 }
 
-/// **The slot being filled is not "now"**: `● now` marks what subagents run
-/// on, so an empty slot waiting for its model never wears it -- it says the
-/// next model goes there instead -- and "Now:" follows favourites on.
+/// **The slot being filled is not "now"**: `●` marks what subagents run on,
+/// so an empty slot waiting for its model never wears it -- it says the next
+/// model goes there instead -- and the Favourites switch follows them on.
 #[test]
 fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
     let (c, n, mut s) = fixture();
@@ -3546,13 +3723,14 @@ fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
             .unwrap_or_else(|| panic!("{needle} is missing:\n{screen}"))
             .to_string()
     };
-    // Nothing is pinned: PINNED is where a model goes, not what runs.
-    assert!(!line(&screen, "PINNED").contains("● now"), "{screen}");
+    // Nothing is pinned: Pinned is where a model goes, not what runs.
+    line(&screen, "Pinned");
+    assert!(!screen.contains("● Pinned"), "{screen}");
     click_item(&mut u, &mut s, &n, "slot:quick");
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
-    assert!(!line(&screen, "QUICK").contains("● now"), "{screen}");
+    assert!(!screen.contains("● Quick"), "{screen}");
     assert!(
-        screen.contains("the next model you choose goes here"),
+        screen.contains("next model you choose goes here"),
         "{screen}"
     );
     let id = {
@@ -3566,16 +3744,21 @@ fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
     };
     click_item(&mut u, &mut s, &n, &id);
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
-    assert!(!line(&screen, "BALANCED").contains("● now"), "{screen}");
+    assert!(!screen.contains("● Balanced"), "{screen}");
     assert_eq!(
         click_item(&mut u, &mut s, &n, "favourites"),
         Effect::Command("/subagents on".into())
     );
-    let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
-    assert!(
-        line(&screen, "Subagents work in parallel").contains("Now: favourites"),
-        "{screen}"
-    );
+    draw(&c, &n, &s, &mut u, 120, 60);
+    let favourites = u
+        .top()
+        .unwrap()
+        .sheet
+        .items
+        .iter()
+        .find(|item| item.id == "favourites")
+        .map(|item| item.kind.clone());
+    assert_eq!(favourites, Some(sterna::workbench::ItemKind::Toggle(true)));
 }
 
 /// Pinning one model over the favourites turns them off, so it is asked
@@ -4614,7 +4797,8 @@ fn a_disabled_ask_reads_as_where_to_turn_it_on() {
 }
 
 /// The Theme row keeps the theme in force on screen, however many themes
-/// there are: drawn as the chip that is on, or held by the fold chip.
+/// there are: drawn as the chip that is on, or as the word that opens the
+/// whole list when they do not fit in the row.
 #[test]
 fn the_active_theme_chip_is_always_drawn() {
     let (_t, mut s, mut p) = prefs();
@@ -4628,7 +4812,7 @@ fn the_active_theme_chip_is_always_drawn() {
         .lines()
         .find(|line| line.contains("Theme"))
         .unwrap_or_else(|| panic!("no Theme row:\n{screen}"));
-    assert!(row.contains("cockatoo ●"), "{screen}");
+    assert!(row.contains("cockatoo ▾"), "{screen}");
 }
 
 /// What the top bar has no room for is one chip away, never gone: the
@@ -4816,7 +5000,7 @@ fn the_theme_picker_has_a_seabirds_family() {
     let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
     let heading = screen
         .lines()
-        .position(|line| line.contains("SEABIRDS"))
+        .position(|line| line.contains("Seabirds ─"))
         .unwrap_or_else(|| panic!("{screen}"));
     assert!(
         screen
@@ -5068,10 +5252,7 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     click_item(&mut u, &mut s, &n, "sandbox:hosts");
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
     assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
-    assert!(
-        screen.contains("apply to this session's next command"),
-        "{screen}"
-    );
+    assert!(screen.contains("apply to the next command"), "{screen}");
     for ecosystem in ECOSYSTEMS {
         assert!(
             screen.contains(ecosystem.label),
@@ -5114,7 +5295,12 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
         saved()
     );
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
-    assert!(screen.contains("Remove · api.example.com"), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .any(|line| line.contains("api.example.com") && line.contains("⟨ Remove ⟩")),
+        "{screen}"
+    );
 
     click_item(&mut u, &mut s, &n, "host:api.example.com");
     assert!(!allowed.permits("api.example.com"));
@@ -5586,6 +5772,9 @@ fn mains_effort_is_chosen_where_its_model_is() {
     u.open(Source::Models(Box::new(navigator())));
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
     assert!(screen.contains("Effort"), "{screen}");
+    // What the words mean is in the strip while the row has the focus.
+    u.top_mut().unwrap().sheet.focus_id("main:effort");
+    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
     assert!(screen.contains("auto lets the model choose"), "{screen}");
     let item = u
         .top()
@@ -5601,12 +5790,12 @@ fn mains_effort_is_chosen_where_its_model_is() {
     );
 }
 
-/// **One line per row, and one card for the focused row.** A setting's row
+/// **One line per row, and one strip for the focused row.** A setting's row
 /// is its name and its choices; what it means, when a change applies and
-/// where the value comes from are on the card at the sheet's foot, for the
-/// row the focus is on.
+/// where the value comes from are in the strip under the list, for the row
+/// the focus is on.
 #[test]
-fn a_settings_row_is_one_line_and_the_card_explains_the_focused_one() {
+fn a_settings_row_is_one_line_and_the_strip_explains_the_focused_one() {
     let (_t, s, p) = prefs();
     let (c, n, _) = fixture();
     let mut u = Workbench::default();
@@ -5628,17 +5817,19 @@ fn a_settings_row_is_one_line_and_the_card_explains_the_focused_one() {
             .all(|row| !row.contains("How hard the model thinks")),
         "{screen}"
     );
-    let card = at("╭─ Reasoning effort").expect("the card names the focused row");
-    assert!(card > theme, "the card is below the rows: {screen}");
-    assert!(sheet[card].contains("applies now"), "{screen}");
+    // The strip under the list names the focused row, when a change applies
+    // and where the value comes from on one line, and what it means under.
+    let strip = sheet
+        .iter()
+        .rposition(|row| row.contains("Reasoning effort") && row.contains("applies now"))
+        .expect("the strip names the focused row");
+    assert!(strip > theme, "the strip is below the rows: {screen}");
     assert!(
-        sheet[card + 1].contains("How hard the model thinks"),
+        sheet[strip].contains("auto · Sterna's own default"),
         "{screen}"
     );
     assert!(
-        sheet[card..]
-            .iter()
-            .any(|row| row.contains("╰─ auto · Sterna's own default")),
+        sheet[strip + 1].contains("How hard the model thinks"),
         "{screen}"
     );
 }

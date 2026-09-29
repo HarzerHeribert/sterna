@@ -165,13 +165,15 @@ pub(super) fn rows(latest: Option<&(Usage, i64)>, failed: bool, now_unix: i64) -
             format!("{} — {who}", account.account)
         }));
         if let Some(error) = &account.error {
-            rows.push(tui::PanelRow::info(format!("  {error}")));
+            rows.push(tui::PanelRow::info(error.clone()));
         }
         for window in &account.windows {
-            rows.push(tui::PanelRow::info(window_line(window, now_unix)));
+            rows.push(
+                tui::PanelRow::info(window.name.clone()).shows(window_line(window, now_unix)),
+            );
         }
         if account.limited {
-            rows.push(tui::PanelRow::info("  a limit is reached now".to_string()));
+            rows.push(tui::PanelRow::info("a limit is reached now"));
         }
     }
     rows.push(PanelRow::info(format!(
@@ -181,7 +183,7 @@ pub(super) fn rows(latest: Option<&(Usage, i64)>, failed: bool, now_unix: i64) -
     rows
 }
 
-/// `  week   ████████████████░░░░  84%  resets in 2d 22h`
+/// A window's use, beside its name: `████████████████░░░░  84%  resets in 2d 22h`.
 pub(super) fn window_line(window: &Window, now_unix: i64) -> String {
     let used = window.used_percent.clamp(0.0, 100.0);
     #[expect(
@@ -197,7 +199,7 @@ pub(super) fn window_line(window: &Window, now_unix: i64) -> String {
         .and_then(parse_rfc3339)
         .map(|at| format!("  resets in {}", span(at - now_unix)))
         .unwrap_or_default();
-    format!("  {:<14} {bar} {:>3.0}%{resets}", window.name, used)
+    format!("{bar} {used:>3.0}%{resets}")
 }
 
 /// The start-of-session lines: every window at or past [`WARN_AT_PERCENT`].
@@ -283,7 +285,15 @@ mod tests {
     /// says how old it is.
     #[test]
     fn the_limits_say_what_is_known_and_how_old_it_is() {
-        let text = |rows: Vec<PanelRow>| rows.into_iter().map(|row| row.text).collect::<Vec<_>>();
+        // A row's text, and its value after it where it has one.
+        let text = |rows: Vec<PanelRow>| {
+            rows.into_iter()
+                .map(|row| match row.value {
+                    Some(value) => format!("{} {value}", row.text),
+                    None => row.text,
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             text(rows(None, false, 0)),
             ["Not read yet: the gateway is being asked now. Open this again in a moment."]
@@ -330,7 +340,7 @@ mod tests {
         };
         assert_eq!(
             window_line(&week, now),
-            "  week           █████████████████░░░  84%  resets in 3d 2h"
+            "█████████████████░░░  84%  resets in 3d 2h"
         );
         let usage = Usage {
             accounts: vec![AccountUsage {

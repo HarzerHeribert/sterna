@@ -171,12 +171,4 @@ impl Family {
             Self::Seabirds => "Seabirds",
         }
     }
-    /// One line on what the family is, under its heading.
-    #[must_use]
-    pub fn blurb(self) -> &'static str {
-        match self {
-            Self::Classic => "a palette alone",
-            Self::Parrots | Self::Seabirds => "the bird's plumage, and the bird",
-        }
-    }
 }

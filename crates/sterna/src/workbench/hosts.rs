@@ -6,8 +6,8 @@
 //! runs a proxy, a change reaches its live list too, so the next command
 //! sees it; otherwise it applies from the next session, and the sheet says
 //! which.
+use super::Action;
 use super::sheet::{Field, Item, Sheet};
-use super::{Action, Tone};
 use crate::sandbox::proxy::{ECOSYSTEMS, valid_host};
 use crate::tui::ScreenState;
 
@@ -148,18 +148,14 @@ impl HostsSheet {
 /// The sheet's rows.
 pub(super) fn items(sheet: &mut Sheet, h: &HostsSheet, s: &ScreenState) -> Vec<Item> {
     sheet.title = "Allowed hosts".into();
-    sheet.crumbs = vec!["what commands may reach".into()];
-    let mut items = vec![
-        Item::info("Saved for every project. A project's own settings cannot change this.")
-            .tone(Tone::Muted),
-        Item::info(if s.allowed.is_some() {
-            "Changes apply to this session's next command."
-        } else {
-            "This session runs no network proxy, so changes apply from the next session."
-        })
-        .tone(Tone::Muted),
-        Item::heading("Ecosystems"),
-    ];
+    sheet.crumbs.clear();
+    sheet.status = if s.allowed.is_some() {
+        "Changes apply to the next command."
+    } else {
+        "Changes apply from the next session."
+    }
+    .into();
+    let mut items = vec![Item::heading("Ecosystems")];
     for ecosystem in ECOSYSTEMS {
         items.push(
             Item::toggle(
@@ -176,24 +172,24 @@ pub(super) fn items(sheet: &mut Sheet, h: &HostsSheet, s: &ScreenState) -> Vec<I
         );
     }
     items.push(Item::heading("Your hosts"));
-    if h.hosts.is_empty() {
-        items.push(Item::info("None yet.").tone(Tone::Muted));
-    }
     for host in &h.hosts {
+        items.push(Item::info(host.clone()));
         items.push(
             Item::run(
                 format!("host:{host}"),
-                format!("Remove · {host}"),
+                "Remove",
                 Action::RemoveHost(host.clone()),
             )
-            .detail("commands reach it in every project"),
+            .detail("Commands reach it in every project.")
+            .trail(),
         );
     }
-    items.push(Item::field("host:new", "Add a host", h.draft.clone()).act(Action::AddHost));
-    items.push(Item::run("host:add", "Add", Action::AddHost).inline());
     items.push(
-        Item::info("api.example.com, or *.example.com for every name under it.").tone(Tone::Muted),
+        Item::field("host:new", "Add a host", h.draft.clone())
+            .act(Action::AddHost)
+            .detail("api.example.com, or *.example.com for every name under it."),
     );
+    items.push(Item::run("host:add", "Add", Action::AddHost).trail());
     // What the live list holds beyond the settings: `--allow-host` and the
     // hosts allowed from a prompt, which end with the session.
     let session_only: Vec<String> = s
@@ -210,7 +206,7 @@ pub(super) fn items(sheet: &mut Sheet, h: &HostsSheet, s: &ScreenState) -> Vec<I
     if !session_only.is_empty() {
         items.push(Item::heading("Allowed for this session only"));
         for host in session_only {
-            items.push(Item::info(host).tone(Tone::Muted));
+            items.push(Item::info(host));
         }
     }
     items

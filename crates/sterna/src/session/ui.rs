@@ -754,6 +754,8 @@ fn run(
     let mut prompts = decision::Prompts::default();
     // Where the open form was drawn, so a click reaches its fields.
     let mut form_hits: Vec<(ratatui::layout::Rect, crate::workbench::FormHit)> = Vec::new();
+    // Where the pointer rests over a form, for hover.
+    let mut form_hover: Option<(u16, u16)> = None;
     loop {
         if !ACTIVE.load(Ordering::SeqCst) {
             break;
@@ -1056,7 +1058,9 @@ fn run(
                     &mut workbench,
                 );
                 form_hits = match state.form.as_ref() {
-                    Some(form) => crate::workbench::render_form(frame, form, state.theme),
+                    Some(form) => {
+                        crate::workbench::render_form(frame, form, state.theme, form_hover)
+                    }
                     None => Vec::new(),
                 };
                 prompts.draw(frame, state.theme);
@@ -1096,6 +1100,7 @@ fn run(
                     }
                     MouseEventKind::ScrollUp => prompts.wheel(true),
                     MouseEventKind::ScrollDown => prompts.wheel(false),
+                    MouseEventKind::Moved => prompts.hover(mouse.column, mouse.row),
                     _ => decision::Done::Nothing,
                 },
                 Event::Resize(_, _) => decision::Done::Redraw,
@@ -1293,6 +1298,20 @@ fn run(
             }
             Event::Mouse(mouse) => {
                 if let Some(form) = state.form.as_mut() {
+                    if mouse.kind == MouseEventKind::Moved {
+                        let under = |at: Option<(u16, u16)>| {
+                            at.and_then(|(x, y)| {
+                                form_hits
+                                    .iter()
+                                    .rev()
+                                    .find(|(r, _)| crate::workbench::contains(*r, x, y))
+                                    .map(|(r, _)| *r)
+                            })
+                        };
+                        let before = under(form_hover);
+                        form_hover = Some((mouse.column, mouse.row));
+                        dirty |= under(form_hover) != before;
+                    }
                     if mouse.kind == MouseEventKind::Up(crossterm::event::MouseButton::Left) {
                         let hit = form_hits
                             .iter()

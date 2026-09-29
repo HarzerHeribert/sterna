@@ -1,6 +1,6 @@
 //! Direct local preferences over Sterna's existing typed, conflict-aware store.
 use super::Action;
-use super::sheet::{Field, Item, Sheet};
+use super::sheet::{Field, Item, Sheet, Tool};
 use crate::settings::{Kind, Loaded, Scope, SettingSpec, Snapshot, Store};
 use crate::tui::ScreenState;
 use std::collections::BTreeMap;
@@ -65,6 +65,56 @@ const MODELS: [&str; 6] = [
     "decisions.model",
     "decisions.mode",
 ];
+
+/// Every group, in the order its section lists them.
+const GROUPS: [&str; 19] = [
+    "Model",
+    "Sandbox and helpers",
+    "Look",
+    "Main",
+    "Helpers and subagents",
+    "Decisions",
+    "What they do",
+    "How hard they work",
+    "Colour",
+    "Layout",
+    "Motion",
+    "Limits",
+    "Helpers",
+    "Subagent favourites",
+    "Sandbox",
+    "Web",
+    "Asking you",
+    "Permissions",
+    "Confidence thresholds",
+];
+
+/// The group a key sits in on its section's page: a few names a person
+/// scans by, never the file's tables. Advanced groups by what the keys
+/// govern.
+fn group_of(category: usize, key: &str) -> &'static str {
+    match (category, key) {
+        (section::EVERYDAY, "model.parent" | "session.effort") => "Model",
+        (section::EVERYDAY, "sandbox.level" | "helpers.enabled") => "Sandbox and helpers",
+        (section::EVERYDAY, _) => "Look",
+        (section::MODELS, "model.parent" | "session.effort") => "Main",
+        (section::MODELS, "helpers.model" | "agents.mode") => "Helpers and subagents",
+        (section::MODELS, _) => "Decisions",
+        (section::HELPERS, k) if k.starts_with("helpers.effort.") => "How hard they work",
+        (section::HELPERS, _) => "What they do",
+        (section::DISPLAY, "ui.theme" | "ui.background") => "Colour",
+        (section::DISPLAY, "ui.statusline" | "ui.sidebar") => "Layout",
+        (section::DISPLAY, _) => "Motion",
+        (_, k) if k.starts_with("limits.") => "Limits",
+        (_, k) if k.starts_with("agents.") => "Subagent favourites",
+        (_, k) if k.starts_with("sandbox.") => "Sandbox",
+        (_, k) if k.starts_with("web.") => "Web",
+        (_, k) if k.starts_with("ask.") => "Asking you",
+        (_, k) if k.starts_with("permissions.") => "Permissions",
+        (_, k) if k.starts_with("decisions.") => "Confidence thresholds",
+        _ => "Helpers",
+    }
+}
 
 /// The category a key is listed under. Everyday repeats keys on purpose;
 /// no other category repeats one, and Advanced holds only what no other
@@ -205,6 +255,7 @@ impl Preferences {
         // Everyday and Models are in the order a person reaches for the
         // things, which is not the order the registry declares them in.
         // Advanced keeps the confidence thresholds together, last.
+        // Each group's rows sit together.
         if self.query.is_empty() {
             match self.category {
                 section::EVERYDAY => found.sort_by_key(|spec| {
@@ -219,9 +270,14 @@ impl Preferences {
                         .position(|k| *k == spec.key)
                         .unwrap_or(usize::MAX)
                 }),
-                section::ADVANCED => found.sort_by_key(|spec| spec.kind == Kind::Float),
                 _ => {}
             }
+            found.sort_by_key(|spec| {
+                GROUPS
+                    .iter()
+                    .position(|g| *g == group_of(self.category, spec.key))
+                    .unwrap_or(usize::MAX)
+            });
         }
         found
     }
@@ -477,54 +533,39 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
     p.category = sheet.section.min(CATEGORIES.len() - 1);
     p.query = sheet.query.clone().unwrap_or_default();
     sheet.title = "Settings".into();
-    sheet.card = true;
-    sheet.crumbs = vec![CATEGORIES[p.category].to_string()];
-    sheet.tools = vec![
-        (
-            Scope::Global.label().to_string(),
-            Action::Scope(true),
-            p.scope == Scope::Global,
-        ),
-        (
-            Scope::Local.label().to_string(),
-            Action::Scope(false),
-            p.scope == Scope::Local,
-        ),
-    ];
-    sheet.total = Some(
+    sheet.crumbs.clear();
+    // Where a save lands, on the title line: a Global label must never be
+    // able to conceal a Project write.
+    sheet.tools = vec![Tool {
+        options: vec![
+            (Scope::Global.label().to_string(), Action::Scope(true)),
+            (Scope::Local.label().to_string(), Action::Scope(false)),
+        ],
+        current: Some(usize::from(p.scope != Scope::Global)),
+    }];
+    sheet.status = saved_in(&p.path);
+    sheet.total = (!p.query.is_empty()).then(|| {
         crate::settings::specs()
             .iter()
             .filter(|spec| !crate::settings::hidden(spec.key))
-            .count(),
-    );
+            .count()
+    });
     if sheet.notice.is_empty() && !p.notice.is_empty() {
         sheet.notice = std::mem::take(&mut p.notice);
     }
     let focused = sheet.items.get(sheet.focus).map(|item| item.id.clone());
     let rows = p.rows();
-    // Where a save lands, named beside the scope chips: a Global label must
-    // never be able to conceal a Project write. Most choices apply at once;
-    // the rows that wait for the next session say so themselves.
-    let mut items = vec![
-        Item::info(format!(
-            "{} · choices save themselves",
-            saved_in(&p.path, p.scope)
-        ))
-        .tone(super::Tone::Muted),
-    ];
+    let grouped = p.query.is_empty();
+    let mut items = Vec::new();
+    let mut group = "";
     for (i, spec) in rows.iter().enumerate() {
-        // Advanced ends with the confidence thresholds, together under
-        // their own heading: numbers a person tunes rarely, and together.
-        if p.category == section::ADVANCED
-            && p.query.is_empty()
-            && spec.kind == Kind::Float
-            && (i == 0 || rows[i - 1].kind != Kind::Float)
-        {
-            items.push(Item::heading("Confidence thresholds"));
+        if grouped && group_of(p.category, spec.key) != group {
+            group = group_of(p.category, spec.key);
+            items.push(Item::heading(group));
         }
         let id = format!("setting:{}", spec.key);
         let effective = p.effective(spec.key);
-        // The row is one line; the card says what it means, when a change
+        // The row is one line; the strip says what it means, when a change
         // applies and where the value comes from.
         let when = if crate::settings::applies_now(spec.key) {
             "applies now"
@@ -561,16 +602,20 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             } else {
                 None
             };
+        let unset = |word: &str| {
+            if effective == "unset" {
+                word.to_string()
+            } else {
+                effective.clone()
+            }
+        };
         // **One editor for the proxy's lists**: the Hosts sheet, which says
         // when a change applies. A second editor here said "next session"
         // while the sheet said "next command" for the same list.
         let item = if matches!(spec.key, "sandbox.hosts" | "sandbox.ecosystems") {
-            Item::open(
-                id,
-                format!("{} · {}", spec.label, word(spec.key, &effective)),
-                Action::Hosts,
-            )
-            .detail("Opens the Hosts sheet, which says when a change applies")
+            Item::open(id, spec.label, Action::Hosts)
+                .shows(word(spec.key, &effective))
+                .detail("Opens the Hosts sheet, which says when a change applies")
         } else if let Some(value) = editing {
             Item::field(
                 id,
@@ -586,29 +631,13 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
             .act(Action::Setting(i, None))
             .detail(format!("{} · Enter saves · Esc cancels", kind_words(spec)))
         } else if spec.kind == Kind::Model {
-            let shown = if effective == "unset" {
-                "choose a model".to_string()
-            } else {
-                effective.clone()
-            };
-            Item::open(
-                id,
-                format!("{} · {shown}", spec.label),
-                Action::Setting(i, None),
-            )
-            .detail(detail)
+            Item::open(id, spec.label, Action::Setting(i, None))
+                .shows(unset("choose a model"))
+                .detail(detail)
         } else if options.is_empty() {
-            let shown = if effective == "unset" {
-                "not set".to_string()
-            } else {
-                effective.clone()
-            };
-            Item::open(
-                id,
-                format!("{} · {shown}", spec.label),
-                Action::Setting(i, None),
-            )
-            .detail(detail)
+            Item::open(id, spec.label, Action::Setting(i, None))
+                .shows(unset("not set"))
+                .detail(detail)
         } else {
             let current = options.iter().position(|v| *v == effective);
             let values = options
@@ -636,11 +665,12 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                     "choose a helper model",
                     Action::SettingsAt(section::MODELS),
                 )
-                .inline(),
+                .tone(super::Tone::Warning)
+                .trail(),
             );
         }
-        // The way back to Sterna's own value, where the focus is and only
-        // when this scope holds a value to remove.
+        // The way back to Sterna's own value, at the end of the focused
+        // row and only when this scope holds a value to remove.
         if is_focused && p.saved(spec.key).is_some() {
             items.push(
                 Item::run(
@@ -648,23 +678,32 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                     "Use default",
                     Action::UseDefault(i),
                 )
-                .inline(),
+                .trail(),
             );
         }
-    }
-    // The Models section ends where the models come from, and where each
-    // subagent's model is chosen.
-    if p.category == section::MODELS && p.query.is_empty() {
-        items.push(Item::open(
-            "setting:agents:picker",
-            "Subagent favourites and the pinned model",
-            Action::Command("/subagents".into()),
-        ));
-        items.push(Item::open(
-            "setting:accounts",
-            "Accounts · sign in, or add an API key",
-            Action::Command("/login".into()),
-        ));
+        // Where the models come from sits with Main, and where each
+        // subagent's model is chosen with the subagents.
+        if p.category == section::MODELS && grouped {
+            match spec.key {
+                "session.effort" => items.push(
+                    Item::open(
+                        "setting:accounts",
+                        "Accounts",
+                        Action::Command("/login".into()),
+                    )
+                    .detail("Sign in with a subscription, or add an API key."),
+                ),
+                "agents.mode" => items.push(
+                    Item::open(
+                        "setting:agents:picker",
+                        "Subagent favourites",
+                        Action::Command("/subagents".into()),
+                    )
+                    .detail("The models each kind of subagent job runs on, and the pinned model."),
+                ),
+                _ => {}
+            }
+        }
     }
     if rows.is_empty() {
         items.push(super::sheet::Item::info(format!(
@@ -718,7 +757,7 @@ pub(super) fn human_value(value: &str) -> &str {
 
 /// Where a choice is saved, in the words a person uses for it -- never a
 /// temporary directory's full path.
-fn saved_in(path: &std::path::Path, scope: Scope) -> String {
+fn saved_in(path: &std::path::Path) -> String {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let shown = match home
         .as_deref()
@@ -736,8 +775,5 @@ fn saved_in(path: &std::path::Path, scope: Scope) -> String {
             .display()
             .to_string(),
     };
-    match scope {
-        Scope::Global => format!("Your settings, for every project · {shown}"),
-        _ => format!("This project only · {shown}"),
-    }
+    format!("Saves to {shown}")
 }

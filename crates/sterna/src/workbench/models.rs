@@ -332,40 +332,33 @@ pub(super) fn items(
         m.selected = 0;
     }
     sheet.title = "Models".into();
-    sheet.crumbs = vec![ROLES[m.role.min(2)].0.to_string()];
+    sheet.crumbs.clear();
+    // Both switches flip their setting, so only the choice that is not
+    // current acts.
     sheet.tools = vec![
-        (
-            if m.all_sources {
-                "all accounts".to_string()
-            } else {
-                "connected accounts".to_string()
-            },
-            Action::Sources,
-            m.all_sources,
-        ),
-        (
-            if m.measured_order {
-                "order: intelligence".to_string()
-            } else {
-                "order: name".to_string()
-            },
-            Action::Scores,
-            m.measured_order,
-        ),
+        super::sheet::Tool {
+            options: vec![
+                ("connected".to_string(), Action::Sources),
+                ("all accounts".to_string(), Action::Sources),
+            ],
+            current: Some(usize::from(m.all_sources)),
+        },
+        super::sheet::Tool {
+            options: vec![
+                ("by name".to_string(), Action::Scores),
+                ("by intelligence".to_string(), Action::Scores),
+            ],
+            current: Some(usize::from(m.measured_order)),
+        },
     ];
     sheet.total = Some(m.catalogue_len());
     sheet.matched = Some(m.candidates().len());
     if sheet.notice.is_empty() && !m.notice.is_empty() {
         sheet.notice = std::mem::take(&mut m.notice);
     }
-    let now = match m.role {
-        1 => m.current.helper.clone(),
-        2 => m.current.subagent.clone(),
-        _ => Some(m.current.parent.clone()).filter(|parent| !parent.is_empty()),
-    }
-    .unwrap_or_else(|| "not chosen yet".into());
     let (name, purpose) = ROLES[m.role.min(2)];
-    let mut items = vec![Item::info(format!("{name} {purpose}. Now: {now}"))];
+    sheet.status = format!("{name} {purpose}.");
+    let mut items = Vec::new();
     // Main's effort sits under its model: how that model works, chosen in
     // the same place. A search is for a model, so the row steps aside.
     if m.role == 0 && m.target_key.is_none() && m.query.is_empty() {
@@ -392,7 +385,7 @@ pub(super) fn items(
                     .collect(),
                 EFFORTS.iter().position(|e| *e == effort),
             )
-            .detail("auto lets the model choose; higher thinks longer and costs more"),
+            .detail("auto lets the model choose; higher thinks longer and costs more."),
         );
     }
     if m.role == 2 && m.target_key.is_none() {
@@ -402,19 +395,19 @@ pub(super) fn items(
             .subagent
             .clone()
             .filter(|word| !matches!(word.as_str(), "off" | "favourites"));
-        // `● now` is what subagents run on; the row a model click fills is
+        // `●` marks what subagents run on; the row a model click fills is
         // said in words, so an empty slot never reads as the one in use.
-        let next = " · the next model you choose goes here";
+        let next = " The next model you choose goes here.";
         items.push(
             Item::choice(
                 "slot:pinned",
-                "PINNED",
+                "Pinned",
                 pinned.is_some(),
                 Action::Slot(None),
             )
+            .shows(pinned.as_deref().unwrap_or("none"))
             .detail(format!(
-                "{} · every subagent runs on one model; Main picks the effort per job{}",
-                pinned.as_deref().unwrap_or("none"),
+                "Every subagent runs on one model; Main picks the effort per job.{}",
                 if m.slot.is_none() { next } else { "" }
             )),
         );
@@ -425,17 +418,20 @@ pub(super) fn items(
             } else {
                 ""
             };
+            let mut title = slot.to_string();
+            title[..1].make_ascii_uppercase();
             items.push(
                 Item::choice(
                     format!("slot:{slot}"),
-                    slot.to_uppercase(),
+                    title.clone(),
                     false,
                     Action::Slot(Some(slot.to_string())),
                 )
-                .detail(held.map_or_else(
-                    || format!("empty · choose it, then a model below{filling}"),
-                    |held| format!("{}{filling}", held.model),
-                )),
+                .shows(held.map_or("empty", |held| held.model.as_str()))
+                .detail(match (held, filling.is_empty()) {
+                    (None, true) => "Choose it, then a model below.",
+                    _ => filling.trim_start(),
+                }),
             );
             // Each favourite's effort sits under it, one click from any value.
             const EFFORTS: [crate::wire::Effort; 5] = [
@@ -449,7 +445,7 @@ pub(super) fn items(
             items.push(
                 Item::value(
                     format!("slot:{slot}:effort"),
-                    "effort",
+                    format!("{title} effort"),
                     EFFORTS
                         .iter()
                         .map(|e| {
@@ -506,25 +502,29 @@ pub(super) fn items(
             items.push(Item::heading(route_words(&c.route)));
             last_route = c.route.clone();
             // A locked account's models stay listed and muted; its one way
-            // in is a row of its own, not a click on each model.
+            // in is a chip on its group's line, not a click on each model.
             if !c.available {
                 let mut parts = c.route.split(" · ");
                 let provider = parts.next().unwrap_or_default().to_string();
                 let account = parts.next().unwrap_or_default().to_string();
-                items.push(Item::run(
-                    format!("signin:{account}"),
-                    format!("Sign in to {provider}"),
-                    Action::Command(format!("/login {account}")),
-                ));
+                items.push(
+                    Item::run(
+                        format!("signin:{account}"),
+                        format!("Sign in to {provider}"),
+                        Action::Command(format!("/login {account}")),
+                    )
+                    .trail(),
+                );
             }
         }
-        let score = c.score.map(|v| format!(" · ★ {v:.0}")).unwrap_or_default();
-        let locked = if c.available { "" } else { " · locked" };
-        let via = if m.measured_order {
-            format!(" · {}", route_words(&c.route))
-        } else {
-            String::new()
-        };
+        // Whether it is locked, its score, and the account when the list is
+        // not grouped by one.
+        let shown: Vec<String> = (!c.available)
+            .then(|| "locked".to_string())
+            .into_iter()
+            .chain(c.score.map(|v| format!("★ {v:.0}")))
+            .chain(m.measured_order.then(|| route_words(&c.route)))
+            .collect();
         let id = format!("model:{}:{}", c.route, c.model);
         // The sheet opens on the model the tier runs on now, when that is in
         // the list; otherwise on its own current value (a slot, say).
@@ -534,19 +534,20 @@ pub(super) fn items(
         if first.is_none() && c.available {
             first = Some(id.clone());
         }
-        items.push(
-            Item::choice(
-                id,
-                format!("{}{locked}{score}{via}", c.model),
-                current.as_deref() == Some(c.model.as_str()),
-                Action::Model(i),
-            )
-            .disabled((!c.available).then(|| {
-                c.reason
-                    .clone()
-                    .unwrap_or_else(|| "This account is not available.".into())
-            })),
+        let mut item = Item::choice(
+            id,
+            c.model.clone(),
+            current.as_deref() == Some(c.model.as_str()),
+            Action::Model(i),
         );
+        if !shown.is_empty() {
+            item = item.shows(shown.join(" · "));
+        }
+        items.push(item.disabled((!c.available).then(|| {
+            c.reason
+                .clone()
+                .unwrap_or_else(|| "This account is not available.".into())
+        })));
     }
     if rows.is_empty() {
         items.push(Item::info(

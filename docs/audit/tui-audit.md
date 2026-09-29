@@ -11,37 +11,45 @@ Eight auditors drove the real TUI (pre.15, then named Pane) with keys and mouse 
 **Mouse first.** Anything a person can change is a chip or a row, and one click acts on it. The keyboard reaches the same things through one key map. There is one component, a `Sheet` with a `List` inside, and every surface is built from it: the pickers, forms, Settings, the wizard steps, the sign-in lists, the info pages, and the decision prompts (approval, ask, confirm, rollback).
 
 ```
-╭────────────────────────────────────────────────────────────────╮
-│ SETTINGS › Display                             ⟨ Esc · Back ⟩  │
-│ ⟨ Everyday ⟩ ⟨ Display ● ⟩ ⟨ Helpers ⟩ …        ⌕ type to filter │
-│────────────────────────────────────────────────────────────────│
-│ › Theme        ⟨ amazon ● ⟩ ⟨ mint ⟩ ⟨ rose ⟩ ⟨ 13 more ▾ ⟩     │
-│   Motion       ⟨ full ● ⟩ ⟨ calm ⟩ ⟨ off ⟩                      │
-│                                                   ↓ 3 more     │
-│────────────────────────────────────────────────────────────────│
-│ Theme is now mint ⟨ Undo ⟩         ←→ change · Tab section · Esc back │
-╰────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ SETTINGS                          Global     Project   ⟨ Esc · Close ⟩ │
+│ Everyday   Models   Little helpers   Display   Advanced   ⌕ type to filter │
+│ ─────────────────────────────────────━━━━━━━────────────────────── │
+│                                                                  │
+│ Colour ────────────────────────────────────────────────────────── │
+│ ▌ Theme            amazon ▾                                      │
+│   Background     ⟨ auto ⟩   dark     light                        │
+│                                                                  │
+│ Motion ────────────────────────────────────────────────────────── │
+│   Motion         ⟨ full ⟩   calm     off                          │
+│ ──────────────────────────────────────────────────────────────── │
+│ Theme                          applies now · set in your global settings │
+│ The accent colour. Your terminal's own background is left alone.  │
+│ ──────────────────────────────────────────────────────────────── │
+│ Theme is now mint ⟨ Undo ⟩         ←→ change · Tab section · Esc close │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 ### Anatomy
-- **Header:** `TITLE › crumb › crumb`. One chip on the right says what Esc does: `⟨ Esc · Back ⟩` when there is a parent sheet, `⟨ Esc · Close ⟩` at the root.
-- **Sections** (optional): chips under the header, such as categories or Main / Helper / Subagents. Every chip is clickable, and `‹` and `›` are separate targets.
+- **Header:** `TITLE › crumb`, the sheet's switches (Global / Project; which accounts, which order) with the current one in the accent, and one chip on the right that says what Esc does: `⟨ Esc · Back ⟩` when there is a parent sheet, `⟨ Esc · Close ⟩` at the root.
+- **Sections** (optional): words under the header, such as categories or Main / Helper / Subagents, the open one in the accent and underlined heavy by the rule below. Every word is a target; Tab and Shift-Tab step through them.
 - **Search** (lists of more than 12 items): `⌕ query · 30 of 474`. Control characters are stripped from typed or pasted text.
-- **Body:** a List of items. It shows `↑ N more` / `↓ N more` whenever something is hidden.
-- **Foot:** the notice on the left, cut with `…` so it never reaches the hint. The hint on the right is generated from the focused item's kind, never hard-coded.
+- **Body:** a list on one grid: the focus bar, the `●` of the current choice, the label, and the value column, which starts in the same column on every row of the sheet. Groups are a bold name and a rule with an empty line above. Nothing else is drawn between rows: no descriptions, notes or more-cues. A list that does not fit shows its scroll position on the frame's right edge.
+- **Strip** (when any row explains itself): the focused row's name, when a change applies and where its value comes from, and what it means, under the list.
+- **Foot:** the notice on the left, cut with `…` so it never reaches the hint, or when nothing just happened the sheet's status (where a choice is saved). The hint on the right is generated from the focused item's kind, never hard-coded.
 
 ### Items: every row is exactly one kind
 | kind | shows | click = Enter = Space | ← → |
 |---|---|---|---|
-| **Value** (one choice of a setting: theme, effort, rung, mode, motion) | chips in the row; the current one is filled and marked `●` | applies now, saves to the scope the sheet names, **sheet stays open**, notice `X is now Y ⟨ Undo ⟩` | previous / next value (applies) |
-| **Toggle** | `⟨ on ⟩` / `⟨ off ⟩` | flips it | flips it |
-| **Open** (goes somewhere: wizard step, provider, tier, a value list too long for its row) | `title ›` | pushes a child sheet | → opens |
-| **Run** (a one-shot action: sign in, try again, copy link, turn handler off) | `⏎ title` | runs it; the row shows the result (`turning off…`, `still not answering · 22:31`). The sheet closes only when the run opens something else | – |
+| **Value** (one choice of a setting: theme, effort, rung, mode, motion) | its values as words in the value column; the current one is the one filled chip, and the word under the pointer becomes a chip. Too many for the row: `current ▾`, which opens the whole list | applies now, saves to the scope the sheet names, **sheet stays open**, notice `X is now Y ⟨ Undo ⟩` | previous / next value (applies) |
+| **Toggle** | `Off  ⟨ On ⟩` | flips it; a click on the side already chosen does nothing | flips it |
+| **Open** (goes somewhere: wizard step, provider, tier) | `title ›`, or its value and `›` in the value column | pushes a child sheet | → opens |
+| **Run** (a one-shot action: sign in, try again, copy link) | `title`; a chip at the end of the row it acts on (`⟨ Use default ⟩`, `⟨ Forget ⟩`) | runs it. The sheet closes only when the run opens something else | – |
 | **Danger** (Never ask, rollback, remove) | warning tone | opens a CONFIRM child that starts focused on **Cancel** | – |
 | **Info / Heading** | plain text | not focusable; focus skips it; no `›` | – |
-| **Field** (forms) | `LABEL ┃value▏` | focuses the field. Enter on the last field or on `⟨ Save ⟩` submits | cursor moves within the text |
+| **Field** (forms) | `Label   ┃value▏` | focuses the field. Enter on the last field or on `⟨ Save ⟩` submits | cursor moves within the text |
 
-A **disabled** item stays visible, muted, and shows its reason as its detail line. Activating it puts the reason in the notice and does nothing else.
+A **disabled** item stays visible and muted, and the strip gives its reason while it has the focus. Activating it puts the reason in the notice and does nothing else.
 
 ### Keys (the same on every sheet)
 - **↑ ↓** move to the previous / next focusable item (no wrap). **PgUp / PgDn** move a page. **Home / End** go to the first / last item.
@@ -56,7 +64,7 @@ A **disabled** item stays visible, muted, and shows its reason as its detail lin
 
 ### Mouse (the same on every sheet)
 - **Left click** focuses the item and does what Enter does. One click, never "click to select, click again to act". The target is the whole row or card: title, detail, swatch and body.
-- **Hover** highlights the target under the pointer (needs `?1003`, redrawn only when the hovered target changes). Hover never moves focus and never changes a value.
+- **Hover** lights the target under the pointer in the accent, on every surface -- sheets, prompts, forms, the chrome -- except the composer; a filled chip keeps its fill (needs `?1003`, redrawn only when the hovered target changes). Hover never moves focus and never changes a value.
 - The **wheel** scrolls the viewport 3 lines and never moves focus. If focus scrolls off-screen it is clamped back into view.
 - A **click on the backdrop** outside a sheet acts as Esc. Decision prompts ignore backdrop clicks.
 
@@ -64,8 +72,8 @@ A **disabled** item stays visible, muted, and shows its reason as its detail lin
 1. A sheet opens focused on the **current value**. Failing that it opens on the first actionable item, never on Info and never on Danger.
 2. There is **one `SheetStack`**. When a row runs a command that produces a sheet, that sheet is pushed as a child. Back re-runs the parent's reopen action and restores focus by row id.
 3. **Row actions are typed** `Action`s, never pseudo slash strings (`/copy`, `/row`, `/open-link`, `/paste-callback`).
-4. Current value is marked with `●` or `· now` and focus with `›`, never by colour alone.
-5. **Overflow is always visible.** Lists show more-cues. A chip set that does not fit becomes `⟨ current ▾ ⟩`, which is an Open item.
+4. Current value is marked with `●` or the one filled chip, and focus with `▌`, never by colour alone.
+5. **Overflow is always visible.** A list that does not fit shows its scroll position on the frame's edge. A set of values that does not fit its row becomes `current ▾`, which opens the whole list.
 6. **A one-line result is a notice, not a sheet.** A bare command that names a setting opens that setting's row.
 7. **A local control is never a turn.** Opening or closing a sheet, or running a slash command, leaves the status line and the turn clock alone.
 8. **Availability is one rule.** Read-only sheets and presentation changes always work. A change the running turn cannot take is shown disabled, with one sentence saying why, before anyone clicks it.

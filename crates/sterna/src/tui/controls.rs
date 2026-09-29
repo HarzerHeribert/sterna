@@ -105,6 +105,9 @@ pub struct PanelRow {
     pub kind: ItemKind,
     /// What choosing the row does. Typed, never a pseudo slash command.
     pub action: Option<Action>,
+    /// What stands beside the text, in the sheet's value column: a fact's
+    /// value, a setting's current word.
+    pub value: Option<String>,
 }
 
 impl PanelRow {
@@ -115,6 +118,7 @@ impl PanelRow {
             text: text.into(),
             kind: ItemKind::Info,
             action: None,
+            value: None,
         }
     }
     /// A row that goes somewhere: another list, a step, a form.
@@ -124,6 +128,7 @@ impl PanelRow {
             text: text.into(),
             kind: ItemKind::Open,
             action: Some(action),
+            value: None,
         }
     }
     /// A one-shot action.
@@ -133,6 +138,7 @@ impl PanelRow {
             text: text.into(),
             kind: ItemKind::Run,
             action: Some(action),
+            value: None,
         }
     }
     /// A row that runs one of the session's own commands.
@@ -150,6 +156,7 @@ impl PanelRow {
             text: text.into(),
             kind: ItemKind::Heading,
             action: None,
+            value: None,
         }
     }
     /// A row whose action cannot be taken back.
@@ -159,7 +166,14 @@ impl PanelRow {
             text: text.into(),
             kind: ItemKind::Danger,
             action: Some(action),
+            value: None,
         }
+    }
+    /// The words in the value column, beside the row's text.
+    #[must_use]
+    pub fn shows(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
     }
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {

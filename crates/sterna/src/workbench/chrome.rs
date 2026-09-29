@@ -175,6 +175,37 @@ pub(super) fn rule(f: &mut Frame<'_>, r: Rect, joints: &[(u16, &str)], tone: Ton
         }
     }
 }
+/// **Hover, drawn once for every surface**: the target under the pointer
+/// lit in the accent. A filled chip keeps its fill (accent on accent would
+/// read as nothing), blank cells stay blank, and the composer -- a place to
+/// type, not a thing to press -- is never lit.
+pub(crate) fn glow(f: &mut Frame<'_>, hits: &[(Rect, Action)], at: Option<(u16, u16)>, t: Theme) {
+    let Some((x, y)) = at else {
+        return;
+    };
+    let target = hits
+        .iter()
+        .rev()
+        .find(|(r, _)| super::contains(*r, x, y))
+        .filter(|(_, action)| *action != Action::Composer);
+    if let Some((r, _)) = target {
+        light(f, *r, t);
+    }
+}
+/// One target lit: its ink in the accent and bold, its fill left alone.
+pub(crate) fn light(f: &mut Frame<'_>, r: Rect, t: Theme) {
+    let r = r.intersection(f.area());
+    let lit = theme::style(Tone::Accent, t);
+    let buffer = f.buffer_mut();
+    for y in r.y..r.bottom() {
+        for x in r.x..r.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.bg == ratatui::style::Color::Reset && !cell.symbol().trim().is_empty() {
+                cell.set_style(lit);
+            }
+        }
+    }
+}
 /// A framed region: rounded corners, and a title in the top edge.
 pub(crate) fn frame(f: &mut Frame<'_>, r: Rect, tone: Tone, t: Theme) {
     if r.width < 2 || r.height < 2 {

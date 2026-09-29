@@ -59,6 +59,8 @@ pub(super) struct Prompts {
     raw: bool,
     /// Where the prompt was last drawn, for the mouse.
     geometry: Geometry,
+    /// Where the pointer rests, for hover.
+    hover: Option<(u16, u16)>,
 }
 
 impl Prompts {
@@ -136,7 +138,10 @@ impl Prompts {
         }
         let a = f.area();
         let width = a.width.saturating_sub(4).min(100);
-        let height = a.height.saturating_sub(2).min(30);
+        // As tall as what it holds, and never taller than the screen.
+        let wanted =
+            crate::workbench::sheet::wanted_height(&self.sheet, width.saturating_sub(4)) + 2;
+        let height = a.height.saturating_sub(2).min(30).min(wanted.max(8));
         let area = Rect::new(
             a.x + a.width.saturating_sub(width) / 2,
             a.y + a.height.saturating_sub(height) / 2,
@@ -158,7 +163,19 @@ impl Prompts {
         } else {
             area
         };
-        crate::workbench::sheet::draw(f, &mut g, inner, &mut self.sheet, theme, None, None);
+        let drawn = crate::workbench::sheet::draw(
+            f,
+            &mut g,
+            inner,
+            &mut self.sheet,
+            theme,
+            None,
+            self.hover,
+        );
+        if let (true, Some(scroll)) = (framed, drawn.scroll) {
+            crate::workbench::sheet::scrollbar(f, area.right() - 1, scroll, theme);
+        }
+        crate::workbench::glow(f, &g.hits, self.hover, theme);
         self.geometry = g;
     }
 
@@ -216,6 +233,18 @@ impl Prompts {
             }
             // A decision is never answered by a click beside it.
             _ => Done::Nothing,
+        }
+    }
+
+    /// The pointer moved: a frame is owed only when the target under it
+    /// changed. Hover never answers anything.
+    pub(super) fn hover(&mut self, x: u16, y: u16) -> Done {
+        let before = self.hover.and_then(|(x, y)| self.geometry.hit_rect(x, y));
+        self.hover = Some((x, y));
+        if self.geometry.hit_rect(x, y) == before {
+            Done::Nothing
+        } else {
+            Done::Redraw
         }
     }
 
@@ -373,17 +402,14 @@ fn approval_items(
     let confirmation = action.confirmation();
     let mut items = Vec::new();
     if let Some(reason) = request.reason() {
-        items.push(Item::info(format!("Why this asks: {reason}")).tone(Tone::Muted));
+        items.push(Item::info("Why this asks").shows(reason));
     }
     if let Some(hint) = request.hint_line() {
-        items.push(
-            Item::info(if hint.fits >= 0.5 {
-                "Jev: this looks like part of what you asked."
-            } else {
-                "Jev: this looks unrelated to what you asked."
-            })
-            .tone(Tone::Muted),
-        );
+        items.push(Item::info("Jev").shows(if hint.fits >= 0.5 {
+            "this looks like part of what you asked"
+        } else {
+            "this looks unrelated to what you asked"
+        }));
     }
     let too_large = (!confirmation.complete)
         .then(|| "Too large to confirm here: deny it and ask for a smaller call.".to_string());
@@ -391,13 +417,7 @@ fn approval_items(
     // command inside the sandbox, where letting the command out does not.
     if !hosts.is_empty() {
         let names = hosts.join(", ");
-        items.push(
-            Item::info(format!(
-                "The sandbox refused {names}. Allowing it runs the command again inside the \
-                 sandbox; Allow once runs it outside."
-            ))
-            .tone(Tone::Strong),
-        );
+        items.push(Item::info(format!("The sandbox refused {names}.")).tone(Tone::Strong));
         items.push(
             Item::run(
                 "allow-host",
@@ -406,6 +426,7 @@ fn approval_items(
             )
             .key('h')
             .inline()
+            .detail("Runs the command again inside the sandbox, with this host let through.")
             .disabled(too_large.clone()),
         );
         items.push(
@@ -416,6 +437,7 @@ fn approval_items(
             )
             .key('w')
             .inline()
+            .detail("The same, and the host is allowed in every session from now on.")
             .disabled(too_large.clone()),
         );
     }
@@ -431,6 +453,11 @@ fn approval_items(
         )
         .key('o')
         .inline()
+        .detail(if hosts.is_empty() {
+            "Runs this call. The next identical call asks again."
+        } else {
+            "Runs the command outside the sandbox, this once."
+        })
         .disabled(too_large.clone()),
     );
     if hosts.is_empty() {
@@ -442,6 +469,7 @@ fn approval_items(
             )
             .key('s')
             .inline()
+            .detail("Runs this call, and every identical call this session without asking.")
             .disabled(too_large.clone()),
         );
     }
@@ -453,6 +481,7 @@ fn approval_items(
         )
         .key('a')
         .inline()
+        .detail("Refuses the call and tells Sterna what to do instead.")
         .disabled(too_large),
     );
     items.push(
@@ -462,16 +491,12 @@ fn approval_items(
             Action::Answer(Answer::Deny),
         )
         .key('d')
-        .inline(),
-    );
-    // The two refusals look alike; one of them is remembered.
-    items.push(
-        Item::info(
-            "Not now (Esc) refuses this call and asks again if it comes back. Deny for this \
-             session refuses it and every identical call, without asking, until you forget it \
-             on the Sandbox sheet.",
-        )
-        .tone(Tone::Muted),
+        .inline()
+        // The two refusals look alike; this one is remembered.
+        .detail(
+            "Refuses this call and every identical one without asking, until you forget it \
+             on the Sandbox sheet. Esc refuses only this one.",
+        ),
     );
     items.push(Item::toggle(
         "raw",
@@ -550,16 +575,12 @@ fn ask_items(sheet: &mut Sheet, request: &crate::ask::Request) -> Vec<Item> {
             .weights()
             .and_then(|weights| weights.probabilities.get(index))
         {
-            item = item.detail(format!("Sterna's guess: {:.0}%", weight * 100.0));
+            item = item.shows(format!("Sterna's guess {:.0}%", weight * 100.0));
         }
         items.push(item);
     }
-    // What Esc does is said where the choices are: the cell goes on either
-    // way.
-    items.push(
-        Item::info("Esc lets Sterna decide: it picks one and tells you what it assumed.")
-            .tone(Tone::Muted),
-    );
+    // What Esc does is said under the choices: the cell goes on either way.
+    sheet.status = "Esc lets Sterna decide: it picks one and tells you what it assumed.".into();
     // The decision model's own pick is where the sheet opens.
     sheet.prefer = request.weights().and_then(|weights| {
         question
@@ -578,11 +599,11 @@ fn redirect_items(sheet: &mut Sheet, redirect: &Redirect) -> Vec<Item> {
     sheet.crumbs = vec![redirect.request.action().label()];
     sheet.decision = true;
     sheet.esc = Some("Back to the call".into());
+    sheet.status = "Empty asks Sterna to propose one.".into();
     vec![
         Item::info("The call is refused either way. What should Sterna do instead?"),
         Item::field("words", "Instead", redirect.field.clone()).act(Action::Answer(Answer::Send)),
-        Item::run("send", "Send", Action::Answer(Answer::Send)).inline(),
-        Item::info("Empty asks Sterna to propose one.").tone(Tone::Muted),
+        Item::run("send", "Send", Action::Answer(Answer::Send)).trail(),
     ]
 }
 
@@ -780,8 +801,9 @@ mod tests {
                 .collect::<String>()
         };
         let text = draw(&mut u, &s);
-        assert!(text.contains("DENIED FOR THIS SESSION"), "{text}");
-        assert!(text.contains("Forget · write a.txt"), "{text}");
+        assert!(text.contains("Denied for this session"), "{text}");
+        assert!(text.contains("write a.txt"), "{text}");
+        assert!(text.contains("⟨ Forget ⟩"), "{text}");
         let index = u
             .top()
             .unwrap()
@@ -847,10 +869,22 @@ mod tests {
                     "o · Allow once",
                     "d · Deny for this session",
                     "Esc · Not now",
-                    "refuses it and every identical call",
                 ] {
                     assert!(text.contains(shown), "{shown} is missing:\n{text}");
                 }
+                // As tall as what it holds: a short call leaves the screen's
+                // top rows to the conversation behind it.
+                assert!(
+                    text.chars().take(3 * 100).all(|c| c == ' '),
+                    "the prompt fills the screen:\n{text}"
+                );
+                // The two refusals look alike: the strip says which one is
+                // remembered while Deny has the focus.
+                let deny = prompts.sheet.items.iter().find(|item| item.id == "deny");
+                assert!(
+                    deny.is_some_and(|item| item.detail.contains("every identical one")),
+                    "{deny:?}"
+                );
             }
         }
         prompts.clear_approvals();

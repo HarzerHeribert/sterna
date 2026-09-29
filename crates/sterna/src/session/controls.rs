@@ -1234,73 +1234,52 @@ fn session_sheet(
     let model = session.model.borrow().clone();
     let effort = session.effort.get();
     let sent = effort.sent_for(&model);
-    let row = |label: &str, value: String| format!("{label:<14}{value}");
     let mut rows = vec![
         PanelRow::heading("This session"),
-        PanelRow::open(
-            row(
-                "Model",
-                if sent == effort {
-                    format!("{model} · effort {}", effort.name())
-                } else {
-                    format!(
-                        "{model} · effort {} (sent as {})",
-                        effort.name(),
-                        sent.name()
-                    )
-                },
-            ),
-            Action::Models,
-        ),
-        PanelRow::open(
-            row(
-                "Sandbox",
-                match session
-                    .level
-                    .as_ref()
-                    .map(crate::permissions::LiveLevel::level)
-                {
-                    Some(level) => format!("{} · {}", level.label(), level.sentence()),
-                    None => "unknown".to_string(),
-                },
-            ),
-            Action::Sandbox,
-        ),
-        PanelRow::open(
-            row(
-                "Helpers",
-                match (helpers_on, config.helpers.model.as_deref()) {
-                    (true, Some(helper)) => format!("on · {helper}"),
-                    _ if config.helpers.enabled => "on, but no helper model chosen".into(),
-                    _ => "off".into(),
-                },
-            ),
-            Action::Settings,
-        ),
-        PanelRow::open(row("Subagents", subagents), Action::Settings),
-        PanelRow::info(row("Project", session.project.root.display().to_string())),
-        PanelRow::info(row(
-            "Rules",
+        PanelRow::open("Model", Action::Models).shows(if sent == effort {
+            format!("{model} · effort {}", effort.name())
+        } else {
             format!(
-                "{} · {} · commands reach {}",
-                counted(session.profile.rule_count(), "path rule"),
-                counted(session.profile.pre_approved().len(), "pre-approved command"),
-                if session.profile.grants_network() {
-                    "any host"
-                } else {
-                    "allowed hosts only"
-                }
-            ),
+                "{model} · effort {} (sent as {})",
+                effort.name(),
+                sent.name()
+            )
+        }),
+        PanelRow::open("Sandbox", Action::Sandbox).shows(
+            match session
+                .level
+                .as_ref()
+                .map(crate::permissions::LiveLevel::level)
+            {
+                Some(level) => format!("{} · {}", level.label(), level.sentence()),
+                None => "unknown".to_string(),
+            },
+        ),
+        PanelRow::open("Helpers", Action::Settings).shows(
+            match (helpers_on, config.helpers.model.as_deref()) {
+                (true, Some(helper)) => format!("on · {helper}"),
+                _ if config.helpers.enabled => "on, but no helper model chosen".into(),
+                _ => "off".into(),
+            },
+        ),
+        PanelRow::open("Subagents", Action::Settings).shows(subagents),
+        PanelRow::info("Project").shows(session.project.root.display().to_string()),
+        PanelRow::info("Rules").shows(format!(
+            "{} · {} · commands reach {}",
+            counted(session.profile.rule_count(), "path rule"),
+            counted(session.profile.pre_approved().len(), "pre-approved command"),
+            if session.profile.grants_network() {
+                "any host"
+            } else {
+                "allowed hosts only"
+            }
         )),
-        PanelRow::info(row("Web tools", config.web.describe())),
-        PanelRow::info(row(
-            "Cells",
-            format!(
-                "{} · {} seconds each · results up to {} bytes",
-                cell_limit(&config.limits),
-                config.limits.cell_wall_clock_s,
-                config.limits.response_bytes
-            ),
+        PanelRow::info("Web tools").shows(config.web.describe()),
+        PanelRow::info("Cells").shows(format!(
+            "{} · {} seconds each · results up to {} bytes",
+            cell_limit(&config.limits),
+            config.limits.cell_wall_clock_s,
+            config.limits.response_bytes
         )),
         PanelRow::heading("Subscription limits"),
     ];
@@ -1500,14 +1479,8 @@ fn context_sheet(parts: &ContextParts) -> Panel {
     if let Some(cap) = parts.cap {
         kinds.push(("Free space", cap.saturating_sub(used)));
     }
-    // One column for the labels, as wide as the longest and two more.
-    let column = kinds
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let line = |label: &str, tokens: u64| {
+    // The bar, the tokens and the share, in the sheet's value column.
+    let line = |tokens: u64| {
         let share = tokens.min(whole) as f64 / whole as f64;
         #[expect(
             clippy::cast_possible_truncation,
@@ -1516,7 +1489,7 @@ fn context_sheet(parts: &ContextParts) -> Panel {
         )]
         let filled = (share * BAR as f64).round() as usize;
         format!(
-            "{label:<column$}{}{} {:>7} {:>4.0}%",
+            "{}{} {:>7} {:>4.0}%",
             "█".repeat(filled),
             "░".repeat(BAR - filled),
             compact_tokens(tokens),
@@ -1538,7 +1511,7 @@ fn context_sheet(parts: &ContextParts) -> Panel {
     rows.extend(
         kinds
             .iter()
-            .map(|(label, tokens)| PanelRow::info(line(label, *tokens))),
+            .map(|(label, tokens)| PanelRow::info(*label).shows(line(*tokens))),
     );
     rows.push(PanelRow::info(format!(
         "Estimated from the request as it would be sent now. {}",
@@ -1587,6 +1560,14 @@ pub(super) mod tests {
         };
         let panel = super::context_sheet(&parts);
         let text: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
+        let value = |label: &str| {
+            panel
+                .rows
+                .iter()
+                .find(|row| row.text == label)
+                .and_then(|row| row.value.clone())
+                .unwrap_or_else(|| panic!("{label}: {text:#?}"))
+        };
         assert_eq!(
             text[0], "20.0k of 200.0k tokens in the next request",
             "{text:#?}"
@@ -1598,11 +1579,10 @@ pub(super) mod tests {
             ("Conversation · 9 messages", "7%"),
             ("Free space", "90%"),
         ] {
-            let row = text
-                .iter()
-                .find(|row| row.starts_with(label))
-                .unwrap_or_else(|| panic!("{label}: {text:#?}"));
+            let row = value(label);
             assert!(row.ends_with(share), "{row}");
+            // The bar starts the value, so every bar starts in one column.
+            assert!(row.starts_with(['█', '░']), "{row}");
         }
         let unknown = super::context_sheet(&super::ContextParts { cap: None, ..parts });
         assert!(
@@ -1616,12 +1596,6 @@ pub(super) mod tests {
                 .iter()
                 .any(|row| row.text.starts_with("Free space"))
         );
-        // The bars start in one column, whatever the labels' lengths.
-        let starts: std::collections::BTreeSet<usize> = text[1..6]
-            .iter()
-            .map(|row| row.chars().position(|c| c == '█' || c == '░').unwrap())
-            .collect();
-        assert_eq!(starts.len(), 1, "{text:#?}");
     }
 
     #[test]
