@@ -87,6 +87,17 @@ share ends at a line boundary with one cursor line saying how to read on —
 `.excerpt({start, lines})` for a file, `.slice(n)` for an array. No field is
 ever replaced by its type name.
 
+**No return exceeds its budget, whatever its shape.** A line longer than
+the whole page is cut inside itself and the cursor says how much is missing
+and which `.slice(n)` holds it; JSON the walk stopped inside is split one
+record per line so it pages like any array; a return of many fields names
+the ones left out once the budget is spent. Free text keeps its last lines
+after the cursor, since a log's verdict is at its end, and the cursor names
+the hidden lines that look like failures (`error`, `panic`, `FAILED`,
+`warning:` …) with the `.split('\n').slice(a, b)` that reads around the
+first. A thrown message is capped the same way in `## Error`: its start and
+its end, and how many characters are between them.
+
 With a decision model configured, `helpers.reduce_returns` (on by default)
 lets it read a large field as a log and send it to the reducer first — the
 whole value stays bound — and `helpers.prefetch_returns` (off by default)

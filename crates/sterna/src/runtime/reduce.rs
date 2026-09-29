@@ -228,15 +228,6 @@ pub(super) fn reduce_asked(text: String, state: &Rc<RuntimeState>) -> Reduction 
 /// The ladder from the rules rung down, over text already judged worth it.
 fn reduce_text(text: String, state: &Rc<RuntimeState>) -> Reduction {
     let threshold = state.reduce_above_tokens();
-    let Some(spec) = crate::helpers::HELPERS.iter().find(|spec| {
-        spec.call_sites
-            .contains(&crate::helpers::CallSite::PostResult)
-    }) else {
-        return Reduction::NotAttempted;
-    };
-    let Ok((model, effort)) = state.helper_route(spec.name) else {
-        return Reduction::NotAttempted;
-    };
 
     // **The deterministic rung, before a model is considered at all.** Most
     // of what trips the threshold -- a thousand passing test lines, a page of
@@ -249,6 +240,35 @@ fn reduce_text(text: String, state: &Rc<RuntimeState>) -> Reduction {
     let ruled = crate::runtime::reduce_rules::apply(&original);
     let text = ruled.text;
     let tokens = estimate_tokens(&text);
+
+    // **With no helper model the rules are all there is, and they are
+    // free.** This rung sat behind the helper route until 2026-09-29, so a
+    // session with helpers off read every `test … ok` line of a failing run
+    // that the rules would have folded into its `test result:` count.
+    let route = crate::helpers::HELPERS
+        .iter()
+        .find(|spec| {
+            spec.call_sites
+                .contains(&crate::helpers::CallSite::PostResult)
+        })
+        .and_then(|spec| {
+            state
+                .helper_route(spec.name)
+                .ok()
+                .map(|route| (spec, route))
+        });
+    let Some((spec, (model, effort))) = route else {
+        if ruled.applied.is_empty() {
+            return Reduction::NotAttempted;
+        }
+        state.count_reduction(|stats| {
+            stats.ruled += 1;
+            stats.bytes_out += text.len() as u64;
+        });
+        let note = format!("rules only, no helper model: {}", ruled.applied.join(", "));
+        return Reduction::Made(with_lossiness(&original, &text, Some(&note)));
+    };
+
     if tokens <= threshold {
         state.count_reduction(|stats| {
             stats.ruled += 1;

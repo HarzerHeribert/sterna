@@ -1537,6 +1537,50 @@ fn rules_alone_bring_a_test_log_under_the_threshold_and_no_request_is_made() {
     );
 }
 
+/// **The free rung does not need a helper model.** With helpers off, the
+/// same four thousand passing lines are still folded into their count: the
+/// rules cost nothing, and until 2026-09-29 they sat behind the helper route,
+/// so a session without helpers read every line.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn with_helpers_off_the_rules_still_fold_a_passing_test_log() {
+    let _environment = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let fixture = Fixture::new("post-result-ruled-off");
+    let provider = provider("helpers are off");
+    unsafe {
+        std::env::set_var("ANTHROPIC_BASE_URL", &provider.url);
+    }
+
+    let mut runtime = Runtime::new(
+        &fixture.profile_with(PRINTF_ONLY),
+        &SessionId::new("post-result-ruled-off"),
+    )
+    .with_helpers(HelpersConfig {
+        model: "a-real-model".to_string().into(),
+        enabled: false,
+        calls_per_cell: 8,
+        ..HelpersConfig::default()
+    });
+    let command = r#"printf 'test suite::case_%s ... ok\n' {1..4000}"#;
+    let (length, reduction) = reported(&runtime.run_cell(&report_program(command)));
+
+    unsafe {
+        std::env::remove_var("ANTHROPIC_BASE_URL");
+    }
+
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    assert!(runtime.helper_records().is_empty());
+    assert!(
+        length / 4 > sterna::runtime::preview::STDOUT_TOKEN_CAP,
+        "the exact output is still there: {length} chars"
+    );
+    assert!(
+        reduction.contains("rules only, no helper model: passing-test-lines")
+            && reduction.contains("4000 passing or ignored test lines removed"),
+        "the rules ran without a helper: {reduction}"
+    );
+}
+
 /// **Do not reduce the same value twice.**
 ///
 /// A cell is code, so the same command inside a loop is the ordinary case.

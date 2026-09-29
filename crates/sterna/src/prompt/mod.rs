@@ -997,7 +997,11 @@ fn render_result_with_state(result: &CellResult, include_state: bool) -> String 
 
     if let Some(error) = &result.error {
         out.push_str("\n\n## Error\n");
-        out.push_str(&format!("{}: {}", error.class, error.message));
+        out.push_str(&format!(
+            "{}: {}",
+            error.class,
+            bounded_error_message(&error.message)
+        ));
         if let Some((line, column)) = error.position {
             // Once, not twice: a first frame of `cell 6, line 1, column 47`
             // under its own copy read as a second location to look at.
@@ -1048,6 +1052,31 @@ fn render_result_with_state(result: &CellResult, include_state: bool) -> String 
     }
 
     out
+}
+
+/// The most of a thrown message `## Error` shows, in estimated tokens. Every
+/// other section of a cell's result has a bound (the handle table, stdout,
+/// the return budget); a message is whatever the program threw, and a
+/// command's whole log thrown as one would reach the model unbounded.
+pub const ERROR_MESSAGE_TOKENS: usize = 2_000;
+
+/// `message` whole when it fits [`ERROR_MESSAGE_TOKENS`]; otherwise its start
+/// and its end -- a failing command's reason is usually the last thing it
+/// printed -- around one line saying how much is missing and how to get it.
+fn bounded_error_message(message: &str) -> String {
+    let length = message.chars().count();
+    let room = ERROR_MESSAGE_TOKENS * 4;
+    if length <= room {
+        return message.to_string();
+    }
+    let head = room * 3 / 4;
+    let tail = room - head;
+    let start: String = message.chars().take(head).collect();
+    let end: String = message.chars().skip(length - tail).collect();
+    format!(
+        "{start}\n[… {} characters of this message not shown · catch the error and return the part you need …]\n{end}",
+        thousands((length - head - tail) as u64)
+    )
 }
 
 fn render_usage_line(budget: &Budget) -> String {
@@ -1332,6 +1361,36 @@ mod tests {
         assert_eq!(preamble_for(abi::Interface::Cells), PREAMBLE);
         assert_ne!(preamble_for(abi::Interface::Hybrid), PREAMBLE);
         assert_ne!(preamble_for(abi::Interface::Tools), PREAMBLE);
+    }
+
+    #[test]
+    fn a_thrown_message_keeps_its_start_and_its_end_within_the_bound() {
+        assert_eq!(
+            bounded_error_message("exit 1: no such file"),
+            "exit 1: no such file"
+        );
+        let log = format!(
+            "cargo test failed\n{}error[E0425]: cannot find value `x`",
+            "   Compiling crate v1.0.0\n".repeat(20_000)
+        );
+        let shown = bounded_error_message(&log);
+        assert!(
+            preview_tokens(&shown) <= ERROR_MESSAGE_TOKENS + 40,
+            "{} tokens",
+            preview_tokens(&shown)
+        );
+        assert!(shown.starts_with("cargo test failed\n"), "the start stays");
+        assert!(
+            shown.ends_with("error[E0425]: cannot find value `x`"),
+            "the end, where the reason is, stays"
+        );
+        assert!(shown.contains("characters of this message not shown"));
+    }
+
+    /// The documented `chars / 4` estimate: this module may not name the
+    /// runtime's preview module, which `prompt_bytes.rs` scans for.
+    fn preview_tokens(text: &str) -> usize {
+        text.chars().count().div_ceil(4)
     }
 
     #[test]

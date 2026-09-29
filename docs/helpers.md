@@ -41,6 +41,11 @@ if (run.exit_code !== 0) keep("failures", await helper.reduce(run.stdout));
 - **Model.** `helpers.model`; with none set, helpers never run.
   Effort per role: `find` low, `reduce` medium, `check` medium by default
   (`helpers.effort.*`).
+- **The reducer's free rung needs no model.** Before any request, rules
+  fold what a log already counts (passing test lines, `Compiling` chatter,
+  repeated lines) and never drop a failure line. They run on a command
+  result over `helpers.reduce_above_tokens` with helpers off too, and the
+  result says `rules only, no helper model`.
 - **At most 8 helper calls per cell** (`helpers.calls_per_cell`); `decide`
   questions share that allowance.
 - **Told to be quick, never cut off.** Nothing counts a helper's turns; a

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::handles::Provenance;
 use crate::runtime::preview::{self, ErrorValue, Value};
+use crate::runtime::reduce_rules;
 
 /// Everything a cell hands back whatever way it ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +208,15 @@ const ONE_LINE_JSON: usize = 240;
 /// boundaries to page on.
 const PRETTY_JSON_ABOVE: usize = 160;
 
+/// The most last lines a paged text field keeps after its cursor: a log's
+/// verdict (`test result:`, the linker's last error, an exit summary) is at
+/// its end, and a page of the head alone hides the line the reader came for.
+const TAIL_LINES: usize = 12;
+
+/// How many hidden failure-looking lines a cursor names by number before it
+/// only counts the rest.
+const NOTABLE_NAMED: usize = 12;
+
 /// What [`Terminal::render_within`] produced, and what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
@@ -263,10 +273,21 @@ impl Terminal {
                     };
                 }
                 let paged = page_fields(fields, budget);
+                // Every field keeps its floor, so a return of many fields
+                // can outgrow a budget no single page exceeds; past this cap
+                // the remaining fields are named, not shown.
+                let hard_cap = budget
+                    .saturating_add(budget / 4)
+                    .max(FIELD_FLOOR_TOKENS * 4);
                 let mut out = String::new();
                 let mut tokens = 0;
                 let mut names = Vec::new();
+                let mut left_out = Vec::new();
                 for (field, (body, cost)) in fields.iter().zip(paged) {
+                    if tokens > 0 && tokens + cost > hard_cap {
+                        left_out.push(field.name.clone());
+                        continue;
+                    }
                     if !out.is_empty() {
                         out.push('\n');
                     }
@@ -279,6 +300,22 @@ impl Terminal {
                     if cost < field.tokens() {
                         names.push(field.name.clone());
                     }
+                }
+                if !left_out.is_empty() {
+                    let named: Vec<&str> = left_out.iter().take(20).map(String::as_str).collect();
+                    let note = format!(
+                        "\n[+{} more fields not shown, the budget is spent: {}{} · return them in a later cell]",
+                        left_out.len(),
+                        named.join(", "),
+                        if left_out.len() > named.len() {
+                            ", …"
+                        } else {
+                            ""
+                        }
+                    );
+                    tokens += preview::estimate_tokens(&note);
+                    out.push_str(&note);
+                    names.extend(left_out);
                 }
                 Rendered {
                     text: out,
@@ -309,14 +346,31 @@ impl ReturnedField {
         matches!(&self.body, FieldBody::Lines(lines) if lines.len() > 1)
     }
 
+    /// Whether a page of this field keeps its last lines as well as its
+    /// first: free text does (a log ends with its verdict); an excerpt pages
+    /// on by its own line numbers, entries and JSON by position.
+    fn keeps_tail(&self) -> bool {
+        matches!(&self.body, FieldBody::Text(text)
+            if !is_excerpt(text) && !self.name.starts_with(PREFETCHED_MARK))
+    }
+
     /// The one line that follows a paged field: how many lines are not
-    /// shown and how to reach them, in the shape the field itself suggests.
-    fn cursor_line(&self, shown_lines: usize, total_lines: usize, shown_text: &str) -> String {
-        let rest = total_lines.saturating_sub(shown_lines);
-        match &self.body {
+    /// shown and how to reach them, in the shape the field itself suggests,
+    /// and -- because the reader came for something in the part it cannot
+    /// see -- where in that part the failure-looking lines are.
+    fn cursor_line(&self, hidden: &Hidden, shown_text: &str) -> String {
+        let rest = hidden.end - hidden.start;
+        if let (0, Some((kept, cut))) = (rest, hidden.first_line_cut) {
+            return format!(
+                "[line {} alone is longer than this page: {} characters of it not shown · .slice({kept}) of it holds the rest]",
+                hidden.start,
+                preview::thousands(cut as u64)
+            );
+        }
+        let mut line = match &self.body {
             // A prefetched file is not held: `read` is the way to the rest.
             FieldBody::Text(_) if self.name.starts_with(PREFETCHED_MARK) => format!(
-                "[+{} lines not shown · read({{path: {:?}}}) holds the whole file]",
+                "[+{} lines not shown · read({{path: {:?}}}) holds the whole file",
                 preview::thousands(rest as u64),
                 self.name[PREFETCHED_MARK.len()..].trim()
             ),
@@ -330,27 +384,111 @@ impl ReturnedField {
                 let end = excerpt_end(text).unwrap_or(last + rest);
                 let remaining = end.saturating_sub(last);
                 format!(
-                    "[+{} lines not shown · call .excerpt({{start: {}, lines: {}}}) on the same File]",
+                    "[+{} lines not shown · call .excerpt({{start: {}, lines: {}}}) on the same File",
                     preview::thousands(remaining as u64),
                     last + 1,
                     remaining.max(1)
                 )
             }
-            FieldBody::Text(_) => format!(
-                "[+{} lines not shown · return this field alone, or a slice of it, to read on]",
-                preview::thousands(rest as u64)
-            ),
+            FieldBody::Text(_) => {
+                let mut line = format!(
+                    "[+{} lines not shown · return this field alone, or a slice of it, to read on · hidden: lines {}–{} of {}",
+                    preview::thousands(rest as u64),
+                    preview::thousands(hidden.start as u64 + 1),
+                    preview::thousands(hidden.end as u64),
+                    preview::thousands(hidden.total as u64),
+                );
+                if hidden.tail > 0 {
+                    line.push_str(&format!(", the last {} follow", hidden.tail));
+                }
+                line
+            }
             FieldBody::Lines(_) => format!(
-                "[+{} of {} entries not shown · .slice({shown_lines}) shows the rest]",
+                "[+{} of {} entries not shown · .slice({}) shows the rest",
                 preview::thousands(rest as u64),
-                preview::thousands(total_lines as u64)
+                preview::thousands(hidden.total as u64),
+                hidden.start
             ),
-            FieldBody::Json(_) => format!(
-                "[+{} lines of JSON not shown · return a narrower value to read on]",
-                preview::thousands(rest as u64)
-            ),
+            FieldBody::Json(_) => {
+                let mut line = format!(
+                    "[+{} lines of JSON not shown · return a narrower value to read on",
+                    preview::thousands(rest as u64)
+                );
+                if let Some((shown, total)) = hidden.elements {
+                    line.push_str(&format!(
+                        " · elements {}–{} of this array are hidden: .slice({shown}) of it holds them",
+                        shown,
+                        total.saturating_sub(1)
+                    ));
+                }
+                line
+            }
+        };
+        if let Some((_, cut)) = hidden.first_line_cut {
+            line.push_str(&format!(
+                " · line {} alone is longer than this page: {} characters of it not shown",
+                hidden.start,
+                preview::thousands(cut as u64)
+            ));
         }
+        if let Some(&first) = hidden.notable.first() {
+            let named: Vec<String> = hidden
+                .notable
+                .iter()
+                .take(NOTABLE_NAMED)
+                .map(|index| match &self.body {
+                    FieldBody::Lines(_) => format!("[{index}]"),
+                    _ => preview::thousands(*index as u64 + 1),
+                })
+                .collect();
+            let more = hidden.notable.len().saturating_sub(NOTABLE_NAMED);
+            let what = match &self.body {
+                FieldBody::Lines(_) => "entries",
+                _ => "lines",
+            };
+            line.push_str(&format!(
+                " · {} hidden {what} look like failures (error, panic, FAILED, warning…): {}{}",
+                preview::thousands(hidden.notable.len() as u64),
+                named.join(", "),
+                if more > 0 {
+                    format!(" (+{} more)", preview::thousands(more as u64))
+                } else {
+                    String::new()
+                }
+            ));
+            // The one read that answers most questions: the first failure
+            // with a little of what led to it.
+            if matches!(&self.body, FieldBody::Text(text) if !is_excerpt(text)) {
+                line.push_str(&format!(
+                    " · .split('\\n').slice({}, {}) of it reads around line {}",
+                    first.saturating_sub(5),
+                    (first + 15).min(hidden.total),
+                    preview::thousands(first as u64 + 1)
+                ));
+            }
+        }
+        line.push(']');
+        line
     }
+}
+
+/// What a page of a field left out: the half-open line range `start..end`
+/// (0-based) of `total`, the kept tail after it, and what is worth finding
+/// in the range.
+struct Hidden {
+    start: usize,
+    end: usize,
+    total: usize,
+    /// Lines kept after the hidden range.
+    tail: usize,
+    /// 0-based indices of hidden lines that look like failures.
+    notable: Vec<usize>,
+    /// When the page could not keep even one whole line: how many characters
+    /// of the first line were shown, and how many cut away. `start` is then
+    /// that line's 1-based number.
+    first_line_cut: Option<(usize, usize)>,
+    /// For a JSON array: (elements shown whole, elements in all).
+    elements: Option<(usize, usize)>,
 }
 
 /// A small object on one line, as the program wrote it, or `None` when any
@@ -397,7 +535,10 @@ fn one_line_object(fields: &[ReturnedField]) -> Option<String> {
 }
 
 /// Compact JSON pretty-printed once it is long enough to need line
-/// boundaries; text that is not JSON (a walk that stopped) stays as it is.
+/// boundaries. JSON that does not parse -- a walk that stopped inside it --
+/// is broken at its separators instead: kept as one line, a 1 MiB array of
+/// `rg` matches had nothing to page on and reached the model whole (E1,
+/// 2026-09-29: 262k tokens against a 24k budget).
 fn pretty_json(json: &str) -> String {
     if json.len() <= PRETTY_JSON_ABOVE {
         return json.to_string();
@@ -405,7 +546,81 @@ fn pretty_json(json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(json)
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| json.to_string())
+        .unwrap_or_else(|| split_json(json))
+}
+
+/// JSON, whole or cut short, with a line break after the opening bracket and
+/// after every separator of the outermost container -- and of an array that
+/// is the outermost container's value -- so a list of records reads one
+/// record per line. Strings are tracked so a comma inside one is left alone.
+fn split_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len() + json.len() / 32);
+    let mut open: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in json.chars() {
+        out.push(ch);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' | '{' => {
+                open.push(ch);
+                if open.len() == 1 || (open.len() == 2 && ch == '[') {
+                    out.push('\n');
+                }
+            }
+            ']' | '}' => {
+                open.pop();
+            }
+            ',' if open.len() == 1 || (open.len() == 2 && open[1] == '[') => out.push('\n'),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// How many elements a JSON array's text holds, whole or cut short, and how
+/// many of them `shown` -- a prefix of it -- holds whole. `None` when the
+/// text is not an array.
+fn array_elements(text: &str, shown: &str) -> Option<(usize, usize)> {
+    if !text.trim_start().starts_with('[') {
+        return None;
+    }
+    // Separators at depth one: each closes one element.
+    let separators = |text: &str| {
+        let (mut depth, mut in_string, mut escaped, mut count) = (0usize, false, false, 0usize);
+        for ch in text.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth = depth.saturating_sub(1),
+                ',' if depth == 1 => count += 1,
+                _ => {}
+            }
+        }
+        count
+    };
+    let total = separators(text) + 1;
+    Some((separators(shown).min(total), total))
 }
 
 fn is_excerpt(text: &str) -> bool {
@@ -482,18 +697,43 @@ fn water_fill(sizes: &[usize], budget: usize) -> Vec<usize> {
     shares
 }
 
-/// `text` to a line boundary within `share` tokens, at least one line, then
-/// the field's cursor line.
+/// `text` within `share` tokens: whole lines from its start, then one cursor
+/// line naming what is hidden and how to reach it, then -- for free text --
+/// its last few lines. **A page is never longer than its share and its
+/// cursor**: a first line longer than the whole page is cut inside itself
+/// rather than sent whole.
 fn page(field: &ReturnedField, text: &str, share: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
+    // Counted as the joined text will be estimated, so the share is met in
+    // the same units the usage line reports.
+    let cost = |line: &str| line.chars().count() + 1;
+    // The tail from at most a quarter of the share, so the head knows what
+    // is left for it; never the whole text, so there is a head to read.
+    let mut tail = 0;
+    if field.keeps_tail() {
+        let mut chars = 0;
+        for line in lines.iter().rev().take(TAIL_LINES) {
+            let after = chars + cost(line);
+            if after.div_ceil(4) > share / 4 || tail + 2 > total {
+                break;
+            }
+            chars = after;
+            tail += 1;
+        }
+    }
+    let head_end = total - tail;
+    let tail_tokens = lines[head_end..]
+        .iter()
+        .map(|line| cost(line))
+        .sum::<usize>()
+        .div_ceil(4);
+    let head_share = share.saturating_sub(tail_tokens);
     let mut kept = 0;
     let mut chars = 0;
-    for line in &lines {
-        // Counted as the joined text will be estimated, so the share is met
-        // in the same units the usage line reports.
-        let after = chars + line.chars().count() + 1;
-        if kept > 0 && after.div_ceil(4) > share {
+    for line in &lines[..head_end] {
+        let after = chars + cost(line);
+        if after.div_ceil(4) > head_share {
             break;
         }
         chars = after;
@@ -501,14 +741,48 @@ fn page(field: &ReturnedField, text: &str, share: usize) -> String {
     }
     // An excerpt's `[next: …]` footer describes the whole block, so it goes
     // with the lines it was written for; the cursor line replaces it.
-    let shown: Vec<&str> = lines[..kept]
+    let mut shown: Vec<String> = lines[..kept]
         .iter()
-        .copied()
         .filter(|line| !line.starts_with("[next: call .excerpt("))
+        .map(|line| (*line).to_string())
         .collect();
+    let mut first_line_cut = None;
+    if kept == 0 && head_end > 0 {
+        // Not one whole line fits: as much of the first as does, and the
+        // cursor says how much of it is missing.
+        let first = lines[0];
+        let length = first.chars().count();
+        let keep = head_share.saturating_mul(4).clamp(1, length.max(1));
+        shown.push(format!("{}…", preview::take_chars(first, keep)));
+        first_line_cut = Some((keep, length.saturating_sub(keep)));
+        kept = 1;
+    }
     let mut out = shown.join("\n");
     out.push('\n');
-    out.push_str(&field.cursor_line(kept, total, &out));
+    let notable = match &field.body {
+        FieldBody::Json(_) => Vec::new(),
+        _ => (kept..head_end)
+            .filter(|&index| reduce_rules::never_drop(lines[index]))
+            .collect(),
+    };
+    let elements = match &field.body {
+        FieldBody::Json(_) => array_elements(text, &out),
+        _ => None,
+    };
+    let hidden = Hidden {
+        start: kept,
+        end: head_end,
+        total,
+        tail,
+        notable,
+        first_line_cut,
+        elements,
+    };
+    out.push_str(&field.cursor_line(&hidden, &out));
+    for line in &lines[head_end..] {
+        out.push('\n');
+        out.push_str(line);
+    }
     out
 }
 
@@ -1054,5 +1328,132 @@ mod tests {
             cut: true,
         };
         assert!(bare.render().contains("stopped at"), "{}", bare.render());
+    }
+
+    /// E1, 2026-09-29: an array of `rg` matches over the whole tree, cut by
+    /// the walk, did not parse, stayed one line, and reached the model whole
+    /// -- 262k tokens against a 24k budget.
+    #[test]
+    fn a_cut_array_on_one_line_is_paged_record_by_record_within_its_budget() {
+        let mut json = String::from("[");
+        for n in 0..20_000 {
+            json.push_str(&format!(
+                r#"{{"path":"crates/pane/src/file_{n}.rs","line":{n},"text":"  \"usage\" => answer(\"/usage, the old name\", {n}),"}},"#
+            ));
+        }
+        json.truncate(TERMINAL_WALK_CAP);
+        let terminal = Terminal::Fields(vec![ReturnedField {
+            name: "references".into(),
+            body: FieldBody::Json(json),
+            whole: false,
+        }]);
+        let rendered = terminal.render_within(24_000);
+        assert!(
+            rendered.tokens <= 24_200,
+            "{} tokens against a 24,000 budget",
+            rendered.tokens
+        );
+        let body = rendered
+            .text
+            .strip_prefix("### references\n")
+            .expect("heading");
+        let mut lines = body.lines();
+        assert_eq!(lines.next(), Some("["));
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .starts_with(r#"{"path":"crates/pane/src/file_0.rs""#),
+            "one record per line: {body:.300}"
+        );
+        assert!(
+            rendered.text.contains("lines of JSON not shown")
+                && rendered.text.contains("of this array are hidden: .slice("),
+            "the cursor says which elements are hidden and how to reach them"
+        );
+        assert!(rendered.text.contains("stopped at 1,048,576 bytes"));
+    }
+
+    #[test]
+    fn a_single_line_longer_than_the_page_is_cut_inside_itself() {
+        let minified = "x".repeat(400_000);
+        for body in [FieldBody::Text(minified.clone()), FieldBody::Json(minified)] {
+            let rendered = Terminal::Fields(vec![field("blob", body)]).render_within(2_000);
+            assert!(rendered.tokens <= 2_100, "{} tokens", rendered.tokens);
+            assert!(
+                rendered.text.contains(
+                    "line 1 alone is longer than this page: 392,000 characters of it not shown"
+                ),
+                "{}",
+                &rendered.text[rendered.text.len() - 400..]
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_verdict_and_names_where_its_failures_are() {
+        let mut log = String::new();
+        for n in 1..=5_000 {
+            match n {
+                812 | 1_203 => {
+                    log.push_str(&format!("thread 'case_{n}' panicked at src/lib.rs:{n}:5\n"))
+                }
+                5_000 => log.push_str("test result: FAILED. 4997 passed; 2 failed\n"),
+                _ => log.push_str(&format!("test case_{n} ... ok\n")),
+            }
+        }
+        let rendered =
+            Terminal::Fields(vec![field("out", FieldBody::Text(log))]).render_within(1_000);
+        assert!(rendered.tokens <= 1_150, "{} tokens", rendered.tokens);
+        assert!(
+            rendered
+                .text
+                .ends_with("test result: FAILED. 4997 passed; 2 failed"),
+            "the verdict at the end is kept: {}",
+            &rendered.text[rendered.text.len() - 300..]
+        );
+        let cursor = rendered
+            .text
+            .lines()
+            .find(|line| line.starts_with("[+"))
+            .expect("a cursor");
+        assert!(
+            cursor.contains("lines not shown · return this field alone"),
+            "{cursor}"
+        );
+        assert!(
+            cursor.contains(
+                "2 hidden lines look like failures (error, panic, FAILED, warning…): 812, 1,203"
+            ),
+            "{cursor}"
+        );
+        assert!(
+            cursor.contains(".split('\\n').slice(806, 826) of it reads around line 812"),
+            "{cursor}"
+        );
+    }
+
+    #[test]
+    fn a_return_of_many_fields_never_outgrows_its_budget() {
+        let fields: Vec<ReturnedField> = (0..200)
+            .map(|n| {
+                field(
+                    &format!("file_{n}"),
+                    FieldBody::Text("some line of text\n".repeat(700)),
+                )
+            })
+            .collect();
+        let rendered = Terminal::Fields(fields).render_within(24_000);
+        assert!(
+            rendered.tokens <= 30_000 + 200,
+            "{} tokens",
+            rendered.tokens
+        );
+        assert!(
+            rendered
+                .text
+                .contains("more fields not shown, the budget is spent: file_"),
+            "the fields left out are named"
+        );
     }
 }
