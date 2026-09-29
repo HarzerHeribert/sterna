@@ -1919,6 +1919,7 @@ impl Runtime {
             preview::TABLE_TOKEN_CAP,
         );
         observation.repeated_observations = self.state.repeated_observations();
+        self.state.follow_changed_sources();
         self.state.flush_source_context();
         let (stdout_tail, stdout_dropped_tokens) = self.state.current.borrow_mut().console.tail();
         let kind = match &ending {

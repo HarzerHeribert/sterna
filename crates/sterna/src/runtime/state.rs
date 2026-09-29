@@ -316,6 +316,11 @@ pub(crate) struct RuntimeState {
     /// checkpoint replaces the conversation: the one time earlier results
     /// leave the request.
     shown_contexts: RefCell<HashMap<String, u64>>,
+    /// The bytes of the latest version of each file the model has a view of
+    /// -- from a delivered `context` or its own `edit` or `write` -- so a
+    /// change something else makes is shown as its changed lines and the
+    /// view follows it ([`Self::follow_changed_sources`]).
+    known_sources: RefCell<HashMap<PathBuf, crate::runtime::rewrites::Known>>,
     /// Every source line a delivered context showed the model, by path and
     /// line number, with its exact text -- the ledger an `edit` may bind to
     /// when no whole version is visible ([`Self::seen_lines_cover`]).
@@ -447,6 +452,7 @@ impl RuntimeState {
             pending_lines: RefCell::default(),
             pending_context_output: RefCell::new(Vec::new()),
             shown_contexts: RefCell::new(HashMap::new()),
+            known_sources: RefCell::new(HashMap::new()),
             observations: RefCell::new(HashMap::new()),
             bindings: RefCell::new(HashMap::new()),
             repeated_observations: std::cell::Cell::new(0),
@@ -533,6 +539,10 @@ impl RuntimeState {
         }
         let cell = self.cell.get() + u64::from(!self.handlers.running.get());
         self.cell.set(cell);
+        // A change made while no cell ran -- the person's editor, a job that
+        // finished -- is found before this cell can trip over it, and
+        // arrives with this cell's result.
+        self.follow_changed_sources();
         let mut current = self.current.borrow_mut();
         current.console.clear();
         current.captures.clear();
@@ -885,6 +895,7 @@ impl RuntimeState {
         self.pending_lines.borrow_mut().clear();
         self.pending_context_output.borrow_mut().clear();
         self.shown_contexts.borrow_mut().clear();
+        self.known_sources.borrow_mut().clear();
         self.observations.borrow_mut().clear();
         self.bindings.borrow_mut().clear();
         self.repeated_observations.set(0);
@@ -939,6 +950,7 @@ impl RuntimeState {
             return false;
         }
         let path = self.absolute_source_path(Path::new(&evidence.path));
+        self.remember_source(&path, &evidence.sha256);
         if evidence.complete {
             self.incomplete_sources.borrow_mut().remove(&path);
             self.pending_sources
@@ -993,7 +1005,7 @@ impl RuntimeState {
             .any(|(p, _)| p == &path)
         {
             return format!(
-                "`edit` did not run: a context for `{named}` is in this turn's feedback and you have not read it yet; it binds from the next cell, so make the edit there"
+                "`edit` did not run: the current version of `{named}` is in this turn's feedback and you have not read it yet; it binds from the next cell, so make the edit there with no new `context`"
             );
         }
         if self.pending_incomplete.borrow().contains(&path)
@@ -1128,9 +1140,21 @@ impl RuntimeState {
     /// Refreshing after an edit replaces the old version instead of making
     /// every future implicit edit ambiguous. The writer still checks disk's
     /// actual hash, so an external change remains a stale-version refusal.
+    ///
+    /// None while a newer version of the path waits in this turn's feedback
+    /// -- a change shown with this cell, or a context of the new bytes: the
+    /// file already is that version, so binding the older one could only be
+    /// refused as stale, and the refusal would send the model to read again
+    /// what it is about to be shown.
     pub(crate) fn visible_source_hash(&self, args: &crate::tools::invoke::Args) -> Option<String> {
         let path = self.absolute_source_path(Path::new(args.get("path")?));
-        self.visible_sources.borrow().get(&path).cloned()
+        let visible = self.visible_sources.borrow().get(&path).cloned()?;
+        let superseded = self
+            .pending_sources
+            .borrow()
+            .iter()
+            .any(|(pending, sha)| pending == &path && !sha.eq_ignore_ascii_case(&visible));
+        (!superseded).then_some(visible)
     }
 
     /// The version of `path` an implicit `edit` would bind to right now.
@@ -1159,9 +1183,167 @@ impl RuntimeState {
         self.pending_lines
             .borrow_mut()
             .retain(|(pending, _, _)| pending != &path);
+        self.remember_source(&path, sha256);
         self.visible_sources
             .borrow_mut()
             .insert(path, sha256.to_ascii_lowercase());
+    }
+
+    /// Records the bytes of the version of `path` the model now has, when
+    /// the file on disk still is that version. One that already moved on is
+    /// forgotten: the model's view of it is stale, and an `edit` says so.
+    fn remember_source(&self, path: &Path, sha256: &str) {
+        match crate::runtime::rewrites::Known::read(path) {
+            Some(known) if known.sha256.eq_ignore_ascii_case(sha256) => {
+                self.known_sources
+                    .borrow_mut()
+                    .insert(path.to_path_buf(), known);
+            }
+            _ => {
+                self.known_sources.borrow_mut().remove(path);
+            }
+        }
+    }
+
+    /// Every change to a file the model has a view of that did not come
+    /// from its own `edit` or `write` -- a formatter it ran, a background
+    /// job, the person's editor -- delivered with this cell's result, and
+    /// the view moved to follow it.
+    ///
+    /// Run at the end of every cell, before the cell's source context is
+    /// written, so a change arrives with the cell whose command made it. A
+    /// change small enough to show is shown line by line, and then an
+    /// `edit` binds to the new version with no new `context`: the version
+    /// the model edits against moves when it had the old one whole, and
+    /// the lines it has seen are renumbered through the change. One too
+    /// large to show is named in one line and the view stays where it was,
+    /// so an `edit` is refused as stale and says to read it again.
+    pub(crate) fn follow_changed_sources(&self) {
+        use crate::runtime::rewrites::{self, Known};
+        const HEADING: &str = "## Changed on disk since you read it\n\
+            Every changed line is below, and the version you edit against follows it: \
+            no new `context` is needed.\n";
+        let known: Vec<(PathBuf, Known)> = self
+            .known_sources
+            .borrow()
+            .iter()
+            .map(|(path, known)| (path.clone(), known.clone()))
+            .collect();
+        let mut shown = String::new();
+        for (path, before) in known {
+            if before.looks_unchanged(&path) {
+                continue;
+            }
+            let label = path
+                .strip_prefix(self.profile.root())
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let Some(now) = Known::read(&path) else {
+                self.known_sources.borrow_mut().remove(&path);
+                self.seen_lines.borrow_mut().remove(&path);
+                shown.push_str(&format!("### {label}: deleted, or no longer text\n"));
+                continue;
+            };
+            if now.sha256 == before.sha256 {
+                self.known_sources.borrow_mut().insert(path, now);
+                continue;
+            }
+            let room = self
+                .remaining_context_budget()
+                .saturating_sub(HEADING.len() + shown.chars().count());
+            let versions = format!("{} -> {}", &before.sha256[..12], &now.sha256[..12]);
+            let too_many = |changed: String| {
+                format!(
+                    "### {label} ({versions}): {changed} lines changed, too many to show here; \
+                     call `context` for what you need before editing it\n"
+                )
+            };
+            match rewrites::delta(&before.text, &now.text, rewrites::MAX_CHANGES) {
+                Some(delta) => {
+                    let part = if delta.changed == 0 {
+                        format!(
+                            "### {label} ({versions}): line endings or the final newline changed; no line's text did\n"
+                        )
+                    } else {
+                        format!("### {label} ({versions})\n{}", delta.rendered)
+                    };
+                    if part.chars().count() <= room {
+                        shown.push_str(&part);
+                        self.follow_source(&path, &before, now, &delta);
+                        continue;
+                    }
+                    shown.push_str(&too_many(delta.changed.to_string()));
+                }
+                None => shown.push_str(&too_many(format!("more than {}", rewrites::MAX_CHANGES))),
+            }
+            // Not followed: the line numbers no longer hold, the version the
+            // model read stays the one an `edit` is checked against, and the
+            // new bytes are recorded so the change is reported once.
+            self.seen_lines.borrow_mut().remove(&path);
+            self.pending_lines
+                .borrow_mut()
+                .retain(|(pending, _, _)| pending != &path);
+            self.known_sources.borrow_mut().insert(path, now);
+        }
+        if !shown.is_empty() {
+            self.pending_context_output
+                .borrow_mut()
+                .push(format!("{HEADING}{shown}"));
+        }
+    }
+
+    /// Moves the model's view of `path` from `before` to `now` through a
+    /// change it is being shown whole.
+    fn follow_source(
+        &self,
+        path: &Path,
+        before: &crate::runtime::rewrites::Known,
+        now: crate::runtime::rewrites::Known,
+        delta: &crate::runtime::rewrites::Delta,
+    ) {
+        let had_whole =
+            self.visible_sources
+                .borrow()
+                .get(path)
+                .is_some_and(|sha| sha.eq_ignore_ascii_case(&before.sha256))
+                || self.pending_sources.borrow().iter().any(|(pending, sha)| {
+                    pending == path && sha.eq_ignore_ascii_case(&before.sha256)
+                });
+        if had_whole {
+            self.pending_sources
+                .borrow_mut()
+                .push((path.to_path_buf(), now.sha256.clone()));
+        }
+        let moved = |line: usize| {
+            line.checked_sub(1)
+                .and_then(|index| delta.map.get(index).copied().flatten())
+                .map(|index| index + 1)
+        };
+        if let Some(seen) = self.seen_lines.borrow_mut().get_mut(path) {
+            *seen = std::mem::take(seen)
+                .into_iter()
+                .filter_map(|(line, text)| moved(line).map(|line| (line, text)))
+                .collect();
+        }
+        let mut pending = self.pending_lines.borrow_mut();
+        pending.retain_mut(|(pending, line, _)| {
+            pending != path
+                || match moved(*line) {
+                    Some(to) => {
+                        *line = to;
+                        true
+                    }
+                    None => false,
+                }
+        });
+        for (line, text) in &delta.added {
+            pending.push((path.to_path_buf(), line + 1, text.clone()));
+        }
+        drop(pending);
+        self.known_sources
+            .borrow_mut()
+            .insert(path.to_path_buf(), now);
     }
 
     fn absolute_source_path(&self, path: &Path) -> PathBuf {

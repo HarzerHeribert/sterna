@@ -717,3 +717,209 @@ fn after_a_checkpoint_every_context_is_printed_in_full_again() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A command that rewrites a file the model has read -- a formatter -- is
+/// delivered as its changed lines with that cell's result, and the next
+/// `edit` binds to the new bytes with no new `context`.
+#[test]
+fn a_file_a_command_rewrote_arrives_as_its_changes_and_an_edit_needs_no_new_context() {
+    let root = fixture("rewritten-by-command");
+    let path = root.join("src/fmt.py");
+    std::fs::write(&path, "def f():\n    x = 1\n    y = 2\n    return x + y\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-by-command"));
+
+    runtime.run_cell("await context({path:'src/fmt.py'});");
+    let formatted = runtime.run_cell(
+        "await bash({command: \"printf 'def f():\\\\n    x = 1\\\\n    y = 22\\\\n    return x + y\\\\n' > src/fmt.py\"});",
+    );
+    let shown = &formatted.turn().stdout_tail;
+    assert!(
+        shown.contains("## Changed on disk since you read it"),
+        "{shown}"
+    );
+    assert!(shown.contains("### src/fmt.py ("), "{shown}");
+    assert!(
+        shown.contains("-    3 |     y = 2\n+    3 |     y = 22\n"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("x = 1"),
+        "unchanged lines are not repeated: {shown}"
+    );
+
+    let edited = runtime
+        .run_cell("await edit({path:'src/fmt.py', old:'    y = 22', replacement:'    y = 3'});");
+    assert_eq!(edited.turn().record.calls[0].ended, Ended::Ok, "{edited:?}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "def f():\n    x = 1\n    y = 3\n    return x + y\n"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A change made while no cell ran -- the person's editor -- arrives with
+/// the next cell's result, whatever that cell does.
+#[test]
+fn a_change_made_between_cells_arrives_with_the_next_result() {
+    let root = fixture("rewritten-between");
+    let path = root.join("src/value.py");
+    std::fs::write(&path, "a = 1\nb = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-between"));
+
+    runtime.run_cell("await context({path:'src/value.py'});");
+    std::fs::write(&path, "a = 1\nb = 2\n").unwrap();
+    let next = runtime.run_cell("return 1;");
+    let shown = &next.turn().stdout_tail;
+    assert!(
+        shown.contains("-    2 | b = 1\n+    2 | b = 2\n"),
+        "{shown}"
+    );
+    let again = runtime.run_cell("return 2;");
+    assert!(
+        !again.turn().stdout_tail.contains("Changed on disk"),
+        "a change is reported once: {again:?}"
+    );
+    let edited =
+        runtime.run_cell("await edit({path:'src/value.py', old:'b = 2', replacement:'b = 3'});");
+    assert_eq!(edited.turn().record.calls[0].ended, Ended::Ok, "{edited:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A rewrite too large to show is named in one line, and the view does not
+/// follow it: an `edit` is refused as stale until the file is read again.
+#[test]
+fn a_rewrite_too_large_to_show_is_named_and_the_view_stays_where_it_was() {
+    let root = fixture("rewritten-whole");
+    let path = root.join("src/many.py");
+    let before: String = (0..300).map(|i| format!("v{i} = {i}\n")).collect();
+    let after: String = (0..300).map(|i| format!("w{i} = {i}\n")).collect();
+    std::fs::write(&path, &before).unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-whole"));
+
+    runtime.run_cell("await context({path:'src/many.py'});");
+    std::fs::write(&path, &after).unwrap();
+    let next = runtime.run_cell("return 1;");
+    let shown = &next.turn().stdout_tail;
+    assert!(
+        shown.contains("more than 200 lines changed, too many to show here"),
+        "{shown}"
+    );
+    assert!(!shown.contains("+    1 | w0 = 0"), "{shown}");
+    let stale = runtime.run_cell(
+        "try { await edit({path:'src/many.py', old:'w5 = 5', replacement:'w5 = 6'}); return 'edited'; } catch (e) { return 'refused'; }",
+    );
+    assert!(
+        format!("{stale:?}").contains("head: \"refused\""),
+        "{stale:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), after);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A file the model saw only part of: the lines it saw are renumbered
+/// through the change and stay editable, and the change certifies nothing
+/// it did not see.
+#[test]
+fn seen_lines_follow_a_change_and_unseen_lines_stay_unbound() {
+    let root = fixture("rewritten-partial");
+    let path = root.join("notes.txt");
+    let mut lines: Vec<String> = (0..400)
+        .map(|i| format!("filler line {i:03} with enough text to make the file long"))
+        .collect();
+    lines[200] = "marker = 1".to_string();
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-partial"));
+
+    let read = runtime.run_cell("await context({path:'notes.txt', symbol:'marker'});");
+    assert!(
+        read.turn().stdout_tail.contains("complete: false"),
+        "{read:?}"
+    );
+    lines.splice(
+        0..0,
+        [
+            "new 1".to_string(),
+            "new 2".to_string(),
+            "new 3".to_string(),
+        ],
+    );
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let next = runtime.run_cell("return 1;");
+    assert!(
+        next.turn().stdout_tail.contains("+    1 | new 1\n"),
+        "{next:?}"
+    );
+
+    // Before any edit of its own: a successful `edit` makes the version it
+    // wrote visible whole, which would bind every line after it.
+    let unseen = runtime.run_cell(
+        "try { await edit({path:'notes.txt', old:'filler line 390 with', replacement:'changed'}); return 'edited'; } catch (e) { return 'refused'; }",
+    );
+    assert!(
+        format!("{unseen:?}").contains("head: \"refused\""),
+        "{unseen:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("filler line 390 with")
+    );
+    let seen = runtime
+        .run_cell("await edit({path:'notes.txt', old:'marker = 1', replacement:'marker = 2'});");
+    assert_eq!(seen.turn().record.calls[0].ended, Ended::Ok, "{seen:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A change made between cells is found before the next cell runs, so an
+/// edit in that cell is told the change is in this turn's feedback --
+/// never sent to read the file again.
+#[test]
+fn an_edit_right_after_an_outside_change_is_told_to_wait_one_cell_not_to_reread() {
+    let root = fixture("rewritten-then-edited");
+    let path = root.join("src/value.py");
+    std::fs::write(&path, "a = 1\nb = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-then-edited"));
+
+    runtime.run_cell("await context({path:'src/value.py'});");
+    std::fs::write(&path, "a = 1\nb = 2\n").unwrap();
+    let early = runtime.run_cell(
+        "try { await edit({path:'src/value.py', old:'b = 2', replacement:'b = 3'}); return 'edited'; } catch (e) { return String(e.message); }",
+    );
+    let said = format!("{early:?}");
+    assert!(said.contains("in this turn's feedback"), "{said}");
+    assert!(
+        early.turn().stdout_tail.contains("+    2 | b = 2\n"),
+        "{early:?}"
+    );
+    let edited =
+        runtime.run_cell("await edit({path:'src/value.py', old:'b = 2', replacement:'b = 3'});");
+    assert_eq!(edited.turn().record.calls[0].ended, Ended::Ok, "{edited:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A change to line endings or the final newline alone is said as that,
+/// not as an empty diff.
+#[test]
+fn a_line_ending_change_is_named_as_one() {
+    let root = fixture("rewritten-endings");
+    let path = root.join("src/value.py");
+    std::fs::write(&path, "a = 1\nb = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("rewritten-endings"));
+
+    runtime.run_cell("await context({path:'src/value.py'});");
+    std::fs::write(&path, "a = 1\nb = 1").unwrap();
+    let next = runtime.run_cell("return 1;");
+    assert!(
+        next.turn()
+            .stdout_tail
+            .contains("line endings or the final newline changed; no line's text did"),
+        "{next:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

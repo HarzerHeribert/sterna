@@ -108,3 +108,16 @@ header (path, symbol, version) and one line naming the cell whose result
 holds it. It still binds an `edit` to that version. A changed file renders
 different bytes and is printed in full, and after a checkpoint replaces the
 conversation every context is printed in full again.
+
+A file the model has read that changes on disk by anything but its own
+`edit` or `write` -- a formatter it ran, a background job, the person's
+editor -- is checked at the start and end of every cell. The change arrives
+with that cell's result as its changed lines, each with its own number, and
+the model's view follows it: the version an `edit` binds to moves to the new
+bytes when the model had the old one whole, and the lines it has seen are
+renumbered through the change. No new `context` is needed, so nothing is
+read twice and the earlier conversation stays as it was. A change of more
+than 200 lines, or one that does not fit the turn's feedback, is named in
+one line instead, and an `edit` of that file is refused as stale until the
+model reads what it needs again. An `edit` in the same cell a change is
+found is told to make it in the next one, where the change has been read.

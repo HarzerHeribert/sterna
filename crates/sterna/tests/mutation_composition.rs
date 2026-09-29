@@ -136,7 +136,7 @@ fn a_written_file_can_be_edited_without_a_context() {
 /// else made between two of Sterna's edits is still a stale refusal, and the
 /// external bytes are left exactly as they were.
 #[test]
-fn an_external_change_between_sternas_edits_is_still_stale() {
+fn an_external_change_between_sternas_edits_is_refused_and_shown() {
     let root = fixture("external");
     let path = root.join("src/value.py");
     std::fs::write(&path, "value = 1\n").unwrap();
@@ -151,14 +151,19 @@ fn an_external_change_between_sternas_edits_is_still_stale() {
         "try { await edit({path:'src/value.py', old:'value = 2', replacement:'value = 3'}); answer(\"applied\"); }\n\
          catch (e) { return e.message; }",
     );
+    // Refused before it runs, and never sent to read again: the change is
+    // in this same result, and the edit binds to it from the next cell.
     let message = returned_text(&refused);
-    assert!(message.contains("The source version changed"), "{message}");
-    assert_eq!(
-        refused.turn().record.calls[0].ended,
-        Ended::Threw {
-            class: "ToolError".into()
-        }
+    assert!(message.contains("in this turn's feedback"), "{message}");
+    assert!(message.contains("no new `context`"), "{message}");
+    assert!(
+        refused
+            .turn()
+            .stdout_tail
+            .contains("-    1 | value = 2\n+    1 | value = 99\n"),
+        "{refused:?}"
     );
+    assert!(refused.turn().record.calls.is_empty(), "{refused:?}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "value = 99\n");
     let _ = std::fs::remove_dir_all(root);
 }

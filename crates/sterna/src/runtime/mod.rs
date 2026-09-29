@@ -24,6 +24,7 @@ pub mod reduce_rules;
 pub mod reduce_run;
 pub mod reduce_sample;
 pub mod repair;
+pub(crate) mod rewrites;
 pub mod state;
 
 pub mod instructions;
