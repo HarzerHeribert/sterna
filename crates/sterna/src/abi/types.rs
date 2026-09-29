@@ -93,6 +93,11 @@ search and check the step needs together, act on what comes back in the same
 program, and yield only at a decision that needs evidence you do not have yet.
 Several small cells cost several turns.
 
+A slow command whose result this step does not need yet -- a whole test
+suite, a build -- need not hold the turn: `const suite = bg.run(\"...\")`
+starts it, you keep reading and editing in this cell and the next, and
+`await suite.result()` collects it where you need it.
+
 Sterna decides execution strategy, output sizing, evidence storage and helper
 escalation. Do not reproduce those mechanisms yourself.
 

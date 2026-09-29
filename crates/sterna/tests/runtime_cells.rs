@@ -3709,3 +3709,87 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
         calls[0]
     );
 }
+
+/// A slow command runs as a job while the program goes on, and
+/// `job.result()` collects it where the program needs it -- the shape
+/// `bash` answers with. A result the program waited for is not delivered a
+/// second time as a `bg.done` event.
+#[test]
+fn a_job_result_is_collected_where_the_program_needs_it_and_not_delivered_twice() {
+    let fixture = Fixture::new("job-result");
+    let session = SessionId::new("job-result-session");
+    let mut runtime = runtime(&fixture, &session);
+
+    let collected = runtime.run_cell(
+        "const job = bg.run(\"i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done; echo done-marker; echo oops >&2; exit 3\");\n\
+         const before = Date.now();\n\
+         const r = await job.result();\n\
+         return JSON.stringify({out: r.stdout.trim(), err: r.stderr.trim(), code: r.exit_code, status: r.status, id: job.id});\n",
+    );
+    let seen = returned_string(&collected);
+    assert!(seen.contains("\"out\":\"done-marker\""), "{seen}");
+    assert!(seen.contains("\"err\":\"oops\""), "{seen}");
+    assert!(seen.contains("\"code\":3"), "{seen}");
+    assert!(seen.contains("\"status\":\"3\""), "{seen}");
+    let pending = sterna::bg::drain(&session);
+    assert!(
+        pending.iter().all(|event| !event.source.starts_with("bg/")),
+        "a result the program waited for arrived again: {pending:?}"
+    );
+    sterna::bg::shutdown(&session);
+}
+
+/// An interrupt stops the wait, never the job, and the wait does not
+/// outlast it.
+#[test]
+fn an_interrupt_stops_waiting_for_a_job_and_leaves_it_running() {
+    let fixture = Fixture::new("job-wait-stop");
+    let session = SessionId::new("job-wait-stop-session");
+    let mut runtime = runtime(&fixture, &session);
+    let token = CancellationToken::new();
+    runtime.set_token(token.clone());
+    let stopper = {
+        let session = session.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            token.cancel();
+            // A wait that ignored the interrupt would never return; ending
+            // every job bounds this test instead of hanging it.
+            std::thread::sleep(Duration::from_secs(3));
+            sterna::bg::shutdown(&session);
+        })
+    };
+    let started = Instant::now();
+    let outcome = runtime.run_cell(
+        "const job = bg.run(\"while true; do :; done\");\n\
+         try { await job.result(); return 'finished'; } catch (e) { return e.name; }\n",
+    );
+    let waited = started.elapsed();
+    assert_eq!(returned_string(&outcome), "Cancelled", "{outcome:?}");
+    assert!(
+        waited < Duration::from_secs(3),
+        "the wait outlasted the interrupt: {waited:?}"
+    );
+    stopper.join().unwrap();
+}
+
+/// Waiting for a job is not the cell's own computing: a wait longer than the
+/// cell's wall-clock limit ends with the job's result -- here its timeout's
+/// `cancelled` -- not with the cell killed for computing too long.
+#[test]
+fn waiting_for_a_job_is_not_the_cells_own_computing() {
+    let fixture = Fixture::new("job-wait-clock");
+    let session = SessionId::new("job-wait-clock-session");
+    let profile = Profile::compile(&fixture.root, None);
+    let mut runtime = Runtime::with_limits(
+        &profile,
+        &session,
+        DEFAULT_HEAP_LIMIT_BYTES,
+        Duration::from_millis(500),
+    );
+    let outcome = runtime.run_cell(
+        "const job = bg.run(\"while true; do :; done\", {timeout: 1500});\nconst r = await job.result();\nreturn r.status;\n",
+    );
+    assert_eq!(returned_string(&outcome), "cancelled", "{outcome:?}");
+    sterna::bg::shutdown(&session);
+}

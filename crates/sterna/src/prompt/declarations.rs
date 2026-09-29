@@ -536,15 +536,18 @@ pub const RUNTIME: &[Binding] = &[
                       watch(command: string, options?: {every?: number; until?: string; timeout?: number}): Job;\n  \
                       cancel(job: Job | string): void;\n\
                       };\n\
-                      type Job = {id: string; source: string};\n\
+                      type Job = {id: string; source: string; result(): Promise<{stdout: string; stderr: string; exit_code: number | null; status: string}>};\n\
                       // Run a command in the background. `bg.run` returns a handle at once and\n\
-                      // never blocks: the exit arrives later as a `bg.done` event whose stdout\n\
-                      // and stderr are themselves handles, so a job that printed 40 MB costs a\n\
-                      // status line. `bg.watch` re-runs `command` every `every` ms (default\n\
-                      // 1000) and emits one `bg.done` per match until `until` matches or you\n\
-                      // cancel. Both refuse a command outside the sandbox grant with\n\
-                      // PermissionDenied, before any handle exists. Use background work only\n\
-                      // when separable from the next decision; do not poll or sleep for it.",
+                      // never blocks. A slow command whose result the next step does not need --\n\
+                      // a whole test suite, a build -- starts here, and you keep reading and\n\
+                      // editing in this cell and later ones; `await job.result()` where you need\n\
+                      // it waits for it then, and a job you did not wait for arrives as a\n\
+                      // `bg.done` event whose stdout and stderr are themselves handles.\n\
+                      // `bg.watch` re-runs `command` every `every` ms (default 1000) and emits\n\
+                      // one `bg.done` per match until `until` matches or you cancel. Both refuse\n\
+                      // a command outside the sandbox grant with PermissionDenied, before any\n\
+                      // handle exists. Use background work only when it is separable from the next\n\
+                      // decision, and do not poll or sleep for a job.",
     },
     Binding {
         global: "batch",

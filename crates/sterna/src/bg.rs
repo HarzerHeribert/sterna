@@ -76,6 +76,9 @@ const WATCH_FLOOR_MS: u64 = 100;
 /// rather than failing it.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
+/// The slice [`wait`] looks at the board in.
+const WAIT_SLICE: Duration = Duration::from_millis(20);
+
 /// The most characters of a job's own summary line a batch preview carries.
 const SUMMARY_CHARS: usize = 160;
 
@@ -168,6 +171,9 @@ struct JobEntry {
     inbox: Option<crate::agent::InboxSink>,
     /// Where the subagent writes its own rollout, so a look can name it.
     record: Option<crate::agent::AgentRollout>,
+    /// The payload of the job's latest emission, which [`wait`] answers
+    /// with once the job has finished.
+    last_payload: Option<String>,
 }
 
 /// One session's jobs, the events they have raised and the payloads those
@@ -382,6 +388,7 @@ fn start(
                 progress: progress.clone(),
                 inbox: inbox.clone(),
                 record: record.clone(),
+                last_payload: None,
             },
         );
         (handle, record)
@@ -725,6 +732,9 @@ impl JobThread {
             job.stdout.len()
         ));
         with_board(&self.session, |board| {
+            if let Some(entry) = board.jobs.get_mut(&self.handle) {
+                entry.last_payload = Some(payload.clone());
+            }
             board.payloads.insert(payload.clone(), job);
             board.pending.push(Event::pending(
                 match &self.work {
@@ -792,6 +802,50 @@ fn cancel_by(session: &SessionId, handle: &str, deadline: Instant) {
     token.cancel();
     while !finished(session, handle) && Instant::now() < deadline {
         std::thread::sleep(SETTLE_SLICE);
+    }
+}
+
+/// What waiting for a job came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Waited {
+    /// It finished, and this is its latest emission.
+    Done(JobResult),
+    /// No job of this session has that handle.
+    Unknown,
+    /// `stop` said to stop waiting; the job runs on.
+    Stopped,
+}
+
+/// A job's result once it has finished: `job.result()`.
+///
+/// **A wait that ends with the result, never a poll the program writes.**
+/// It returns the job's latest emission -- for `bg.run` its only one -- when
+/// the job finishes, or [`Waited::Stopped`] as soon as `stop` says so (the
+/// cell was interrupted), leaving the job running. The `bg.done` the finish
+/// raised is withdrawn while it is still undrained, so a result the program
+/// waited for does not arrive a second time in `batch`.
+pub fn wait(session: &SessionId, handle: &str, stop: impl Fn() -> bool) -> Waited {
+    let source = format!("bg/{handle}");
+    loop {
+        let looked = with_board(session, |board| {
+            let job = board.jobs.get(handle)?;
+            if !job.finished {
+                return Some(None);
+            }
+            let result = job
+                .last_payload
+                .as_ref()
+                .and_then(|payload| board.payloads.get(payload))
+                .cloned()?;
+            board.pending.retain(|event| event.source != source);
+            Some(Some(result))
+        });
+        match looked {
+            None => return Waited::Unknown,
+            Some(Some(result)) => return Waited::Done(result),
+            Some(None) if stop() => return Waited::Stopped,
+            Some(None) => std::thread::sleep(WAIT_SLICE),
+        }
     }
 }
 
@@ -1060,6 +1114,7 @@ mod tests {
                     progress: None,
                     inbox: None,
                     record: None,
+                    last_payload: None,
                 },
             );
         });
@@ -1072,6 +1127,12 @@ mod tests {
             elapsed < Duration::from_secs(1),
             "a job that never finishes held the exit for {elapsed:?}; the grace is not a bound"
         );
+    }
+
+    #[test]
+    fn waiting_for_a_handle_no_job_has_is_answered_not_hung() {
+        let session = SessionId::new("bg-wait-unknown");
+        assert_eq!(wait(&session, "no-such-job", || false), Waited::Unknown);
     }
 
     #[test]

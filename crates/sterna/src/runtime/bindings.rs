@@ -39,6 +39,7 @@ mod ask;
 mod console;
 mod decide;
 pub(super) mod helper;
+mod job;
 use helper::helper_callback;
 mod search;
 use search::{build_glob, build_grep};
@@ -2570,7 +2571,7 @@ fn bg_run_callback(
     }
     match bg::run(&state.profile, &state.session, &command, &options) {
         Ok(handle) => {
-            let object = job_object(scope, &handle);
+            let object = job::job_object(scope, &handle);
             retval.set(object);
         }
         Err(denied) => throw_denied(scope, &denied),
@@ -2604,7 +2605,7 @@ fn bg_watch_callback(
     }
     match bg::watch(&state.profile, &state.session, &command, &options) {
         Ok(handle) => {
-            let object = job_object(scope, &handle);
+            let object = job::job_object(scope, &handle);
             retval.set(object);
         }
         Err(denied) => throw_denied(scope, &denied),
@@ -2635,15 +2636,6 @@ fn bg_cancel_callback(
     }
     let session = state(scope).session.clone();
     bg::cancel(&session, &id);
-}
-
-fn job_object<'s>(scope: &mut v8::PinScope<'s, '_>, handle: &str) -> v8::Local<'s, v8::Value> {
-    let object = v8::Object::new(scope);
-    let id = js_string(scope, handle);
-    set_fixed_key(scope, object, "id", id);
-    let source = js_string(scope, &format!("bg/{handle}"));
-    set_fixed_key(scope, object, "source", source);
-    object.into()
 }
 
 /// One string property of an options object, or `None` when the object, the

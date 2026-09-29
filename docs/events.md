@@ -49,6 +49,7 @@ runtime waits.
     bg.run(command, {timeout})             → Job, immediately
     bg.watch(command, {every, until, timeout}) → Job, immediately
     bg.cancel(job)                         → idempotent
+    await job.result()                     → {stdout, stderr, exit_code, status}
 
 `bg.run` returns before the process has done anything; the model never
 blocks on output and never polls. On exit a `bg.done` event carries a
@@ -58,6 +59,14 @@ printed 40 MB costs a status line. `bg.watch` re-runs the command every
 until the `until` substring appears or the job is cancelled. A cancelled or
 timed-out job still emits `bg.done` with a cancelled status, so nothing
 waits on a dead result.
+
+`job.result()` is the one wait a program may ask for: it returns when the
+job finishes, in the cell that started it or any later one, so a slow
+command whose result the next step does not need runs while the model reads
+and edits. The wait pauses the cell's clock as a foreground command does,
+and an interrupt stops the wait and leaves the job running. A result a
+program waited for is withdrawn from the events not yet delivered, so it
+does not arrive again as a `bg.done`.
 
 A background job runs under the same sandbox grant as a foreground call: a
 command outside the grant throws `PermissionDenied` at the call, before any
