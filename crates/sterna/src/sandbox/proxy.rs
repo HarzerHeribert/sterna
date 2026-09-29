@@ -529,15 +529,22 @@ impl Drop for Proxy {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         // `accept` has no timeout; one connection of our own wakes it to see
-        // the flag.
-        let _ = TcpStream::connect(("127.0.0.1", self.port));
-        if let Some(handle) = self.tcp.take() {
+        // the flag. A wake-up that cannot connect -- a sandbox around this
+        // process refusing it, a descriptor limit -- leaves that thread in
+        // `accept` for good, so it is joined only when it was woken and is
+        // otherwise left to end with the process. Measured 2026-09-29: under
+        // a seatbelt refusing local-socket connects, every session hung at
+        // exit in the unconditional join.
+        if TcpStream::connect(("127.0.0.1", self.port)).is_ok()
+            && let Some(handle) = self.tcp.take()
+        {
             let _ = handle.join();
         }
         #[cfg(unix)]
         if let Some((socket, handle)) = self.unix.take() {
-            let _ = std::os::unix::net::UnixStream::connect(&socket);
-            let _ = handle.join();
+            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+                let _ = handle.join();
+            }
             if let Some(dir) = socket.parent() {
                 let _ = std::fs::remove_dir_all(dir);
             }
@@ -967,6 +974,27 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// A wake-up that cannot connect does not hold the drop -- and with it
+    /// the process -- open: the accept thread it could not wake is left.
+    #[cfg(unix)]
+    #[test]
+    fn a_wake_up_that_cannot_connect_does_not_hold_the_drop() {
+        let proxy = Proxy::start(Allowed::defaults()).expect("the proxy starts");
+        let socket = proxy.unix_path().expect("a socket on unix").to_path_buf();
+        std::fs::remove_file(&socket).expect("the socket file is removed");
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(proxy);
+            let _ = done.send(());
+        });
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            "dropping the proxy hung on a thread it could not wake"
+        );
     }
 
     #[test]
