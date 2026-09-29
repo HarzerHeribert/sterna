@@ -37,10 +37,11 @@ and a **supervisor** watches for loops.
 **The longest run on the least.** History is append-only except when it is
 compacted, the system prompt stays the same between tasks, and a context
 that stops fitting is compacted while the isolate keeps running, so a result
-from turn three is still addressable afterwards. Against the Codex CLI on
-four tasks with the same model (2026-09-24, three attempts each), Sterna
-finished the same 12 of 12 on 18 % fewer tokens; Codex was 1.28× faster, most
-of it in a gate script Sterna ran more often
+from turn three is still addressable afterwards. Against the Codex CLI with
+the same model (GPT-6 Sol, 2026-09-29, three attempts each, Sterna with its
+helper models off): on four small tasks both finished 12 of 12, Sterna in
+8 % less time on 31 % fewer tokens; on six hard SWE-bench Verified tasks
+Sterna resolved 7 of 18 to Codex's 9, in 19 % less time at 16 % lower cost
 ([measurements](docs/measurements.md)).
 
 **Your subscription or your key.** Sterna talks to models through the

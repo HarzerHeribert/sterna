@@ -5,7 +5,56 @@ program under its former name, Pane; the commits named are in this
 repository's history. Tasks are the [ruler](ruler.md)'s. **Read the limits
 at the end before acting on a number.**
 
-## Against the Codex CLI (2026-09-24)
+## Against the Codex CLI (2026-09-29)
+
+Same model (GPT-6 Sol) for both, three attempts per task. Sterna ran with its
+helper models and Jev off (`[helpers] enabled = false`, `[decisions] mode =
+"off"`) at its default effort, which sends `low` for an OpenAI model; Codex
+0.155.1 ran at `medium`. Cost is API-equivalent at $2 fresh input, $0.20
+cached input and $10 output per million tokens; both actually ran on the
+ChatGPT subscription.
+
+**Four small tasks** (the [ruler](ruler.md)'s F1, X1, I1, E1; commit
+`26130fb3`): every attempt of both passed.
+
+| | Sterna, helpers off | Codex | Sterna, shipped defaults |
+|---|---|---|---|
+| passed | 12/12 | 12/12 | 12/12 |
+| time, sum of per-task means | 452 s | 489 s | 521 s |
+| tokens (uncached) | 6.44M (780k) | 9.31M (699k) | — |
+| requests | 122 | 188 | — |
+| cost | $2.97 | $3.45 | $5.85 |
+
+The shipped defaults cost most because of the helper models; one of those
+attempts also hit a paging bug fixed in `a542867e`.
+
+**Six hard SWE-bench Verified tasks** (django 14631, 15629, 15957, 16263;
+sympy 14248, 16597; build `16fbebee`), graded on the tasks' own
+FAIL_TO_PASS and PASS_TO_PASS tests:
+
+| | Sterna, helpers off | Codex |
+|---|---|---|
+| resolved | 7/18 | 9/18 |
+| time per attempt | 187 s | 230 s |
+| requests per attempt | 18.2 | 27.5 |
+| cost per attempt | $0.32 | $0.38 |
+
+Both failed every attempt of 16263, 14248 and 16597; Sterna lost one attempt
+each of 15629 and 15957, one to a test it skipped after watching it fail and
+one to a query that duplicated rows on many-to-many relations. At `medium`
+effort Sterna resolved 5 of 9 on three of these tasks, at 304 s and $0.57 an
+attempt. Neither agent looked up the upstream fix in any run.
+
+**What a model can find on this machine.** DeepSeek V4.1 Flash under Sterna
+resolved 17 and 18 of 18 until the fix was out of its reach: it read later
+commits from the repository's history, other copies of the project on disk,
+the pull request on GitHub, and notes in temporary folders. Each attempt now
+gets a clone ending at the task's base commit and runs under a seatbelt
+profile that refuses the home folder, temporary folders and the network
+outside its own tree. Sealed that way it resolved 7 of 18, at 770 s and
+$0.13 (DeepSeek's peak rates) an attempt.
+
+## Against the Codex CLI (2026-09-24, superseded by the section above)
 
 Four tasks, same model (GPT-6 Sol), three attempts each, Sterna at its
 shipped defaults of commit `6fc97dc7`. Time is launch to exit including the
