@@ -91,3 +91,10 @@ A definition is marked complete only when its boundaries were established;
 ambiguous syntax falls back to a bounded window and names the omission.
 A definition is capped at 24,000 bytes and a result at 18 supporting
 excerpts.
+
+The conversation is append-only, so a context whose exact rendering an
+earlier result already carries is not printed again: it arrives as its
+header (path, symbol, version) and one line naming the cell whose result
+holds it. It still binds an `edit` to that version. A changed file renders
+different bytes and is printed in full, and after a checkpoint replaces the
+conversation every context is printed in full again.

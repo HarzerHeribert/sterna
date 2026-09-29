@@ -253,6 +253,7 @@ pub(super) fn send_task_turn_recovering(
     );
     transcript.provider_start = transcript.conversation.messages.len();
     transcript.provider_checkpoint = Some(checkpoint.clone());
+    runtime.forget_shown_contexts();
     {
         let _line = session.interrupt.writing();
         rollout

@@ -4140,6 +4140,48 @@ fn an_overflow_checkpoints_the_already_projected_request_once() {
     );
 }
 
+/// An unchanged context is pointed back to only while the earlier result is
+/// in the request. A checkpoint takes it out, so the next context after one
+/// is printed in full rather than pointing at a result the model no longer
+/// has.
+#[test]
+fn after_an_overflow_checkpoint_a_context_is_printed_in_full_again() {
+    let root = scratch_dir("overflow-shown-context");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/value.py"), "value = 41\n").unwrap();
+    let rollout = root.join("rollout.jsonl");
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let read = "```sterna\nawait context({path:'src/value.py'});\n```";
+    let (base_url, bodies) = start_status_answering_provider(4, move |_body| {
+        let n = turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match n {
+            0 | 2 => (200, assistant_reply(read)),
+            1 => (400, too_long_body()),
+            _ => (200, assistant_reply("```sterna\nanswer('done');\n```")),
+        }
+    });
+
+    let output = run_session(&root, &rollout, "sess-overflow-shown", "do it", &base_url);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 4, "expected a retry after the overflow");
+    assert!(bodies[3].contains("no longer fit"), "{}", bodies[3]);
+    assert!(
+        bodies[3].contains("value = 41"),
+        "the context after the checkpoint must be printed in full: {}",
+        bodies[3]
+    );
+    assert!(
+        !bodies[3].contains("identical to the context"),
+        "a pointer to a result the checkpoint removed: {}",
+        bodies[3]
+    );
+}
+
 #[test]
 fn task_after_overflow_keeps_small_provider_context_without_stale_handles() {
     let root = scratch_dir("overflow-new-task");

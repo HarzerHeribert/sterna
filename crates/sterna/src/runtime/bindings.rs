@@ -1024,7 +1024,7 @@ fn tool_callback(
         })
         .map(|mut packed| {
             let budget = state.remaining_context_budget();
-            let delivered = packed.narrow_to(budget);
+            let delivered = state.context_shown(&packed) || packed.narrow_to(budget);
             // Rebuilt from the narrowed context, never copied from the
             // tool's own payload: a record that named ranges the turn never
             // received would be describing a delivery that did not happen.
@@ -1046,7 +1046,7 @@ fn tool_callback(
             // arithmetically; if they ever drift, the context is dropped, and
             // reading the answer rather than assuming it is what keeps that
             // drop loud instead of silent.
-            let queued = delivered && state.note_source_context(&evidence, packed.render());
+            let queued = delivered && state.note_source_context(&evidence, &packed);
             if queued {
                 state.note_seen_lines(std::iter::once(&packed.target).chain(&packed.supporting));
             }

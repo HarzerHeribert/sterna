@@ -596,3 +596,124 @@ fn a_context_batch_past_the_feedback_budget_narrows_and_the_cell_runs_on() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The conversation is append-only, so a context whose exact bytes an earlier
+/// result carries is pointed back to rather than printed again -- and the
+/// pointer still binds an edit, because the model has those bytes. A changed
+/// file renders different bytes and is printed in full.
+#[test]
+fn a_context_already_shown_is_pointed_back_to_and_a_changed_one_printed_again() {
+    let root = fixture("shown-before");
+    let path = root.join("src/value.py");
+    std::fs::write(&path, "value = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("shown-before"));
+
+    let first = runtime.run_cell("await context({path:'src/value.py'});");
+    assert!(first.turn().stdout_tail.contains("value = 1"), "{first:?}");
+    let again = runtime.run_cell("await context({path:'src/value.py'});");
+    let again = &again.turn().stdout_tail;
+    assert!(
+        again.contains("unchanged: identical to the context in cell 1's result"),
+        "{again}"
+    );
+    assert!(again.contains("path: src/value.py"), "{again}");
+    assert!(!again.contains("value = 1"), "{again}");
+
+    std::fs::write(&path, "value = 2\n").unwrap();
+    let changed = runtime.run_cell("await context({path:'src/value.py'});");
+    assert!(
+        changed.turn().stdout_tail.contains("value = 2"),
+        "{changed:?}"
+    );
+    assert!(
+        !changed.turn().stdout_tail.contains("unchanged:"),
+        "{changed:?}"
+    );
+
+    std::fs::write(&path, "value = 1\n").unwrap();
+    let back = runtime.run_cell("await context({path:'src/value.py'});");
+    assert!(
+        back.turn()
+            .stdout_tail
+            .contains("identical to the context in cell 1's result"),
+        "{back:?}"
+    );
+    let edited = runtime
+        .run_cell("await edit({path:'src/value.py', old:'value = 1', replacement:'value = 3'});");
+    assert_eq!(edited.turn().record.calls[0].ended, Ended::Ok, "{edited:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "value = 3\n");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_same_context_twice_in_one_cell_is_printed_once() {
+    let root = fixture("shown-same-cell");
+    std::fs::write(root.join("src/value.py"), "value = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("shown-same-cell"));
+
+    let cell = runtime
+        .run_cell("await context({path:'src/value.py'});\nawait context({path:'src/value.py'});");
+    let stdout = &cell.turn().stdout_tail;
+    assert_eq!(stdout.matches("value = 1").count(), 1, "{stdout}");
+    assert!(
+        stdout.contains("identical to the context earlier in this result"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A pointer is one line, so a context already shown is delivered even when
+/// the turn has no room left for it in full.
+#[test]
+fn a_context_already_shown_needs_no_room_in_a_full_turn() {
+    let root = fixture("shown-full-turn");
+    for name in ["a", "b", "c"] {
+        let body = format!(
+            "# {name}-BEGIN\n{}# {name}-END\nvalue = 1\n",
+            format!("# {}\n", "x".repeat(120)).repeat(100)
+        );
+        std::fs::write(root.join(format!("src/{name}.py")), body).unwrap();
+    }
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("shown-full-turn"));
+
+    runtime.run_cell("await context({path:'src/c.py'});");
+    let cell = runtime.run_cell(
+        "await context({path:'src/a.py'});\nawait context({path:'src/b.py'});\nawait context({path:'src/c.py'});",
+    );
+    let turn = cell.turn();
+    assert!(
+        turn.stdout_tail
+            .contains("identical to the context in cell 1's result"),
+        "{:?}",
+        turn.record.calls
+    );
+    let c = turn.record.calls[2].evidence.as_ref().expect("evidence");
+    assert!(
+        !c.omissions.iter().any(|o| o.contains("not delivered")),
+        "{c:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A checkpoint takes every earlier result out of the request, so nothing
+/// can be pointed back to after one.
+#[test]
+fn after_a_checkpoint_every_context_is_printed_in_full_again() {
+    let root = fixture("shown-checkpoint");
+    std::fs::write(root.join("src/value.py"), "value = 1\n").unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("shown-checkpoint"));
+
+    runtime.run_cell("await context({path:'src/value.py'});");
+    runtime.forget_shown_contexts();
+    let after = runtime.run_cell("await context({path:'src/value.py'});");
+    assert!(after.turn().stdout_tail.contains("value = 1"), "{after:?}");
+    assert!(
+        !after.turn().stdout_tail.contains("unchanged:"),
+        "{after:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

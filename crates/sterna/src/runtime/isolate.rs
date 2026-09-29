@@ -857,6 +857,13 @@ impl Runtime {
         self.state.visible_version(path)
     }
 
+    /// The conversation was replaced by a checkpoint, so no earlier result
+    /// is in front of the model any more: every context is printed in full
+    /// again rather than pointed back to.
+    pub fn forget_shown_contexts(&self) {
+        self.state.forget_shown_contexts();
+    }
+
     /// The model's own plan for this task, for the checkpoint a compaction
     /// writes. Task-scoped like the handles beside it.
     pub fn plan(&self) -> Vec<crate::runtime::outcome::PlanItem> {

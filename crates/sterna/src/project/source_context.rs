@@ -89,14 +89,7 @@ impl std::error::Error for ContextError {}
 
 impl SourceContext {
     pub fn render(&self) -> String {
-        let mut o = format!(
-            "## Source context\npath: {}\nlanguage: {}\nsymbol: {}\nversion: {}\ncomplete: {}\n",
-            self.path,
-            self.language,
-            self.symbol.as_deref().unwrap_or("(whole file)"),
-            &self.sha256[..12],
-            self.complete
-        );
+        let mut o = format!("{}complete: {}\n", self.header(), self.complete);
         render_one(&mut o, &self.target);
         for e in &self.supporting {
             render_one(&mut o, e)
@@ -105,6 +98,27 @@ impl SourceContext {
             o.push_str(&format!("omission: {x}\n"))
         }
         o
+    }
+
+    /// What stands in for a context the conversation already carries byte
+    /// for byte: the header that names path, symbol and version, and where
+    /// the rest is. `place` is "in cell 7's result" or "earlier in this
+    /// result".
+    pub fn render_shown(&self, place: &str) -> String {
+        format!(
+            "{}unchanged: identical to the context {place}, so it is not printed again\n",
+            self.header()
+        )
+    }
+
+    fn header(&self) -> String {
+        format!(
+            "## Source context\npath: {}\nlanguage: {}\nsymbol: {}\nversion: {}\n",
+            self.path,
+            self.language,
+            self.symbol.as_deref().unwrap_or("(whole file)"),
+            &self.sha256[..12],
+        )
     }
 
     /// Sheds lowest-ranked supporting excerpts until `fits` is satisfied,

@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 use crate::config::HelpersConfig;
 use crate::contract::SessionId;
 use crate::helpers::{HelperCall, HelperRecord};
+use crate::project::source_context::SourceContext;
 use crate::runtime::handles::{HandleMeta, HandleTable, Provenance};
 use crate::runtime::instructions::{InstructionContext, PendingInstructions};
 use crate::runtime::observation::ReductionStats;
@@ -304,6 +305,17 @@ pub(crate) struct RuntimeState {
     /// supersedes the entry, because then enough of it has been read.
     incomplete_sources: RefCell<HashSet<PathBuf>>,
     pending_context_output: RefCell<Vec<String>>,
+    /// Every source context delivered this task, by the SHA-256 of its exact
+    /// rendering, with the cell whose result carries it.
+    ///
+    /// **The conversation is append-only, so those bytes are still in front
+    /// of the model.** A later context that renders the same bytes -- the
+    /// rendering names path, symbol and file version, so a changed file
+    /// never matches -- is delivered as its header and one line naming that
+    /// cell, never as a second copy. Forgotten with the task, and when a
+    /// checkpoint replaces the conversation: the one time earlier results
+    /// leave the request.
+    shown_contexts: RefCell<HashMap<String, u64>>,
     /// Every source line a delivered context showed the model, by path and
     /// line number, with its exact text -- the ledger an `edit` may bind to
     /// when no whole version is visible ([`Self::seen_lines_cover`]).
@@ -357,6 +369,12 @@ impl Repeat {
             None => format!(" (unchanged since cell {})", self.cell),
         }
     }
+}
+
+/// The key [`RuntimeState::shown_contexts`] is kept under.
+fn rendering_key(rendered: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(rendered.as_bytes()))
 }
 
 /// Slots a pushed helper may never take, so the model's own `helper.*` calls
@@ -428,6 +446,7 @@ impl RuntimeState {
             seen_lines: RefCell::default(),
             pending_lines: RefCell::default(),
             pending_context_output: RefCell::new(Vec::new()),
+            shown_contexts: RefCell::new(HashMap::new()),
             observations: RefCell::new(HashMap::new()),
             bindings: RefCell::new(HashMap::new()),
             repeated_observations: std::cell::Cell::new(0),
@@ -865,6 +884,7 @@ impl RuntimeState {
         self.seen_lines.borrow_mut().clear();
         self.pending_lines.borrow_mut().clear();
         self.pending_context_output.borrow_mut().clear();
+        self.shown_contexts.borrow_mut().clear();
         self.observations.borrow_mut().clear();
         self.bindings.borrow_mut().clear();
         self.repeated_observations.set(0);
@@ -895,7 +915,24 @@ impl RuntimeState {
     /// Callers narrow to [`Self::remaining_context_budget`] first, so a
     /// refusal here means the bare target alone is larger than what is left
     /// -- the one case there is nothing to deliver.
-    pub(crate) fn note_source_context(&self, evidence: &SourceEvidence, text: String) -> bool {
+    ///
+    /// A context whose exact rendering an earlier result already carries is
+    /// queued as [`SourceContext::render_shown`] instead: it still certifies
+    /// its version for `edit`, because the model has those bytes in front of
+    /// it.
+    pub(crate) fn note_source_context(
+        &self,
+        evidence: &SourceEvidence,
+        packed: &SourceContext,
+    ) -> bool {
+        let full = packed.render();
+        let key = rendering_key(&full);
+        let shown = self.shown_contexts.borrow().get(&key).copied();
+        let text = match shown {
+            Some(cell) if cell == self.cell.get() => packed.render_shown("earlier in this result"),
+            Some(cell) => packed.render_shown(&format!("in cell {cell}'s result")),
+            None => full,
+        };
         let mut output = self.pending_context_output.borrow_mut();
         let used: usize = output.iter().map(|s| s.chars().count() + 1).sum();
         if used + text.chars().count() + 1 > KEEP_CHARS.saturating_sub(CONTEXT_MARKER_RESERVE) {
@@ -911,7 +948,26 @@ impl RuntimeState {
             self.pending_incomplete.borrow_mut().push(path);
         }
         output.push(text);
+        if shown.is_none() {
+            self.shown_contexts
+                .borrow_mut()
+                .insert(key, self.cell.get());
+        }
         true
+    }
+
+    /// Whether this context's exact rendering already reached the model this
+    /// task, so it needs no room beyond one line.
+    pub(crate) fn context_shown(&self, packed: &SourceContext) -> bool {
+        self.shown_contexts
+            .borrow()
+            .contains_key(&rendering_key(&packed.render()))
+    }
+
+    /// Forgets which contexts the conversation carries, for when it stops
+    /// carrying them.
+    pub(crate) fn forget_shown_contexts(&self) {
+        self.shown_contexts.take();
     }
 
     /// Why an `edit` is not yet bound to a version of its path, in terms the
