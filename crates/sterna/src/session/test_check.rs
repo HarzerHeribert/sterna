@@ -305,6 +305,8 @@ mod tests {
         root
     }
 
+    /// The red run's answer, once it has one.
+    #[cfg(unix)]
     fn wait(check: &RedCheck) -> Option<String> {
         let started = Instant::now();
         loop {

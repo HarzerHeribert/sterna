@@ -962,9 +962,9 @@ pub struct FieldShape {
 ///
 /// One `Choice` question, synchronous, bounded by [`DECISION_TIMEOUT`] like
 /// every other call here. The field travels as state: its name, size, first
-/// and last lines, and the line-shape histogram `reduce_sample` computes,
-/// which is what tells a log from a listing without reading the whole of
-/// either. The user's reading (2026-09-23): *sometimes reduction is
+/// and last lines, and the line-shape histogram `runtime::line_shapes`
+/// computes, which is what tells a log from a listing without reading the
+/// whole of either. The user's reading (2026-09-23): *sometimes reduction is
 /// enrichment, by not flooding context with what nobody needs* -- and this
 /// is the question that decides which.
 pub fn field_shape(model: &str, name: &str, text: &str) -> Result<FieldShape, DecideError> {

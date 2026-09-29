@@ -627,8 +627,8 @@ fn run(
     let mut sign_in_shown = false;
     let mut paste_form = false;
     // A prompt sent while idle, shown at once: the session records it only
-    // after its preflight (the decision, the Scout, the acceptance lister),
-    // and until then the snapshots it sends do not hold it yet.
+    // after the decision model's question about it, and until then the
+    // snapshots it sends do not hold it yet.
     let mut sending: Option<Sending> = None;
     // Whether the previous pass through the loop was working, so the two
     // edges -- a task starting and a task ending -- can be told from the

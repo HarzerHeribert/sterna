@@ -6612,6 +6612,7 @@ fn committed_repo(root: &Path) {
 
 /// A JavaScript cell that waits `ms` milliseconds of wall time, so work
 /// beside the task can finish before the cell does.
+#[cfg(unix)]
 fn waiting_cell(ms: u64) -> String {
     assistant_reply(&format!(
         "```sterna\nconst t0 = Date.now(); while (Date.now() - t0 < {ms}) {{}}\nreturn 1;\n```"
