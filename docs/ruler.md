@@ -32,7 +32,7 @@ removed afterwards, so no attempt sees another's tree.
   task measures the sample, not the harness.
 - `--parent-model` is required for a Sterna row. It is written into the
   attempt's own `.sterna/config.toml`, the file a person's session reads,
-  not passed as a flag. `--helpers-model` does the same for helpers.
+  not passed as a flag.
 - Two expansions split the Sterna row into arms: one per interface
   (`cells`, `hybrid`, `tools`), or one per decision mode (`off`, `shadow`,
   `on`, with `--decisions-model`). One expansion at a time; `sterna ruler

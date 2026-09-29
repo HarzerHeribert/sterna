@@ -22,13 +22,6 @@ use super::model::Attempt;
 pub struct DecisionFigures {
     pub verified: Option<bool>,
     pub findings: Option<u64>,
-    /// `decisions.completion.checker_skipped` is a reason string or absent
-    /// on the wire (`session/task.rs`'s `Option<String>`), not a bool.
-    /// `Some(true)` when that string is present, `Some(false)` when the
-    /// completion question was answered but did not skip the checker, and
-    /// `None` only when no completion question was ever asked for this
-    /// attempt (`decisions.completion` itself absent).
-    pub checker_skipped: Option<bool>,
     pub finding_added: Option<bool>,
     pub holds: Option<u64>,
     pub overrides: Option<u64>,
@@ -53,17 +46,11 @@ impl DecisionFigures {
     /// Reads the fields by their documented paths; every miss stays `None`.
     pub fn from_telemetry(telemetry: &Value) -> DecisionFigures {
         let at = |path: &[&str]| lookup(telemetry, path);
-        let decisions_completion = at(&["decisions", "completion"]);
         DecisionFigures {
             verified: at(&["completion", "verified"]).and_then(Value::as_bool),
             findings: at(&["completion", "findings"])
                 .and_then(Value::as_array)
                 .map(|findings| findings.len() as u64),
-            checker_skipped: decisions_completion.map(|completion| {
-                completion
-                    .get("checker_skipped")
-                    .is_some_and(|v| !v.is_null())
-            }),
             finding_added: at(&["decisions", "completion", "finding_added"])
                 .and_then(Value::as_bool),
             holds: at(&["decisions", "holds"]).and_then(Value::as_u64),
@@ -111,9 +98,6 @@ pub struct DecisionRow {
     pub verified_n: u32,
     pub verified_m: u32,
     pub findings_sum: u64,
-    /// Attempts whose completion decision was a confident yes that spared
-    /// the fresh checker.
-    pub checker_spared: u32,
     pub holds_sum: u64,
     pub overrides_sum: u64,
     pub would_hold_sum: u64,
@@ -161,9 +145,6 @@ pub fn rows(attempts: &[Attempt]) -> Vec<DecisionRow> {
             }
             if let Some(findings) = figures.findings {
                 row.findings_sum += findings;
-            }
-            if figures.checker_skipped == Some(true) {
-                row.checker_spared += 1;
             }
             if let Some(holds) = figures.holds {
                 row.holds_sum += holds;

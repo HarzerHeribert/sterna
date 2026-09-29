@@ -10,7 +10,7 @@
 use serde::Serialize;
 
 use crate::abi::lift::{self, Family};
-use crate::runtime::outcome::{CellRecord, Ended, PlanItem, PlanStatus};
+use crate::runtime::outcome::{CellRecord, Ended};
 
 /// Facts kept verbatim; older ones are counted, not lost silently.
 const FACT_CAP: usize = 8;
@@ -33,7 +33,6 @@ pub struct Capsule {
     checkpoint: Option<Checkpoint>,
     risks: Vec<Risk>,
     risks_omitted: usize,
-    next_action: Option<String>,
     last_verification: Option<Verification>,
 }
 
@@ -94,7 +93,6 @@ impl Capsule {
             checkpoint: None,
             risks: Vec::new(),
             risks_omitted: 0,
-            next_action: None,
             last_verification: None,
         }
     }
@@ -119,25 +117,12 @@ impl Capsule {
         self.last_verification.as_ref()
     }
 
-    pub fn next_action(&self) -> Option<&str> {
-        self.next_action.as_deref()
-    }
-
-    /// The exact facts as one line each, for `completion::fresh_checker_evidence`.
-    pub fn fact_lines(&self) -> Vec<String> {
-        self.facts
-            .iter()
-            .map(|fact| format!("{} (cell {})", fact.text, fact.evidence.cell))
-            .collect()
-    }
-
     /// Folds one finished cell in. Calls are read in trajectory order, so a
     /// verification followed by an edit in the same cell ends unverified.
     pub fn observe_cell(
         &mut self,
         record: &CellRecord,
         error: Option<(&str, &str)>,
-        plan: &[PlanItem],
         tree_digest: Option<&str>,
     ) {
         if self.state == State::NotStarted {
@@ -193,12 +178,6 @@ impl Capsule {
                 ),
                 record.cell,
             );
-        }
-        if !plan.is_empty() {
-            self.next_action = plan
-                .iter()
-                .find(|item| item.status == PlanStatus::Active)
-                .map(|item| item.text.clone());
         }
     }
 
@@ -273,9 +252,6 @@ impl Capsule {
             if self.risks_omitted > 0 {
                 out.push_str(&format!("- …and {} more\n", self.risks_omitted));
             }
-        }
-        if let Some(next) = &self.next_action {
-            out.push_str(&format!("next: {}\n", clip(next, LINE_CHARS)));
         }
         out.push_str(&format!("verified: {}\n", self.verified_line()));
         if out.chars().count() > RENDER_CAP {
@@ -514,7 +490,6 @@ mod tests {
                 )],
             ),
             None,
-            &[],
             None,
         );
         assert_eq!(capsule.state(), &State::Verified { cell: 1 });
@@ -537,7 +512,6 @@ mod tests {
                 )],
             ),
             None,
-            &[],
             None,
         );
         assert_eq!(capsule.state(), &State::InProgress);
@@ -556,7 +530,6 @@ mod tests {
                 )],
             ),
             None,
-            &[],
             Some("digest-2"),
         );
         assert_eq!(capsule.state(), &State::Verified { cell: 2 });
@@ -567,7 +540,6 @@ mod tests {
                 vec![call("write", &[("path", "/p/README")], Ended::Ok, None)],
             ),
             None,
-            &[],
             None,
         );
         assert_eq!(capsule.state(), &State::UnverifiedSince { cell: 3 });
@@ -592,7 +564,6 @@ mod tests {
                 )],
             ),
             None,
-            &[],
             Some("d"),
         );
         assert_eq!(capsule.state(), &State::InProgress);
@@ -617,7 +588,6 @@ mod tests {
                     )],
                 ),
                 None,
-                &[],
                 None,
             );
         }
@@ -633,10 +603,6 @@ mod tests {
             capsule.observe_cell(
                 &cell(n, vec![call("edit", &[("path", &path)], Ended::Ok, None)]),
                 Some(("TypeError", &"boom ".repeat(100))),
-                &[PlanItem {
-                    text: "z".repeat(500),
-                    status: PlanStatus::Active,
-                }],
                 None,
             );
         }
@@ -662,7 +628,6 @@ mod tests {
                 )],
             ),
             None,
-            &[],
             None,
         );
         capsule.salvage("cell limit reached");

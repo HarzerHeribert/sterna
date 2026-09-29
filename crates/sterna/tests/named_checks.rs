@@ -161,10 +161,6 @@ fn named_check_binding_persists_within_request_but_is_absent_from_helpers() {
         "{after_end:?}"
     );
     drop(runtime);
-    let mut helper = Runtime::for_helper(&f.profile, &session, &["read"]);
-    let absent = helper.run_cell("console.log(typeof globalThis.checks);");
-    assert_eq!(absent.turn().stdout_tail.trim(), "undefined");
-    drop(helper);
     let mut fresh = Runtime::new(&f.profile, &session);
     assert!(
         fresh

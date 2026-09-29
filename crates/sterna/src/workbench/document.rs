@@ -2,7 +2,7 @@
 //!
 //! **A row says what kind of thing it is, and the view draws the shape.**
 //! The conversation has a grammar -- your turn, Sterna's turn, a cell's card,
-//! a helper's lane, a local note, the answer -- and each row carries its
+//! a local note, the answer -- and each row carries its
 //! [`RowKind`] so the view can draw a gutter, a card edge or a label without
 //! the text itself having to spell it. Selection and copying read
 //! [`Row::text`], which stays the words alone.
@@ -18,8 +18,8 @@ pub enum Tone {
     /// Emphasis without hue: a cell's number, a final answer's first line.
     Strong,
     Accent,
-    /// Little helpers and the evidence they return.
-    Helper,
+    /// Observed evidence: what came back from a call.
+    Evidence,
     Failure,
     Warning,
     Success,
@@ -50,8 +50,6 @@ pub enum RowKind {
     CardBody,
     /// A cell card's bottom edge, with a short summary in it.
     CardBottom,
-    /// A helper's lane under a card.
-    Helper,
     /// A local notice, where it happened.
     Note,
     /// The first line of a finished turn's answer.
@@ -77,17 +75,14 @@ pub struct Row {
     pub kind: RowKind,
 }
 /// The one live thing in the document that moves. Several can be live at
-/// once -- the Scout, work behind the answer, reasoning, a cell being
-/// written, the prose -- and a spinner on each stacked them on screen, so
+/// once -- reasoning, a cell being written, the prose -- and a spinner on each stacked them on screen, so
 /// only the newest moves and the rest hold their still mark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Mover {
     #[default]
     Nothing,
-    Preflight,
-    Behind,
     Reasoning,
-    /// A cell running, and the helpers it is waiting on.
+    /// A cell running.
     Running,
     Cell,
     Prose,
@@ -311,10 +306,6 @@ impl Document {
             Mover::Reasoning
         } else if s.activity == crate::tui::Activity::Executing {
             Mover::Running
-        } else if !s.behind.is_empty() {
-            Mover::Behind
-        } else if n.preflight.is_some() {
-            Mover::Preflight
         } else {
             Mover::Nothing
         };
@@ -346,12 +337,6 @@ impl Document {
         let last_assistant = reads
             .iter()
             .rposition(|r| matches!(r, Reads::Turn(_) | Reads::After));
-        // The Scout reads the newest request before its first turn, so it
-        // sits under that request, above the work.
-        let scout_under = n
-            .preflight
-            .as_ref()
-            .and_then(|_| reads.iter().rposition(|r| *r == Reads::You));
         for (idx, m) in c.messages.iter().enumerate() {
             let id = idx + 1;
             d.notes(s, ui, &mut note, idx, room);
@@ -359,12 +344,6 @@ impl Document {
                 Reads::Hidden | Reads::Echo => continue,
                 Reads::You => {
                     d.turn_you(&m.as_written(), room, id);
-                    if scout_under == Some(idx)
-                        && let Some(p) = &n.preflight
-                    {
-                        d.scout(p, s, ui, room, id);
-                        d.blank(id);
-                    }
                     continue;
                 }
                 Reads::After => {
@@ -439,27 +418,6 @@ impl Document {
             } else {
                 vec![("RECORDED".to_string(), Tone::Muted)]
             };
-            // A folded card counts its helpers on its own line; their rows
-            // are inside the card, one click away, never loose beside it.
-            let mut state = state;
-            if let Some(v) = v.filter(|v| !open && !v.helpers.is_empty()) {
-                let count = v.helpers.len();
-                let failed = v
-                    .helpers
-                    .iter()
-                    .filter(|h| !h.outcome.ok && !h.outcome.text.is_empty())
-                    .count();
-                let mut said = vec![(
-                    format!("{count} helper{} ", if count == 1 { "" } else { "s" }),
-                    Tone::Helper,
-                )];
-                if failed > 0 {
-                    said.push((format!("· {failed} failed "), Tone::Failure));
-                }
-                said.push(("· ".to_string(), Tone::Line));
-                said.append(&mut state);
-                state = said;
-            }
             let tone = if failed {
                 Tone::Failure
             } else if running || ui.selected_cell == Some(cell) {
@@ -532,13 +490,7 @@ impl Document {
             if open {
                 d.container = RowKind::CardBody;
                 let tab = ui.tabs.get(&cell).copied().unwrap_or(CellTab::Code);
-                d.tabstrip(
-                    cell,
-                    tab,
-                    v.and_then(|v| v.changes.as_deref()),
-                    v.is_some_and(|v| !v.helpers.is_empty()),
-                    id,
-                );
+                d.tabstrip(cell, tab, v.and_then(|v| v.changes.as_deref()), id);
                 if v.is_some_and(|v| v.origin != crate::abi::Origin::AuthoredCell) {
                     d.push(
                         "Host-lowered tool frame · not model-authored source",
@@ -574,17 +526,6 @@ impl Document {
                                     d.wrapped(value, tone, None, inner, id, 4);
                                 }
                             }
-                        }
-                    }
-                    CellTab::Helpers => {
-                        if v.is_none_or(|v| v.helpers.is_empty()) {
-                            d.push(
-                                "No helper calls recorded for this cell.",
-                                Tone::Normal,
-                                None,
-                                inner,
-                                id,
-                            );
                         }
                     }
                 }
@@ -625,18 +566,10 @@ impl Document {
                     }
                 }
                 if running {
-                    d.work(s, v, inner, id);
+                    d.work(s, inner, id);
                 }
                 if let Some(asked) = v.and_then(|v| v.asked.as_deref()) {
                     d.push(asked, Tone::Accent, None, inner, id);
-                }
-                // The helper calls this cell made, inside its card: every
-                // row of the lane on the program's tab, and each call's
-                // whole account on the Helpers tab.
-                if let Some(v) = v.filter(|v| !v.helpers.is_empty())
-                    && matches!(tab, CellTab::Code | CellTab::Helpers)
-                {
-                    d.helpers(cell, v, s, ui, inner, id);
                 }
                 d.container = RowKind::Plain;
                 // The bottom edge says what the cell changed once it has
@@ -662,14 +595,6 @@ impl Document {
             d.blank(id);
         }
         d.notes(s, ui, &mut note, usize::MAX, room);
-        d.behind(s, room);
-        // A Scout with no turn of the person's in view to sit under still
-        // shows, where it always did.
-        if scout_under.is_none()
-            && let Some(p) = &n.preflight
-        {
-            d.scout(p, s, ui, room, usize::MAX - 2);
-        }
         if let Some(reasoning) = &s.streaming_reasoning {
             d.turn_sterna(usize::MAX - 4);
             d.reasoning(reasoning, s, room);
@@ -823,17 +748,6 @@ impl Document {
                 if files == 1 { "file" } else { "files" }
             ));
         }
-        if !v.helpers.is_empty() {
-            facts.push(format!(
-                "{} {}",
-                v.helpers.len(),
-                if v.helpers.len() == 1 {
-                    "helper"
-                } else {
-                    "helpers"
-                }
-            ));
-        }
         if let Some(calls) = v.call_count.filter(|c| *c > 0) {
             facts.push(format!(
                 "{calls} {}",
@@ -931,7 +845,7 @@ impl Document {
         }
     }
     /// The program, with the calls that act on the world lit up: `read`,
-    /// `edit`, `bash`, a helper, a check -- every `await`ed call and every
+    /// `edit`, `bash`, a check -- every `await`ed call and every
     /// call on one of the runtime's own objects -- so the chain of events a
     /// cell will cause is read off it at a glance.
     fn program(&mut self, program: &str, answered: Option<&str>, width: usize, id: usize) {
@@ -1445,18 +1359,13 @@ impl Document {
                 // A verdict just in stands out for a moment, then settles.
                 _ if settling => (Tone::Accent, Tone::Strong),
                 crate::tui::NoteKind::Error => (Tone::Failure, Tone::Failure),
-                crate::tui::NoteKind::Checked => (Tone::Success, Tone::Muted),
                 crate::tui::NoteKind::Flagged => (Tone::Warning, Tone::Warning),
-                crate::tui::NoteKind::Learned => (Tone::Helper, Tone::Helper),
                 crate::tui::NoteKind::Plain => (Tone::Line, Tone::Muted),
             };
-            // **A check's reasons fold under its verdict.** The person reads
-            // the verdict first and opens the why when they want it; the
-            // reasons never push the next turn off the screen.
-            let folds = matches!(
-                kind,
-                crate::tui::NoteKind::Checked | crate::tui::NoteKind::Flagged
-            ) && note.text.lines().nth(1).is_some();
+            // **A gate note's lines fold under its first.** The person reads
+            // the first line and opens the rest when they want it; the notes
+            // never push the next turn off the screen.
+            let folds = kind == crate::tui::NoteKind::Flagged && note.text.lines().nth(1).is_some();
             let open = ui.notes_open.contains(&index);
             let fold = folds.then_some(Action::Note(index));
             let room = width.saturating_sub(4).max(8);
@@ -1490,15 +1399,7 @@ impl Document {
                     }
                     continue;
                 }
-                // What the check used is said quietly at the verdict's end.
-                let (said, cost) = match line
-                    .rfind(crate::tui::history::COST)
-                    .filter(|_| line_no == 0 && folds && line.ends_with(" tokens"))
-                {
-                    Some(at) => (&line[..at], Some(&line[at..])),
-                    None => (line, None),
-                };
-                let parts = super::view::wrap_words(said, room);
+                let parts = super::view::wrap_words(line, room);
                 let last = parts.len().saturating_sub(1);
                 for (part_no, part) in parts.into_iter().enumerate() {
                     let mut spans = vec![(
@@ -1506,35 +1407,12 @@ impl Document {
                         mark_tone,
                     )];
                     spans.push((part, text_tone));
-                    if part_no == last && line_no == 0 {
-                        if let Some(cost) = cost {
-                            spans.push((cost.to_string(), Tone::Muted));
-                        }
-                        if folds {
-                            spans.push(((if open { " ▾" } else { " ▸" }).to_string(), Tone::Line));
-                        }
+                    if part_no == last && line_no == 0 && folds {
+                        spans.push(((if open { " ▾" } else { " ▸" }).to_string(), Tone::Line));
                     }
                     self.kinded(spans, fold.clone(), usize::MAX - 4, RowKind::Note);
                 }
             }
-        }
-    }
-    /// Work still running behind the answer, one row each, where its
-    /// verdict will land; the row goes when the work ends.
-    fn behind(&mut self, s: &ScreenState, width: usize) {
-        for lane in &s.behind {
-            self.kinded(
-                vec![
-                    (format!("  {} ", self.busy(s, Mover::Behind)), Tone::Helper),
-                    (
-                        clip(&voice::behind(lane), width.saturating_sub(5)),
-                        Tone::Helper,
-                    ),
-                ],
-                None,
-                usize::MAX - 4,
-                RowKind::Note,
-            );
         }
     }
     /// A full-width separator in the one colour reserved for separators.
@@ -1548,17 +1426,9 @@ impl Document {
     /// The cell's own navigation: what this cell changed, what it ran, what
     /// came back, and a route to the full diff. The counts are the observed
     /// patch's, so an empty capture says so by showing no counts at all.
-    fn tabstrip(
-        &mut self,
-        cell: usize,
-        current: CellTab,
-        changes: Option<&str>,
-        helpers: bool,
-        id: usize,
-    ) {
+    fn tabstrip(&mut self, cell: usize, current: CellTab, changes: Option<&str>, id: usize) {
         // A tab is offered only when it has something behind it: a cell
-        // that changed nothing has no Changes tab and no diff to open, and
-        // one no helper looked at has no Helpers tab.
+        // that changed nothing has no Changes tab and no diff to open.
         let (added, removed) = changes.map_or((0, 0), count_changes);
         let changed = added + removed > 0;
         let mut tabs = Vec::new();
@@ -1567,9 +1437,6 @@ impl Document {
         }
         tabs.push(("Cell program".to_string(), CellTab::Code));
         tabs.push(("Full output".to_string(), CellTab::Output));
-        if helpers {
-            tabs.push(("Helpers".to_string(), CellTab::Helpers));
-        }
         // The Changes tab is the route to the diff; a second link beside
         // it opened the same thing.
         let text = tabs
@@ -1593,28 +1460,12 @@ impl Document {
     }
     /// What is actually happening inside a running cell, how long it has
     /// been, and at whose cost, under the scanner.
-    fn work(&mut self, s: &ScreenState, v: Option<&CellView>, width: usize, id: usize) {
-        let helper = v.and_then(|v| v.helpers.last());
-        let waiting = helper.is_some_and(|h| !h.outcome.ok && h.outcome.text.is_empty());
-        let (label, detail) = voice::working(s.activity, waiting, &clock(s.pulse.elapsed_ms));
-        let cost = helper.map_or_else(
-            || {
-                s.model
-                    .as_deref()
-                    .map_or_else(|| "model unknown".into(), |m| format!("this session · {m}"))
-            },
-            |h| {
-                format!(
-                    "{} · {}",
-                    h.helper,
-                    if h.usage.model.is_empty() {
-                        "model not named"
-                    } else {
-                        h.usage.model.as_str()
-                    }
-                )
-            },
-        );
+    fn work(&mut self, s: &ScreenState, width: usize, id: usize) {
+        let (label, detail) = voice::working(s.activity, &clock(s.pulse.elapsed_ms));
+        let cost = s
+            .model
+            .as_deref()
+            .map_or_else(|| "model unknown".into(), |m| format!("this session · {m}"));
         let label = format!("◆ {label}  ");
         let mut head = vec![(label.clone(), Tone::Accent)];
         if span_width(&label) + 12 < width {
@@ -1722,301 +1573,10 @@ impl Document {
         out.push((files, Tone::Muted));
         out
     }
-    /// The Scout that ran before the request's first turn: one line once it
-    /// has answered, its whole report a click away. Drawn in full after the
-    /// cells, the report sat under the work for the whole task.
-    fn scout(
-        &mut self,
-        p: &crate::helpers::HelperRecord,
-        s: &ScreenState,
-        ui: &Workbench,
-        width: usize,
-        id: usize,
-    ) {
-        let waiting = !p.outcome.ok && p.outcome.text.is_empty();
-        let failed = !p.outcome.ok && !waiting;
-        let said = if waiting {
-            format!("{} {}", p.verb, p.asked)
-        } else if failed {
-            p.outcome.text.lines().next().unwrap_or("").to_string()
-        } else {
-            match named_files(&p.outcome.text) {
-                0 => "named no files".to_string(),
-                1 => "named 1 file".to_string(),
-                files => format!("named {files} files"),
-            }
-        };
-        let right = if waiting {
-            String::new()
-        } else if p.outcome.elapsed_ms == 0 {
-            (if ui.scout { "▾" } else { "▸" }).to_string()
-        } else {
-            format!(
-                "{:.1}s {}",
-                p.outcome.elapsed_ms as f64 / 1000.,
-                if ui.scout { "▾" } else { "▸" }
-            )
-        };
-        let left = vec![
-            (
-                format!(
-                    "{} PREFLIGHT · SCOUT  ",
-                    if waiting {
-                        self.busy(s, Mover::Preflight)
-                    } else {
-                        "◇"
-                    }
-                ),
-                Tone::Helper,
-            ),
-            (
-                clip(&said, width.saturating_sub(34)),
-                if failed { Tone::Failure } else { Tone::Muted },
-            ),
-        ];
-        self.kinded(
-            justify(left, vec![(right, Tone::Muted)], width),
-            (!waiting).then_some(Action::Scout),
-            id,
-            RowKind::Helper,
-        );
-        if waiting {
-            self.wrapped(
-                format!(
-                    "Waiting on helper · {:.1}s · estimate unknown",
-                    p.outcome.elapsed_ms as f64 / 1000.
-                ),
-                Tone::Normal,
-                None,
-                width,
-                id,
-                5,
-            );
-        } else if ui.scout && failed {
-            self.wrapped(p.outcome.text.clone(), Tone::Failure, None, width, id, 5);
-        } else if ui.scout {
-            // The report reads as the answers do: its Markdown drawn, never
-            // shown as hashes and backticks.
-            self.prose(&scout_report(&p.outcome.text), Tone::Normal, width, id, 5);
-        }
-    }
-    fn helpers(
-        &mut self,
-        cell: usize,
-        v: &CellView,
-        s: &ScreenState,
-        ui: &Workbench,
-        width: usize,
-        id: usize,
-    ) {
-        for (i, h) in v.helpers.iter().enumerate() {
-            let waiting = !h.outcome.ok && h.outcome.text.is_empty();
-            let tone = if waiting {
-                Tone::Accent
-            } else if !h.outcome.ok {
-                Tone::Failure
-            } else {
-                Tone::Normal
-            };
-            let result = if waiting {
-                format!(
-                    "{} {} · {:.1}s · estimate unknown",
-                    h.verb,
-                    h.asked,
-                    h.outcome.elapsed_ms as f64 / 1000.
-                )
-            } else {
-                h.outcome
-                    .text
-                    .lines()
-                    .next()
-                    .unwrap_or("Returned")
-                    .to_string()
-            };
-            let open =
-                ui.helper == Some((cell, i)) || ui.tabs.get(&cell) == Some(&CellTab::Helpers);
-            let right = format!(
-                "{} {}",
-                if waiting || h.outcome.elapsed_ms == 0 {
-                    String::new()
-                } else {
-                    format!("{:.1}s", h.outcome.elapsed_ms as f64 / 1000.)
-                },
-                if open { "▾" } else { "▸" }
-            );
-            let left = vec![
-                (
-                    format!(
-                        "{} {}  ",
-                        if waiting {
-                            self.busy(s, Mover::Running)
-                        } else {
-                            "◇"
-                        },
-                        h.helper
-                    ),
-                    if tone == Tone::Normal {
-                        Tone::Helper
-                    } else {
-                        tone
-                    },
-                ),
-                (
-                    clip(&result, width.saturating_sub(9 + h.helper.len())),
-                    if tone == Tone::Normal {
-                        Tone::Muted
-                    } else {
-                        tone
-                    },
-                ),
-            ];
-            let kind = if self.container == RowKind::CardBody {
-                RowKind::CardBody
-            } else {
-                RowKind::Helper
-            };
-            self.kinded(
-                justify(left, vec![(right, Tone::Muted)], width),
-                Some(Action::Helper(cell, i)),
-                id,
-                kind,
-            );
-            if open {
-                // What was asked, what came back, and what it cites; the
-                // steps it took and the excerpts written for the model are
-                // its raw record, one chip away.
-                self.wrapped(
-                    format!("Asked: {}", h.asked),
-                    Tone::Normal,
-                    None,
-                    width,
-                    id,
-                    2,
-                );
-                if !h.usage.model.is_empty() {
-                    self.wrapped(
-                        format!("Model: {}", h.usage.model),
-                        Tone::Muted,
-                        None,
-                        width,
-                        id,
-                        2,
-                    );
-                }
-                let (answer, cited, raw) = helper_account(&h.outcome.text);
-                if waiting {
-                    self.wrapped("Waiting for its answer.", Tone::Normal, None, width, id, 2);
-                } else if h.outcome.ok {
-                    self.wrapped(format!("Answer: {answer}"), tone, None, width, id, 2);
-                } else {
-                    self.wrapped(format!("Failed: {answer}"), tone, None, width, id, 2);
-                }
-                if !cited.is_empty() {
-                    self.wrapped(
-                        format!("Cited: {}", cited.join(", ")),
-                        Tone::Muted,
-                        None,
-                        width,
-                        id,
-                        2,
-                    );
-                }
-                if !h.looked.is_empty() || !raw.is_empty() {
-                    self.chips(
-                        vec![(
-                            "raw".to_string(),
-                            Action::HelperRaw(cell, i),
-                            ui.helper_raw == Some((cell, i)),
-                        )],
-                        id,
-                    );
-                    if ui.helper_raw == Some((cell, i)) {
-                        for step in &h.looked {
-                            self.wrapped(step.clone(), Tone::Muted, None, width, id, 4);
-                        }
-                        self.wrapped(raw.to_string(), Tone::Muted, None, width, id, 4);
-                    }
-                }
-            }
-        }
-    }
-}
-/// How many files a Scout's report names: its `path:line` spans, and the
-/// paths a dissection's `## Files` names without a line.
-fn named_files(report: &str) -> usize {
-    let mut paths: Vec<String> = crate::preflight::spans(report)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    for (path, _) in crate::preflight::dissection_files(report) {
-        if !paths.contains(&path) {
-            paths.push(path);
-        }
-    }
-    paths.len()
-}
-
-/// A helper's returned text as a person reads it: the answer, the
-/// `path:lines` spans it cites, and the excerpt block written for the model.
-fn helper_account(text: &str) -> (&str, Vec<String>, &str) {
-    let Some(at) = text.find(crate::excerpts::HEADING) else {
-        return (text.trim(), Vec::new(), "");
-    };
-    let raw = &text[at..];
-    let cited = raw
-        .lines()
-        .filter_map(|line| line.strip_prefix("### "))
-        .map(str::to_string)
-        .collect();
-    (text[..at].trim(), cited, raw.trim())
 }
 
 /// The start of an `answer("…")` literal, up to its closing quote: whole
 /// when it fits in `room` characters, else cut at a word and marked cut.
-/// The Scout's report with its empty sections folded into one closing
-/// line: "## Tests / none found" and "## Risks / none found" become "No
-/// tests or risks found."
-fn scout_report(text: &str) -> String {
-    let mut kept: Vec<(String, Vec<&str>)> = Vec::new();
-    let mut lead: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if let Some(name) = line.strip_prefix("## ") {
-            kept.push((name.trim().to_string(), Vec::new()));
-        } else if let Some((_, body)) = kept.last_mut() {
-            body.push(line);
-        } else {
-            lead.push(line);
-        }
-    }
-    let empty = |body: &[&str]| {
-        body.iter()
-            .map(|line| line.trim().trim_end_matches('.').to_lowercase())
-            .filter(|line| !line.is_empty())
-            .all(|line| matches!(line.as_str(), "none" | "none found" | "- none" | "n/a"))
-    };
-    let mut none = Vec::new();
-    let mut out: Vec<String> = lead.iter().map(|line| (*line).to_string()).collect();
-    for (name, body) in &kept {
-        if empty(body) {
-            none.push(name.to_lowercase());
-            continue;
-        }
-        out.push(format!("## {name}"));
-        out.extend(body.iter().map(|line| (*line).to_string()));
-    }
-    if !none.is_empty() {
-        let last = none.pop().unwrap_or_default();
-        let named = if none.is_empty() {
-            last
-        } else {
-            format!("{} or {last}", none.join(", "))
-        };
-        out.push(String::new());
-        out.push(format!("No {named} found."));
-    }
-    out.join("\n")
-}
-
 fn answer_head(literal: &str, room: usize) -> (String, bool) {
     let mut text = String::new();
     let mut escaped = false;

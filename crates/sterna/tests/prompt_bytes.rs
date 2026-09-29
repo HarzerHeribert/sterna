@@ -129,7 +129,6 @@ fn the_worked_turn_renders_byte_for_byte() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
 
     assert_eq!(prompt::render_result(&result), cell_1_result);
@@ -393,7 +392,6 @@ fn a_result_block_omits_empty_sections_and_writes_none_for_an_empty_table() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
     let rendered = prompt::render_result(&empty);
     assert!(rendered.contains("## Handles\n(none)"));
@@ -419,7 +417,6 @@ fn a_result_block_omits_empty_sections_and_writes_none_for_an_empty_table() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
     let rendered = prompt::render_result(&with_stdout);
     assert!(rendered.contains("## stdout\nhello"));
@@ -448,7 +445,6 @@ fn a_result_block_omits_empty_sections_and_writes_none_for_an_empty_table() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
     let rendered = prompt::render_result(&with_error);
     assert!(rendered.starts_with("[cell 3 threw in 5 ms]"));
@@ -484,7 +480,6 @@ fn task_spend_has_no_cap_warning_and_limit_preambles_are_one_sentence() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
     assert!(!prompt::render_result(&below).contains("finish or return"));
 
@@ -506,7 +501,6 @@ fn task_spend_has_no_cap_warning_and_limit_preambles_are_one_sentence() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
     let rendered = prompt::render_result(&at_ninety);
     assert!(rendered.contains("turn output cap 8,000 · task spent 360,000 · cells 1/40"));
@@ -601,7 +595,6 @@ fn an_unattributed_throw_omits_the_position_line() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
 
     let unattributed = prompt::render_result(&result(None));
@@ -648,7 +641,6 @@ fn a_position_the_first_frame_names_is_said_once() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     });
     assert_eq!(
         rendered.matches("line 1, column 47").count(),
@@ -684,7 +676,6 @@ fn a_yield_reason_is_one_line_under_the_cell_line() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
 
     let yielded = prompt::render_result(&result(None));
@@ -759,7 +750,6 @@ fn a_stack_overflow_renders_no_position_line_and_no_zero_frames() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     };
 
     let rendered = prompt::render_result(&result);
@@ -783,7 +773,7 @@ fn a_stack_overflow_renders_no_position_line_and_no_zero_frames() {
 
 // --- compaction --------------------------------------------------------
 
-fn sample_result(cell: u64, plan: Vec<sterna::runtime::outcome::PlanItem>) -> String {
+fn sample_result(cell: u64) -> String {
     prompt::render_result(&CellResult {
         ask_answer: None,
         cell,
@@ -802,7 +792,6 @@ fn sample_result(cell: u64, plan: Vec<sterna::runtime::outcome::PlanItem>) -> St
             cells_cap: Some(40),
             feedback: None,
         },
-        plan,
     })
 }
 
@@ -810,17 +799,13 @@ fn sample_result(cell: u64, plan: Vec<sterna::runtime::outcome::PlanItem>) -> St
 /// removes is present, in full, in the newest result.
 #[test]
 fn compaction_removes_only_what_the_newest_result_restates() {
-    let plan = vec![sterna::runtime::outcome::PlanItem {
-        text: "the one step".to_string(),
-        status: sterna::runtime::outcome::PlanStatus::Active,
-    }];
-    let old = sample_result(1, plan.clone());
-    let newest = sample_result(2, plan);
+    let old = sample_result(1);
+    let newest = sample_result(2);
 
     let compacted = prompt::compact_result(&old);
     assert!(compacted.len() < old.len(), "nothing was removed");
 
-    for section in ["## Handles", "## Plan", "## Usage"] {
+    for section in ["## Handles", "## Usage"] {
         assert!(
             !compacted.contains(section),
             "`{section}` survived compaction: {compacted}"
@@ -865,7 +850,6 @@ fn compaction_never_drops_an_error() {
             cells_cap: Some(40),
             feedback: None,
         },
-        plan: Vec::new(),
     });
     let compacted = prompt::compact_result(&rendered);
     assert!(
@@ -886,9 +870,9 @@ fn compaction_spares_the_newest_result_and_every_word_a_person_wrote() {
         messages: vec![
             Message::text(Role::User, person),
             Message::text(Role::Assistant, "```sterna\nconst a = 1;\n```"),
-            Message::text(Role::User, sample_result(1, Vec::new())),
+            Message::text(Role::User, sample_result(1)),
             Message::text(Role::Assistant, "```sterna\nconst b = 2;\n```"),
-            Message::text(Role::User, sample_result(2, Vec::new())),
+            Message::text(Role::User, sample_result(2)),
         ],
     };
     let report = prompt::compact_conversation(&mut conversation);
@@ -916,26 +900,13 @@ fn compaction_spares_the_newest_result_and_every_word_a_person_wrote() {
 /// The checkpoint's job is to say the objects survived; a model told only
 /// "the conversation was dropped" would re-run everything it still holds.
 #[test]
-fn the_checkpoint_names_the_live_handles_and_the_plan() {
-    let plan = vec![
-        sterna::runtime::outcome::PlanItem {
-            text: "read the files".to_string(),
-            status: sterna::runtime::outcome::PlanStatus::Done,
-        },
-        sterna::runtime::outcome::PlanItem {
-            text: "summarise them".to_string(),
-            status: sterna::runtime::outcome::PlanStatus::Active,
-        },
-    ];
+fn the_checkpoint_names_the_task_and_the_live_handles() {
     let text = prompt::checkpoint(
         "summarise every caller",
-        &plan,
         &["hits".to_string(), "files".to_string()],
         Some("http status: 400 — prompt is too long"),
     );
     assert!(text.contains("summarise every caller"), "{text}");
-    assert!(text.contains("[x] read the files"), "{text}");
-    assert!(text.contains("[~] summarise them"), "{text}");
     assert!(text.contains("hits, files"), "{text}");
     assert!(
         text.contains("every handle below is live"),
@@ -999,7 +970,6 @@ fn every_descriptor_survives_compaction_when_the_handles_do_not() {
                 cells_cap: Some(40),
                 feedback: None,
             },
-            plan: Vec::new(),
         })
     };
     let first = "Reading the ssh design to find what I have to change.";
@@ -1033,7 +1003,7 @@ fn every_descriptor_survives_compaction_when_the_handles_do_not() {
 /// descriptor existed: absent is not an empty line, and not an error.
 #[test]
 fn a_result_without_a_descriptor_is_byte_identical_to_the_old_head() {
-    let rendered = sample_result(4, Vec::new());
+    let rendered = sample_result(4);
     assert!(
         rendered.starts_with("[cell 4 yielded in 12 ms]\n\n## Handles"),
         "{rendered}"

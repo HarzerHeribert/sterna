@@ -456,11 +456,6 @@ pub fn render(
             gutter,
             running_cell,
             boxed,
-            if sidebar.is_none() {
-                &n.acceptance
-            } else {
-                &[]
-            },
         );
         y += 1;
     }
@@ -603,7 +598,7 @@ pub fn render(
         }
     }
     if ui.is_local() {
-        super::sheets::build(ui, s, n);
+        super::sheets::build(ui, s);
         // Between the session bar and the composer: a sheet sits above the
         // composer, as tall as what it holds.
         let room = Rect::new(a.x, a.y + header, a.width, body_height + queue_height);
@@ -874,17 +869,11 @@ fn session_card(
             Tone::Normal,
             Some(Action::Models),
         ),
-        // The effort opens where the model is chosen; the helpers open the
-        // settings that turn them on.
+        // The effort opens where the model is chosen.
         (
             super::facts::effort_word(s),
             Tone::Muted,
             Some(Action::Models),
-        ),
-        (
-            format!("helpers {}", if s.helpers_on { "on" } else { "off" }),
-            Tone::Muted,
-            Some(Action::SettingsAt(super::settings::section::HELPERS)),
         ),
     ]);
     if let Some(word) = &s.subagents {
@@ -923,56 +912,6 @@ fn session_card(
             };
             lines.push((format!("{mark} {count} {said}"), Tone::Muted, None));
         }
-    }
-    // The task's acceptance list, when it has one, is one line of progress:
-    // its items cut to the card's width could not be read, and the whole
-    // list is one click away.
-    if !n.acceptance.is_empty() {
-        lines.push((
-            format!("{} ▸", crate::acceptance::glance(&n.acceptance)),
-            acceptance_tone(&n.acceptance, Tone::Accent),
-            Some(Action::Acceptance),
-        ));
-    }
-    lines.push((String::new(), Tone::Normal, None));
-    lines.push(("◇ HELPERS".into(), Tone::Helper, None));
-    // The newest cell that called a helper: the turn ending does not make
-    // the sidebar forget them.
-    let with_helpers = n.last_with_helpers();
-    let helpers = with_helpers
-        .and_then(|cell| n.cells.get(cell - 1))
-        .map_or(&[][..], |c| c.helpers.as_slice());
-    let state = |record: &crate::helpers::HelperRecord| {
-        if record.outcome.ok {
-            ("returned", Tone::Muted)
-        } else if record.outcome.text.is_empty() {
-            ("working", Tone::Muted)
-        } else {
-            ("failed", Tone::Failure)
-        }
-    };
-    // The Scout is a helper too: while it reads the project before the
-    // first cell, the rail says so rather than "none yet".
-    match (helpers.is_empty(), n.preflight.as_ref()) {
-        (true, Some(scout)) => {
-            let (word, tone) = state(scout);
-            lines.push((format!("Scout · {word}"), tone, Some(Action::Scout)));
-        }
-        (true, None) => lines.push((
-            if s.helpers_on { "none yet" } else { "off" }.into(),
-            Tone::Muted,
-            Some(Action::SettingsAt(super::settings::section::HELPERS)),
-        )),
-        _ => {}
-    }
-    for (i, helper) in helpers.iter().enumerate() {
-        let (word, tone) = state(helper);
-        lines.push((
-            format!("{} · {word}", helper.helper),
-            tone,
-            // The same lane the card shows, opened there.
-            Some(Action::Helper(with_helpers.unwrap_or(0), i)),
-        ));
     }
     for (i, (text, tone, action)) in lines.iter().enumerate() {
         let y = side.y + i as u16;
@@ -1033,16 +972,10 @@ fn dock_top(
     gutter: Option<u16>,
     cell: Option<usize>,
     boxed: bool,
-    acceptance: &[crate::acceptance::Verdict],
 ) {
     let t = s.theme;
     let running = s.activity.working();
-    // The turn is complete once its check has had its say, not before.
-    let said = if s.activity == Activity::Complete && s.behind.iter().any(|lane| lane == "check") {
-        voice::CHECKING.to_string()
-    } else {
-        voice::status(s.activity, cell, s.streaming_tool_input.is_some())
-    };
+    let said = voice::status(s.activity, cell, s.streaming_tool_input.is_some());
     let status = format!(
         "{said}{}",
         if s.stopping { " · stop requested" } else { "" }
@@ -1140,36 +1073,6 @@ fn dock_top(
                 row(f, Rect::new(right, a.y, w, 1), &above, Tone::Muted, t);
             }
         }
-        // The acceptance list's one line, where the sidebar that carries it
-        // is not on screen: beside the turn's status, one click from the list.
-        if !acceptance.is_empty() {
-            let label = crate::acceptance::glance(acceptance);
-            let w = chrome::width(&label) + 4;
-            if right > a.x + used + w + 2 {
-                chrome::chip(
-                    f,
-                    g,
-                    right - w - 1,
-                    a.y,
-                    right,
-                    &label,
-                    Action::Acceptance,
-                    false,
-                    acceptance_tone(acceptance, Tone::Normal),
-                    ui.press,
-                    t,
-                );
-            }
-        }
-    }
-}
-/// The acceptance list's one line in the failure colour once a check has
-/// found an item not met, and in `calm` until then.
-fn acceptance_tone(acceptance: &[crate::acceptance::Verdict], calm: Tone) -> Tone {
-    if crate::acceptance::failed(acceptance) > 0 {
-        Tone::Failure
-    } else {
-        calm
     }
 }
 /// The dock's bottom edge: the three everyday chips, one whispered hint,
@@ -1229,14 +1132,6 @@ fn dock_bottom(
                     .map(|label| format!("signing in to {label} ▸"))
                     .unwrap_or_default(),
                 Action::ReopenSignIn,
-            ),
-            (
-                if s.helpers_on {
-                    "◇ helpers on".to_string()
-                } else {
-                    String::new()
-                },
-                Action::SettingsAt(super::settings::section::HELPERS),
             ),
             (
                 s.subagents

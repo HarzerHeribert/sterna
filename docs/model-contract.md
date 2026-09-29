@@ -56,7 +56,7 @@ call id; a result is never duplicated into plain text.
       // the next cell: the edits those results earned, and the check for them
       await edit({path: "src/config.rs", old: OLD, replacement: REPLACEMENT});
       const run = await bash({command: "cargo test -p sterna --lib config"});
-      const failures = await helper.reduce(run.stdout);
+      const failures = run.stdout.split("\n").filter(line => line.includes("FAILED"));
       return {passed: run.exit_code === 0, failures};
 
       // judge what the cell already holds, and branch on it, in the same turn
@@ -67,10 +67,9 @@ call id; a result is never duplicated into plain text.
         diff.stdout);
       if (call.choice === "wider" && call.confidence > 0.85) { /* inspect */ }
 
-    `helper.<name>` and `decide.choice` answer from inside the cell and cost no
-    turn, so a summary or a judgement belongs in the step that needs it rather
-    than in a turn of its own; the Runtime block below declares the ones this
-    session has.
+    `decide.choice` answers from inside the cell and costs no turn, so a
+    judgement belongs in the step that needs it rather than in a turn of its
+    own; the Runtime block below declares it when this session has it.
 
     Changing existing source has a rhythm worth knowing before you start: `edit`
     writes against lines a previous completed cell showed you — a `context`, or the
@@ -126,14 +125,6 @@ call id; a result is never duplicated into plain text.
     that state; failed or skipped calls did not succeed. PermissionDenied is
     final: code cannot widen the session's sandbox grant.
 
-### 2.0 Blocks after the preamble
-
-Two blocks may follow the project's instructions, both derived before the
-first turn and paid for once: the scout's preflight block (`## Scouting
-record`) and the acceptance list (`## Acceptance list`), the request's own
-verifiable items that a completion is checked against. Neither changes a
-sentence of the preamble.
-
 ### 2.1 Interface variants
 
 `prompt::preamble_for(interface)` renders the preamble for the interface a
@@ -154,14 +145,14 @@ The completion sentence becomes:
 
     A prose response with no tool call ends the task as the answer.
 
-The `helper`/`decide` sentence gains what a direct call costs:
+The `decide` sentence gains what a direct call costs:
 
-    `helper.<name>` and `decide.choice` answer from inside the cell and cost no
-    turn, so a summary or a judgement belongs in the step that needs it rather
-    than in a turn of its own; the Runtime block below declares the ones this
-    session has. A direct call spends a whole turn on one operation, which suits
-    an independent step whose result needs nothing further this turn; dependent,
-    branching or repeated work is what a cell is for.
+    `decide.choice` answers from inside the cell and costs no turn, so a
+    judgement belongs in the step that needs it rather than in a turn of its
+    own; the Runtime block below declares it when this session has it. A direct
+    call spends a whole turn on one operation, which suits an independent step
+    whose result needs nothing further this turn; dependent, branching or
+    repeated work is what a cell is for.
 
 The chaining paragraph with its worked cells, and the edit-rhythm
 paragraph, stay verbatim: a cell is where dependent, branching or repeated
@@ -178,7 +169,7 @@ The rest of the opening paragraph becomes:
     for its correlated result. Never invent output or infer success: only that
     result is runtime evidence.
 
-The chaining paragraph, the `helper`/`decide` sentence, the edit-rhythm
+The chaining paragraph, the `decide` sentence, the edit-rhythm
 paragraph and the description paragraph are dropped: a request that
 declares no `execute_cell` runs no cell. The cell-mechanics paragraph
 becomes:
@@ -209,7 +200,7 @@ The purity clause is the tool's own declaration and is what lets a handle be
 re-materialised after resume ([runtime](runtime.md#resume)).
 
 After the tools come the **Runtime** block (the host globals a cell holds:
-`helper`, `decide`, `agent`, `bg`, `batch`, `todo`, `web`, `mcp`, `checks`,
+`decide`, `agent`, `bg`, `batch`, `web`, `mcp`, `checks`,
 `keep`, `free`, `handles`, `yieldNow`, `answer`, `ask`, `on`, `off`,
 `console`), each declared only where this session binds it — `web` only
 when `[web]` is configured, `decide` only when a decision model is — then

@@ -98,11 +98,44 @@ the hidden lines that look like failures (`error`, `panic`, `FAILED`,
 first. A thrown message is capped the same way in `## Error`: its start and
 its end, and how many characters are between them.
 
-With a decision model configured, `helpers.reduce_returns` (on by default)
-lets it read a large field as a log and send it to the reducer first — the
-whole value stays bound — and `helpers.prefetch_returns` (off by default)
-follows a return that names unread project files with those files
-([decisions](decisions.md)).
+With a decision model configured, `decisions.reduce_returns` (on by
+default) lets it read a large field as a log and shorten it by the rules
+below first — the whole value stays bound ([decisions](decisions.md)).
+
+## Shortened output
+
+A command result over `limits.reduce_above_tokens` (2,048 estimated tokens
+by default) is shortened by rules before the program reads it: passing
+test lines, a page of `Compiling` and a line repeated many times fold into
+one line each, and no failure line is ever dropped. The shortened text
+leads with one line saying what it left out; `stdout` and `stderr` on the
+result stay complete. An output no rule recognises is left as it is.
+
+## Checking the work
+
+Declared checks live in `.sterna/checks.toml`:
+
+```toml
+[checks.tests]
+command = "python3 -m unittest discover -s tests -v"
+inputs = ["src", "tests", "README.md"]
+reuse = true
+```
+
+A cell runs them with `checks.run("tests")`, inside the sandbox like any
+command. With `reuse`, an unchanged successful result (same inputs, same
+environment) is returned marked `reused` instead of run again.
+
+When a command that runs a changed test file passes and the task has
+changed code too, Sterna copies the project into a temp folder, puts the
+changed code back as it was when the task started, keeps the tests, and
+runs the same command there on its own thread. If it passes there too, the
+next cell result says the tests do not exercise what changed; if it fails,
+as a test of the change should, nothing is said. It needs no model and knows
+no language: a test file is recognised by its path (`tests/`, `test_`,
+`_test.`, `.test.`, `.spec.`, `…Test.java`), the command is the model's own,
+and the verdict is an exit code. A command that writes the test file (a `>`
+into it, `tee`, `cp`) is not a run. Git projects only; one run at a time.
 
 ## Throws
 

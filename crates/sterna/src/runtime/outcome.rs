@@ -47,11 +47,6 @@ pub struct CellTurn {
     /// The one rollout line this cell owes — appended by the wiring package,
     /// never by this one.
     pub record: CellRecord,
-    /// The model's own plan as it stood when the cell ended, newest write
-    /// wins. Empty until a cell calls `todo.write`. It rides the turn rather
-    /// than the record because it is task state the screen re-renders every
-    /// cell, not a line the rollout owes.
-    pub plan: Vec<PlanItem>,
     /// The canonical typed result of each capability call, in call order,
     /// captured only for a frame lowered from direct provider tool calls.
     ///
@@ -64,56 +59,6 @@ pub struct CellTurn {
     /// What rendering `table` as a delta cost and saved this turn
     /// (`smarter-cheaper-roadmap.md`, *Observation delta*).
     pub observation: crate::runtime::observation::ObservationStats,
-}
-
-/// One item of the model's own plan — `todo.write`'s unit.
-///
-/// The invariant: **a status is one of three states and there is no fourth.**
-/// A plan the model can put arbitrary text in the status of is a plan nothing
-/// downstream can render or count, so an unknown status is refused at the
-/// binding rather than stored and puzzled over later.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanItem {
-    pub text: String,
-    pub status: PlanStatus,
-}
-
-/// A plan item's state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanStatus {
-    Pending,
-    Active,
-    Done,
-}
-
-impl PlanStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PlanStatus::Pending => "pending",
-            PlanStatus::Active => "active",
-            PlanStatus::Done => "done",
-        }
-    }
-
-    /// The status named by `text`, or `None` for anything else. The three
-    /// spellings are the whole vocabulary and the model is told them.
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "pending" => Some(PlanStatus::Pending),
-            "active" => Some(PlanStatus::Active),
-            "done" => Some(PlanStatus::Done),
-            _ => None,
-        }
-    }
-
-    /// The mark this status carries in a rendered plan.
-    pub fn mark(self) -> &'static str {
-        match self {
-            PlanStatus::Pending => "[ ]",
-            PlanStatus::Active => "[~]",
-            PlanStatus::Done => "[x]",
-        }
-    }
 }
 
 /// How a cell ended.
@@ -1081,7 +1026,6 @@ mod tests {
                 handles: Vec::new(),
                 calls: Vec::new(),
             },
-            plan: Vec::new(),
             capability_results: Vec::new(),
             observation: Default::default(),
         }

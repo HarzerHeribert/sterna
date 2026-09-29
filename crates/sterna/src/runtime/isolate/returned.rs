@@ -444,17 +444,14 @@ fn bounded_utf8(
 }
 
 impl Runtime {
-    /// Reduce a returned field's text the decision model read as a log:
-    /// `reduce.rs`'s ladder from the rules rung down, with this task's
-    /// caches and helper route, and its lossiness line at the head of what
-    /// comes back. `None` when nothing was made -- no helper configured, the
-    /// economics test refused, the filter was rejected -- and the field is
-    /// then paged as it would have been.
+    /// Reduce a returned field's text the decision model read as a log, by
+    /// `reduce.rs`'s rules, with its lossiness line at the head of what comes
+    /// back. `None` when no rule applied, and the field is then paged as it
+    /// would have been.
     pub fn reduce_returned(&self, text: &str) -> Option<String> {
         match crate::runtime::reduce::reduce_asked(text.to_string(), &self.state) {
             crate::runtime::reduce::Reduction::Made(reduced) => Some(reduced),
-            crate::runtime::reduce::Reduction::NotAttempted
-            | crate::runtime::reduce::Reduction::Failed(_) => None,
+            crate::runtime::reduce::Reduction::NotAttempted => None,
         }
     }
 }

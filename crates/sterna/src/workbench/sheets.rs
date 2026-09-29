@@ -5,12 +5,12 @@ use super::sheet::{Item, Kind, Sheet};
 use super::view::{label, row, wrap_words};
 use super::{Action, Layer, Source, Tone, Workbench, chrome, document::clip};
 use crate::permissions::Level;
-use crate::tui::{Notebook, ScreenState, Theme};
+use crate::tui::{ScreenState, Theme};
 use ratatui::{Frame, layout::Rect, widgets::Clear};
 
 /// Rebuilds the top sheet's rows from its source and the session's state.
 /// Focus, scroll and the search are the sheet's own and survive.
-pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
+pub(super) fn build(ui: &mut Workbench, s: &ScreenState) {
     let depth = ui.sheets.len();
     if depth == 0 {
         return;
@@ -48,7 +48,6 @@ pub(super) fn build(ui: &mut Workbench, s: &ScreenState, n: &Notebook) {
         Source::Confirm(what) => confirm(sheet, what),
         Source::Keys => keys(sheet),
         Source::Activity => activity(sheet, s),
-        Source::Acceptance => acceptance(sheet, n),
         Source::Themes { .. } => themes(sheet, s),
         Source::Settings(p) => super::settings::items(sheet, p, s),
         Source::Models(m) => super::models::items(sheet, m, s.effort),
@@ -225,7 +224,6 @@ pub fn keymap() -> Vec<(&'static str, &'static str, Option<Action>)> {
         ),
         ("F3", "which model answers", Some(Action::Models)),
         ("F4", "the selected cell's diff", None),
-        ("F5", "the selected cell's helpers", None),
         ("Ctrl-O", "expand or collapse the selected cell", None),
         ("Alt-↑ ↓", "select the previous or next cell", None),
         (
@@ -292,70 +290,6 @@ fn activity(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
         vec![Item::info("Nothing has happened yet.").tone(Tone::Muted)]
     } else {
         lines
-    }
-}
-
-/// The task's acceptance list, whole: grouped by what needs attention first
-/// -- not met, not checkable, open, met -- each item under its mark, and
-/// under it what the last check found or when it will be checked.
-fn acceptance(sheet: &mut Sheet, n: &Notebook) -> Vec<Item> {
-    use crate::acceptance::Status;
-    let (met, total) = crate::acceptance::tally(&n.acceptance);
-    sheet.title = "Acceptance".into();
-    sheet.crumbs = vec![format!(
-        "{met} of {total} met · {}",
-        n.acceptance_from.words()
-    )];
-    if n.acceptance.is_empty() {
-        return vec![Item::info("This task has no acceptance list.").tone(Tone::Muted)];
-    }
-    let mut items = Vec::new();
-    for (heading, wanted) in [
-        ("Not met", &[Status::Unmet][..]),
-        ("Could not check", &[Status::Unknown][..]),
-        ("Open", &[Status::Open, Status::Judge][..]),
-        ("Met", &[Status::Met][..]),
-    ] {
-        let group: Vec<_> = n
-            .acceptance
-            .iter()
-            .filter(|verdict| wanted.contains(&verdict.status))
-            .collect();
-        if group.is_empty() {
-            continue;
-        }
-        items.push(Item::heading(format!("{heading} · {}", group.len())));
-        for verdict in group {
-            items.push(
-                Item::info(format!(
-                    "{} {}",
-                    verdict.status.mark(),
-                    verdict.item.plain()
-                ))
-                .tone(status_tone(verdict.status)),
-            );
-            let found = match verdict.status {
-                _ if !verdict.evidence.is_empty() => verdict.evidence.as_str(),
-                Status::Judge => "left to the checker",
-                _ => "checked when the task finishes",
-            };
-            items.push(Item::info(format!("↳ {found}")).tone(Tone::Muted));
-        }
-    }
-    sheet.status = "Files are read after every cell; commands and judged items when the \
-                    model says it is done."
-        .into();
-    items
-}
-
-/// The colour of an acceptance item's mark and words.
-fn status_tone(status: crate::acceptance::Status) -> Tone {
-    use crate::acceptance::Status;
-    match status {
-        Status::Met => Tone::Success,
-        Status::Unmet => Tone::Failure,
-        Status::Unknown => Tone::Warning,
-        Status::Judge | Status::Open => Tone::Muted,
     }
 }
 
@@ -564,7 +498,7 @@ fn draw_palette_preview(f: &mut Frame<'_>, area: Rect, chosen: Theme, t: Theme) 
     let mut x = area.x;
     for (word, tone) in [
         ("you", Tone::You),
-        ("helper", Tone::Helper),
+        ("evidence", Tone::Evidence),
         ("detail", Tone::Muted),
     ] {
         let w = chrome::width(word);

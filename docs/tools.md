@@ -33,17 +33,15 @@ prompt's Runtime block only where the session binds them:
 
 | global | what it is |
 |---|---|
-| `helper.find`, `helper.reduce`, `helper.check` | cheap-model errands from inside the cell ([helpers](helpers.md)) |
 | `decide.choice` | a typed question to Jev, answered in about two seconds ([decisions](decisions.md)) |
 | `agent.run` | start a subagent; returns a handle at once ([events](events.md#subagents)) |
 | `bg.run`, `bg.watch`, `bg.cancel`, `job.result()` | background commands, collected where they are needed ([events](events.md#background-jobs)) |
-| `speculate(check, candidates)` | one to four candidate changes tried against one check in one cell; each is written, the check runs, and every file is put back before the next, through the same checked `write` and `bash` calls and approval gate. Nothing stays changed. Withheld from helpers |
+| `speculate(check, candidates)` | one to four candidate changes tried against one check in one cell; each is written, the check runs, and every file is put back before the next, through the same checked `write` and `bash` calls and approval gate. Nothing stays changed |
 | `batch` | the events that arrived while the model was not looking |
 | `on`, `off` | standing handlers over future batches |
 | `web.fetch`, `web.search` | the host web broker, when `[web]` is configured ([web](web.md)) |
 | `mcp.list`, `mcp.call` | the project's MCP servers ([project context](project-context.md#mcp-servers)) |
 | `checks.list`, `checks.run` | the project's declared verification commands |
-| `todo.write`, `todo.read` | the model's own plan, shown to the person |
 | `ask(question, choices)` | put a question to the person (off with nobody at the keyboard) |
 | `keep`, `free`, `handles` | manage handles |
 | `yieldNow(reason)`, `answer(text)` | hand back; end the task |
@@ -78,8 +76,8 @@ description:
 - **exact** — the complete observation within the requested scope;
 - **bounded exact** — an exact subset whose remainder is still reachable
   through a handle or a continuation;
-- **derived** — a semantic transformation ran; every helper's output is
-  this, whatever its quality.
+- **derived** — a transformation ran; output the rules shortened is this,
+  whatever its quality.
 
 A weaker class never stands in for a stronger claim.
 

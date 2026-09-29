@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 
 use super::decisions::{DecisionFigures, DecisionRow};
-use super::interface::{CreditRatios, Metrics, RegretRow};
+use super::interface::{Metrics, RegretRow};
 use super::model::{Attempt, Outcome, Program, Tier};
 use super::score::{AggregateRow, Row, Score, TaskRow, TierRow};
 
@@ -60,12 +60,11 @@ pub const JSONL_KEYS: [&str; 18] = [
 
 /// The decisions table's columns, in order; rendered only when some attempt
 /// is a `sterna:decisions-<mode>` arm.
-pub const DECISIONS_HEADERS: [&str; 12] = [
+pub const DECISIONS_HEADERS: [&str; 11] = [
     "task",
     "arm",
     "verified",
     "findings",
-    "checker spared",
     "holds",
     "overrides",
     "would_hold",
@@ -131,27 +130,20 @@ pub fn render_table(score: &Score) -> String {
     }
 
     if !score.regret.is_empty() {
-        out.push_str(&render_regret_table(&score.regret, &score.ratios));
+        out.push_str(&render_regret_table(&score.regret));
     }
 
     out
 }
 
 /// The second table: `sterna:hybrid` against the best other sterna arm, per
-/// task and dimension. Its header names the credit ratio the weighted
-/// spend used and calls it assumed unless `--credit-ratio` set it -- the
-/// figure is never a billed one.
-fn render_regret_table(rows: &[RegretRow], ratios: &CreditRatios) -> String {
+/// task and dimension. Spend is the parent's known tokens, never a billed
+/// figure.
+fn render_regret_table(rows: &[RegretRow]) -> String {
     let mut out = String::new();
-    let kind = if ratios.is_assumed() {
-        "assumed ratio"
-    } else {
-        "given ratio"
-    };
     writeln!(
         out,
-        "-- interface regret (weighted spend = parent + luna x helpers, {kind} luna={} terra={}, not billed) --",
-        ratios.luna, ratios.terra
+        "-- interface regret (spend = parent known tokens, not billed) --"
     )
     .expect("String write is infallible");
     writeln!(out, "{}", REGRET_HEADERS.join("  ")).expect("String write is infallible");
@@ -194,13 +186,12 @@ pub fn render_decisions_table(rows: &[DecisionRow]) -> String {
     for row in rows {
         writeln!(
             out,
-            "{}  {}  {}/{}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
+            "{}  {}  {}/{}  {}  {}  {}  {}  {}  {}  {}  {}",
             row.task,
             row.arm,
             row.verified_n,
             row.verified_m,
             row.findings_sum,
-            row.checker_spared,
             row.holds_sum,
             row.overrides_sum,
             row.would_hold_sum,
@@ -378,8 +369,7 @@ fn render_jsonl_line(attempt: &Attempt) -> String {
 
 /// The rubric tasks' A/B table: one row per (task, harness) with the mean
 /// facts stated, how many attempts passed, and the mean wall-clock, cells
-/// and parent and helper tokens -- what a context-handling arm is judged
-/// by. Empty when no attempt carried a rubric score.
+/// and parent tokens -- what a context-handling arm is judged by. Empty when no attempt carried a rubric score.
 pub fn render_rubric_table(attempts: &[Attempt]) -> String {
     let mut keys: Vec<(&str, &str)> = Vec::new();
     for attempt in attempts.iter().filter(|a| a.rubric.is_some()) {
@@ -391,9 +381,8 @@ pub fn render_rubric_table(attempts: &[Attempt]) -> String {
     if keys.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "\ntask | harness | facts | passed | wall | cells | parent tokens | helper tokens\n",
-    );
+    let mut out =
+        String::from("\ntask | harness | facts | passed | wall | cells | parent tokens\n");
     for (task, harness) in keys {
         let rows: Vec<&Attempt> = attempts
             .iter()
@@ -434,15 +423,9 @@ pub fn render_rubric_table(attempts: &[Attempt]) -> String {
                 .map(|n| n as f64)
                 .collect(),
         );
-        let helper = mean(
-            rows.iter()
-                .filter_map(|a| a.metrics.as_ref().and_then(|m| m.helper_known_tokens))
-                .map(|n| n as f64)
-                .collect(),
-        );
         writeln!(
             out,
-            "{task} | {harness} | {facts}/{total} | {passed}/{} | {wall}s | {cells} | {parent} | {helper}",
+            "{task} | {harness} | {facts}/{total} | {passed}/{} | {wall}s | {cells} | {parent}",
             rows.len()
         )
         .expect("String write is infallible");
@@ -453,10 +436,9 @@ pub fn render_rubric_table(attempts: &[Attempt]) -> String {
 /// The decision figures under stable keys; an absent figure is `null`.
 fn render_decision_figures(figures: &DecisionFigures) -> String {
     format!(
-        "{{\"verified\":{},\"findings\":{},\"checker_skipped\":{},\"finding_added\":{},\"holds\":{},\"overrides\":{},\"would_hold\":{},\"asked\":{},\"failed\":{},\"latency_ms_total\":{},\"parent_known_tokens\":{},\"wall_time_ms\":{}}}",
+        "{{\"verified\":{},\"findings\":{},\"finding_added\":{},\"holds\":{},\"overrides\":{},\"would_hold\":{},\"asked\":{},\"failed\":{},\"latency_ms_total\":{},\"parent_known_tokens\":{},\"wall_time_ms\":{}}}",
         json_opt(figures.verified),
         json_opt(figures.findings),
-        json_opt(figures.checker_skipped),
         json_opt(figures.finding_added),
         json_opt(figures.holds),
         json_opt(figures.overrides),
@@ -482,10 +464,9 @@ fn render_metrics(metrics: &Metrics) -> String {
         None => "null".to_string(),
     };
     format!(
-        "{{\"parent_requests\":{},\"parent_known_tokens\":{},\"helper_known_tokens\":{},\"execute_cell_calls\":{},\"direct_tool_calls\":{},\"frames_failed\":{},\"failures_by_kind\":{},\"repair_requests\":{},\"observation_bytes_rendered\":{},\"wall_time_ms\":{},\"completion_verified\":{}}}",
+        "{{\"parent_requests\":{},\"parent_known_tokens\":{},\"execute_cell_calls\":{},\"direct_tool_calls\":{},\"frames_failed\":{},\"failures_by_kind\":{},\"repair_requests\":{},\"observation_bytes_rendered\":{},\"wall_time_ms\":{},\"completion_verified\":{}}}",
         json_opt(metrics.parent_requests),
         json_opt(metrics.parent_known_tokens),
-        json_opt(metrics.helper_known_tokens),
         json_opt(metrics.execute_cell_calls),
         json_opt(metrics.direct_tool_calls),
         json_opt(metrics.frames_failed),

@@ -1839,9 +1839,8 @@ fn an_unconfigured_session_declares_no_web_global_and_a_configured_one_names_its
     );
     assert!(
         !HostGlobals::Every.installs_with("web", false)
-            && HostGlobals::Every.installs_with("web", true)
-            && !HostGlobals::Helper(&["read"]).installs_with("web", true),
-        "the predicate: configuration decides `web` for a cell, and a helper never holds it"
+            && HostGlobals::Every.installs_with("web", true),
+        "the predicate: configuration decides `web` for a cell"
     );
 }
 
@@ -1881,7 +1880,6 @@ fn the_agent_declaration_names_the_models_this_session_can_delegate_to() {
         sterna::prompt::Reach {
             web: None,
             agents: Some(&roster),
-            helpers: None,
             decisions: false,
         },
     );
@@ -1927,7 +1925,6 @@ fn an_unconfigured_session_is_not_told_about_the_decision_model() {
         sterna::prompt::Reach {
             web: None,
             agents: None,
-            helpers: None,
             decisions: false,
         },
     );
@@ -1940,7 +1937,6 @@ fn an_unconfigured_session_is_not_told_about_the_decision_model() {
         sterna::prompt::Reach {
             web: None,
             agents: None,
-            helpers: None,
             decisions: true,
         },
     );

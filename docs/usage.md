@@ -34,8 +34,8 @@ Session flags: `--model`, `--profile NAME`, `--sandbox ask|sandboxed|full`,
 each with `schema_version: 1`, `type` and `sequence`. Both need a single
 task. The final `result` carries `success`, `answer`, `error` and a
 `telemetry` object: wall time, cells run and failed, tool calls, provider
-requests, and input, output, cache-read and cache-creation tokens split
-between the main model and the helpers and again by model. Missing
+requests, and input, output, cache-read and cache-creation tokens, in all
+and by model. Missing
 provider usage shows in coverage counters rather than as a zero.
 Diagnostics go to stderr and failures exit non-zero.
 
@@ -63,7 +63,7 @@ machine or container you trust; the machine is then the boundary.
 |---|---|
 | `/login` | sign in: a subscription, an API key or your own endpoint |
 | `/key <provider>` | store an API key (not echoed) |
-| `/models`, `/model` | browse models; set the main, helper or subagent model |
+| `/models`, `/model` | browse models; set the main or subagent model |
 | `/effort` | Main's reasoning effort: `auto`, `low` … `max`; also on the model chip in the top bar |
 | `/wizard` | sign-in, models for each workload, Jev |
 | `/sandbox` | how much runs without asking: Ask, Sandboxed or Full access |
@@ -76,7 +76,7 @@ machine or container you trust; the machine is then the boundary.
 | `/rollback` | preview and undo what the session changed, keeping your own edits |
 | `/memory` | read or save this project's notes |
 | `/subagents` | subagent favourites: `on`, `off`, `SLOT MODEL [EFFORT]` |
-| `/status` | the Session sheet: models, sandbox, helpers, and how much of each subscription's limits is used |
+| `/status` | the Session sheet: models, sandbox, subagents, and how much of each subscription's limits is used |
 | `/context` | what fills the context window: system prompt, project instructions, tools, conversation and free space |
 | `/telemetry` | live requests and execution (Ctrl-T) |
 | `/statusline`, `/motion`, `/fullscreen` | what the screen carries; Ctrl-B shows or hides the sidebar |
@@ -86,7 +86,7 @@ machine or container you trust; the machine is then the boundary.
 
 Project commands in `.claude/commands/NAME.md` and skills in
 `.claude/skills/NAME/SKILL.md` run as `/NAME`. Keys: F2 settings, F3
-models, F4 the selected cell's diff, F5 its helpers, Ctrl-O expand a cell,
+models, F4 the selected cell's diff, Ctrl-O expand a cell,
 `?` on an empty composer shows every key. See [workbench](workbench.md).
 
 ## Git inside the sandbox
@@ -110,7 +110,7 @@ effort = "high"
 
 A cell selects one with `agent.run(task, {profile: "NAME"})`. A template
 grants no permissions and runs under the session's own sandbox. Subagents
-are off until you enable them ([helpers](helpers.md#subagents)).
+are off until you enable them ([subagents](subagents.md)).
 
 ## In CI
 

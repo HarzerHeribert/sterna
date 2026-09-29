@@ -140,7 +140,9 @@ fn named_agent_routes_snapshot_instructions_model_and_effort_with_explicit_overr
     );
     let id = SessionId::new("custom-agent-routing");
     let mut effective = sterna::config::SternaConfig::load(&fixture.0).unwrap();
-    effective.helpers.enabled = false;
+    // A decision model the project file does not name: a child that binds
+    // `decide` read the effective configuration, not the file.
+    effective.decisions.model = Some("jev-latest".into());
     // Explicitly authorize both fixture assignments; templates are not authority.
     effective.agents = sterna::config::SternaConfig::parse("[agents]\nmode='roster'\n[agents.slots.deep]\nmodel='template-model'\neffort='high'\n[agents.slots.quick]\nmodel='explicit-model'\neffort='low'").unwrap().agents;
     let mut runtime = Runtime::new(&fixture.profile(), &id)
@@ -179,7 +181,7 @@ fn named_agent_routes_snapshot_instructions_model_and_effort_with_explicit_overr
             sender
                 .send(serde_json::from_slice::<serde_json::Value>(&body).unwrap())
                 .unwrap();
-            let response = r#"{"role":"assistant","content":[{"type":"tool_use","id":"check-helpers","name":"execute_cell","input":{"code":"try { helper.find('sample'); answer('unexpected helper execution'); } catch (error) { answer(String(error)); }"}}]}"#;
+            let response = r#"{"role":"assistant","content":[{"type":"tool_use","id":"check-helpers","name":"execute_cell","input":{"code":"answer('decide is ' + typeof decide);"}}]}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
         }
     });
@@ -220,8 +222,8 @@ fn named_agent_routes_snapshot_instructions_model_and_effort_with_explicit_overr
     assert!(
         answers
             .iter()
-            .all(|answer| answer.stdout.contains("helpers are off")),
-        "child helpers ignored effective config: {answers:?}"
+            .all(|answer| answer.stdout.contains("decide is object")),
+        "the child ignored the effective config: {answers:?}"
     );
     for request in received {
         let request = request.unwrap();

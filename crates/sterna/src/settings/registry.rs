@@ -57,8 +57,8 @@ pub struct SettingSpec {
 /// Reasoning effort as the parent tier accepts it: `default` means *the
 /// provider's own*, which is not the same as removing a saved override.
 const EFFORT: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
-/// Per-helper effort is a hard policy (`config.rs`): a helper never inherits
-/// `default`, so the curated word is absent here on purpose.
+/// A favourite's effort is a hard policy (`config.rs`): a slot never inherits
+/// `auto`, so the curated word is absent here on purpose.
 const HARD_EFFORT: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// `tui::Theme::ALL`, spelled for the registry. `tests/settings_store.rs`
 /// asserts the two lists stay identical, so a new theme cannot appear in the
@@ -92,23 +92,13 @@ const AGENT_MODES: &[&str] = &["auto", "off", "pinned", "roster"];
 /// The sandbox levels, spelled once in `permissions::Level::NAMES` so the
 /// sheet and the settings row cannot disagree.
 const SANDBOX_LEVELS: &[&str] = &crate::permissions::Level::NAMES;
-const COMPLETION: &[&str] = &["silent", "recap"];
-const COMPLETION_CHECKS: &[&str] = &crate::config::CompletionCheck::NAMES;
-const PREFLIGHT_SCOPE: &[&str] = &["auto", "always"];
 const DECISION_MODES: &[&str] = &["off", "shadow", "on"];
 const ASK_JEV: &[&str] = &["off", "weight", "decide"];
 
 /// The top-level tables `SternaConfig` parses. A key under one of these is
 /// validated by the runtime parser; everything else is owned here.
-pub(crate) const RUNTIME_TABLES: [&str; 7] = [
-    "limits",
-    "helpers",
-    "agents",
-    "model",
-    "web",
-    "decisions",
-    "ask",
-];
+pub(crate) const RUNTIME_TABLES: [&str; 6] =
+    ["limits", "agents", "model", "web", "decisions", "ask"];
 
 /// Whether a key belongs to a runtime table, and so reaches `SternaConfig`.
 pub fn is_runtime(key: &str) -> bool {
@@ -155,12 +145,11 @@ pub fn is_global_only(key: &str) -> bool {
 /// `/effort high` two lines lower changed it instantly. One of those two was
 /// wrong, and it was not the slash command.
 ///
-/// A key absent from this match genuinely cannot move mid-session -- a
-/// helper roster is captured when a cell starts, a web broker is built once
-/// -- and the panel says `next session` on that row rather than in a
+/// A key absent from this match genuinely cannot move mid-session -- a web
+/// broker is built once -- and the panel says `next session` on that row rather than in a
 /// sentence attached to every row.
 ///
-/// **The three model keys are here for agreement, not because the panel
+/// **The model keys are here for agreement, not because the panel
 /// reaches them this way.** A model row opens the navigator, and the
 /// navigator already hands the loop the same `/model …` line this would; the
 /// arms exist so [`applies_now`] and the thing that actually happens cannot
@@ -172,7 +161,6 @@ pub fn live_command(key: &str, value: Option<&str>) -> Option<String> {
         "session.effort" => Some(format!("/effort {value}")),
         "sandbox.level" => Some(format!("/sandbox {value}")),
         "model.parent" => Some(format!("/model {value}")),
-        "helpers.model" => Some(format!("/model helper {value}")),
         "agents.model" => Some(format!("/model subagent {value}")),
         // `pinned` and `roster` need a model to name, and assigning one is
         // what turns them on; only the two that stand alone travel here.
@@ -191,7 +179,6 @@ const LIVE: &[&str] = &[
     "session.effort",
     "sandbox.level",
     "model.parent",
-    "helpers.model",
     "agents.model",
     "agents.mode",
 ];
@@ -210,7 +197,7 @@ pub fn applies_now(key: &str) -> bool {
 }
 
 static SPECS: &[SettingSpec] = &[
-    // -- the three model tiers, the everyday half of `/settings` ----------
+    // -- the model tiers, the everyday half of `/settings` ----------------
     SettingSpec {
         key: "model.parent",
         label: "Main model",
@@ -246,33 +233,6 @@ static SPECS: &[SettingSpec] = &[
         choices: &[],
         basic: true,
         restart: false,
-    },
-    SettingSpec {
-        key: "helpers.model",
-        label: "Helper model",
-        description: "The cheap model that reads long output for you and returns the part that mattered. With none set, helpers never run.",
-        kind: Kind::Model,
-        choices: &[],
-        basic: true,
-        restart: false,
-    },
-    SettingSpec {
-        key: "helpers.enabled",
-        label: "Helpers",
-        description: "Whether the little helpers run. Off means you read the whole of every command's output yourself.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: true,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.completion",
-        label: "Completion presentation",
-        description: "What the completion gate says when a task is accepted: nothing, or a short recap.",
-        kind: Kind::Choice,
-        choices: COMPLETION,
-        basic: true,
-        restart: true,
     },
     SettingSpec {
         key: "agents.slots.quick.model",
@@ -430,117 +390,18 @@ static SPECS: &[SettingSpec] = &[
     },
     // -- advanced runtime keys --------------------------------------------
     SettingSpec {
-        key: "helpers.effort.find",
-        label: "Find effort",
-        description: "Hard reasoning level for the lookup helper; it never inherits `default`.",
-        kind: Kind::Choice,
-        choices: HARD_EFFORT,
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.effort.reduce",
-        label: "Reduce effort",
-        description: "Hard reasoning level for the filtering helper.",
-        kind: Kind::Choice,
-        choices: HARD_EFFORT,
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.effort.check",
-        label: "Check effort",
-        description: "Hard reasoning level for the completion check, the most consequential helper decision.",
-        kind: Kind::Choice,
-        choices: HARD_EFFORT,
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.preflight",
-        label: "Helper preflight",
-        description: "Run the Scout before the first turn, at the cost of a repository scan per request.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.calls_per_cell",
-        label: "Helper calls per cell",
-        description: "The most helper calls one cell may make.",
-        kind: Kind::Integer,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.preflight_scope",
-        label: "Preflight scope",
-        description: "With preflight on: `auto` runs the Scout only for a request with an uncertainty signal; `always` runs it for every task.",
-        kind: Kind::Choice,
-        choices: PREFLIGHT_SCOPE,
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.completion_check",
-        label: "Check the answer",
-        description: "After the answer, a second model checks the work against your request, the answer, the diff and exact evidence. It never holds the answer back; the verdict is a note for you. `auto` checks after big work: a list the Scout wrote, or many files, lines or cells. `always` checks every answer that changed something. A turn that changed nothing is never checked. A one-task run (sterna -p, exec) checks only when you set this yourself.",
-        kind: Kind::Choice,
-        choices: COMPLETION_CHECKS,
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.acceptance_list",
-        label: "Request-derived acceptance list",
-        description: "Derive a checklist of verifiable items from the request before the first turn and hold a completion that leaves one unmet.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.reduce_returns",
+        key: "decisions.reduce_returns",
         label: "Reduce returned logs",
-        description: "Ask the decision model what kind of text a large returned field is, and send a log to the reducer before the model reads it. Needs a decisions model.",
+        description: "Ask the decision model what kind of text a large returned field is, and shorten a log by rules before the model reads it. Needs a decisions model.",
         kind: Kind::Bool,
         choices: &[],
         basic: false,
         restart: true,
     },
     SettingSpec {
-        key: "helpers.learn",
-        label: "Learned notes",
-        description: "After a task that had to search, note where things live in .sterna/learned.md, and read those notes into the next task. Written behind the answer; a one-task run (sterna -p, exec) writes them only when you set this yourself.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.scout_oneshot",
-        label: "One-shot dissection",
-        description: "Dissect an exploring request in one request over the project's file listing instead of the Scout's search loop.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.prefetch_returns",
-        label: "Prefetch what a return names",
-        description: "Ask the decision model whether a returned value is enough to go on, and fetch the in-project files it names when it is not. Needs a decisions model.",
-        kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "helpers.reduce_above_tokens",
+        key: "limits.reduce_above_tokens",
         label: "Reduce above tokens",
-        description: "Estimated command-output tokens above which the pushed reducer is worth a cheap request.",
+        description: "Estimated tokens above which command output and a returned log are shortened by rules before the model reads them.",
         kind: Kind::Integer,
         choices: &[],
         basic: false,
@@ -601,27 +462,9 @@ static SPECS: &[SettingSpec] = &[
         restart: true,
     },
     SettingSpec {
-        key: "decisions.scout_above",
-        label: "Scout confidence",
-        description: "Confidence at or above which a `needs_exploration` complexity answer adds a reason to run the preflight scout.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
         key: "decisions.completion_no_below",
         label: "Completion no threshold",
         description: "The completion question's confidence at or below which a claimed completion gets a not-satisfied finding.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.completion_yes_above",
-        label: "Completion yes threshold",
-        description: "The completion question's confidence at or above which the fresh checker is spared, when nothing else was found.",
         kind: Kind::Float,
         choices: &[],
         basic: false,
@@ -640,51 +483,6 @@ static SPECS: &[SettingSpec] = &[
         key: "decisions.hygiene_yes_above",
         label: "Hygiene yes threshold",
         description: "A diff-hygiene confidence at or above which an out-of-scope, debug-leftover, deleted-test or changed-signature question is decisive.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.judge_yes_above",
-        label: "Judge yes threshold",
-        description: "A `judge` acceptance item's confidence at or above which the item counts as satisfied without the fresh checker.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.judge_no_below",
-        label: "Judge no threshold",
-        description: "A `judge` acceptance item's confidence at or below which the item becomes a finding held once.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.drift_no_below",
-        label: "Drift no threshold",
-        description: "The drift question's confidence at or below which an effectful cell is held once, as not doing what the plan's current step says.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.scout_relevance_below",
-        label: "Scout relevance floor",
-        description: "A scout candidate's own relevance confidence at or below which it is left out of what the Scout is served.",
-        kind: Kind::Float,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "decisions.helper_no_below",
-        label: "Helper judge no threshold",
-        description: "A helper result's own confidence at or below which its record carries the one line that it may not answer what was asked.",
         kind: Kind::Float,
         choices: &[],
         basic: false,
@@ -957,6 +755,28 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
         "limits.task_tokens",
         "spend is shown and never capped: nobody knows up front how much a task needs",
     ),
+    ("decisions.scout_above", HELPERS_GONE),
+    ("decisions.scout_relevance_below", HELPERS_GONE),
+    ("decisions.helper_no_below", HELPERS_GONE),
+    ("decisions.judge_yes_above", HELPERS_GONE),
+    ("decisions.judge_no_below", HELPERS_GONE),
+    ("decisions.completion_yes_above", HELPERS_GONE),
+    (
+        "decisions.drift_no_below",
+        "the model's to-do list is gone, and the check of each cell against its current step with it: /plan <task> plans one request",
+    ),
+];
+
+/// Where the helpers' jobs went when they were removed. Every `helpers.*`
+/// key but the two [`MOVED_KEYS`] retires with this sentence.
+const HELPERS_GONE: &str =
+    "helpers are gone: the model reads what it needs itself, and a subagent takes delegated work";
+
+/// Settings that kept their job and changed their table: the old key, and
+/// the key its saved value is written under now.
+const MOVED_KEYS: &[(&str, &str)] = &[
+    ("helpers.reduce_above_tokens", "limits.reduce_above_tokens"),
+    ("helpers.reduce_returns", "decisions.reduce_returns"),
 ];
 
 /// Where the supervisor's job went when it was removed.
@@ -973,13 +793,10 @@ pub fn hidden(key: &str) -> bool {
 }
 
 /// The word a setting that changed kind is saved as now, for the word it
-/// was saved as before. `helpers.completion_check` was on or off; it is now
-/// when: on meant "every answer", and "auto" keeps the check where it pays.
+/// was saved as before.
 #[must_use]
 pub fn migrated_value(key: &str, word: &str) -> Option<&'static str> {
     match (key, word) {
-        ("helpers.completion_check", "true") => Some("auto"),
-        ("helpers.completion_check", "false") => Some("off"),
         // The effort the model chooses for itself was called `default`.
         ("session.effort", "default") => Some("auto"),
         _ => None,
@@ -996,9 +813,6 @@ pub fn migration_notice(key: &str, word: &str, now: &str, written: bool) -> Stri
         format!("`{key} = {word}` is read as `\"{now}\"`")
     };
     match (key, now) {
-        ("helpers.completion_check", "auto") => format!(
-            "{what}: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
-        ),
         ("session.effort", "auto") => {
             format!(
                 "{what}: the same setting under a clearer name. The model chooses its own effort."
@@ -1024,12 +838,43 @@ pub fn migrated_level(key: &str, word: &str) -> Option<&'static str> {
     }
 }
 
-/// Where a removed setting's job went, if `key` is one.
+/// `key` split into the profile overlay it sits in, if any, and the key
+/// inside it: `profiles.review.limits.cells` is `(Some("review"),
+/// "limits.cells")`.
+#[must_use]
+pub fn in_profile(key: &str) -> (Option<&str>, &str) {
+    match key
+        .strip_prefix("profiles.")
+        .and_then(|rest| rest.split_once('.'))
+    {
+        Some((name, inner)) => (Some(name), inner),
+        None => (None, key),
+    }
+}
+
+/// Where a removed setting's job went, if `key` is one -- in a profile
+/// overlay as much as at the top of a file.
 pub fn retired_key(key: &str) -> Option<&'static str> {
+    let (_, key) = in_profile(key);
+    if key.starts_with("helpers.") {
+        return Some(HELPERS_GONE);
+    }
     RETIRED_KEYS
         .iter()
         .find(|(retired, _)| *retired == key)
         .map(|(_, instead)| *instead)
+}
+
+/// The key a moved setting is saved under now, in the same profile overlay
+/// when it sat in one.
+#[must_use]
+pub fn moved_key(key: &str) -> Option<String> {
+    let (profile, inner) = in_profile(key);
+    let (_, now) = MOVED_KEYS.iter().find(|(old, _)| *old == inner)?;
+    Some(match profile {
+        Some(name) => format!("profiles.{name}.{now}"),
+        None => (*now).to_string(),
+    })
 }
 
 /// Turns the word a person typed into the value that will be written.
@@ -1305,7 +1150,6 @@ fn unknown_key(key: &str) -> String {
 /// "and this is what happens when nothing does".
 #[must_use]
 pub fn shown_default(key: &str) -> Option<String> {
-    let helpers = crate::config::HelpersConfig::default();
     let decisions = crate::config::DecisionsConfig::default();
     let ask = crate::config::AskConfig::default();
     Some(match key {
@@ -1323,14 +1167,8 @@ pub fn shown_default(key: &str) -> Option<String> {
         "limits.instructions_outline" => crate::config::Limits::default()
             .instructions_outline
             .to_string(),
-        "helpers.completion_check" => helpers.completion_check.as_str().into(),
-        "helpers.acceptance_list" => helpers.acceptance_list.to_string(),
-        "helpers.preflight_scope" => "auto".into(),
-        "helpers.reduce_above_tokens" => helpers.reduce_above_tokens.to_string(),
-        "helpers.reduce_returns" => helpers.reduce_returns.to_string(),
-        "helpers.prefetch_returns" => helpers.prefetch_returns.to_string(),
-        "helpers.scout_oneshot" => helpers.scout_oneshot.to_string(),
-        "helpers.learn" => helpers.learn.to_string(),
+        "limits.reduce_above_tokens" => crate::config::REDUCE_ABOVE_TOKENS_DEFAULT.to_string(),
+        "decisions.reduce_returns" => decisions.reduce_returns.to_string(),
         "ask.enabled" => ask.enabled.to_string(),
         // The runtime's own defaults, so the ● marks what actually runs.
         "ask.jev" => ask.jev.as_str().into(),
@@ -1340,14 +1178,8 @@ pub fn shown_default(key: &str) -> Option<String> {
         "agents.slots.deep.effort" => crate::config::slot_effort("deep").name().into(),
         "agents.slots.heavy.effort" => crate::config::slot_effort("heavy").name().into(),
         "ask.decide_above" => ask.decide_above.to_string(),
-        "decisions.scout_above" => decisions.scout_above.to_string(),
         "decisions.hygiene_no_below" => decisions.hygiene_no_below.to_string(),
         "decisions.hygiene_yes_above" => decisions.hygiene_yes_above.to_string(),
-        "decisions.judge_yes_above" => decisions.judge_yes_above.to_string(),
-        "decisions.judge_no_below" => decisions.judge_no_below.to_string(),
-        "decisions.drift_no_below" => decisions.drift_no_below.to_string(),
-        "decisions.scout_relevance_below" => decisions.scout_relevance_below.to_string(),
-        "decisions.helper_no_below" => decisions.helper_no_below.to_string(),
         _ => return None,
     })
 }

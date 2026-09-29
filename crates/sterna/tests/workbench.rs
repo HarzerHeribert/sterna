@@ -13,7 +13,6 @@ use std::{
 };
 use sterna::{
     contract::{Block, Conversation, Message, Role, ServedBy},
-    helpers::{HelperOutcome, HelperRecord, HelperUsage},
     tui::{
         Activity, CellError, CellView, ModelGroup, Notebook, Panel, ScreenState, Theme, TierModels,
     },
@@ -48,23 +47,6 @@ fn fixture() -> (Conversation, Notebook, ScreenState) {
                 output: Some("99 / 99 tests passed".into()),
                 stdout: Some("Compiling dependency graph".into()),
                 changes: Some("--- a/view.rs\n+++ b/view.rs\n@@ -1 +1 @@\n-old();\n+new();".into()),
-                helpers: vec![HelperRecord {
-                    helper: "reduce".into(),
-                    verb: "reducing".into(),
-                    asked: "Retain failures and source locations".into(),
-                    outcome: HelperOutcome {
-                        text: "No failing tests in the supplied output".into(),
-                        ok: true,
-                        elapsed_ms: 1200,
-                        ..Default::default()
-                    },
-                    usage: HelperUsage {
-                        model: "fixture-helper".into(),
-                        ..Default::default()
-                    },
-                    looked: vec!["prepare failure windows".into()],
-                    ..Default::default()
-                }],
                 ..Default::default()
             }],
             ..Default::default()
@@ -217,12 +199,11 @@ fn navigator() -> Navigator {
     let panel = Panel::models(
         "Models",
         vec![
-            group("A", true, vec!["fixture-main", "fixture-helper"]),
+            group("A", true, vec!["fixture-main", "fixture-agent"]),
             group("OpenRouter", false, vec!["unavailable-model"]),
         ],
         TierModels {
             parent: "fixture-main".into(),
-            helper: Some("fixture-helper".into()),
             subagent: None,
         },
     );
@@ -232,12 +213,7 @@ fn navigator() -> Navigator {
 fn code_public_explanation_and_results_remain_readable() {
     let (c, n, s) = fixture();
     let d = doc(&c, &n, &s, &Workbench::default());
-    for t in [
-        "const result",
-        "inspect the motion guard",
-        "99 / 99",
-        "No failing tests",
-    ] {
+    for t in ["const result", "inspect the motion guard", "99 / 99"] {
         assert!(words(&d).contains(t));
     }
     assert!(d.rows.iter().any(|r| {
@@ -246,39 +222,6 @@ fn code_public_explanation_and_results_remain_readable() {
                 .iter()
                 .any(|(t, tone)| t.contains("99 / 99") && *tone == Tone::Normal)
     }));
-}
-/// A folded card counts its helpers on its own line and keeps their rows
-/// inside it: a helper row left under a folded card sat outside the card's
-/// edge, beside work it no longer showed. Opening the card shows them.
-#[test]
-fn a_folded_card_counts_its_helpers_and_keeps_them_inside() {
-    let (c, n, s) = fixture();
-    let mut u = Workbench::default();
-    u.collapsed.insert(1);
-    let d = doc(&c, &n, &s, &u);
-    let t = words(&d);
-    assert!(!t.contains("const result"));
-    assert!(!t.contains("No failing tests"), "{t}");
-    let title = d
-        .rows
-        .iter()
-        .find(|r| {
-            matches!(
-                r.kind,
-                sterna::workbench::RowKind::CardTop { open: false, .. }
-            )
-        })
-        .expect("the folded card");
-    let sterna::workbench::RowKind::CardTop { right, .. } = &title.kind else {
-        unreachable!()
-    };
-    assert!(
-        right.iter().any(|(word, _)| word.contains("1 helper")),
-        "{right:?}"
-    );
-    u.collapsed.clear();
-    u.expanded.insert(1);
-    assert!(words(&doc(&c, &n, &s, &u)).contains("No failing tests"));
 }
 #[test]
 fn local_notices_are_not_model_conversation() {
@@ -391,70 +334,6 @@ fn compiler_chatter_stays_muted() {
             .rows
             .iter()
             .any(|r| r.text.contains("dependency graph") && r.tone == Tone::Muted)
-    );
-}
-#[test]
-fn helper_details_preserve_assignment_model_and_evidence() {
-    let (c, n, s) = fixture();
-    let mut u = Workbench::default();
-    u.helper = Some((1, 0));
-    // How the helper prepared its input is one chip further in.
-    u.helper_raw = Some((1, 0));
-    let t = words(&doc(&c, &n, &s, &u));
-    for part in [
-        "Retain failures",
-        "fixture-helper",
-        "prepare failure windows",
-    ] {
-        assert!(t.contains(part), "{t}");
-    }
-}
-/// A helper opened inside its card offers its raw record as a chip that a
-/// click opens, like every other chip.
-#[test]
-fn a_helper_in_a_card_opens_its_raw_record_on_a_click() {
-    let (c, n, mut s) = fixture();
-    let mut u = Workbench::default();
-    u.helper = Some((1, 0));
-    draw(&c, &n, &s, &mut u, 100, 40);
-    let raw = Action::HelperRaw(1, 0);
-    assert!(
-        u.geometry.hits.iter().any(|(_, a)| *a == raw),
-        "the raw chip is not clickable"
-    );
-    click(&mut u, &mut s, &n, raw);
-    assert_eq!(u.helper_raw, Some((1, 0)));
-    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(screen.contains("prepare failure windows"), "{screen}");
-}
-#[test]
-fn long_wait_has_time_but_no_fake_percentage() {
-    let (c, mut n, mut s) = fixture();
-    n.cells[0].helpers[0].outcome = HelperOutcome {
-        elapsed_ms: 123000,
-        ..Default::default()
-    };
-    s.activity = Activity::Compacting;
-    let mut u = Workbench::default();
-    u.helper = Some((1, 0));
-    let t = words(&doc(&c, &n, &s, &u));
-    assert!(t.contains("123.0s"));
-    assert!(t.contains("estimate unknown"));
-    assert!(!t.contains("Returned:"));
-    assert!(!t.contains('%'));
-}
-#[test]
-fn failed_helper_does_not_disappear_in_a_large_roster() {
-    let (c, mut n, s) = fixture();
-    let h = n.cells[0].helpers[0].clone();
-    n.cells[0].helpers = vec![h; 8];
-    n.cells[0].helpers[7].outcome.ok = false;
-    n.cells[0].helpers[7].outcome.text = "Provider unavailable".into();
-    assert!(
-        doc(&c, &n, &s, &Workbench::default())
-            .rows
-            .iter()
-            .any(|r| r.text.contains("Provider unavailable") && r.tone == Tone::Failure)
     );
 }
 #[test]
@@ -781,14 +660,14 @@ fn model_search_spaces_do_not_stage_models() {
     let (c0, n, mut s) = fixture();
     let mut u = Workbench::default();
     u.open(Source::Models(Box::new(navigator())));
-    for c in "A helper".chars() {
+    for c in "A agent".chars() {
         key(&mut u, &mut s, &n, KeyCode::Char(c));
     }
     draw(&c0, &n, &s, &mut u, 100, 40);
     let m = u.models_mut().unwrap();
-    assert_eq!(m.query, "A helper");
+    assert_eq!(m.query, "A agent");
     m.role = 1;
-    assert_eq!(m.choose().unwrap(), "/model helper fixture-helper");
+    assert_eq!(m.choose().unwrap(), "/model subagent fixture-agent");
 }
 #[test]
 fn unmeasured_does_not_mean_zero() {
@@ -804,7 +683,7 @@ fn picker_never_offers_implicit_subagent_inheritance() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     u.open(Source::Models(Box::new(m)));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(
@@ -872,8 +751,8 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
     for width in [80, 50] {
         draw(&c, &n, &s, &mut u, width, 30);
         let reach = reachable(&u);
-        // Everyday, Models, Little helpers, Display, Advanced.
-        for i in 0..5 {
+        // Everyday, Models, Display, Advanced.
+        for i in 0..4 {
             assert!(
                 reach.contains(&Action::Sheet(Hit::Section(i))),
                 "{width} columns: section {i} cannot be reached"
@@ -887,7 +766,7 @@ fn every_settings_section_and_tool_is_reachable_on_a_narrow_screen() {
         }
     }
     draw(&c, &n, &s, &mut u, 50, 30);
-    let advanced = 4;
+    let advanced = 3;
     let fold = u
         .geometry
         .hits
@@ -1019,7 +898,7 @@ fn concurrent_file_edits_are_not_overwritten() {
 fn every_native_key_is_searchable_but_normal_categories_are_bounded() {
     let (_t, _, mut p) = prefs();
     // Every section but Advanced fits one screen.
-    for category in 0..4 {
+    for category in 0..3 {
         p.category = category;
         assert!(p.rows().len() <= 8, "category {category}");
     }
@@ -1114,11 +993,11 @@ fn reader_anchor_survives_rows_inserted_above_it() {
 fn the_picker_shows_what_its_own_commands_did() {
     let (c, n, mut s) = fixture();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     m.assignment.slots.insert(
         "quick".into(),
         sterna::config::AgentSlot {
-            model: "fixture-helper".into(),
+            model: "fixture-agent".into(),
             effort: sterna::wire::Effort::Low,
         },
     );
@@ -1152,15 +1031,14 @@ fn the_picker_shows_what_its_own_commands_did() {
     draw(&c, &n, &s, &mut u, 110, 40);
     assert_eq!(toggle(&u), Some(sterna::workbench::ItemKind::Toggle(false)));
     // A tier turned off says so where the picker says what it is now.
-    u.models_mut().unwrap().role = 1;
     u.models_mut().unwrap().slot = None;
     draw(&c, &n, &s, &mut u, 110, 40);
     assert_eq!(
         click_item(&mut u, &mut s, &n, "off"),
-        Effect::Command("/model helper off".into())
+        Effect::Command("/model subagent off".into())
     );
     let screen = text(&draw(&c, &n, &s, &mut u, 110, 40));
-    assert!(screen.contains("Helpers are off"), "{screen}");
+    assert!(screen.contains("Subagents are off"), "{screen}");
     assert!(
         !screen.contains("● fixture"),
         "no model is marked:\n{screen}"
@@ -1187,7 +1065,6 @@ fn a_reason_shared_by_a_run_of_rows_is_said_once() {
         }],
         TierModels {
             parent: "b-one".into(),
-            helper: None,
             subagent: None,
         },
     );
@@ -1208,7 +1085,7 @@ fn a_reason_shared_by_a_run_of_rows_is_said_once() {
 #[test]
 fn favorites_picker_assigns_one_slot_and_preserves_other_roles() {
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     m.slot = Some("quick".into());
     let candidate = m.candidates()[m.selected].model.clone();
     // The slot's effort travels with it: quick runs at low unless chosen.
@@ -1231,7 +1108,7 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
     s.model = Some("live-main".into());
     let mut m = navigator();
     m.role = 1;
-    m.target_key = Some("helpers.model".into());
+    m.target_key = Some("agents.model".into());
     let chosen = m.candidates()[m.selected].clone();
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
@@ -1239,7 +1116,7 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
     let (c, n, _) = fixture();
     draw(&c, &n, &s, &mut u, 110, 40);
     // Saved, and applied to the running session like every other setting
-    // that applies now: the helper changes, the main model does not.
+    // that applies now: the subagents change, the main model does not.
     assert_eq!(
         click_item(
             &mut u,
@@ -1247,7 +1124,7 @@ fn choosing_a_model_from_global_settings_preserves_scope_and_live_assignment() {
             &n,
             &format!("model:{}:{}", chosen.route, chosen.model)
         ),
-        Effect::Command(format!("/model helper {}", chosen.model))
+        Effect::Command(format!("/model subagent {}", chosen.model))
     );
     let chosen = chosen.model;
     assert_eq!(s.model.as_deref(), Some("live-main"));
@@ -1297,7 +1174,6 @@ fn screenshot() {
     s.sandbox = Some("3 path rules · 1 command pattern".into());
     s.confinement = Some("unconfined".into());
     s.network = Some("off".into());
-    s.helpers_on = true;
     s.subagents = Some("off".into());
     for note in [
         "session tlqdct-yqr — resume it with:  sterna --resume tlqdct-yqr",
@@ -1392,11 +1268,11 @@ fn a_filtered_navigator_leaves_no_row_of_the_wider_list() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     let mut nav = navigator();
-    nav.query = "fixture-helper".into();
+    nav.query = "fixture-agent".into();
     u.open(Source::Models(Box::new(nav)));
     let b = draw(&c, &n, &s, &mut u, 80, 30);
     let screen = text(&b);
-    assert!(screen.contains("fixture-helper"), "{screen}");
+    assert!(screen.contains("fixture-agent"), "{screen}");
     // The *list* holds one row, and the model the query excluded is not
     // among them. (The session bar above the sheet names it.)
     let sheet: String = sheet_rows(&screen, "MODELS").join("\n");
@@ -1532,61 +1408,6 @@ fn your_turn_shows_only_what_you_wrote() {
     assert!(!words(&d).contains("## Request"), "{}", words(&d));
 }
 
-/// The Scout reads the request before the first turn, so it sits under that
-/// request, above the work, as one line; its report opens on a click. Drawn
-/// in full after the cells, it sat under the running work for the whole task.
-#[test]
-fn the_scout_folds_under_the_request_it_read() {
-    let (c, mut n, s) = fixture();
-    n.preflight = Some(HelperRecord {
-        helper: "dissect".into(),
-        verb: "dissecting".into(),
-        asked: "Respect reduced motion and the terminal background.".into(),
-        outcome: HelperOutcome {
-            text: "## Tasks\n1. guard — the motion guard reads the setting\n## Files\nsrc/motion.rs:12 — task 1, the guard\nsrc/look.rs — task 1, the ground\n".into(),
-            ok: true,
-            elapsed_ms: 2100,
-            ..Default::default()
-        },
-        ..Default::default()
-    });
-    let mut u = Workbench::default();
-    let d = doc(&c, &n, &s, &u);
-    let scout = d
-        .rows
-        .iter()
-        .position(|r| r.text.contains("PREFLIGHT · SCOUT"))
-        .expect("the Scout is drawn");
-    let card = d
-        .rows
-        .iter()
-        .position(|r| matches!(r.kind, sterna::workbench::RowKind::CardTop { .. }))
-        .expect("the cell is drawn");
-    assert!(scout < card, "the Scout sits above the work: {}", words(&d));
-    assert!(
-        d.rows[scout].text.contains("named 2 files"),
-        "{}",
-        d.rows[scout].text
-    );
-    assert!(
-        !words(&d).contains("the motion guard reads"),
-        "{}",
-        words(&d)
-    );
-    assert_eq!(d.rows[scout].action, Some(Action::Scout));
-
-    let mut s = s;
-    let _ = draw(&c, &n, &s, &mut u, 100, 40);
-    click(&mut u, &mut s, &n, Action::Scout);
-    assert!(u.scout);
-    let d = doc(&c, &n, &s, &u);
-    assert!(
-        words(&d).contains("the motion guard reads"),
-        "{}",
-        words(&d)
-    );
-}
-
 /// Prose ends where the cards end, at every width: the same padding on the
 /// right as on the left, and no fixed column leaving a wide terminal's
 /// right third empty. A table keeps the whole width, because a cut row
@@ -1673,85 +1494,6 @@ fn the_transcript_keeps_a_gutter_before_the_sidebar() {
     }
 }
 
-/// The task's acceptance list is one line of progress: in the sidebar, or
-/// without it as one chip on the dock. Its items cut to the sidebar's width
-/// could not be read, so they live in a panel either one opens, grouped by
-/// what needs attention first. A failure a check found turns the line red.
-#[test]
-fn the_acceptance_list_is_one_line_that_opens_a_grouped_panel() {
-    use sterna::acceptance::{Item, Origin, Status, Verdict};
-    let (c, mut n, mut s) = fixture();
-    n.acceptance = vec![
-        Verdict {
-            item: Item::FileExists {
-                path: "src/motion.rs".into(),
-            },
-            status: Status::Met,
-            evidence: "present, 12 bytes".into(),
-        },
-        Verdict {
-            item: Item::RunExitsZero {
-                command: "cargo test".into(),
-            },
-            status: Status::Open,
-            evidence: String::new(),
-        },
-        Verdict {
-            item: Item::Judge {
-                text: "the guard reads the setting".into(),
-            },
-            status: Status::Open,
-            evidence: String::new(),
-        },
-    ];
-    let mut u = Workbench::default();
-    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
-    assert!(wide.contains("≡ 1 of 3 met ▸"), "{wide}");
-    assert_eq!(
-        wide.matches("≡ 1 of 3 met").count(),
-        1,
-        "one line on screen: {wide}"
-    );
-    assert!(
-        !wide.contains("cargo test"),
-        "the items stay in the panel: {wide}"
-    );
-
-    let narrow = text(&draw(&c, &n, &s, &mut u, 100, 30));
-    assert!(narrow.contains("⟨ ≡ 1 of 3 met ⟩"), "{narrow}");
-    click(&mut u, &mut s, &n, Action::Acceptance);
-    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
-    for line in [
-        "ACCEPTANCE › 1 of 3 met · from your request only",
-        "Open · 2",
-        "○ cargo test exits 0",
-        "↳ checked when the task finishes",
-        "Met · 1",
-        "↳ present, 12 bytes",
-    ] {
-        assert!(panel.contains(line), "{line}: {panel}");
-    }
-    assert!(!panel.contains("Not met"), "{panel}");
-    assert!(panel.find("Open · 2") < panel.find("Met · 1"), "{panel}");
-
-    // After a check found `cargo test` failing: the line says so, and the
-    // failure heads the panel.
-    n.acceptance[1].status = Status::Unmet;
-    n.acceptance[1].evidence = "exit 101: 2 failed".into();
-    n.acceptance_from = Origin::Scout;
-    let mut u = Workbench::default();
-    let wide = text(&draw(&c, &n, &s, &mut u, 140, 40));
-    assert!(wide.contains("≡ 1 of 3 met · 1 failed ▸"), "{wide}");
-    click(&mut u, &mut s, &n, Action::Acceptance);
-    let panel = text(&draw(&c, &n, &s, &mut u, 100, 30));
-    assert!(panel.contains("from the Scout's look"), "{panel}");
-    assert!(panel.contains("↳ exit 101: 2 failed"), "{panel}");
-    let failed = panel
-        .find("Not met · 1")
-        .expect("the failure has its group");
-    assert!(failed < panel.find("Open · 1").unwrap(), "{panel}");
-}
-
 /// Every control in the top bar is a chip, and every chip is a click target
 /// for the thing it names.
 #[test]
@@ -1826,17 +1568,17 @@ fn the_composer_dock_carries_the_status_above_and_the_chips_below() {
     let bottom = screen.lines().last().unwrap();
     assert!(bottom.starts_with("╰─"), "{bottom}");
     assert!(!bottom.contains("effort"), "{bottom}");
-    for default in ["helpers", "subagents", "stream"] {
+    for default in ["subagents", "stream"] {
         assert!(
             !bottom.contains(default),
             "a default is not a chip: {bottom}"
         );
     }
     s.effort = sterna::wire::Effort::High;
-    s.helpers_on = true;
+    s.subagents = Some("pinned".into());
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     let bottom = screen.lines().last().unwrap();
-    assert!(bottom.contains("⟨ ◇ helpers on ⟩"), "{bottom}");
+    assert!(bottom.contains("⟨ subagents pinned ⟩"), "{bottom}");
     // And what typing lands on is still marked the way the transcript
     // marks what was said.
     assert!(screen.contains("│ ❯ "), "{screen}");
@@ -1949,11 +1691,7 @@ fn the_latest_answer_offers_what_to_do_next() {
         .find(|r| r.kind == sterna::workbench::RowKind::Answer)
         .expect("the answer's first line is marked");
     assert_eq!(answer.text.trim(), "The motion guard is fixed.");
-    assert!(
-        words(&d).contains("✓ 1 file · +1 −1 · 1 helper"),
-        "{}",
-        words(&d)
-    );
+    assert!(words(&d).contains("✓ 1 file · +1 −1"), "{}", words(&d));
     draw(&c, &n, &s, &mut u, 100, 40);
     for action in [
         Action::Tab(1, CellTab::Diff),
@@ -2041,7 +1779,7 @@ fn the_answer_is_shown_once_under_the_card_and_not_again_inside_it() {
     c.messages[1].content = vec![Block::ToolUse {
         id: "call-1".into(),
         name: "execute_cell".into(),
-        input: serde_json::json!({"code": format!("todo.write([]);\nanswer(\"{}\");", answer.replace('\n', "\\n"))}),
+        input: serde_json::json!({"code": format!("const done = true;\nanswer(\"{}\");", answer.replace('\n', "\\n"))}),
     }];
     n.cells[0].returned = Some(answer.into());
     n.cells[0].output = Some(answer.into());
@@ -2049,7 +1787,6 @@ fn the_answer_is_shown_once_under_the_card_and_not_again_inside_it() {
     n.cells[0].call_count = Some(0);
     n.cells[0].changes = None;
     n.cells[0].execution = None;
-    n.cells[0].helpers.clear();
     let d = doc(&c, &n, &s, &Workbench::default());
     let text = words(&d);
     assert_eq!(
@@ -2171,41 +1908,6 @@ fn arriving_reasoning_shows_its_size_and_newest_sentence_on_one_line() {
     assert_eq!(screen.matches("The four tests call").count(), 0, "{screen}");
 }
 
-/// A check behind the answer shows while it runs, then its verdict lands
-/// emphasised for a few frames and settles to its own colour.
-#[test]
-fn a_check_behind_the_answer_runs_visibly_then_settles_into_its_verdict() {
-    let (c, n, mut s) = fixture();
-    s.lane("check", true);
-    let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(screen.contains("checking the answer"), "{screen}");
-    s.note(format!("{}holds", sterna::tui::history::CHECKED));
-    s.landed_note();
-    s.lane("check", false);
-    let d = doc(&c, &n, &s, &u);
-    let verdict = d
-        .rows
-        .iter()
-        .find(|r| r.text.contains("checked after the answer: holds"))
-        .expect("the verdict is in the transcript");
-    assert_eq!(verdict.spans[0].1, Tone::Accent, "it lands emphasised");
-    assert!(
-        !words(&d).contains("checking the answer"),
-        "the working row went"
-    );
-    for _ in 0..10 {
-        s.advance_landing();
-    }
-    let d = doc(&c, &n, &s, &u);
-    let verdict = d
-        .rows
-        .iter()
-        .find(|r| r.text.contains("checked after the answer: holds"))
-        .unwrap();
-    assert_eq!(verdict.spans[0].1, Tone::Success, "then it settles");
-}
-
 /// A running cell under the instrument: a label and a scanner in place of
 /// the bird, moving at most two cells of its own a frame; motion off holds it.
 #[test]
@@ -2255,14 +1957,13 @@ fn motion_takes_three_levels() {
     assert_eq!(s.motion, sterna::tui::Motion::Full);
 }
 
-/// Several things can be live at once -- reasoning, a cell being written,
-/// work behind the answer -- and a spinner on each stacked them on screen.
+/// Several things can be live at once -- reasoning, a cell being written --
+/// and a spinner on each stacked them on screen.
 /// Only the newest moves; between two frames, only its row changes.
 #[test]
 fn only_the_newest_live_row_moves() {
     let (c, n, mut s) = fixture();
     s.streaming_reasoning = Some("Looking at the tests first.".into());
-    s.behind = vec!["checker".into()];
     s.streaming_tool_input = Some("{\"code\":\"await read({path: \\\"a.rs\\\"});".into());
     s.activity = sterna::tui::Activity::Streaming;
     let rows = |s: &ScreenState| -> Vec<String> {
@@ -2315,16 +2016,12 @@ fn the_opening_card_repeats_nothing_the_header_says() {
 fn a_cell_offers_only_the_tabs_it_can_fill_and_says_its_title_once() {
     let (c, mut n, s) = fixture();
     let full = words(&doc(&c, &n, &s, &Workbench::default()));
-    assert!(
-        full.contains("Changes +1 −1") && full.contains("⟨ Helpers ⟩"),
-        "{full}"
-    );
+    assert!(full.contains("Changes +1 −1"), "{full}");
     n.cells[0].changes = None;
-    n.cells[0].helpers.clear();
     n.cells[0].description = Some("I will inspect the motion guard before changing it.".into());
     let text = words(&doc(&c, &n, &s, &Workbench::default()));
     assert!(text.contains("⟨ Cell program ⟩"), "{text}");
-    for gone in ["Changes", "⟨ Helpers ⟩", "open diff"] {
+    for gone in ["Changes", "open diff"] {
         assert!(
             !text.contains(gone),
             "{gone:?} with nothing behind it: {text}"
@@ -2528,7 +2225,7 @@ fn the_favourite_slots_are_rows_on_the_subagents_section() {
     let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     u.open(Source::Models(Box::new(m)));
     draw(&c, &n, &s, &mut u, 120, 40);
     // The sheet opens on the pinned row, the one the session is on.
@@ -2951,10 +2648,10 @@ fn every_value_on_a_settings_page_starts_in_one_column() {
             .unwrap()
     };
     let main = value_column("Main model");
-    for label in ["Reasoning effort", "Sandbox", "Helpers", "Theme", "Motion"] {
+    for label in ["Reasoning effort", "Sandbox", "Theme", "Motion"] {
         assert_eq!(value_column(label), main, "{label}:\n{screen}");
     }
-    for group in ["Model ─", "Sandbox and helpers ─", "Look ─"] {
+    for group in ["Model ─", "Sandbox ─", "Look ─"] {
         let at = sheet
             .iter()
             .position(|row| row.contains(group))
@@ -2974,7 +2671,7 @@ fn every_value_on_a_settings_page_starts_in_one_column() {
     // A list longer than its sheet says how far it goes on the frame's
     // edge, not in a line of the list.
     let (_t, s, mut p) = prefs();
-    p.category = 4;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let screen = text(&draw(&c, &n, &s, &mut u, 110, 30));
@@ -3000,7 +2697,7 @@ fn a_click_on_the_switch_already_chosen_changes_nothing() {
     click(&mut u, &mut s, &n, Action::Sheet(Hit::Tool(0, 1)));
     assert!(u.models().unwrap().all_sources);
     // A switch row is the same: Off, already chosen, sends nothing.
-    u.models_mut().unwrap().role = 2;
+    u.models_mut().unwrap().role = 1;
     u.models_mut().unwrap().assignment.slots.insert(
         "quick".into(),
         sterna::config::AgentSlot {
@@ -3231,30 +2928,20 @@ fn an_effort_on_its_way_out_is_saved() {
     assert!(saved.contains("effort = \"high\""), "{saved}");
 }
 
-/// The sidebar's effort and helpers are two targets: the effort opens the
-/// Models sheet, never the helpers line, and a helper's own line opens it.
+/// The sidebar's model and its effort open the Models sheet, where both
+/// are chosen.
 #[test]
-fn the_sidebar_splits_effort_from_helpers() {
-    let (c, n, mut s) = fixture();
-    s.helpers_on = false;
+fn the_sidebar_effort_opens_the_models_sheet() {
+    let (c, n, s) = fixture();
     let mut u = Workbench::default();
     draw(&c, &n, &s, &mut u, 140, 42);
-    let side = |a: &Action| {
-        u.geometry
-            .hits
-            .iter()
-            .filter(|(r, act)| act == a && r.x > 100)
-            .map(|(r, _)| r.y)
-            .collect::<Vec<_>>()
-    };
-    let effort = side(&Action::Models);
-    let helpers = side(&Action::SettingsAt(2));
-    assert!(!effort.is_empty() && !helpers.is_empty());
-    assert!(effort.iter().all(|y| !helpers.contains(y)));
-    assert!(
-        !side(&Action::Helper(1, 0)).is_empty(),
-        "the helper line opens its lane"
-    );
+    let effort = u
+        .geometry
+        .hits
+        .iter()
+        .filter(|(r, act)| *act == Action::Models && r.x > 100)
+        .count();
+    assert!(effort >= 2, "the model and its effort both open Models");
 }
 
 /// Backspace edits a search and nothing else: with the search empty it does
@@ -3375,7 +3062,7 @@ fn a_setting_named_after_the_command_is_where_settings_opens() {
     let mut u = Workbench::default();
     assert!(u.local_command("/settings theme", &mut s, &n));
     let p = u.preferences().unwrap();
-    assert_eq!(p.category, 3, "Display");
+    assert_eq!(p.category, 2, "Display");
     assert_eq!(
         u.top().unwrap().sheet.prefer.as_deref(),
         Some("setting:ui.theme")
@@ -3400,7 +3087,7 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
     let (_t, mut s, mut p) = prefs();
     p.save("web.allow_domains", Some("old.example".into()), &mut s)
         .unwrap();
-    p.category = 4;
+    p.category = 3;
     let row = p
         .rows()
         .iter()
@@ -3445,11 +3132,11 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
 fn advanced_repeats_nothing_and_offers_no_bookkeeping() {
     let (_t, _, mut p) = prefs();
     let mut elsewhere = std::collections::BTreeSet::new();
-    for category in [0, 1, 2, 3] {
+    for category in [0, 1, 2] {
         p.category = category;
         elsewhere.extend(p.rows().iter().map(|spec| spec.key));
     }
-    p.category = 4;
+    p.category = 3;
     let advanced: Vec<_> = p.rows().iter().map(|spec| spec.key).collect();
     for key in &advanced {
         assert!(!elsewhere.contains(key), "{key} is repeated");
@@ -3518,7 +3205,7 @@ fn a_global_save_the_project_overrides_says_so() {
         p.notice,
         "Theme is saved globally; this project sets rose, which wins here."
     );
-    p.category = 3;
+    p.category = 2;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -3582,16 +3269,18 @@ fn the_opening_survives_a_note_and_its_command_chip_runs() {
 fn switching_tier_selects_that_tiers_current_model() {
     let (c, n, mut s) = fixture();
     let mut u = Workbench::default();
-    u.open(Source::Models(Box::new(navigator())));
+    let mut m = navigator();
+    m.current.subagent = Some("fixture-agent".into());
+    u.open(Source::Models(Box::new(m)));
     draw(&c, &n, &s, &mut u, 120, 40);
     key(&mut u, &mut s, &n, KeyCode::Tab);
     draw(&c, &n, &s, &mut u, 120, 40);
     let m = u.models().unwrap();
     assert_eq!(m.role, 1);
-    assert_eq!(m.candidates()[m.selected].model, "fixture-helper");
+    assert_eq!(m.candidates()[m.selected].model, "fixture-agent");
     let focused = &u.top().unwrap().sheet;
     assert!(
-        focused.items[focused.focus].id.ends_with(":fixture-helper"),
+        focused.items[focused.focus].id.ends_with(":fixture-agent"),
         "{:?}",
         focused.items[focused.focus]
     );
@@ -3607,20 +3296,20 @@ fn a_choice_keeps_the_picker_open_and_names_the_change() {
     draw(&c, &n, &s, &mut u, 120, 40);
     let id = {
         let m = u.models().unwrap();
-        let helper = m
+        let other = m
             .candidates()
             .into_iter()
-            .find(|c| c.model == "fixture-helper")
+            .find(|c| c.model == "fixture-agent")
             .unwrap();
-        format!("model:{}:{}", helper.route, helper.model)
+        format!("model:{}:{}", other.route, other.model)
     };
     assert_eq!(
         click_item(&mut u, &mut s, &n, &id),
-        Effect::Command("/model fixture-helper".into())
+        Effect::Command("/model fixture-agent".into())
     );
     let m = u.models().expect("the picker stays open");
-    assert_eq!(m.current.parent, "fixture-helper");
-    assert_eq!(u.top().unwrap().sheet.notice, "Main is now fixture-helper");
+    assert_eq!(m.current.parent, "fixture-agent");
+    assert_eq!(u.top().unwrap().sheet.notice, "Main is now fixture-agent");
 }
 
 /// A favourite is filled by choosing its slot, then a model; the picker
@@ -3629,7 +3318,7 @@ fn a_choice_keeps_the_picker_open_and_names_the_change() {
 fn a_favourite_is_a_slot_then_a_model_and_the_picker_moves_on() {
     let (c, n, mut s) = fixture();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     let mut u = Workbench::default();
     u.open(Source::Models(Box::new(m)));
     draw(&c, &n, &s, &mut u, 120, 60);
@@ -3712,7 +3401,7 @@ fn an_account_heading_says_subscription_or_api_key() {
 fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
     let (c, n, mut s) = fixture();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     let mut u = Workbench::default();
     u.open(Source::Models(Box::new(m)));
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
@@ -3767,7 +3456,7 @@ fn the_slot_being_filled_is_not_now_and_now_follows_favourites() {
 fn pinning_over_favourites_asks_first() {
     let (c, n, mut s) = fixture();
     let mut m = navigator();
-    m.role = 2;
+    m.role = 1;
     m.assignment.mode = sterna::config::AgentsMode::Roster;
     let mut u = Workbench::default();
     u.open(Source::Models(Box::new(m)));
@@ -3816,7 +3505,6 @@ fn search_is_ranked_and_only_chat_models_are_offered() {
         }],
         TierModels {
             parent: "claude-sonnet-5".into(),
-            helper: None,
             subagent: None,
         },
     );
@@ -3854,7 +3542,7 @@ fn a_locked_account_offers_its_sign_in_as_one_row() {
 }
 
 /// Settings › Models is which model does which job -- Main and its
-/// effort, helpers, whether subagents run, Jev -- and the way to the picker
+/// effort, whether subagents run, Jev -- and the way to the picker
 /// where the favourites are chosen.
 #[test]
 fn settings_models_links_to_the_picker() {
@@ -3865,7 +3553,6 @@ fn settings_models_links_to_the_picker() {
         [
             "model.parent",
             "session.effort",
-            "helpers.model",
             "agents.mode",
             "decisions.model",
             "decisions.mode"
@@ -4007,7 +3694,7 @@ fn click_during_turn(u: &mut Workbench, s: &mut ScreenState, n: &Notebook, a: Ac
 /// While a turn runs, a row that waits for the turn to end says so before
 /// it is clicked, in the one sentence every such refusal uses. A model
 /// named in full applies from the turn's next request, so it does not wait;
-/// a bare `/model helper` opens a sheet the session builds, so it does.
+/// a bare `/model subagent` opens a sheet the session builds, so it does.
 #[test]
 fn mid_turn_a_row_that_waits_says_so_before_a_click() {
     let (c, n, mut s) = fixture();
@@ -4037,8 +3724,8 @@ fn mid_turn_a_row_that_waits_says_so_before_a_click() {
         Effect::Command("/model claude-x".into())
     );
     assert!(workbench::mid_turn("/effort high"));
-    assert!(workbench::mid_turn("/model helper claude-x"));
-    assert!(!workbench::mid_turn("/model helper"));
+    assert!(workbench::mid_turn("/model subagent claude-x"));
+    assert!(!workbench::mid_turn("/model subagent"));
     assert!(!workbench::mid_turn("/sandbox"));
     // Between turns nothing waits.
     s.activity = Activity::Complete;
@@ -4062,22 +3749,6 @@ fn the_diff_chip_is_a_view_of_its_own_cell() {
         "no diff chip goes through the command path"
     );
     assert!(actions.contains(&Action::Tab(1, CellTab::Diff)));
-}
-
-/// The turn is complete once its check has had its say: until then the
-/// status says the answer is in and being checked.
-#[test]
-fn the_turn_is_complete_once_its_check_has_had_its_say() {
-    let (c, n, mut s) = fixture();
-    s.activity = Activity::Complete;
-    s.lane("check", true);
-    let mut u = Workbench::default();
-    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
-    assert!(screen.contains(workbench::voice::CHECKING), "{screen}");
-    assert!(!screen.contains("complete"), "{screen}");
-    s.lane("check", false);
-    let screen = text(&draw(&c, &n, &s, &mut u, 120, 40));
-    assert!(screen.contains("complete"), "{screen}");
 }
 
 /// A turn waiting on the person's answer says so on its card and on the
@@ -4191,8 +3862,8 @@ fn an_answer_is_latest_even_with_its_echo_after_it() {
     );
 }
 
-/// F4, F5, Ctrl-O and the sidebar read the cells that ran a program; the
-/// entry a prose answer leaves in the notebook is not one of them.
+/// F4, Ctrl-O and the sidebar read the cells that ran a program; the entry
+/// a prose answer leaves in the notebook is not one of them.
 #[test]
 fn the_cell_keys_and_the_sidebar_skip_a_prose_entry() {
     let (c, mut n, s) = fixture();
@@ -4201,17 +3872,8 @@ fn the_cell_keys_and_the_sidebar_skip_a_prose_entry() {
     let mut s = s;
     let screen = text(&draw(&c, &n, &s, &mut u, 140, 40));
     assert!(screen.contains("1 cell ·"), "{screen}");
-    assert!(screen.contains("reduce · returned"), "{screen}");
-    assert!(
-        u.geometry
-            .hits
-            .iter()
-            .any(|(_, a)| *a == Action::Helper(1, 0))
-    );
     key(&mut u, &mut s, &n, KeyCode::F(4));
     assert_eq!(u.tabs.get(&1), Some(&CellTab::Diff));
-    key(&mut u, &mut s, &n, KeyCode::F(5));
-    assert_eq!(u.tabs.get(&1), Some(&CellTab::Helpers));
     assert!(!u.tabs.contains_key(&2), "no key acted on the prose entry");
 }
 
@@ -4299,7 +3961,7 @@ fn a_card_shows_what_was_asked_and_what_was_chosen() {
 }
 
 /// The dock names the running cell by its card's number, even when a
-/// helper's snapshot already holds that cell in the notebook.
+/// snapshot already holds that cell in the notebook.
 #[test]
 fn the_running_cell_is_named_by_its_card() {
     let (_, _, mut s) = fixture();
@@ -4312,13 +3974,7 @@ fn the_running_cell_is_named_by_its_card() {
         ],
     };
     let n = Notebook {
-        cells: vec![CellView {
-            helpers: vec![HelperRecord {
-                helper: "scout".into(),
-                ..HelperRecord::default()
-            }],
-            ..CellView::default()
-        }],
+        cells: vec![CellView::default()],
         ..Notebook::default()
     };
     let mut u = Workbench::default();
@@ -4644,27 +4300,6 @@ fn answer_markdown_is_rendered() {
     );
 }
 
-/// A cell's helper calls are drawn inside its card, before its bottom edge.
-#[test]
-fn helper_rows_are_drawn_inside_their_card() {
-    let (c, n, s) = fixture();
-    let mut u = Workbench::default();
-    u.expanded.insert(1);
-    let d = doc(&c, &n, &s, &u);
-    let helper = d
-        .rows
-        .iter()
-        .position(|r| r.text.contains("◇ reduce"))
-        .expect("the helper's row");
-    let bottom = d
-        .rows
-        .iter()
-        .position(|r| r.kind == sterna::workbench::RowKind::CardBottom)
-        .expect("the card's bottom edge");
-    assert!(helper < bottom, "the lane is inside the card");
-    assert_eq!(d.rows[helper].kind, sterna::workbench::RowKind::CardBody);
-}
-
 /// A path in a styled row is clickable, and the diff's file header opens
 /// the file it names.
 #[test]
@@ -4733,33 +4368,6 @@ fn a_rolled_back_cell_says_so() {
     assert!(!shown.contains("1 file changed"), "{shown}");
 }
 
-/// A helper's account is what was asked, what came back and what it cites;
-/// its preparation and the excerpts written for the model are one chip away.
-#[test]
-fn a_helpers_account_is_for_the_person() {
-    let (c, mut n, s) = fixture();
-    n.cells[0].helpers[0].looked = vec!["listed src/".into()];
-    n.cells[0].helpers[0].outcome.text = format!(
-        "The guard is in src/motion.rs.\n\n{}\n### src/motion.rs:1-3\n1 | fn guard() {{}}",
-        sterna::excerpts::HEADING
-    );
-    let mut u = Workbench::default();
-    u.expanded.insert(1);
-    u.helper = Some((1, 0));
-    let shown = words(&doc(&c, &n, &s, &u));
-    assert!(
-        shown.contains("Answer: The guard is in src/motion.rs."),
-        "{shown}"
-    );
-    assert!(shown.contains("Cited: src/motion.rs:1-3"), "{shown}");
-    assert!(!shown.contains("## Excerpts"), "{shown}");
-    assert!(!shown.contains("listed src/"), "{shown}");
-    u.helper_raw = Some((1, 0));
-    let shown = words(&doc(&c, &n, &s, &u));
-    assert!(shown.contains("listed src/"), "{shown}");
-    assert!(shown.contains("## Excerpts"), "{shown}");
-}
-
 /// The sidebar has no heading over nothing, and its tally says what each
 /// count is.
 #[test]
@@ -4803,7 +4411,7 @@ fn a_disabled_ask_reads_as_where_to_turn_it_on() {
 fn the_active_theme_chip_is_always_drawn() {
     let (_t, mut s, mut p) = prefs();
     p.save("ui.theme", Some("cockatoo".into()), &mut s).unwrap();
-    p.category = 3;
+    p.category = 2;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     let (c, n, _) = fixture();
@@ -4861,13 +4469,13 @@ fn a_chip_row_keeps_its_open_tab_and_folds_the_rest() {
     let (c, n, s) = fixture();
     let mut u = Workbench::default();
     u.expanded.insert(1);
-    u.tabs.insert(1, CellTab::Helpers);
+    u.tabs.insert(1, CellTab::Output);
     let screen = text(&draw(&c, &n, &s, &mut u, 50, 30));
     let strip = screen
         .lines()
         .find(|line| line.contains("▾ ⟩"))
         .unwrap_or_else(|| panic!("no fold chip:\n{screen}"));
-    assert!(strip.contains("⟨ Helpers ⟩"), "{screen}");
+    assert!(strip.contains("⟨ Full output ⟩"), "{screen}");
     let folded = u
         .geometry
         .hits
@@ -5168,10 +4776,9 @@ fn a_bird_on_a_light_terminal_wears_its_light_palette() {
     assert!(sterna::workbench::look::contrast(named, sterna::workbench::look::LIGHT_GROUND) >= 1.4);
 }
 
-/// Mono is monochrome: the person and the helpers are told apart by
-/// weight, not hue.
+/// Mono is monochrome: the person is told apart by weight, not hue.
 #[test]
-fn mono_draws_the_person_and_the_helpers_without_hue() {
+fn mono_draws_the_person_without_hue() {
     let (c, n, mut s) = fixture();
     s.theme = Theme::Mono;
     let mut u = Workbench::default();
@@ -5187,10 +4794,7 @@ fn mono_draws_the_person_and_the_helpers_without_hue() {
             + line[..line.find(needle).unwrap()].chars().count();
         b[(x as u16, y as u16)].clone()
     };
-    for needle in ["you", "◇ reduce"] {
-        let cell = cell_of(needle);
-        assert_eq!(cell.fg, Color::Reset, "{needle} has a hue in mono");
-    }
+    assert_eq!(cell_of("you").fg, Color::Reset, "you has a hue in mono");
 }
 
 /// The background setting is in force the moment it is chosen.
@@ -5326,58 +4930,47 @@ fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
     );
 }
 
-/// A check's reasons fold under its verdict line, which ends in what the
-/// check used, said quietly. A click opens the reasons, wrapped between
-/// words and never cut at the edge; another click folds them again.
+/// A gate note's further lines fold under its first. A click opens them,
+/// wrapped between words and never cut at the edge; another click folds
+/// them again.
 #[test]
-fn a_checks_reasons_fold_under_its_verdict_and_open_on_a_click() {
+fn a_gate_notes_lines_fold_under_its_first_and_open_on_a_click() {
     let (c, n, mut s) = fixture();
     s.messages_seen = c.messages.len();
     s.note(format!(
-        "{}cannot tell · 11.2k tokens\nThe documented delivery does support the packaging part: customers receive a ZIP for their setup, with tenant URLs filled in by the install script.\nNot read: docs/delivery.md",
-        sterna::tui::history::CHECKED
+        "{}no test ran after the last change\nThe diff changes crates/sterna/src/view.rs and no command ran after it, so nothing shows the change holds.\nRun the tests, or say in the answer why not.",
+        sterna::tui::history::NOTED
     ));
     let index = s.history.len() - 1;
     let mut u = Workbench::default();
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
     assert!(
-        screen.contains("checked after the answer: cannot tell · 11.2k tokens ▸"),
+        screen.contains("noted, not held: no test ran after the last change ▸"),
         "{screen}"
     );
-    assert!(!screen.contains("packaging part"), "folded: {screen}");
-    let d = doc(&c, &n, &s, &u);
-    let verdict = d
-        .rows
-        .iter()
-        .find(|r| r.text.contains("cannot tell"))
-        .unwrap();
-    assert!(
-        verdict
-            .spans
-            .iter()
-            .any(|(text, tone)| text.contains("11.2k tokens") && *tone == Tone::Muted),
-        "the cost is said quietly: {:?}",
-        verdict.spans
-    );
+    assert!(!screen.contains("nothing shows"), "folded: {screen}");
 
     click(&mut u, &mut s, &n, Action::Note(index));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(screen.contains("cannot tell · 11.2k tokens ▾"), "{screen}");
     assert!(
-        screen.contains("install script."),
-        "wrapped whole: {screen}"
+        screen.contains("no test ran after the last change ▾"),
+        "{screen}"
     );
-    assert!(screen.contains("Not read: docs/delivery.md"), "{screen}");
+    assert!(screen.contains("change holds."), "wrapped whole: {screen}");
+    assert!(
+        screen.contains("Run the tests, or say in the answer why not."),
+        "{screen}"
+    );
     assert!(
         !screen
             .lines()
-            .any(|line| line.contains("packaging") && line.contains('…')),
+            .any(|line| line.contains("nothing shows") && line.contains('…')),
         "nothing is cut: {screen}"
     );
 
     click(&mut u, &mut s, &n, Action::Note(index));
     let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
-    assert!(!screen.contains("packaging part"), "folded again: {screen}");
+    assert!(!screen.contains("nothing shows"), "folded again: {screen}");
 }
 
 /// A cell's intent says what the cell is for: normal text, never cut with
@@ -5511,7 +5104,7 @@ fn page_down_never_passes_a_row_it_did_not_show() {
     u.open(Source::Settings(Box::new(p)));
     draw(&c, &n, &s, &mut u, 110, 40);
     // Advanced: the long section.
-    for _ in 0..4 {
+    for _ in 0..3 {
         key(&mut u, &mut s, &n, KeyCode::Tab);
     }
     draw(&c, &n, &s, &mut u, 110, 40);
@@ -5625,50 +5218,6 @@ fn the_foot_names_what_enter_does_on_the_focused_row() {
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 30));
     assert!(screen.contains("Enter cancel"), "{screen}");
     assert!(!screen.contains("Enter run"), "{screen}");
-}
-
-/// The Scout's report reads as an answer does: its headings drawn, never
-/// shown as "##", and its empty sections said once at the end.
-#[test]
-fn the_scouts_report_reads_as_markdown() {
-    let (c, mut n, s) = fixture();
-    n.preflight = Some(HelperRecord {
-        helper: "dissect".into(),
-        verb: "dissecting".into(),
-        asked: "Make the greeting friendlier.".into(),
-        outcome: HelperOutcome {
-            text: "## Constraints\n- keep the exported name `greet`\n## Files\nsrc/greet.ts — the greeting\n## Tests\nnone found\n## Risks\nnone found\n".into(),
-            ok: true,
-            elapsed_ms: 900,
-            ..Default::default()
-        },
-        ..Default::default()
-    });
-    let mut u = Workbench::default();
-    u.scout = true;
-    let all = words(&doc(&c, &n, &s, &u));
-    assert!(all.contains("Constraints"), "{all}");
-    assert!(!all.contains("## "), "{all}");
-    assert!(!all.contains('`'), "{all}");
-    assert!(!all.contains("none found"), "{all}");
-    assert!(all.contains("No tests or risks found."), "{all}");
-}
-
-/// While helpers work -- the Scout before the first cell, a helper inside a
-/// running one -- the rail lists them; "none yet" is for a turn with none.
-#[test]
-fn the_rail_lists_the_helpers_that_are_working() {
-    let (c, mut n, s) = fixture();
-    n.preflight = Some(HelperRecord {
-        helper: "dissect".into(),
-        verb: "dissecting".into(),
-        asked: "Make the greeting friendlier.".into(),
-        ..Default::default()
-    });
-    n.cells.iter_mut().for_each(|cell| cell.helpers.clear());
-    let screen = text(&draw(&c, &n, &s, &mut Workbench::default(), 140, 40));
-    assert!(screen.contains("Scout · working"), "{screen}");
-    assert!(!screen.contains("none yet"), "{screen}");
 }
 
 /// Code wraps between tokens, never inside a word or an escape: `\n` stays
@@ -5834,13 +5383,14 @@ fn a_settings_row_is_one_line_and_the_strip_explains_the_focused_one() {
     );
 }
 
-/// A choice says what it does: the checker's chips read "after big work",
-/// "every change" and "off", while the file keeps `auto` and `always`.
+/// A choice says what it does: Jev's chips read "ask me", "show Jev's
+/// guess" and "Jev answers when sure", while the file keeps `off`, `weight`
+/// and `decide`.
 #[test]
 fn a_choice_says_what_it_does() {
     let (_t, s, mut p) = prefs();
     let (c, n, _) = fixture();
-    p.category = 2;
+    p.category = 3;
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
     draw(&c, &n, &s, &mut u, 120, 40);
@@ -5850,14 +5400,17 @@ fn a_choice_says_what_it_does() {
         .sheet
         .items
         .iter()
-        .find(|item| item.id == "setting:helpers.completion_check")
-        .expect("the checker's row")
+        .find(|item| item.id == "setting:ask.jev")
+        .expect("Jev's row")
         .clone();
     let workbench::ItemKind::Value { values, .. } = &row.kind else {
         panic!("{row:?}");
     };
     let words: Vec<&str> = values.iter().map(|(word, _)| word.as_str()).collect();
-    assert_eq!(words, ["after big work", "every change", "off"]);
+    assert_eq!(
+        words,
+        ["ask me", "show Jev's guess", "Jev answers when sure"]
+    );
     assert_eq!(
         values[0].1,
         Action::Setting(
@@ -5865,8 +5418,8 @@ fn a_choice_says_what_it_does() {
                 Action::Setting(i, _) => i,
                 _ => unreachable!(),
             },
-            Some("auto".into())
+            Some("off".into())
         ),
-        "the saved word is still `auto`"
+        "the saved word is still `off`"
     );
 }

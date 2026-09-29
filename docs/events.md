@@ -94,7 +94,7 @@ tools called, elapsed — without waiting.
   it models through the four favourite slots `quick`, `balanced`, `deep` and
   `heavy` (`/subagents quick MODEL [EFFORT]`). An empty slot never inherits
   the main model; a pinned model cannot be escaped by a template or an
-  explicit `model`. See [helpers](helpers.md#subagents).
+  explicit `model`. See [subagents](subagents.md).
 
 ## Standing handlers
 

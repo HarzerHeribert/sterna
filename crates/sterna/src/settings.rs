@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
-use crate::config::{AgentsMode, CompletionStyle, SternaConfig};
+use crate::config::{AgentsMode, SternaConfig};
 use crate::sandbox::profile::Profile;
 
 pub use registry::{
@@ -250,6 +250,12 @@ impl Store {
             .retired
             .iter()
             .map(|retired| {
+                // A moved setting's value is written under its new key, in
+                // the file and the profile it was found in, unless that key
+                // is saved there already.
+                if let Some(now) = registry::moved_key(&retired.key) {
+                    return self.move_key(retired, &now);
+                }
                 // A value saved in a setting's old kind is rewritten in
                 // place, in the file it was found in.
                 if let Some(now) = registry::migrated_value(&retired.key, &retired.word) {
@@ -334,6 +340,34 @@ impl Store {
             .collect()
     }
 
+    /// Writes a moved setting's saved value under `now` and takes the old
+    /// key out, and says so once.
+    fn move_key(&self, retired: &Retired, now: &str) -> String {
+        let (profile, old) = registry::in_profile(&retired.key);
+        let (_, new) = registry::in_profile(now);
+        let written = self.read(retired.scope).and_then(|snapshot| {
+            let taken = now
+                .split('.')
+                .try_fold(&snapshot.values, |value, part| value.get(part))
+                .is_some();
+            let mut edits = vec![(old.to_string(), None)];
+            if !taken {
+                edits.push((new.to_string(), Some(retired.word.clone())));
+            }
+            self.save_profile(retired.scope, &snapshot, &edits, profile)
+        });
+        format!(
+            "`{} = {}` is `{now}` now{}; /settings changes it.",
+            retired.key,
+            retired.word,
+            if written.is_ok() {
+                ", and your settings were updated"
+            } else {
+                ""
+            },
+        )
+    }
+
     /// One scope's file, exactly as it is on disk. A missing file is an empty
     /// snapshot, and nothing is created.
     pub fn read(&self, scope: Scope) -> Result<Snapshot, String> {
@@ -407,10 +441,13 @@ impl Store {
                     self.path(Scope::Global).display()
                 ));
             }
-            if profile.is_some() && !registry::is_runtime(key) {
+            if profile.is_some()
+                && !registry::is_runtime(key)
+                && registry::retired_key(key).is_none()
+            {
                 return Err(format!(
                     "settings: `{key}` is not a runtime setting; a profile overlays only \
-                     [limits], [helpers], [agents], [model], [web], [decisions] and [ask]"
+                     [limits], [agents], [model], [web], [decisions] and [ask]"
                 ));
             }
             let typed = match value {
@@ -1231,6 +1268,20 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
                 })?;
                 let mut flat = BTreeMap::new();
                 flatten("", &toml::Value::Table(overlay.clone()), &mut flat);
+                // A retired or moved key in an overlay is what it is at the
+                // top of a file: read as its new key, or as unset, and said.
+                for (key, value) in flat.clone() {
+                    let full = format!("profiles.{name}.{key}");
+                    if let Some(now) = registry::moved_key(&key) {
+                        flat.remove(&key);
+                        flat.entry(now).or_insert_with(|| value.clone());
+                    } else if registry::retired_key(&key).is_some() {
+                        flat.remove(&key);
+                    } else {
+                        continue;
+                    }
+                    parsed.retired.push((full, saved_word(&value)));
+                }
                 for (key, value) in &flat {
                     if !registry::is_runtime(key) {
                         return Err(format!(
@@ -1257,9 +1308,7 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
         .flat
         .iter()
         .filter_map(|(key, value)| {
-            let saved = value
-                .as_str()
-                .map_or_else(|| value.to_string(), str::to_string);
+            let saved = saved_word(value);
             if registry::retired_key(key).is_some()
                 || registry::migrated_value(key, &saved).is_some()
             {
@@ -1280,11 +1329,16 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
                     .insert(key.clone(), toml::Value::String(now.to_string()));
             }
             None => {
-                parsed.flat.remove(key);
+                let value = parsed.flat.remove(key);
+                // A moved key's value is read under its new name, unless the
+                // file already says something there.
+                if let (Some(now), Some(value)) = (registry::moved_key(key), value) {
+                    parsed.flat.entry(now).or_insert(value);
+                }
             }
         }
     }
-    parsed.retired = retired;
+    parsed.retired.extend(retired);
     for (key, value) in &parsed.flat {
         registry::check_value(key, value)
             .map_err(|error| format!("{error} ({})", path.display()))?;
@@ -1296,6 +1350,13 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
         }
     }
     Ok(parsed)
+}
+
+/// A saved value as one word: a string as written, anything else in TOML.
+fn saved_word(value: &toml::Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
 }
 
 fn check_profile_name(name: &str) -> Result<(), String> {
@@ -1354,15 +1415,14 @@ fn nest<'a>(entries: impl Iterator<Item = (&'a String, &'a toml::Value)>) -> tom
 /// Every key that has a value before anyone has saved one -- the curated
 /// presentation keys, and each runtime default `config.rs` already applies.
 ///
-/// A panel that showed "unset" for `helpers.enabled` would be describing a
-/// runtime that does not exist: the default is `true` whether or not a file
+/// A panel that showed "unset" for `web.enabled` would be describing a
+/// runtime that does not exist: the default holds whether or not a file
 /// says so. These are read from the same `Default` implementations the
 /// session uses, so the panel cannot drift from the runtime. Keys with no
-/// default -- the three model ids -- are absent until something sets them,
-/// which is exactly what "unset means off" means for helpers and agents.
+/// default -- the model ids -- are absent until something sets them, which
+/// is exactly what "unset means off" means for agents.
 fn defaults() -> Vec<(&'static str, toml::Value)> {
     let limits = crate::config::Limits::default();
-    let helpers = crate::config::HelpersConfig::default();
     let agents = crate::config::AgentsConfig::default();
     let web = crate::web::WebConfig::default();
     let decisions = crate::config::DecisionsConfig::default();
@@ -1384,22 +1444,10 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         // `0` is this file's spelling for "no ceiling", the same as absent,
         // so the row round-trips through the parser unchanged.
         ("limits.cells", count(limits.cells.unwrap_or(0))),
-        ("helpers.enabled", toml::Value::Boolean(helpers.enabled)),
-        ("helpers.preflight", toml::Value::Boolean(helpers.preflight)),
         (
-            "helpers.calls_per_cell",
-            count(u64::from(helpers.calls_per_cell)),
+            "limits.reduce_above_tokens",
+            count(limits.reduce_above_tokens as u64),
         ),
-        (
-            "helpers.completion",
-            word(match helpers.completion {
-                CompletionStyle::Silent => "silent",
-                CompletionStyle::Recap => "recap",
-            }),
-        ),
-        ("helpers.effort.find", word(helpers.effort.find.name())),
-        ("helpers.effort.reduce", word(helpers.effort.reduce.name())),
-        ("helpers.effort.check", word(helpers.effort.check.name())),
         (
             "agents.mode",
             word(match agents.mode {
@@ -1428,8 +1476,8 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
             toml::Value::Float(decisions.completion_no_below),
         ),
         (
-            "decisions.completion_yes_above",
-            toml::Value::Float(decisions.completion_yes_above),
+            "decisions.reduce_returns",
+            toml::Value::Boolean(decisions.reduce_returns),
         ),
     ]
 }

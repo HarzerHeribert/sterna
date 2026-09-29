@@ -17,7 +17,7 @@ Start with [architecture](architecture.md): two programs, one page.
 - [tools](tools.md) — the tools, the host globals, the three interfaces, command lifting
 - [events](events.md) — background jobs, subagents, standing handlers
 - [sandbox](sandbox.md) — grants, platforms, modes, how often you are asked
-- [helpers](helpers.md) — the scout, reducer and checker; subagents
+- [subagents](subagents.md) — delegating a whole goal to another model loop
 - [decisions](decisions.md) — Jev, the classifier
 - [project context](project-context.md) — instructions, MCP servers, source context
 - [observing](observing.md) — the live event stream

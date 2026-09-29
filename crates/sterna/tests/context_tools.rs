@@ -422,7 +422,6 @@ fn a_full_context_batch_preserves_whole_evidence_and_does_not_certify_overflow()
         output: None,
         handle_table: inspected.turn().table.clone(),
         stdout_tail: Some(inspected.turn().stdout_tail.clone()),
-        plan: Vec::new(),
         budget: sterna::prompt::Budget {
             turn_cap: 8192,
             task_used: 0,
@@ -972,6 +971,5 @@ fn speculate_refuses_what_is_not_a_list_of_candidates() {
         said.contains("`candidates` is an array of 1 to 4"),
         "{said}"
     );
-    assert!(!sterna::runtime::bindings::HostGlobals::Helper(&[]).installs("speculate"));
     let _ = std::fs::remove_dir_all(root);
 }

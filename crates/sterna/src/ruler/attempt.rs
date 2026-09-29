@@ -83,9 +83,10 @@ pub struct HarnessCommand {
 pub struct DecisionsArm {
     pub model: Option<String>,
     pub mode: String,
-    /// `[helpers]` lines the arm writes verbatim (`reduce_returns = true`,
-    /// `enabled = false`); empty for a decisions arm.
-    pub helpers: &'static [&'static str],
+    /// Configuration lines the arm writes verbatim under its `[decisions]`
+    /// table, which they continue until one opens a table of its own;
+    /// empty for a decisions arm.
+    pub lines: &'static [&'static str],
 }
 
 impl HarnessCommand {
@@ -128,14 +129,14 @@ impl HarnessCommand {
             decisions: Some(DecisionsArm {
                 model: model.map(str::to_string),
                 mode: mode.to_string(),
-                helpers: &[],
+                lines: &[],
             }),
         }
     }
 
     /// The `sterna` row expanded into one `sterna:feedback-<arm>` arm: a
-    /// decisions arm whose `.sterna/config.toml` also turns on the `[helpers]`
-    /// switches `arm` names ([`FEEDBACK_ARMS`]).
+    /// decisions arm whose `.sterna/config.toml` also carries the lines `arm`
+    /// names ([`FEEDBACK_ARMS`]).
     pub fn sterna_feedback_arm(
         sterna: &HarnessCommand,
         model: &str,
@@ -143,177 +144,78 @@ impl HarnessCommand {
     ) -> HarnessCommand {
         let mut command = Self::sterna_decisions_arm(sterna, Some(model), arm.mode);
         if let Some(decisions) = command.decisions.as_mut() {
-            decisions.helpers = arm.helpers;
+            decisions.lines = arm.lines;
         }
         command
     }
 }
 
-/// One `--sterna-feedback` arm: the decision mode and the `[helpers]`
-/// switches it runs with.
+/// One `--sterna-feedback` arm: the decision mode and the configuration
+/// lines it runs with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackArm {
     pub name: &'static str,
     pub mode: &'static str,
-    pub helpers: &'static [&'static str],
+    pub lines: &'static [&'static str],
 }
 
-/// The helper arms (2026-09-23): `bare` runs no helper and asks Jev
-/// nothing; `shadow` asks every question and acts on none, with the default
-/// helpers (acceptance list, completion check); `scout` adds the span
-/// Scout; `dissect` acts on the request's kind (effort and the Scout's
-/// dissection); `reduce` and `prefetch` add one return-side switch each;
-/// `all` turns everything on; `oneshot` is `dissect` with the one-shot
-/// dissection instead of the Scout's search loop; `lanes` is the design of
-/// 2026-09-23 spelled out whatever the defaults become -- nothing before the
-/// first turn, `helper.find` with verified excerpts, logs shortened, the
-/// checker and the learned-notes writer behind the answer.
-/// `working` and `outline` are `lanes` plus one engine change each (A and B,
-/// 2026-09-23): the newest two results kept whole, or long instruction
-/// documents outlined. Their lines open a `[limits]` table, so they come
-/// last: every line after it lands in that table. `turns` is `lanes` plus
-/// the turn-economy line (D).
-pub const FEEDBACK_ARMS: [FeedbackArm; 15] = [
+/// The feedback arms: `bare` asks Jev nothing; `shadow` asks every question
+/// and acts on none; `on` acts on the answers (a hold, the request's kind
+/// lowering the effort); `unreduced` is `on` with returned logs left whole.
+/// `working`, `outline`, `turns`, `guided` and `nudge` are `shadow` plus one
+/// engine change each: the newest two results kept whole, long instruction
+/// documents outlined, the turn-economy line, the prompting guides' autonomy
+/// and scope blocks, the batch nudge. `low` is `shadow` at low effort.
+pub const FEEDBACK_ARMS: [FeedbackArm; 10] = [
     FeedbackArm {
         name: "bare",
         mode: "off",
-        helpers: &["enabled = false"],
+        lines: &[],
     },
     FeedbackArm {
         name: "shadow",
         mode: "shadow",
-        helpers: &[],
+        lines: &[],
     },
     FeedbackArm {
-        name: "scout",
-        mode: "shadow",
-        // `always`: under `auto` the span Scout runs only for a request
-        // carrying an uncertainty signal, and the first run of this arm
-        // (2026-09-23) never ran it at all.
-        helpers: &["preflight = true", "preflight_scope = \"always\""],
-    },
-    FeedbackArm {
-        name: "dissect",
+        name: "on",
         mode: "on",
-        helpers: &[],
+        lines: &[],
     },
     FeedbackArm {
-        name: "lanes",
-        mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-        ],
+        name: "unreduced",
+        mode: "on",
+        lines: &["reduce_returns = false"],
     },
     FeedbackArm {
         name: "working",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[limits]",
-            "keep_results = 2",
-        ],
+        lines: &["[limits]", "keep_results = 2"],
     },
     FeedbackArm {
         name: "outline",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[limits]",
-            "instructions_outline = true",
-        ],
+        lines: &["[limits]", "instructions_outline = true"],
     },
     FeedbackArm {
         name: "turns",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[limits]",
-            "turn_economy = true",
-        ],
+        lines: &["[limits]", "turn_economy = true"],
     },
-    // The prompting guides' candidates (2026-09-24), each over `lanes`.
     FeedbackArm {
         name: "guided",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[limits]",
-            "autonomy_block = true",
-            "scope_block = true",
-        ],
+        lines: &["[limits]", "autonomy_block = true", "scope_block = true"],
     },
     FeedbackArm {
         name: "nudge",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[limits]",
-            "batch_nudge = true",
-        ],
+        lines: &["[limits]", "batch_nudge = true"],
     },
     FeedbackArm {
         name: "low",
         mode: "shadow",
-        helpers: &[
-            "preflight = false",
-            "acceptance_list = false",
-            "completion_check = \"always\"",
-            "reduce_returns = true",
-            "prefetch_returns = false",
-            "learn = true",
-            "[session]",
-            "effort = \"low\"",
-        ],
-    },
-    FeedbackArm {
-        name: "oneshot",
-        mode: "on",
-        helpers: &["scout_oneshot = true"],
-    },
-    FeedbackArm {
-        name: "reduce",
-        mode: "on",
-        helpers: &["reduce_returns = true"],
-    },
-    FeedbackArm {
-        name: "prefetch",
-        mode: "on",
-        helpers: &["prefetch_returns = true"],
-    },
-    FeedbackArm {
-        name: "all",
-        mode: "on",
-        helpers: &["reduce_returns = true", "prefetch_returns = true"],
+        lines: &["[session]", "effort = \"low\""],
     },
 ];
 
@@ -422,10 +324,6 @@ pub struct RunOpts {
     /// exit is `Errored` rather than scored. This stays an `Option` because
     /// the other rows carry their own configuration.
     pub parent_model: Option<String>,
-    /// The helper model every `sterna` row's session runs its Scout, lister
-    /// and checker with, written as `[helpers] model`; `None` leaves the
-    /// helpers without a model, so none of them runs.
-    pub helpers_model: Option<String>,
 }
 
 /// Runs one attempt of `task` by `harness` and returns its record.
@@ -539,9 +437,6 @@ fn run_attempt_in(
     if let Err(_message) = write_sterna_config(
         dir,
         sterna_row.then_some(opts.parent_model.as_deref()).flatten(),
-        sterna_row
-            .then_some(opts.helpers_model.as_deref())
-            .flatten(),
         command.decisions.as_ref(),
     ) {
         return finish(
@@ -715,13 +610,10 @@ pub fn is_sterna_row(row: &str) -> bool {
 fn write_sterna_config(
     dir: &Path,
     parent_model: Option<&str>,
-    helpers_model: Option<&str>,
     arm: Option<&DecisionsArm>,
 ) -> Result<(), String> {
     let decisions_model = arm.and_then(|arm| arm.model.as_deref());
-    let helper_switches = arm.map_or(&[][..], |arm| arm.helpers);
-    let helpers_wanted = helpers_model.is_some() || !helper_switches.is_empty();
-    if parent_model.is_none() && decisions_model.is_none() && !helpers_wanted {
+    if parent_model.is_none() && decisions_model.is_none() {
         return Ok(());
     }
     let config_dir = dir.join(".sterna");
@@ -730,7 +622,6 @@ fn write_sterna_config(
     for (table, wanted) in [
         ("[model]", parent_model.is_some()),
         ("[decisions]", decisions_model.is_some()),
-        ("[helpers]", helpers_wanted),
     ] {
         if wanted && existing.contains(table) {
             return Err(format!(
@@ -753,19 +644,7 @@ fn write_sterna_config(
             "[decisions]\nmodel = \"{model}\"\nmode = \"{}\"\n",
             arm.map_or("", |arm| arm.mode.as_str())
         ));
-    }
-    if helpers_wanted {
-        content.push_str("[helpers]\n");
-        let sets_enabled = helper_switches
-            .iter()
-            .any(|line| line.trim_start().starts_with("enabled"));
-        if let Some(model) = helpers_model {
-            if !sets_enabled {
-                content.push_str("enabled = true\n");
-            }
-            content.push_str(&format!("model = \"{model}\"\n"));
-        }
-        for line in helper_switches {
+        for line in arm.map_or(&[][..], |arm| arm.lines) {
             content.push_str(line);
             content.push('\n');
         }
@@ -822,9 +701,8 @@ fn substituted_args(
     out
 }
 
-/// The bare runtime tools a cell calls by name. `helper.<name>` and
-/// `decide.choice` are counted separately in [`count_calls`], since both are
-/// reached through a receiver and a bare `find(` is not one of them.
+/// The bare runtime tools a cell calls by name. `decide.choice` is counted
+/// separately in [`count_calls`], since it is reached through a receiver.
 const CELL_TOOLS: [&str; 10] = [
     "read", "rg", "grep", "glob", "context", "edit", "write", "bash", "fd", "jq",
 ];
@@ -832,8 +710,8 @@ const CELL_TOOLS: [&str; 10] = [
 /// How many tool calls one cell's source makes.
 ///
 /// An identifier counts when it is one of [`CELL_TOOLS`], stands on its own
-/// rather than after a `.`, and is followed by `(`; or when it is reached
-/// through `helper.` or as `decide.choice`. A method of the same name on
+/// rather than after a `.`, and is followed by `(`; or when it is
+/// `decide.choice`. A method of the same name on
 /// something else -- `results.read(...)` -- is not a tool call and is not
 /// counted.
 fn count_calls(source: &str) -> u32 {
@@ -872,10 +750,8 @@ fn count_calls(source: &str) -> u32 {
             while receiver_start > 0 && is_ident(bytes[receiver_start - 1]) {
                 receiver_start -= 1;
             }
-            match &source[receiver_start..receiver_end] {
-                "helper" => calls += 1,
-                "decide" if name == "choice" => calls += 1,
-                _ => {}
+            if &source[receiver_start..receiver_end] == "decide" && name == "choice" {
+                calls += 1;
             }
         } else if CELL_TOOLS.contains(&name) {
             calls += 1;
@@ -1112,12 +988,11 @@ mod tests {
         let source = "const a = await read({path: \"x\"});\n\
              const b = await rg({pattern: \"y\"});\n\
              const c = context({path: \"z\", symbol: \"S\"});\n\
-             const d = await helper.find(\"where\");\n\
              const e = await decide.choice(\"q\", {a: \"1\", b: \"2\"});\n\
              const f = results.read(0);\n\
              const g = readme(1);\n\
              const h = \"bash is a word here\";\n";
-        assert_eq!(count_calls(source), 5);
+        assert_eq!(count_calls(source), 4);
     }
 
     #[test]

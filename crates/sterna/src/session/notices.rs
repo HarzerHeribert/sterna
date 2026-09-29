@@ -28,6 +28,4 @@ pub(super) fn at_task_end() {
     for warning in usage::take_warnings() {
         ui::output(warning);
     }
-    // Reaped only: each note reached the screen when its work ended.
-    super::after::settle(false);
 }

@@ -1,9 +1,7 @@
 //! The structured task capsule derives its state from the trajectory alone.
 
 use sterna::runtime::capsule::{Capsule, RENDER_CAP, State};
-use sterna::runtime::outcome::{
-    CallRecord, CellOutcomeKind, CellRecord, Ended, PlanItem, PlanStatus,
-};
+use sterna::runtime::outcome::{CallRecord, CellOutcomeKind, CellRecord, Ended};
 
 fn call(tool: &str, args: &[(&str, &str)], ended: Ended, exit_code: Option<i32>) -> CallRecord {
     CallRecord {
@@ -49,7 +47,6 @@ fn an_edit_then_a_passing_verification_is_verified_and_a_further_edit_is_not() {
             )],
         ),
         None,
-        &[],
         Some("tree-1"),
     );
     assert_eq!(capsule.state(), &State::InProgress);
@@ -69,22 +66,16 @@ fn an_edit_then_a_passing_verification_is_verified_and_a_further_edit_is_not() {
             )],
         ),
         None,
-        &[PlanItem {
-            text: "write the changelog".into(),
-            status: PlanStatus::Active,
-        }],
         Some("tree-1"),
     );
     assert_eq!(capsule.state(), &State::Verified { cell: 2 });
     assert_eq!(capsule.checkpoint().unwrap().tree_digest, "tree-1");
-    assert_eq!(capsule.next_action(), Some("write the changelog"));
     let rendered = capsule.render();
     assert!(rendered.contains("state: verified at cell 2"), "{rendered}");
     assert!(
         rendered.contains("edited /app/src/lib.rs (version 0123456789ab) (cell 1)"),
         "{rendered}"
     );
-    assert!(rendered.contains("next: write the changelog"), "{rendered}");
     assert!(
         rendered.contains("verified: cell 2 `cargo test` → exit 0"),
         "{rendered}"
@@ -101,7 +92,6 @@ fn an_edit_then_a_passing_verification_is_verified_and_a_further_edit_is_not() {
             )],
         ),
         None,
-        &[],
         Some("tree-2"),
     );
     assert_eq!(capsule.state(), &State::UnverifiedSince { cell: 3 });
@@ -126,7 +116,6 @@ fn a_denial_is_one_risk_however_often_it_repeats() {
                 )],
             ),
             None,
-            &[],
             None,
         );
     }
@@ -143,7 +132,6 @@ fn render_stays_under_the_bound_with_fifty_facts() {
         capsule.observe_cell(
             &cell(n, vec![call("edit", &[("path", &path)], Ended::Ok, None)]),
             Some(("RangeError", &"long message ".repeat(50))),
-            &[],
             None,
         );
     }

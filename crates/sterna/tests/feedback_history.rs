@@ -19,7 +19,6 @@ fn result(cell: u64, table: &str) -> CellResult {
         stdout_tail: Some(
             "source text\n\n## Handles\nliteral heading\n\n## Budget\nliteral budget".into(),
         ),
-        plan: vec![],
         budget: Budget {
             turn_cap: 1,
             task_used: 1,

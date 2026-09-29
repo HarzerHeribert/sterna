@@ -4,7 +4,6 @@
 //! rest of the workspace.
 
 pub mod abi;
-pub mod acceptance;
 pub mod agent;
 pub mod approval;
 pub mod ask;
@@ -16,22 +15,16 @@ pub mod config;
 pub mod contract;
 pub mod decide;
 pub mod events;
-pub mod excerpts;
 pub mod gateway;
-pub mod helper_context;
-pub mod helpers;
 pub mod images;
-pub mod learned;
 pub mod manifest;
 pub mod memory;
 pub mod models;
 pub mod observe;
 pub mod permissions;
-pub mod preflight;
 pub mod progress;
 pub mod project;
 pub mod prompt;
-pub mod reader;
 pub mod relocate;
 pub mod rollout;
 pub mod ruler;

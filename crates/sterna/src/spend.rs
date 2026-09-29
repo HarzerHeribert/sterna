@@ -1,11 +1,11 @@
 //! What each tier of the session actually consumed, and on what.
 //!
-//! A session is not one model spending tokens. It is a parent that reasons, a
-//! helper that absorbs bulk and a subagent that is delegated to, and those can
-//! be three different models on three different routes at three prices. A
-//! single `spent 278.6k` figure hides all of that: it looks worse than
-//! `60k` until you know that 235k of it went to a model costing eighteen times
-//! less and never entered the parent's context at all.
+//! A session is not one model spending tokens. It is a parent that reasons
+//! and a subagent that is delegated to, and those can be two different models
+//! on two different routes at two prices. A single `spent 278.6k` figure hides
+//! that: it looks worse than `60k` until you know that most of it went to a
+//! model costing a tenth as much and never entered the parent's context at
+//! all.
 //!
 //! So the unit here is the **tier**, not the token. Every figure is optional
 //! and absent is never zero, because these come from a provider's own usage
@@ -15,15 +15,13 @@ use std::collections::BTreeMap;
 
 /// Which part of the session spent something.
 ///
-/// Three, and no "other": work that belongs to none of these is work whose
-/// cost nobody owns, and the right response to discovering some is to name a
-/// fourth tier rather than to hide it in a total.
+/// Two, and no "other": work that belongs to neither is work whose cost
+/// nobody owns, and the right response to discovering some is to name a
+/// third tier rather than to hide it in a total.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     /// The model the person is talking to.
     Parent,
-    /// Bounded, out-of-turn semantic work owned by the cell that asked.
-    Helpers,
     /// Delegated goals running as session-background work.
     Subagents,
 }
@@ -33,7 +31,6 @@ impl Tier {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Parent => "parent",
-            Self::Helpers => "helpers",
             Self::Subagents => "subagents",
         }
     }
@@ -43,7 +40,6 @@ impl Tier {
     pub fn singular(self) -> &'static str {
         match self {
             Self::Parent => "parent",
-            Self::Helpers => "helper",
             Self::Subagents => "subagent",
         }
     }
@@ -51,31 +47,29 @@ impl Tier {
     /// The tier a person names, in either spelling.
     ///
     /// **This is the same enum the ledger reports**, which is the point:
-    /// `/model helper luna` and the `helpers` heading in the breakdown must
-    /// be the same tier, or configuring the ladder and reading its bill are
+    /// `/model subagent luna` and the `subagents` heading in the breakdown
+    /// must be the same tier, or configuring the ladder and reading its bill are
     /// two vocabularies a person has to hold at once.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
         match word {
             "parent" => Some(Self::Parent),
-            "helper" | "helpers" => Some(Self::Helpers),
             "subagent" | "subagents" => Some(Self::Subagents),
             _ => None,
         }
     }
 
-    /// The three, in the order work flows through them.
+    /// Both, in the order work flows through them.
     #[must_use]
-    pub fn every() -> [Self; 3] {
-        [Self::Parent, Self::Helpers, Self::Subagents]
+    pub fn every() -> [Self; 2] {
+        [Self::Parent, Self::Subagents]
     }
 
     /// The next tier, wrapping — what Tab does in the model panel.
     #[must_use]
     pub fn next(self) -> Self {
         match self {
-            Self::Parent => Self::Helpers,
-            Self::Helpers => Self::Subagents,
+            Self::Parent => Self::Subagents,
             Self::Subagents => Self::Parent,
         }
     }
@@ -83,14 +77,14 @@ impl Tier {
 
 /// One tier's consumption, on one model.
 ///
-/// Keyed by model rather than summed across the tier, because "helpers used
-/// 235k" is not a fact anybody can price until it says which helper model.
+/// Keyed by model rather than summed across the tier, because "subagents
+/// used 235k" is not a fact anybody can price until it says which model.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Consumption {
     /// The route that served it — the entitlement, as the gateway reported
     /// it. Absent when the request went direct, or when nothing said.
     pub route: Option<String>,
-    /// Requests for a parent or a helper; turns for a subagent.
+    /// Requests for a parent; turns for a subagent.
     pub calls: u64,
     /// Every token class the provider reported, summed. Absent when no
     /// request in this tier reported any.
@@ -155,7 +149,7 @@ impl Ledger {
             .record(tokens, cost_usd, route);
     }
 
-    /// Every entry, parent first, then helpers, then subagents.
+    /// Every entry, parent first, then subagents.
     #[must_use]
     pub fn entries(&self) -> Vec<(Tier, &str, &Consumption)> {
         self.tiers
@@ -251,13 +245,6 @@ mod tests {
             Some("chatgpt-subscription"),
         );
         ledger.record(
-            Tier::Helpers,
-            "gpt-5.6-luna",
-            Some(235_500),
-            None,
-            Some("chatgpt-subscription"),
-        );
-        ledger.record(
             Tier::Subagents,
             "claude-sonnet-5",
             Some(12_000),
@@ -269,7 +256,7 @@ mod tests {
 
     /// Configuring a tier and reading its bill are one vocabulary.
     ///
-    /// `/model helper luna` and the `helpers` heading below must name the
+    /// `/model subagent luna` and the `subagents` heading below must name the
     /// same tier, or a person has to hold two spellings at once to connect
     /// what they chose to what it cost.
     #[test]
@@ -283,15 +270,12 @@ mod tests {
     }
 
     #[test]
-    fn cycling_visits_all_three_and_returns() {
+    fn cycling_visits_both_and_returns() {
         let mut seen = vec![Tier::Parent];
-        for _ in 0..3 {
+        for _ in 0..2 {
             seen.push(seen.last().expect("seeded").next());
         }
-        assert_eq!(
-            seen,
-            [Tier::Parent, Tier::Helpers, Tier::Subagents, Tier::Parent]
-        );
+        assert_eq!(seen, [Tier::Parent, Tier::Subagents, Tier::Parent]);
     }
 
     /// The reason the module exists: the same total means different things
@@ -300,13 +284,12 @@ mod tests {
     fn each_tier_names_its_own_model_and_route() {
         let rendered = heterogeneous().render();
         assert!(rendered.contains("parent\n  model: gpt-6-astra"));
-        assert!(rendered.contains("helpers\n  model: gpt-5.6-luna"));
         assert!(rendered.contains("subagents\n  model: claude-sonnet-5"));
         assert!(rendered.contains("route: chatgpt-subscription"));
         assert!(rendered.contains("route: claude-max"));
     }
 
-    /// A subagent is measured in turns; a parent and a helper in calls.
+    /// A subagent is measured in turns; a parent in calls.
     #[test]
     fn a_subagent_is_counted_in_turns_rather_than_calls() {
         let rendered = heterogeneous().render();
@@ -319,8 +302,8 @@ mod tests {
     #[test]
     fn an_unreported_request_is_visible_rather_than_counted_as_free() {
         let mut ledger = Ledger::new();
-        ledger.record(Tier::Helpers, "luna", Some(100), None, None);
-        ledger.record(Tier::Helpers, "luna", None, None, None);
+        ledger.record(Tier::Parent, "luna", Some(100), None, None);
+        ledger.record(Tier::Parent, "luna", None, None, None);
         let rendered = ledger.render();
         assert!(rendered.contains("partial"), "{rendered}");
         assert!(rendered.contains("1 call unreported"), "{rendered}");
@@ -368,8 +351,7 @@ mod tests {
     fn the_parent_is_reported_before_what_it_delegated_to() {
         let rendered = heterogeneous().render();
         let parent = rendered.find("parent").unwrap();
-        let helpers = rendered.find("helpers").unwrap();
         let subagents = rendered.find("subagents").unwrap();
-        assert!(parent < helpers && helpers < subagents, "{rendered}");
+        assert!(parent < subagents, "{rendered}");
     }
 }

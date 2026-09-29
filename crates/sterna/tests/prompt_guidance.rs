@@ -43,15 +43,15 @@ fn the_preamble_teaches_what_a_turn_buys() {
     //    the edit-and-check, and the judgement the cell branches on.
     for worked in [
         "await Promise.all",
-        "const failures = await helper.reduce(run.stdout);",
+        "const failures = run.stdout.split(\"\\n\").filter(line => line.includes(\"FAILED\"));",
         "const call = await decide.choice(",
         "if (call.choice === \"wider\" && call.confidence > 0.85)",
     ] {
         assert!(text.contains(worked), "missing worked example: {worked}");
     }
 
-    // 3. A helper and a judgement cost no turn, said where it is useful.
-    assert!(text.contains("cost no\nturn"), "{text}");
+    // 3. A judgement costs no turn, said where it is useful.
+    assert!(text.contains("costs no turn"), "{text}");
 
     // 4. The rhythm `edit` imposes, stated before the model can trip it
     //    (`runtime/bindings.rs` terminates a cell whose edit has no

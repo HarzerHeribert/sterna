@@ -1,6 +1,6 @@
 //! The system block of one task: the prompt, its facts and manifest, and
-//! the scouting preflight block (moved out of `session.rs` for the Phase 59
-//! size ratchet, 2026-09-13; nothing here is new).
+//! the decision model's task question and holds (moved out of `session.rs`
+//! for the Phase 59 size ratchet, 2026-09-13).
 
 use super::*;
 
@@ -17,7 +17,6 @@ pub(super) fn build_system_prompt(
     limits: &crate::config::Limits,
     web: &crate::web::WebConfig,
     agents: &crate::config::AgentsConfig,
-    helpers: &crate::config::HelpersConfig,
     decisions: &crate::config::DecisionsConfig,
     served: &[crate::models::RosterModel],
     profile: &Profile,
@@ -49,9 +48,6 @@ pub(super) fn build_system_prompt(
         prompt::Reach {
             web: web.as_ref(),
             agents: Some(&agents),
-            // The same predicate `system_manifest` writes its `Unavailable:`
-            // line on, so the roster and its refusal cannot disagree.
-            helpers: Some(helpers.model.is_some() && helpers.enabled),
             // The same predicate the runtime binds `decide` on, so an
             // unconfigured session is told of no global it does not have.
             decisions: decisions.model.is_some(),
@@ -73,19 +69,15 @@ pub(super) fn build_system_prompt(
     if limits.scope_block {
         system.push_str(prompt::SCOPE_BLOCK);
     }
-    // Last, so a note written behind one answer changes only the tail of
-    // the next task's prompt and the cached prefix before it survives.
-    system.push_str(&crate::learned::section(profile));
     system
 }
 /// Keeps the system prompt byte-stable from task to task, so a task after the
 /// first reads the whole earlier conversation from the provider's cache.
 ///
 /// It is replaced only when what it says changed -- the instructions, the
-/// grants, the model, the interface -- never for its orientation timestamp or
-/// a note `learned.md` gained behind the last answer: those reach the next
-/// session. Whatever differs per task rides in the task's own message
-/// ([`task_lines`], [`carry_task_context`]).
+/// grants, the model, the interface -- never for its orientation timestamp:
+/// that reaches the next session. Whatever differs per task rides in the
+/// task's own message ([`task_lines`], [`carry_task_context`]).
 pub(super) fn keep_session_system(session: &Session<'_>, transcript: &mut Transcript) {
     let mut fresh = system_prompt_for(session);
     if session.config().web.enabled {
@@ -102,14 +94,11 @@ pub(super) fn keep_session_system(session: &Session<'_>, transcript: &mut Transc
     }
 }
 
-/// A system prompt without the two parts that change on their own between
-/// tasks and do not warrant a new cache.
+/// A system prompt without the part that changes on its own between tasks
+/// and does not warrant a new cache.
 fn lasting_part(system: &str) -> String {
-    let body = system
-        .split("\n\n## Learned about this project")
-        .next()
-        .unwrap_or(system);
-    body.lines()
+    system
+        .lines()
         .filter(|line| !line.starts_with("task-start UTC:"))
         .collect::<Vec<_>>()
         .join("\n")
@@ -127,7 +116,7 @@ pub(super) fn task_lines(session: &Session<'_>) -> String {
     lines
 }
 
-/// Appends the task's context -- mode, plan, preflight, acceptance -- to the
+/// Appends the task's context -- mode, plan -- to the
 /// task's own message, after the request itself, which stays the first block.
 pub(super) fn carry_task_context(message: &mut Message, context: String) {
     let context = context.trim_start();
@@ -143,111 +132,12 @@ pub(super) fn system_prompt_for(session: &Session<'_>) -> String {
         &session.config().limits,
         &session.config().web,
         &session.config().agents,
-        &session.config().helpers,
         &session.config().decisions,
         &session.roster,
         session.profile,
         session.interface.get(),
         &session.manifest,
     )
-}
-
-/// The most files one preflight serves in full, and the most bytes one of
-/// them may hold to be served at all.
-///
-/// **A file too large to serve whole is not served.** The section says *in
-/// full*, and a truncated file under that heading is a claim the model cannot
-/// check: it would read the first half as the whole of it.
-pub(super) const PREFLIGHT_SERVE_FILES: usize = 6;
-pub(super) const PREFLIGHT_SERVE_BYTES: u64 = 32 * 1024;
-
-/// The acceptance lister: one toolless request that turns the task into the
-/// items its completion is checked against (`acceptance.rs`). Runs once per
-/// task before the first turn when `[helpers] acceptance_list` is on; a
-/// request too short to need the repository gets none.
-///
-/// The call, ready to run on another thread: everything
-/// it reads is owned or `Sync`, so it runs beside the preflight Scout rather
-/// than after it -- the two are independent reads of the same request, and
-/// in series the person waited for both (2026-09-23).
-pub(super) struct PendingAcceptance<'s> {
-    task: String,
-    model: String,
-    effort: crate::wire::Effort,
-    profile: &'s crate::sandbox::profile::Profile,
-    session_id: &'s crate::contract::SessionId,
-    token: invoke::CancellationToken,
-}
-
-impl PendingAcceptance<'_> {
-    pub(super) fn call(self) -> Option<crate::helpers::HelperRecord> {
-        crate::helpers::acceptance_list(
-            &self.task,
-            crate::helpers::HelperRoute::new(&self.model, self.effort),
-            self.profile,
-            self.session_id,
-            &self.token,
-        )
-    }
-}
-
-/// The lister's call for this task, or `None` when no list is derived.
-pub(super) fn start_acceptance<'s>(
-    task: &str,
-    session: &'s Session<'_>,
-) -> Option<PendingAcceptance<'s>> {
-    let helpers = session.config().helpers.clone();
-    if !helpers.enabled || !helpers.acceptance_list || !request_may_need_the_repository(task) {
-        return None;
-    }
-    let model = helpers.model.clone()?;
-    let effort = helpers.effort.for_helper("accept")?;
-    let token = invoke::CancellationToken::new();
-    session.interrupt.arm(token.clone());
-    Some(PendingAcceptance {
-        task: task.to_string(),
-        model,
-        effort,
-        profile: session.profile,
-        session_id: session.id,
-        token,
-    })
-}
-
-/// "1 check" or "3 checks": the acceptance list's items, as the person
-/// reads them.
-fn checks(count: usize) -> String {
-    format!("{count} check{}", if count == 1 { "" } else { "s" })
-}
-
-/// The lister's answer parsed into the block, the items and the record.
-pub(super) fn finish_acceptance(
-    session: &Session<'_>,
-    record: Option<crate::helpers::HelperRecord>,
-) -> Option<(
-    String,
-    Vec<crate::acceptance::Item>,
-    crate::helpers::HelperRecord,
-)> {
-    let record = record?;
-    if record.outcome.cancelled {
-        session.interrupt.consumed();
-    }
-    output::acceptance_helper(&record);
-    if !record.outcome.ok {
-        session_println!(
-            "The checks for this request were not listed: the helper did not answer ({})",
-            record.outcome.text.lines().next().unwrap_or("").trim()
-        );
-        return None;
-    }
-    let items = crate::acceptance::parse(&record.outcome.text);
-    if items.is_empty() {
-        session_println!("No checks for this request: the helper found nothing it could verify");
-        return None;
-    }
-    session_println!("{} taken from your request", checks(items.len()));
-    Some((crate::acceptance::render_list(&items), items, record))
 }
 
 /// The decision hold, applied right before a cell or direct frame would run
@@ -286,9 +176,7 @@ pub(super) fn apply_decision_hold(
         effect.as_ref().map(|(name, line)| (name.as_str(), *line)),
         task_state.effect_holds > 0,
     ) {
-        crate::decide::Hold::Run => {
-            apply_drift_hold(session, task_state, runtime, effect.as_ref(), source, calls)
-        }
+        crate::decide::Hold::Run => None,
         crate::decide::Hold::Overridden => {
             task_state.effect_overrides += 1;
             output::decisions(task_state.decisions_telemetry(&session.config().decisions));
@@ -334,90 +222,7 @@ pub(super) fn apply_decision_hold(
     }
 }
 
-/// The drift question (2643), asked only after the intent hold above has
-/// itself returned `Run` for this cell -- an effectful cell running while a
-/// read-only intent is not confident enough to hold, or while the intent is
-/// not read-only at all, still gets one chance to be checked against the
-/// plan's own current step. `effect` is `None` for a pure cell, in which case
-/// nothing is ever asked.
-///
-/// Unlike the intent question (asked once, before the first turn, and cached
-/// on [`TaskState::intent`]), this question is asked fresh before every
-/// candidate effectful cell, including the one re-issued after a hold --
-/// [`crate::decide::drift_for`]'s own once rule (`already_held`) is what
-/// keeps that second ask from holding the cell again, exactly as
-/// [`crate::decide::hold_for`]'s `already_held` does for the intent hold.
-fn apply_drift_hold(
-    session: &Session<'_>,
-    task_state: &mut TaskState,
-    runtime: &Runtime,
-    effect: Option<&(String, Option<u32>)>,
-    source: &str,
-    calls: &[(&String, &String, &serde_json::Value)],
-) -> Option<Step> {
-    effect?;
-    let decisions = &session.config().decisions;
-    let model = decisions.model.as_deref()?;
-    if decisions.mode == crate::config::DecisionMode::Off {
-        return None;
-    }
-    let plan = runtime.plan();
-    let step = plan
-        .iter()
-        .find(|item| item.status == crate::runtime::outcome::PlanStatus::Active)?;
-    let already_held = task_state.drift_holds > 0;
-    task_state.drift_asked += 1;
-    let answer = match crate::decide::drift_satisfied(model, &task_state.task, &step.text, source) {
-        Ok(noul) => Some(noul),
-        Err(_) => {
-            task_state.drift_failed += 1;
-            None
-        }
-    };
-    match crate::decide::drift_for(
-        decisions.mode,
-        answer,
-        decisions.drift_no_below,
-        &step.text,
-        already_held,
-    ) {
-        crate::decide::Drift::Run => None,
-        crate::decide::Drift::Shadow(_) => {
-            task_state.would_drift += 1;
-            output::decisions(task_state.decisions_telemetry(&session.config().decisions));
-            None
-        }
-        crate::decide::Drift::Held(block) => {
-            task_state.drift_holds += 1;
-            output::decisions(task_state.decisions_telemetry(&session.config().decisions));
-            let native_result = (!calls.is_empty()).then(|| Message {
-                role: Role::User,
-                content: calls
-                    .iter()
-                    .map(|(id, _, _)| Block::ToolResult {
-                        tool_use_id: (*id).clone(),
-                        content: block.clone(),
-                        is_error: false,
-                    })
-                    .collect(),
-                historical: None,
-            });
-            Some(Step {
-                answer: Some(block.clone()),
-                historical: Some(block),
-                native_result,
-                response: None,
-                prose: false,
-                record: None,
-                rollback: None,
-                view: CellView::default(),
-            })
-        }
-    }
-}
-
-/// The decision model's one request, asked once per task beside
-/// [`preflight_block`] and [`append_acceptance`], on its own thread.
+/// The decision model's one request, asked once per task on its own thread.
 ///
 /// **In `on` the task waits for it, because it decides; in `shadow` it does
 /// not, because it only records** -- the answer is collected after the
@@ -495,57 +300,6 @@ impl PendingDecision {
     }
 }
 
-/// The acceptance list in the task's system block, returned for the task
-/// state to check when the model claims completion, with where it came
-/// from. A dissection's `## Accept` items are the list when it named any;
-/// otherwise the lister's answer is -- and when the lister was held back
-/// for a dissection that named none, the lister runs now, after it.
-pub(super) fn append_acceptance(
-    task: &str,
-    session: &Session<'_>,
-    scouted: Vec<crate::acceptance::Item>,
-    (record, held_back): (Option<crate::helpers::HelperRecord>, bool),
-    task_context: &mut String,
-    budget: &mut TaskSpend,
-) -> (Vec<crate::acceptance::Item>, crate::acceptance::Origin) {
-    use crate::acceptance::Origin;
-    if !scouted.is_empty() {
-        session_println!(
-            "{} taken from your request by the Scout",
-            checks(scouted.len())
-        );
-        task_context.push_str(&crate::acceptance::render_list(&scouted));
-        return (scouted, Origin::Scout);
-    }
-    let record = if held_back {
-        start_acceptance(task, session).and_then(PendingAcceptance::call)
-    } else {
-        record
-    };
-    let Some((block, items, record)) = finish_acceptance(session, record) else {
-        return (Vec::new(), Origin::Request);
-    };
-    task_context.push_str(&block);
-    budget.add_helpers(std::slice::from_ref(&record));
-    (items, Origin::Request)
-}
-
-/// The stand-in gate: a request of fewer words than this gets no preflight.
-pub(super) const PREFLIGHT_MIN_WORDS: usize = 4;
-
-/// Whether this request plausibly needs the repository at all.
-///
-/// A request under [`PREFLIGHT_MIN_WORDS`] words — "hi", "thanks", "carry
-/// on" — gets no preflight; everything else is decided by
-/// [`crate::preflight::should_scout`] on the request's own signals.
-/// The whole-response cap on a dissection, in tokens: ~300 words with room
-/// for the headings (memory `scout-dissection-latency-2026-09-23`).
-const DISSECTION_CAP: u32 = 640;
-
-pub(super) fn request_may_need_the_repository(task: &str) -> bool {
-    task.split_whitespace().count() >= PREFLIGHT_MIN_WORDS
-}
-
 /// The effort a request's kind sets for one task, and its restoration.
 ///
 /// **The person's choice always wins.** A kind acts only when the session's
@@ -616,389 +370,6 @@ impl Drop for EffortLease<'_, '_> {
             self.session.effort.set(effort);
         }
     }
-}
-
-/// [`preflight_block`]'s result: the system-prompt block, if a scout ran and
-/// answered, plus what the decision model's complexity answer did to that
-/// choice -- `scout_signal` and `would_scout` feed straight into
-/// `TaskState::with_decision`'s telemetry.
-pub(super) struct PreflightOutcome {
-    pub(super) block: Option<String>,
-    /// Which brief the Scout ran with, when one ran.
-    pub(super) brief: Option<crate::preflight::Brief>,
-    /// `mode = shadow` and the kind read `explore`: the dissection brief
-    /// would have been chosen.
-    pub(super) would_dissect: bool,
-    /// Whether `preflight::SIGNAL_DECIDED_EXPLORATION` was one of the reasons
-    /// this task actually ran a scout (`mode = on` only).
-    pub(super) scout_signal: bool,
-    /// Whether the complexity answer would have added that signal had
-    /// `mode` been `on` (`mode = shadow` only; recorded, changes nothing).
-    pub(super) would_scout: bool,
-    /// The dissection's `## Accept` items, when `[helpers] acceptance_list`
-    /// is on: the task's acceptance list, written after a look at the
-    /// project. Empty otherwise.
-    pub(super) acceptance: Vec<crate::acceptance::Item>,
-}
-
-impl PreflightOutcome {
-    const NONE: Self = Self {
-        block: None,
-        brief: None,
-        would_dissect: false,
-        scout_signal: false,
-        would_scout: false,
-        acceptance: Vec::new(),
-    };
-}
-
-/// Whether this task's Scout dissects the request: the decision model read
-/// it as `explore`, confidently, with `[decisions] mode = "on"`. A dissection
-/// that runs with `[helpers] acceptance_list` on writes the task's
-/// acceptance list, so the lister does not run beside it.
-pub(super) fn dissects(
-    session: &Session<'_>,
-    decision: Option<&crate::decide::TaskDecision>,
-) -> bool {
-    decision
-        .and_then(crate::decide::TaskDecision::confident_kind)
-        .is_some_and(|kind| kind == crate::decide::KIND_EXPLORE)
-        && session.config().decisions.mode == crate::config::DecisionMode::On
-}
-
-/// One preflight block to append to this task's system prompt, or `None` when
-/// no scout ran or none answered.
-///
-/// The invariant: **a failed preflight leaves the session exactly as it is
-/// today**, and **the scout never attempts the task**: it is handed a
-/// scouting brief built around the verbatim request and the manifest, and
-/// answers with constraints, files, tests, capabilities and risks
-/// (`smarter-cheaper-roadmap.md`, *Preflight Helper*). With
-/// `preflight_scope = "auto"` it runs only when the request carries an
-/// uncertainty signal, so a task that names existing files and available
-/// tools pays nothing -- unless `decision` names `needs_exploration` at or
-/// above `scout_above` while `[decisions] mode = "on"` (F2): that signal
-/// can only add a reason to run the scout, never remove one, and `mode =
-/// "shadow"` only records what would have happened (`would_scout`).
-pub(super) fn preflight_block(
-    task: &str,
-    session: &Session<'_>,
-    transcript: &mut Transcript,
-    decision: Option<&crate::decide::TaskDecision>,
-) -> PreflightOutcome {
-    let helpers = session.config().helpers.clone();
-    let decisions = session.config().decisions.clone();
-    // The kind (2026-09-23): a confident `explore` briefs the Scout to
-    // dissect the request and is itself a reason to run it -- with or
-    // without `[helpers] preflight`, which opts in the span Scout only: the
-    // dissection is what `mode = "on"` asked for when it read exploration.
-    let explore = decision
-        .and_then(crate::decide::TaskDecision::confident_kind)
-        .is_some_and(|kind| kind == crate::decide::KIND_EXPLORE);
-    let dissect = dissects(session, decision);
-    if !helpers.enabled || !(helpers.preflight || dissect) || !request_may_need_the_repository(task)
-    {
-        return PreflightOutcome::NONE;
-    }
-    let complexity = decision.map(|decision| &decision.complexity);
-    let clears_scout_above = complexity.is_some_and(|complexity| {
-        complexity.choice == crate::decide::NEEDS_EXPLORATION
-            && complexity.confidence >= decisions.scout_above
-    });
-    let would_scout = decisions.mode == crate::config::DecisionMode::Shadow && clears_scout_above;
-    let decided_for_scout = if decisions.mode == crate::config::DecisionMode::On {
-        complexity
-    } else {
-        None
-    };
-    let would_dissect = explore && decisions.mode == crate::config::DecisionMode::Shadow;
-    let brief_kind = if dissect {
-        crate::preflight::Brief::Dissection
-    } else {
-        crate::preflight::Brief::Spans
-    };
-    let checks_configured = crate::verification::load(session.profile)
-        .map(|config| !config.checks.is_empty())
-        .unwrap_or(false);
-    let scouting_decision = crate::preflight::should_scout(
-        task,
-        &session.manifest,
-        helpers.preflight_scope,
-        checks_configured,
-        decided_for_scout,
-        decisions.scout_above,
-    );
-    let scouting_decision = match (dissect, scouting_decision) {
-        (true, crate::preflight::Decision::Run(mut signals)) => {
-            signals.push(crate::preflight::SIGNAL_DECIDED_EXPLORE);
-            crate::preflight::Decision::Run(signals)
-        }
-        (true, crate::preflight::Decision::Skip(_)) => {
-            crate::preflight::Decision::Run(vec![crate::preflight::SIGNAL_DECIDED_EXPLORE])
-        }
-        (false, decision) => decision,
-    };
-    let scout_signal = matches!(
-        &scouting_decision,
-        crate::preflight::Decision::Run(signals)
-            if signals.contains(&crate::preflight::SIGNAL_DECIDED_EXPLORATION)
-    );
-    // Machine output says why the Scout ran or did not; the conversation
-    // shows the Scout's own card instead of a configuration line.
-    if session.ui.is_none() {
-        session_println!("{}", crate::preflight::signals_summary(&scouting_decision));
-    }
-    let none = PreflightOutcome {
-        block: None,
-        brief: None,
-        would_dissect,
-        scout_signal,
-        would_scout,
-        acceptance: Vec::new(),
-    };
-    if matches!(scouting_decision, crate::preflight::Decision::Skip(_)) {
-        return none;
-    }
-    let Some(model) = helpers.model.as_deref() else {
-        return none;
-    };
-    let Some(effort) = helpers.effort.for_helper("find") else {
-        return none;
-    };
-    let token = invoke::CancellationToken::new();
-    session.interrupt.arm(token.clone());
-    let mut brief = crate::preflight::scouting_brief_for(brief_kind, task, &session.manifest);
-    // The one-shot dissection answers from the file listing in one request
-    // instead of searching; without a listing the search loop runs.
-    let listing = (dissect && helpers.scout_oneshot)
-        .then(|| crate::preflight::listing_section(&session.project.root))
-        .flatten();
-    let oneshot = listing.is_some();
-    if let Some(listing) = &listing {
-        brief.push_str(listing);
-    }
-    // Ranking and judging (2644, 2645): `decisions.model` set and `mode`
-    // not `off` is the same gate the intent/complexity question already
-    // uses above. `apply` carries `mode = on` versus `shadow` -- shadow
-    // still asks and counts, it just never reorders what the Scout is
-    // served or writes a line into what it returned.
-    let decisions_active = decisions.mode != crate::config::DecisionMode::Off;
-    let decisions_apply = decisions.mode == crate::config::DecisionMode::On;
-    let decision_model = decisions.model.clone();
-    // The pool ranked is `prepare_scout`'s own term-matched walk, never a
-    // separate directory walk: `helper_context.rs` does no model work by
-    // its own invariant, so the ranking happens here, over what that walk
-    // already found, rather than inside it.
-    let scout_pool = (decisions_active && decision_model.is_some()).then(|| {
-        crate::helper_context::prepare(
-            crate::helper_context::HelperRole::Scout,
-            task,
-            session.profile,
-            &token,
-        )
-    });
-    let rank_candidates = scout_pool.as_ref().map(|prepared| {
-        crate::helpers::scout_candidates_from_evidence(&prepared.evidence, session.profile, 40)
-    });
-    let rank = match (&rank_candidates, decision_model.as_deref()) {
-        (Some(candidates), Some(decision_model)) => Some((
-            candidates.as_slice(),
-            crate::helpers::ScoutRankRoute {
-                model: decision_model,
-                floor: decisions.scout_relevance_below,
-                apply: decisions_apply,
-            },
-        )),
-        _ => None,
-    };
-    let judge = if decisions_active {
-        decision_model
-            .as_deref()
-            .map(|decision_model| crate::helpers::HelperJudge {
-                model: decision_model,
-                floor: decisions.helper_no_below,
-                apply: decisions_apply,
-            })
-    } else {
-        None
-    };
-    let helper_context = crate::helpers::HelperContext {
-        profile: session.profile,
-        session: session.id,
-        token: &token,
-    };
-    // A dissection is capped where it was measured right: output length is
-    // the lever on its latency, and past ~300 words it was both slower and
-    // malformed more often.
-    let route = crate::helpers::HelperRoute {
-        model,
-        effort,
-        cap: dissect.then_some(DISSECTION_CAP),
-    };
-    let Some(judged) = crate::helpers::preflight_judged(
-        &brief,
-        route,
-        helper_context,
-        rank,
-        judge,
-        oneshot,
-        |record| {
-            let Some(ui) = session.ui else {
-                return;
-            };
-            // The real user turn is recorded below in the established rollout
-            // order. This snapshot makes the submitted request and its Scout
-            // visible immediately without adding a synthetic model turn.
-            let mut visible = transcript.clone();
-            visible
-                .conversation
-                .messages
-                .push(Message::text(Role::User, task));
-            visible.notebook.preflight = Some(record.clone());
-            ui.publish(&visible, &ServedBy::default(), tui::Activity::Searching);
-        },
-    ) else {
-        return none;
-    };
-    let record = judged.record;
-    let ranking_note = judged
-        .ranking
-        .as_ref()
-        .map(crate::helpers::ScoutRanking::note);
-    if let Some(ranking) = &judged.ranking {
-        output::helpers_ranking(ranking);
-    }
-    if let Some((noul, latency_ms)) = judged.judge {
-        output::helpers_checked(noul, decisions.helper_no_below, latency_ms);
-    }
-    if record.outcome.cancelled {
-        session.interrupt.consumed();
-    }
-    output::preflight(&record);
-    // Keep the resolved Scout beside this request for every later task-frame.
-    // The next task clears it before deciding whether another preflight runs.
-    transcript.notebook.preflight = Some(record.clone());
-    let acceptance = if helpers.acceptance_list
-        && record.outcome.ok
-        && brief_kind == crate::preflight::Brief::Dissection
-    {
-        crate::preflight::accept_items(&record.outcome.text)
-    } else {
-        Vec::new()
-    };
-    let block = record.outcome.ok.then(|| {
-        let mut named = crate::preflight::spans(&record.outcome.text);
-        if brief_kind == crate::preflight::Brief::Dissection {
-            for (path, why) in crate::preflight::dissection_files(&record.outcome.text) {
-                if !named.iter().any(|(seen, _)| *seen == path) {
-                    named.push((path, why));
-                }
-            }
-        }
-        let (served, unserved) = preflight_serving(session.profile, &named);
-        let served: Vec<(String, String)> = served
-            .into_iter()
-            .map(|(path, _why, text)| (path, text))
-            .collect();
-        crate::preflight::render_brief(
-            brief_kind,
-            task,
-            &record.outcome.text,
-            &served,
-            &unserved,
-            ranking_note.as_deref(),
-            !acceptance.is_empty(),
-        )
-    });
-    PreflightOutcome {
-        block,
-        brief: Some(brief_kind),
-        would_dissect,
-        scout_signal,
-        would_scout,
-        acceptance,
-    }
-}
-
-/// A file the preflight serves whole: the path the scout named, why it named
-/// it, and the file's complete text.
-pub(super) type ServedFile = (String, String, String);
-
-/// A file the scout named that the preflight did not serve, and the reason in
-/// the person's words.
-pub(super) type UnservedFile = (String, String);
-
-/// The named files that can be served whole -- inside the grant, a regular
-/// file, UTF-8, and small enough that *in full* is true of it -- and beside
-/// them every named file that was **not** served, with its reason.
-///
-/// **The profile decides what may be served, not this function.** A scout
-/// that named a path outside the grant has it refused here for the same
-/// reason `read` would refuse it, and a preflight is not a way around a
-/// grant.
-///
-/// **A file the scout named and the preflight did not serve is stated, never
-/// dropped.** Not serving it is right — the section claims *in full*, and a
-/// truncated file under that heading is a claim the model cannot check — but
-/// silence turns a bounded offer into an invisible one: the model cannot
-/// `read` a file it was never told about, so it re-derives what it was almost
-/// given. Each reason names the bound so the model can act on it.
-pub(super) fn preflight_serving(
-    profile: &Profile,
-    named: &[(String, String)],
-) -> (Vec<ServedFile>, Vec<UnservedFile>) {
-    let mut served = Vec::new();
-    let mut unserved: Vec<(String, String)> = Vec::new();
-    for (path, why) in named {
-        if served.len() == PREFLIGHT_SERVE_FILES {
-            unserved.push((
-                path.clone(),
-                format!("not served: this section serves at most {PREFLIGHT_SERVE_FILES} files"),
-            ));
-            continue;
-        }
-        let candidate = std::path::Path::new(path);
-        let absolute = if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            profile.root().join(candidate)
-        };
-        let Ok(granted) = profile.check(
-            "preflight",
-            crate::sandbox::profile::Access::Read,
-            &absolute,
-        ) else {
-            unserved.push((
-                path.clone(),
-                "not served: outside this session's grant".into(),
-            ));
-            continue;
-        };
-        let Ok(metadata) = fs::metadata(&granted) else {
-            unserved.push((path.clone(), "not served: no such file".into()));
-            continue;
-        };
-        if !metadata.is_file() {
-            unserved.push((path.clone(), "not served: not a regular file".into()));
-            continue;
-        }
-        if metadata.len() > PREFLIGHT_SERVE_BYTES {
-            unserved.push((
-                path.clone(),
-                format!(
-                    "not served whole: {} bytes, over the {PREFLIGHT_SERVE_BYTES}-byte limit",
-                    metadata.len()
-                ),
-            ));
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&granted) else {
-            unserved.push((path.clone(), "not served: not UTF-8 text".into()));
-            continue;
-        };
-        served.push((path.clone(), why.clone(), text));
-    }
-    (served, unserved)
 }
 
 /// The compiled profile, as the model needs to read it.
@@ -1075,11 +446,6 @@ pub fn system_manifest(profile: &Profile, config: &SternaConfig) -> crate::manif
         manifest
             .unavailable
             .push("web.search: no search provider is configured".into());
-    }
-    if config.helpers.model.is_none() || !config.helpers.enabled {
-        manifest
-            .unavailable
-            .push("helper.*: no helper model is configured".into());
     }
     if matches!(config.agents.mode, crate::config::AgentsMode::Off) {
         manifest

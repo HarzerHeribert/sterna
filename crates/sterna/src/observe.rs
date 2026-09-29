@@ -95,7 +95,7 @@ const REDACTED: &str = "«redacted»";
 ///
 /// Two shapes. A **span** opens and closes, and its two halves share a
 /// `span` id so a reader can pair them and take a duration: `session`,
-/// `task`, `turn`, `cell`, `helper`, `agent`. A **moment** happens once and
+/// `task`, `turn`, `cell`, `command`, `agent`. A **moment** happens once and
 /// closes nothing: `cell.repair`, `command.judge`, `file.change`,
 /// `answer.propose`, `ask.raise`, `sandbox.move`,
 /// `reduction.made`, `approval.raise`.
@@ -131,8 +131,6 @@ pub enum Kind {
     /// answer. It closes `command.judge`'s span and nothing else.
     CommandEnd,
     FileChange,
-    HelperBegin,
-    HelperEnd,
     AgentBegin,
     AgentEnd,
     /// `answer(text)` was called and the task has not ended yet.
@@ -159,8 +157,6 @@ impl Kind {
             Self::CommandJudge => "command.judge",
             Self::CommandEnd => "command.end",
             Self::FileChange => "file.change",
-            Self::HelperBegin => "helper.begin",
-            Self::HelperEnd => "helper.end",
             Self::AgentBegin => "agent.begin",
             Self::AgentEnd => "agent.end",
             Self::AnswerPropose => "answer.propose",
@@ -181,7 +177,6 @@ impl Kind {
             Self::TurnEnd => Some(Self::TurnBegin),
             Self::CellEnd => Some(Self::CellSubmit),
             Self::CommandEnd => Some(Self::CommandJudge),
-            Self::HelperEnd => Some(Self::HelperBegin),
             Self::AgentEnd => Some(Self::AgentBegin),
             _ => None,
         }
@@ -533,7 +528,7 @@ mod tests {
 
     /// Every kind the vocabulary names, so a kind added without a decision
     /// about its shape cannot slip past.
-    const ALL: [Kind; 21] = [
+    const ALL: [Kind; 19] = [
         Kind::SessionBegin,
         Kind::SessionEnd,
         Kind::TaskBegin,
@@ -546,8 +541,6 @@ mod tests {
         Kind::CommandJudge,
         Kind::CommandEnd,
         Kind::FileChange,
-        Kind::HelperBegin,
-        Kind::HelperEnd,
         Kind::AgentBegin,
         Kind::AgentEnd,
         Kind::AnswerPropose,
@@ -569,8 +562,8 @@ mod tests {
         let closers: Vec<Kind> = ALL.into_iter().filter(|k| k.opens().is_some()).collect();
         assert_eq!(
             closers.len(),
-            7,
-            "session, task, turn, cell, command, helper, agent"
+            6,
+            "session, task, turn, cell, command, agent"
         );
         for closing in closers {
             let opening = closing.opens().expect("filtered to closers");

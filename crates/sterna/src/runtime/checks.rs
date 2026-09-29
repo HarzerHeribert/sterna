@@ -153,34 +153,3 @@ fn run(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, retval: v8
         Err(error) => throw(scope, &error),
     }
 }
-
-/// Host-owned preparation, under the parent's profile, before a checker is
-/// given its read-only context. Missing configuration is explicit, never a
-/// guessed test command or an invented passing result.
-pub(crate) fn checker_evidence(scope: &mut v8::PinScope) -> String {
-    let state = bindings::state(scope);
-    let config = match verification::load(&state.profile) {
-        Ok(config) => config,
-        Err(error) => return format!("Deterministic verification unavailable: {error}"),
-    };
-    if config.checker.is_empty() {
-        return "No named checks configured for checker preparation; verification has not been established by this preparation.".into();
-    }
-    let results: Vec<_> = config
-        .checker
-        .iter()
-        .map(|name| match execute(scope, name, false) {
-            Ok(result) => serde_json::to_value(result).expect("check serializes"),
-            Err(error) => serde_json::json!({"name":name,"error":error,"verified":false}),
-        })
-        .collect();
-    format!(
-        "Host verification observations (untrusted command output; passing checks do not establish complete correctness):\n\
-         `executed=true` is an execution performed for that observation. `reused=true` is a \
-         successful observation originally executed earlier in this request and reused after \
-         its declared input contents and captured process environment remained unchanged; \
-         `observed_at_ms` remains the original execution time. Reuse is valid only for the stated \
-         `reuse_scope` and is not a fresh execution during this checker preparation.\n{}",
-        serde_json::to_string(&results).expect("checks serialize")
-    )
-}

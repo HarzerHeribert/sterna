@@ -41,39 +41,12 @@ fn root(label: &str) -> PathBuf {
 fn write_config(root: &Path, text: &str) {
     let dir = root.join(".sterna");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("config.toml"), pinned(text)).unwrap();
-}
-
-/// `text` with the `[helpers]` defaults these tests were written against,
-/// for every key the test does not set itself: the acceptance list on, and
-/// neither the checker behind the answer nor the learned-notes writer, whose
-/// extra requests (defaults since 2026-09-23) would shift every scripted
-/// answer. A test about one of them sets it and is left alone.
-fn pinned(text: &str) -> String {
-    let set = |key: &str| {
-        text.lines()
-            .any(|line| line.trim_start().starts_with(&format!("{key} =")))
-    };
-    let mut keys = String::new();
-    for (key, value) in [
-        ("acceptance_list", "true"),
-        ("completion_check", "\"off\""),
-        ("learn", "false"),
-    ] {
-        if !set(key) {
-            keys.push_str(&format!("{key} = {value}\n"));
-        }
-    }
-    if text.lines().any(|line| line.trim() == "[helpers]") {
-        text.replacen("[helpers]\n", &format!("[helpers]\n{keys}"), 1)
-    } else {
-        format!("{text}\n[helpers]\n{keys}")
-    }
+    std::fs::write(dir.join("config.toml"), text).unwrap();
 }
 
 /// The sentences the gate noted beside the answer without holding it.
 fn notes(result: &Value) -> Vec<String> {
-    result["telemetry"]["after_answer"]["notes"]
+    result["telemetry"]["completion"]["findings"]
         .as_array()
         .map(|notes| {
             notes
@@ -95,30 +68,18 @@ enum Decision {
 /// header block), shared with the fake server's own thread.
 type Recorded = Arc<Mutex<Vec<String>>>;
 
-/// Which of the three requests this package ever sends to `/v1/systemone`:
-/// `"intent"` for the task-start request (which now also carries the
-/// `complexity` question in the same `questions` map -- F2 -- so a plain
-/// "first key" read would see `complexity` first once `BTreeMap` sorts them),
-/// `"satisfied"` for the completion question (2616), or `"drift"` for the
-/// per-cell question asked before an effectful cell runs (2643).
+/// Which request this package sent to `/v1/systemone`: `"intent"` for the
+/// task-start request (which also carries the `kind` question in the same
+/// `questions` map, so a plain "first key" read would see `intent` only by
+/// luck of the sort), `"satisfied"` for the completion question (2616), or
+/// `"field_shape"` for a large returned field.
 fn question_key(body_text: &str) -> String {
     let value: Value = serde_json::from_str(body_text).unwrap();
     let questions = value["questions"].as_object().cloned().unwrap_or_default();
     if questions.contains_key("satisfied") {
         "satisfied".to_string()
-    } else if questions.contains_key("drift") {
-        "drift".to_string()
-    } else if questions.contains_key("judge") {
-        "judge".to_string()
     } else if questions.contains_key("field_shape") {
         "field_shape".to_string()
-    } else if questions.contains_key("enough") {
-        "enough".to_string()
-    } else if !questions.is_empty() && questions.keys().all(|key| key.parse::<usize>().is_ok()) {
-        // A Scout ranking request (2644): one `noul` per candidate, keyed by
-        // the candidate's own index, so its key set is never one of the
-        // fixed names above.
-        "rank".to_string()
     } else {
         "intent".to_string()
     }
@@ -140,45 +101,6 @@ fn providers(
     intent: Vec<Decision>,
     completion: Vec<Decision>,
 ) -> (String, Recorded, Recorded, Recorded) {
-    providers_full(cells, intent, completion, vec![], vec![], vec![])
-}
-
-/// [`providers`] plus a fourth scripted queue for the drift question's own
-/// key (2643) -- most tests never ask it, so [`providers`] stays the
-/// three-argument call every existing test already uses.
-fn providers_with_drift(
-    cells: Vec<Value>,
-    intent: Vec<Decision>,
-    completion: Vec<Decision>,
-    drift: Vec<Decision>,
-) -> (String, Recorded, Recorded, Recorded) {
-    providers_full(cells, intent, completion, drift, vec![], vec![])
-}
-
-/// [`providers`] plus scripted queues for the Scout's own ranking question
-/// (2644, numeric candidate-index keys) and a judge question (2645, either
-/// call site the judge reaches). An unscripted judge question defaults to a
-/// confident yes (`checker_judge_answer(0.94)`), so a test scripting only
-/// `rank` (or neither) keeps seeing a helper's own result byte-identical to
-/// before this feature landed.
-fn providers_with_rank_and_judge(
-    cells: Vec<Value>,
-    intent: Vec<Decision>,
-    completion: Vec<Decision>,
-    rank: Vec<Decision>,
-    judge: Vec<Decision>,
-) -> (String, Recorded, Recorded, Recorded) {
-    providers_full(cells, intent, completion, vec![], judge, rank)
-}
-
-fn providers_full(
-    cells: Vec<Value>,
-    intent: Vec<Decision>,
-    completion: Vec<Decision>,
-    drift: Vec<Decision>,
-    judge: Vec<Decision>,
-    rank: Vec<Decision>,
-) -> (String, Recorded, Recorded, Recorded) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let message_bodies = Arc::new(Mutex::new(Vec::new()));
@@ -191,9 +113,6 @@ fn providers_full(
         let mut cells = cells.into_iter();
         let mut intent: std::collections::VecDeque<Decision> = intent.into_iter().collect();
         let mut completion: std::collections::VecDeque<Decision> = completion.into_iter().collect();
-        let mut drift: std::collections::VecDeque<Decision> = drift.into_iter().collect();
-        let mut judge: std::collections::VecDeque<Decision> = judge.into_iter().collect();
-        let mut rank: std::collections::VecDeque<Decision> = rank.into_iter().collect();
         loop {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
@@ -241,29 +160,10 @@ fn providers_full(
                     "satisfied" => completion
                         .pop_front()
                         .unwrap_or_else(|| Decision::Answer(completion_answer(0.50))),
-                    "drift" => drift
-                        .pop_front()
-                        .unwrap_or_else(|| Decision::Answer(drift_answer(0.50))),
-                    "judge" => judge
-                        .pop_front()
-                        .unwrap_or_else(|| Decision::Answer(checker_judge_answer(0.94))),
-                    "rank" => rank
-                        .pop_front()
-                        .unwrap_or_else(|| Decision::Answer(rank_answer(&[("0", 0.94)]))),
                     // The field-shape question (`session/returned.rs`) is
                     // answered `log` at 0.90 for every field: the one test
                     // that asks it returns a log.
                     "field_shape" => Decision::Answer(field_shape_answer("log", 0.90)),
-                    // The enough question (`session/returned.rs::enrich`) is
-                    // answered from the request itself: a request that asks
-                    // to read everything is never enough, any other is.
-                    "enough" => {
-                        Decision::Answer(enough_answer(if body_text.contains("read everything") {
-                            0.20
-                        } else {
-                            0.90
-                        }))
-                    }
                     other => panic!("unexpected decision question key `{other}`"),
                 };
                 match decision {
@@ -345,23 +245,10 @@ fn prose(text: &str) -> Value {
         "usage": {"input_tokens": 20, "output_tokens": 7}})
 }
 
-/// The intent answer alone, with a harmless default `complexity` answer
-/// (`routine` at a confidence under every `scout_above` a test configures) so
-/// every existing hold/override test -- which scripts only the intent choice
-/// it cares about -- keeps working now that `decide()` requires an answer for
-/// every question it asked, complexity included.
-fn decision_answer(choice: &str, confidence: f64) -> Value {
-    decision_answer_with_complexity(choice, confidence, "routine", 0.50)
-}
-
-/// Both answers from the one task-start request, for a test that scripts the
-/// complexity question itself (`preflight::SIGNAL_DECIDED_EXPLORATION`, F2).
-fn decision_answer_with_complexity(
-    intent_choice: &str,
-    intent_confidence: f64,
-    complexity_choice: &str,
-    complexity_confidence: f64,
-) -> Value {
+/// The intent answer, with an inert `kind` answer (under `KIND_ABOVE`) so
+/// every hold/override test -- which scripts only the intent choice it
+/// cares about -- answers every question the request asked.
+fn decision_answer(intent_choice: &str, intent_confidence: f64) -> Value {
     json!({
         "model": "jev-latest",
         "answers": {
@@ -371,15 +258,8 @@ fn decision_answer_with_complexity(
                 "probabilities": {"read_only": intent_confidence, "modify": 0.0, "run": 0.0, "other": 0.0},
                 "confidence": intent_confidence,
             },
-            "complexity": {
-                "type": "choice",
-                "choice": complexity_choice,
-                "probabilities": {"trivial": 0.0, "routine": 0.0, "needs_exploration": 0.0},
-                "confidence": complexity_confidence,
-            },
-            // The kind question (2026-09-23) rides the same request; an
-            // inert answer here, under `KIND_ABOVE`, so every older test
-            // keeps its shape. `decision_answer_with_kind` overrides it.
+            // The kind question (2026-09-23) rides the same request;
+            // `decision_answer_with_kind` overrides it.
             "kind": {
                 "type": "choice",
                 "choice": "fix",
@@ -407,30 +287,15 @@ fn field_shape_answer(choice: &str, confidence: f64) -> Value {
     })
 }
 
-/// The enough question's answer: one noul.
-fn enough_answer(noul: f64) -> Value {
-    json!({
-        "model": "jev-latest",
-        "answers": {
-            "enough": {
-                "type": "noul",
-                "noul": noul,
-            }
-        },
-        "usage": {"input_tokens": 30, "output_tokens": 8},
-    })
-}
-
-/// All three task-start answers, for a test that scripts the kind question
-/// (2026-09-23): intent and kind as given, complexity `routine` at 0.50.
+/// Both task-start answers, for a test that scripts the kind question
+/// (2026-09-23).
 fn decision_answer_with_kind(
     intent_choice: &str,
     intent_confidence: f64,
     kind_choice: &str,
     kind_confidence: f64,
 ) -> Value {
-    let mut value =
-        decision_answer_with_complexity(intent_choice, intent_confidence, "routine", 0.50);
+    let mut value = decision_answer(intent_choice, intent_confidence);
     value["answers"]["kind"] = json!({
         "type": "choice",
         "choice": kind_choice,
@@ -450,54 +315,6 @@ fn completion_answer(noul: f64) -> Value {
             }
         },
         "usage": {"input_tokens": 40, "output_tokens": 12},
-    })
-}
-
-/// The drift question's answer alone (2643) -- always a single-key request,
-/// unlike `satisfied`'s hygiene and judge additions.
-fn drift_answer(noul: f64) -> Value {
-    json!({
-        "model": "jev-latest",
-        "answers": {
-            "drift": {
-                "type": "noul",
-                "noul": noul,
-            }
-        },
-        "usage": {"input_tokens": 30, "output_tokens": 8},
-    })
-}
-
-/// The completion gate's fresh-checker judge question's answer alone
-/// (2645) -- always a single-key request over `{asked, result}`, keyed
-/// `"judge"` exactly as the preflight Scout's own result-judge is (the same
-/// one `noul` both call sites are judged with).
-fn checker_judge_answer(noul: f64) -> Value {
-    json!({
-        "model": "jev-latest",
-        "answers": {
-            "judge": {
-                "type": "noul",
-                "noul": noul,
-            }
-        },
-        "usage": {"input_tokens": 20, "output_tokens": 5},
-    })
-}
-
-/// A Scout ranking request's answer (2644): one `noul` per candidate index
-/// key -- unlike every other question in this file, the key set depends on
-/// how many candidates the ranking named, so this builds the map from
-/// `(key, noul)` pairs instead of naming one fixed key.
-fn rank_answer(scores: &[(&str, f64)]) -> Value {
-    let answers: serde_json::Map<String, Value> = scores
-        .iter()
-        .map(|(key, noul)| ((*key).to_string(), json!({"type": "noul", "noul": noul})))
-        .collect();
-    json!({
-        "model": "jev-latest",
-        "answers": Value::Object(answers),
-        "usage": {"input_tokens": 20, "output_tokens": 5},
     })
 }
 
@@ -548,27 +365,6 @@ fn completion_answer_with_hygiene(noul: f64, hygiene: [f64; 5]) -> Value {
     })
 }
 
-/// A completion answer that also scripts one `judge_<n>` noul per entry in
-/// `judge`, in order (2642).
-fn completion_answer_with_judge(noul: f64, judge: &[f64]) -> Value {
-    let mut answers = serde_json::Map::new();
-    answers.insert(
-        "satisfied".to_string(),
-        json!({"type": "noul", "noul": noul}),
-    );
-    for (index, value) in judge.iter().enumerate() {
-        answers.insert(
-            format!("judge_{index}"),
-            json!({"type": "noul", "noul": value}),
-        );
-    }
-    json!({
-        "model": "jev-latest",
-        "answers": Value::Object(answers),
-        "usage": {"input_tokens": 40, "output_tokens": 12},
-    })
-}
-
 const DECISIONS_ON: &str =
     "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n";
 const DECISIONS_SHADOW: &str =
@@ -577,7 +373,6 @@ const DECISIONS_SHADOW: &str =
 /// work, and a turn that changed nothing is never checked.
 const WRITES_THEN_ANSWERS: &str =
     "await write({path:'fix.txt',content:'fixed'});\nanswer(\"done\");";
-const DECISIONS_ON_WITH_CHECKER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nhold_above = 0.85\n[helpers]\nmodel = \"helper-tier\"\ncompletion_check = \"always\"\n";
 
 fn write_checks_toml(root: &Path, text: &str) {
     let dir = root.join(".sterna");
@@ -712,160 +507,6 @@ fn shadow_records_the_would_be_hold_and_writes_the_file() {
     let telemetry = &result["telemetry"]["decisions"];
     assert_eq!(telemetry["would_hold"], 1, "{telemetry}");
     assert_eq!(telemetry["holds"], 0, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-// -- the drift question (2643) -------------------------------------------
-
-const DRIFT_PLAN_CELL: &str = "todo.write([{text: \"write a.txt\", status: \"active\"}]);";
-const DRIFT_EFFECT_CELL: &str =
-    "await write({path: \"a.txt\", content: \"1\"});\nanswer(\"done\");";
-
-#[test]
-fn a_confident_drift_no_holds_the_cell_once_then_lets_it_run() {
-    let root = root("drift-hold");
-    write_config(&root, DECISIONS_ON);
-    let (endpoint, messages, _decisions, _headers) = providers_with_drift(
-        vec![
-            cell("c1", DRIFT_PLAN_CELL),
-            cell("c2", DRIFT_EFFECT_CELL),
-            cell("c3", DRIFT_EFFECT_CELL),
-        ],
-        vec![Decision::Answer(decision_answer("modify", 0.99))],
-        vec![],
-        // Two confident nos: the second is what a broken once rule would act
-        // on (holding the re-issued cell again, forever) -- `exec_bounded`'s
-        // own bound turns that into a fast, clean failure rather than a hang.
-        vec![
-            Decision::Answer(drift_answer(0.05)),
-            Decision::Answer(drift_answer(0.05)),
-        ],
-    );
-    let result = exec_bounded(&root, &endpoint, "write the file", None)
-        .expect("the once rule keeps the task moving");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        3,
-        "the plan cell, the held effect cell, then the re-issue that runs"
-    );
-    assert!(
-        messages[2].contains("this cell may not do what the plan's current step says")
-            && messages[2].contains("write a.txt"),
-        "the drift block reaches the model's next turn, naming the step: {}",
-        messages[2]
-    );
-    assert!(root.join("a.txt").exists(), "the re-issued cell ran");
-    assert_eq!(result["answer"], "done");
-    let telemetry = &result["telemetry"]["decisions"]["drift"];
-    assert_eq!(
-        telemetry["asked"], 2,
-        "asked again on the re-issue, but the once rule still wins: {telemetry}"
-    );
-    assert_eq!(telemetry["held"], 1, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn an_in_between_drift_answer_runs_the_cell() {
-    let root = root("drift-in-between");
-    write_config(&root, DECISIONS_ON);
-    let (endpoint, messages, _decisions, _headers) = providers_with_drift(
-        vec![cell("c1", DRIFT_PLAN_CELL), cell("c2", DRIFT_EFFECT_CELL)],
-        vec![Decision::Answer(decision_answer("modify", 0.99))],
-        vec![],
-        vec![Decision::Answer(drift_answer(0.50))],
-    );
-    let result = exec_bounded(&root, &endpoint, "write the file", None).expect("no hold, no hang");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        2,
-        "the plan cell, then the effect cell running unheld"
-    );
-    assert!(
-        !messages[1].contains("this cell may not do what the plan's current step says"),
-        "{}",
-        messages[1]
-    );
-    assert!(root.join("a.txt").exists());
-    let telemetry = &result["telemetry"]["decisions"]["drift"];
-    assert_eq!(telemetry["asked"], 1, "{telemetry}");
-    assert_eq!(telemetry["held"], 0, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_plan_with_no_active_step_asks_nothing() {
-    let root = root("drift-no-plan");
-    write_config(&root, DECISIONS_ON);
-    let (endpoint, messages, decisions, _headers) = providers_with_drift(
-        vec![cell("c1", DRIFT_EFFECT_CELL)],
-        vec![Decision::Answer(decision_answer("modify", 0.99))],
-        vec![],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, "write the file", None).expect("no hold, no hang");
-    assert_eq!(messages.lock().unwrap().len(), 1, "nothing is ever held");
-    assert!(root.join("a.txt").exists());
-    let bodies = decisions.lock().unwrap();
-    assert!(
-        bodies.iter().all(|body| !body.contains("\"drift\"")),
-        "no active plan step means the drift question is never asked: {bodies:?}"
-    );
-    let telemetry = &result["telemetry"]["decisions"]["drift"];
-    assert_eq!(telemetry["asked"], 0, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn shadow_counts_would_drift_and_runs_the_cell() {
-    let root = root("drift-shadow");
-    write_config(&root, DECISIONS_SHADOW);
-    let (endpoint, messages, _decisions, _headers) = providers_with_drift(
-        vec![cell("c1", DRIFT_PLAN_CELL), cell("c2", DRIFT_EFFECT_CELL)],
-        vec![Decision::Answer(decision_answer("modify", 0.99))],
-        vec![],
-        vec![Decision::Answer(drift_answer(0.05))],
-    );
-    let result =
-        exec_bounded(&root, &endpoint, "write the file", None).expect("shadow never holds");
-    let messages = messages.lock().unwrap();
-    assert_eq!(messages.len(), 2, "shadow runs the cell as today");
-    assert!(
-        !messages[1].contains("this cell may not do what the plan's current step says"),
-        "shadow never reaches the model: {}",
-        messages[1]
-    );
-    assert!(root.join("a.txt").exists(), "shadow still writes the file");
-    let telemetry = &result["telemetry"]["decisions"]["drift"];
-    assert_eq!(telemetry["would_hold"], 1, "{telemetry}");
-    assert_eq!(telemetry["held"], 0, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_slow_drift_decision_runs_the_cell_and_counts_drift_failed() {
-    let root = root("drift-timeout");
-    write_config(&root, DECISIONS_ON);
-    let (endpoint, messages, _decisions, _headers) = providers_with_drift(
-        vec![cell("c1", DRIFT_PLAN_CELL), cell("c2", DRIFT_EFFECT_CELL)],
-        vec![Decision::Answer(decision_answer("modify", 0.99))],
-        vec![],
-        vec![Decision::Sleep(Duration::from_secs(3))],
-    );
-    let result = exec_bounded(&root, &endpoint, "write the file", None)
-        .expect("a failed decision runs the cell, not a hang");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        2,
-        "the cell runs unheld once the request times out"
-    );
-    assert!(root.join("a.txt").exists());
-    let telemetry = &result["telemetry"]["decisions"]["drift"];
-    assert_eq!(telemetry["failed"], 1, "{telemetry}");
-    assert_eq!(telemetry["held"], 0, "{telemetry}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1113,356 +754,14 @@ fn the_decision_request_carries_purpose_model_and_the_intent_question() {
     assert!(body["questions"]["intent"]["criteria"]["read_only"].is_string());
     assert_eq!(
         body["questions"].as_object().unwrap().len(),
-        3,
-        "one request, all three questions: {body}"
+        2,
+        "one request, both questions: {body}"
     );
     assert_eq!(body["questions"]["kind"]["type"], "choice");
     assert!(
         body["questions"]["kind"]["criteria"]["explore"].is_string(),
         "{body}"
     );
-    assert_eq!(body["questions"]["complexity"]["type"], "choice");
-    assert!(
-        body["questions"]["complexity"]["criteria"]["needs_exploration"].is_string(),
-        "{body}"
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
-// -- the preflight signal (F2, map 2614/2615's paragraph) -----------------
-
-const DECISIONS_ON_WITH_PREFLIGHT: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\npreflight = true\nacceptance_list = false\n";
-const DECISIONS_SHADOW_WITH_PREFLIGHT: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"shadow\"\n\
-     [helpers]\nmodel = \"helper-tier\"\npreflight = true\nacceptance_list = false\n";
-
-const DECISIONS_ON_ONESHOT: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\nacceptance_list = false\nscout_oneshot = true\n";
-
-/// With `scout_oneshot`, a confident explore is dissected in one toolless
-/// request over the project's file listing: the Scout's request carries the
-/// tracked files and offers no tool, and its dissection reaches the turn.
-#[test]
-fn an_explore_request_is_dissected_in_one_request_over_the_file_listing() {
-    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\nrun: bash -n scripts/setup.sh exits 0\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
-    let root = root("kind-explore-oneshot");
-    write_config(&root, DECISIONS_ON_ONESHOT);
-    std::fs::write(root.join("README.md"), "# Demo\n").unwrap();
-    std::fs::create_dir_all(root.join("scripts")).unwrap();
-    std::fs::write(root.join("scripts/setup.sh"), "#!/bin/sh\n").unwrap();
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .expect("git runs")
-    };
-    git(&["init", "-q"]);
-    git(&["add", "README.md", "scripts/setup.sh"]);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![prose(DISSECTION), cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_kind(
-            "read_only",
-            0.94,
-            "explore",
-            0.90,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        2,
-        "the dissection, then the task's own turn"
-    );
-    let scout = &messages[0];
-    assert!(scout.contains("## Project files"), "{scout}");
-    assert!(
-        scout.contains("scripts/setup.sh") && scout.contains("README.md"),
-        "{scout}"
-    );
-    assert!(
-        !scout.contains("\"tools\""),
-        "one request, no tool offered: {scout}"
-    );
-    assert!(messages[1].contains("1. Read the setup"), "{}", messages[1]);
-    assert!(
-        messages[1].contains("## Served in full (1)")
-            && messages[1].contains("### scripts/setup.sh"),
-        "the file the dissection named reaches the turn: {}",
-        messages[1]
-    );
-    assert_eq!(
-        result["telemetry"]["decisions"]["scout_brief"],
-        "dissection"
-    );
-}
-
-const DECISIONS_ON_ONESHOT_LISTED: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\nacceptance_list = true\nscout_oneshot = true\n";
-
-/// A project with a README and a setup script, tracked, for a one-shot
-/// dissection's file listing.
-fn listed_root(label: &str) -> std::path::PathBuf {
-    let root = root(label);
-    write_config(&root, DECISIONS_ON_ONESHOT_LISTED);
-    std::fs::write(root.join("README.md"), "# Demo\n").unwrap();
-    std::fs::create_dir_all(root.join("scripts")).unwrap();
-    std::fs::write(root.join("scripts/setup.sh"), "#!/bin/sh\n").unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["add", "README.md", "scripts/setup.sh"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .expect("git runs");
-    }
-    root
-}
-
-/// A dissection writes the task's acceptance list after a look at the
-/// project, so the lister -- which reads only the request's words -- never
-/// runs beside it, and the brief points at the list instead of repeating it.
-#[test]
-fn a_dissection_writes_the_acceptance_list_and_the_lister_never_runs() {
-    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\nfile: scripts/setup.sh exists\nfile: README.md contains Demo\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
-    let root = listed_root("dissection-lists");
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![prose(DISSECTION), cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_kind(
-            "read_only",
-            0.94,
-            "explore",
-            0.90,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        2,
-        "the dissection, then the task's own turn"
-    );
-    let turn = &messages[1];
-    assert!(
-        turn.contains("## Acceptance list") && turn.contains("file `scripts/setup.sh` exists"),
-        "the dissection's items are the list: {turn}"
-    );
-    assert!(
-        turn.contains(sterna::preflight::ACCEPT_CARRIED),
-        "the brief points at the list: {turn}"
-    );
-    let acceptance = &result["telemetry"]["acceptance"];
-    assert_eq!(acceptance["items"], 2, "{acceptance}");
-    assert_eq!(acceptance["met"], 2, "{acceptance}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// A dissection that names no acceptance item hands the list back to the
-/// lister, which runs after it rather than beside it.
-#[test]
-fn a_dissection_naming_no_items_hands_the_list_back_to_the_lister() {
-    const DISSECTION: &str = "## Tasks\n1. Read the setup — every step is known\n\n## Files\nscripts/setup.sh — task 1, the setup\n\n## Accept\n(none found)\n\n## Needs\n(none)\n\n## Skip\n(none found)\n";
-    let root = listed_root("dissection-lists-nothing");
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            prose(DISSECTION),
-            prose("file: README.md exists"),
-            cell("c1", "answer(\"done\");"),
-        ],
-        vec![Decision::Answer(decision_answer_with_kind(
-            "read_only",
-            0.94,
-            "explore",
-            0.90,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        3,
-        "the dissection, the lister, then the task's own turn"
-    );
-    assert!(
-        messages[1].contains("acceptance items"),
-        "the second request is the lister's: {}",
-        messages[1]
-    );
-    assert!(
-        messages[2].contains("## Acceptance list")
-            && messages[2].contains("file `README.md` exists"),
-        "{}",
-        messages[2]
-    );
-    assert_eq!(result["telemetry"]["acceptance"]["items"], 1);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-const DECISIONS_ON_WITH_HELPERS: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\nacceptance_list = false\n";
-
-/// A harmless scout answer: five headings, each `(none found)` -- content
-/// does not matter to these tests, only that the scout was asked at all.
-fn scout_prose() -> Value {
-    prose(
-        "## Constraints\n(none found)\n\n## Files\n(none found)\n\n## Tests\n(none found)\n\n\
-         ## Capabilities\n(none found)\n\n## Risks\n(none found)\n",
-    )
-}
-
-/// A request with no deterministic preflight signal: no missing path, no
-/// absent executable, no verification word, under 80 words.
-const NO_SIGNAL_TASK: &str = "please give me a hand with something here";
-
-#[test]
-fn a_needs_exploration_answer_above_threshold_starts_the_scout_with_the_signal_named() {
-    let root = root("scout-signal-above");
-    write_config(&root, DECISIONS_ON_WITH_PREFLIGHT);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![scout_prose(), cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_complexity(
-            "read_only",
-            0.94,
-            "needs_exploration",
-            0.90,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None)
-        .expect("the scout runs, then the task's own turn");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        2,
-        "no deterministic signal alone would have run the scout"
-    );
-    let telemetry = &result["telemetry"]["decisions"];
-    assert_eq!(telemetry["scout_signal"], true, "{telemetry}");
-    assert_eq!(telemetry["would_scout"], false, "{telemetry}");
-    assert_eq!(
-        telemetry["complexity"]["choice"], "needs_exploration",
-        "{telemetry}"
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_needs_exploration_answer_below_threshold_does_not_start_the_scout() {
-    let root = root("scout-signal-below");
-    write_config(&root, DECISIONS_ON_WITH_PREFLIGHT);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_complexity(
-            "read_only",
-            0.94,
-            "needs_exploration",
-            0.80,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None)
-        .expect("no signal at all, no scout, no hang");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        1,
-        "below scout_above, the model's answer adds no reason to scout"
-    );
-    let telemetry = &result["telemetry"]["decisions"];
-    assert_eq!(telemetry["scout_signal"], false, "{telemetry}");
-    assert_eq!(telemetry["would_scout"], false, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_trivial_answer_never_suppresses_a_deterministic_signal() {
-    let root = root("scout-signal-trivial");
-    write_config(&root, DECISIONS_ON_WITH_PREFLIGHT);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![scout_prose(), cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_complexity(
-            "read_only",
-            0.94,
-            "trivial",
-            0.99,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(
-        &root,
-        &endpoint,
-        "Rename the entry function in src/missing.rs quickly",
-        None,
-    )
-    .expect("the missing path alone runs the scout");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        2,
-        "a missing path is its own deterministic signal, trivial or not"
-    );
-    let telemetry = &result["telemetry"]["decisions"];
-    assert_eq!(
-        telemetry["scout_signal"], false,
-        "trivial never contributes the decided signal: {telemetry}"
-    );
-    assert_eq!(telemetry["complexity"]["choice"], "trivial", "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn shadow_records_would_scout_and_never_starts_the_scout() {
-    let root = root("scout-signal-shadow");
-    write_config(&root, DECISIONS_SHADOW_WITH_PREFLIGHT);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_complexity(
-            "read_only",
-            0.94,
-            "needs_exploration",
-            0.90,
-        ))],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None)
-        .expect("shadow never scouts, never hangs");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        1,
-        "shadow records the answer and changes nothing"
-    );
-    let telemetry = &result["telemetry"]["decisions"];
-    assert_eq!(telemetry["would_scout"], true, "{telemetry}");
-    assert_eq!(telemetry["scout_signal"], false, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_failed_decision_leaves_preflight_exactly_as_it_is_today() {
-    let root = root("scout-signal-failed");
-    write_config(&root, DECISIONS_ON_WITH_PREFLIGHT);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![cell("c1", "answer(\"done\");")],
-        vec![Decision::Status(500)],
-        vec![],
-    );
-    let result = exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None)
-        .expect("a failed decision leaves preflight alone, no hang");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        1,
-        "no deterministic signal and no decision to add one"
-    );
-    let telemetry = &result["telemetry"]["decisions"];
-    assert_eq!(telemetry["failed"], 1, "{telemetry}");
-    assert!(telemetry["complexity"].is_null(), "{telemetry}");
-    assert_eq!(telemetry["scout_signal"], false, "{telemetry}");
-    assert_eq!(telemetry["would_scout"], false, "{telemetry}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1551,9 +850,9 @@ fn a_changed_diff_is_asked_again_and_a_fixed_task_verifies() {
         "{result}"
     );
     assert!(
-        result["telemetry"]["after_answer"]["notes"][0]
-            .as_str()
-            .is_some_and(|note| note.contains("Run a verification")),
+        notes(&result)
+            .iter()
+            .any(|note| note.contains("Run a verification")),
         "{result}"
     );
     let telemetry = &result["telemetry"]["decisions"]["completion"];
@@ -1579,69 +878,14 @@ fn a_changed_diff_is_asked_again_and_a_fixed_task_verifies() {
 }
 
 #[test]
-fn a_confident_yes_spares_the_fresh_checker_when_nothing_else_is_found() {
-    let root = root("completion-yes");
-    write_config(&root, DECISIONS_ON_WITH_CHECKER);
-    let (endpoint, messages, decisions, _headers) = providers(
-        vec![cell("c1", "answer(\"done\");")],
-        vec![],
-        vec![Decision::Answer(completion_answer(0.94))],
-    );
-    let result = exec_bounded(&root, &endpoint, "fix the bug", None)
-        .expect("a spared checker still finishes the task");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        1,
-        "no second request reaches /v1/messages for the checker"
-    );
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["noul"], 0.94, "{telemetry}");
-    assert_eq!(telemetry["checker_skipped"], "decision 0.94", "{telemetry}");
-    assert_eq!(
-        decisions.lock().unwrap().len(),
-        2,
-        "the intent question, and the completion question"
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn an_undecided_answer_runs_the_checker_as_today() {
-    let root = root("completion-undecided");
-    write_config(&root, DECISIONS_ON_WITH_CHECKER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            cell("c1", WRITES_THEN_ANSWERS),
-            prose("The change holds; nothing more is needed."),
-        ],
-        vec![Decision::Answer(decision_answer("modify", 0.94))],
-        vec![Decision::Answer(completion_answer(0.55))],
-    );
-    let result = exec_bounded(&root, &endpoint, "fix the bug", None)
-        .expect("the checker runs and the task still finishes");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        2,
-        "the task turn, then the checker's own request"
-    );
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["noul"], 0.55, "{telemetry}");
-    assert!(telemetry["checker_skipped"].is_null(), "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
 fn a_yes_never_removes_a_mechanical_finding() {
     let root = root("completion-yes-with-finding");
-    write_config(&root, DECISIONS_ON_WITH_CHECKER);
+    write_config(&root, DECISIONS_ON);
     write_checks_toml(&root, "[contract]\nrequired = [\"missing.txt\"]\n");
     let (endpoint, messages, _decisions, _headers) = providers(
         vec![
             cell("c1", WRITES_THEN_ANSWERS),
             cell("c2", "answer(\"done\");"),
-            prose("holds\nnothing more is needed."),
         ],
         vec![Decision::Answer(decision_answer("modify", 0.94))],
         vec![Decision::Answer(completion_answer(0.94))],
@@ -1650,16 +894,11 @@ fn a_yes_never_removes_a_mechanical_finding() {
         .expect("a confident yes does not remove the required-path finding");
     assert_eq!(
         messages.lock().unwrap().len(),
-        3,
-        "held once, the same claim finishes unverified, then the checker behind the answer"
-    );
-    assert_eq!(
-        result["telemetry"]["after_answer"]["checks"][0]["verdict"], "holds",
-        "{result}"
+        2,
+        "held once, then the same claim finishes unverified"
     );
     let telemetry = &result["telemetry"]["decisions"]["completion"];
     assert_eq!(telemetry["noul"], 0.94, "{telemetry}");
-    assert!(telemetry["checker_skipped"].is_null(), "{telemetry}");
     assert_eq!(telemetry["finding_added"], false, "{telemetry}");
     let completion = &result["telemetry"]["completion"];
     assert_eq!(completion["verified"], false, "{completion}");
@@ -1670,118 +909,6 @@ fn a_yes_never_removes_a_mechanical_finding() {
             .contains("missing.txt"),
         "{completion}"
     );
-    let _ = std::fs::remove_dir_all(root);
-}
-
-// -- the fresh checker, behind the answer (2026-09-23) -----------------------
-
-/// The checker runs after the answer and its verdict is a note for the
-/// person: a "does not hold" costs the model no turn and never reaches it,
-/// and nothing judges the checker's own result any more (2645's judge sat on
-/// a hold that no longer exists).
-#[test]
-fn a_checker_that_says_does_not_hold_is_a_note_behind_the_answer_and_costs_no_turn() {
-    let root = root("checker-after-no");
-    write_config(&root, DECISIONS_ON_WITH_CHECKER);
-    let (endpoint, messages, decisions, _headers) = providers(
-        vec![
-            cell("c1", WRITES_THEN_ANSWERS),
-            prose("does not hold\nthe diff misses the retry path"),
-        ],
-        vec![Decision::Answer(decision_answer("modify", 0.94))],
-        vec![Decision::Answer(completion_answer(0.55))],
-    );
-    let result = exec_bounded(&root, &endpoint, "fix the bug", None)
-        .expect("a flagged checker never holds the task");
-    let bodies = messages.lock().unwrap();
-    assert_eq!(
-        bodies.len(),
-        2,
-        "the task turn, then the checker's own request"
-    );
-    assert!(
-        !bodies[0].contains("the diff misses the retry path"),
-        "the checker's words never reach the model"
-    );
-    let check = &result["telemetry"]["after_answer"]["checks"][0];
-    assert_eq!(check["verdict"], "does not hold", "{result}");
-    assert!(
-        check["text"]
-            .as_str()
-            .unwrap_or("")
-            .contains("the diff misses the retry path"),
-        "{check}"
-    );
-    assert_eq!(result["telemetry"]["completion"]["deferred"], 0);
-    assert_eq!(
-        decisions.lock().unwrap().len(),
-        2,
-        "the intent question and the completion question -- no judge on the checker"
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// A checker that finds the answer holds leaves one quiet verdict, and the
-/// task's own figures are those of a run with no checker at all.
-#[test]
-fn a_checker_that_says_holds_leaves_one_verdict_and_nothing_else() {
-    let root = root("checker-after-yes");
-    write_config(&root, DECISIONS_ON_WITH_CHECKER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            cell("c1", WRITES_THEN_ANSWERS),
-            prose("holds\nthe answer does what was asked"),
-        ],
-        vec![Decision::Answer(decision_answer("modify", 0.94))],
-        vec![Decision::Answer(completion_answer(0.55))],
-    );
-    let result = exec_bounded(&root, &endpoint, "fix the bug", None)
-        .expect("a checker behind the answer finishes");
-    assert_eq!(messages.lock().unwrap().len(), 2);
-    let checks = &result["telemetry"]["after_answer"]["checks"];
-    assert_eq!(checks.as_array().map(Vec::len), Some(1), "{checks}");
-    assert_eq!(checks[0]["verdict"], "holds", "{checks}");
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    assert_eq!(result["telemetry"]["completion"]["deferred"], 0);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// `decisions.helpers` counts a Scout ranking (2644) and the judge it also
-/// runs on the Scout's own returned result (2645, unconditional whenever a
-/// decision model is configured and `mode` is not `off`) -- the checker
-/// path's own check is proven separately above, with `completion_check`
-/// off here so only the Scout's self-check contributes to `checked`.
-#[test]
-fn decisions_helpers_telemetry_counts_the_scouts_ranking_and_its_own_judge() {
-    let root = root("helpers-ranking-telemetry");
-    write_config(&root, DECISIONS_ON_WITH_PREFLIGHT);
-    std::fs::write(
-        root.join("retry.rs"),
-        "fn handle_timeout() { /* timeout retry code lives here */ }\n",
-    )
-    .unwrap();
-    let (endpoint, _messages, _decisions, _headers) = providers_with_rank_and_judge(
-        vec![scout_prose(), cell("c1", "answer(\"done\");")],
-        vec![Decision::Answer(decision_answer_with_complexity(
-            "read_only",
-            0.94,
-            "needs_exploration",
-            0.90,
-        ))],
-        vec![],
-        vec![Decision::Answer(rank_answer(&[("0", 0.94)]))],
-        vec![Decision::Answer(checker_judge_answer(0.9))],
-    );
-    let result = exec_bounded(&root, &endpoint, "please find the timeout retry code", None)
-        .expect("the scout runs, ranked and judged, then the task's own turn");
-    let helpers_telemetry = &result["telemetry"]["decisions"]["helpers"];
-    assert_eq!(helpers_telemetry["ranked"], 1, "{helpers_telemetry}");
-    assert_eq!(helpers_telemetry["skipped"], 0, "{helpers_telemetry}");
-    assert_eq!(
-        helpers_telemetry["checked"], 1,
-        "the scout's own result is judged too (2645): {helpers_telemetry}"
-    );
-    assert_eq!(helpers_telemetry["flagged"], 0, "{helpers_telemetry}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -2040,151 +1167,9 @@ fn a_confident_no_over_the_answer_state_is_a_note_and_never_holds() {
 
 // -- judge items (2642) ----------------------------------------------------
 
-const DECISIONS_ON_WITH_LISTER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n\
-     [helpers]\nmodel = \"helper-tier\"\ncompletion_check = \"always\"\n";
-/// No `completion_check`, so a judge finding that does not spare the checker
-/// (a confident no, or shadow mode never sparing it) does not also pay for
-/// one -- these tests are about the judge decision alone.
-const DECISIONS_ON_WITH_LISTER_NO_CHECKER: &str =
-    "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\n[helpers]\nmodel = \"helper-tier\"\n";
-const DECISIONS_SHADOW_WITH_LISTER: &str = "[decisions]\nmodel = \"jev-latest\"\nmode = \"shadow\"\n\
-     [helpers]\nmodel = \"helper-tier\"\n";
-
-#[test]
-fn a_judge_item_answered_yes_is_satisfied_without_the_checker() {
-    let root = root("judge-yes");
-    write_config(&root, DECISIONS_ON_WITH_LISTER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            prose("judge: the tone is friendly"),
-            cell("c1", "answer(\"done\");"),
-        ],
-        vec![],
-        vec![Decision::Answer(completion_answer_with_judge(
-            0.94,
-            &[0.95],
-        ))],
-    );
-    let result = exec_bounded(&root, &endpoint, "make sure the tone is friendly", None)
-        .expect("a satisfied judge item spares the checker too");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        2,
-        "the lister, then the first turn -- no checker, no hold"
-    );
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    let acceptance = &result["telemetry"]["acceptance"];
-    assert_eq!(
-        acceptance["judged"], 0,
-        "the judge item is now met: {acceptance}"
-    );
-    assert_eq!(acceptance["met"], 1, "{acceptance}");
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["judged"]["yes"], 1, "{telemetry}");
-    assert_eq!(telemetry["judged"]["undecided"], 0, "{telemetry}");
-    assert!(telemetry["checker_skipped"].is_string(), "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_judge_item_answered_no_is_a_note_naming_the_item_and_never_holds() {
-    let root = root("judge-no");
-    write_config(&root, DECISIONS_ON_WITH_LISTER_NO_CHECKER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            prose("judge: the tone is friendly"),
-            cell("c1", "answer(\"done\");"),
-        ],
-        vec![],
-        vec![Decision::Answer(completion_answer_with_judge(
-            0.94,
-            &[0.05],
-        ))],
-    );
-    let result = exec_bounded(&root, &endpoint, "make sure the tone is friendly", None)
-        .expect("a not-satisfied judge item is a note");
-    let messages = messages.lock().unwrap();
-    assert_eq!(
-        messages.len(),
-        2,
-        "the lister, the first turn -- no held turn"
-    );
-    assert!(
-        notes(&result)
-            .iter()
-            .any(|n| n.contains("the tone is friendly")),
-        "the note names the item: {result}"
-    );
-    assert_eq!(result["telemetry"]["completion"]["deferred"], 0);
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["judged"]["no"], 1, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_judge_item_answered_undecided_runs_the_checker_as_today() {
-    let root = root("judge-undecided");
-    write_config(&root, DECISIONS_ON_WITH_LISTER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            prose("judge: the tone is friendly"),
-            cell("c1", WRITES_THEN_ANSWERS),
-            prose("The change holds; nothing more is needed."),
-        ],
-        vec![Decision::Answer(decision_answer("modify", 0.94))],
-        vec![Decision::Answer(completion_answer_with_judge(0.94, &[0.5]))],
-    );
-    let result = exec_bounded(&root, &endpoint, "make sure the tone is friendly", None)
-        .expect("an undecided judge item runs the checker and still finishes");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        3,
-        "the lister, the first turn, then the checker's own request"
-    );
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["judged"]["undecided"], 1, "{telemetry}");
-    assert!(telemetry["checker_skipped"].is_null(), "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn shadow_records_judged_and_changes_nothing() {
-    let root = root("judge-shadow");
-    write_config(&root, DECISIONS_SHADOW_WITH_LISTER);
-    let (endpoint, messages, _decisions, _headers) = providers(
-        vec![
-            prose("judge: the tone is friendly"),
-            cell("c1", "answer(\"done\");"),
-        ],
-        vec![],
-        vec![Decision::Answer(completion_answer_with_judge(
-            0.94,
-            &[0.95],
-        ))],
-    );
-    let result = exec_bounded(&root, &endpoint, "make sure the tone is friendly", None)
-        .expect("shadow never decides a judge item");
-    assert_eq!(
-        messages.lock().unwrap().len(),
-        2,
-        "shadow finishes on the first claim, no checker skip recorded as a hold"
-    );
-    assert_eq!(result["telemetry"]["completion"]["verified"], true);
-    let acceptance = &result["telemetry"]["acceptance"];
-    assert_eq!(
-        acceptance["judged"], 1,
-        "shadow never mutates the acceptance list's own status: {acceptance}"
-    );
-    let telemetry = &result["telemetry"]["decisions"]["completion"];
-    assert_eq!(telemetry["judged"]["yes"], 1, "{telemetry}");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// A large returned field the decision model reads as a log goes to the
-/// reducer before the model sees it (`session/returned.rs`): the rules rung
-/// drops the passing lines with no helper request, the failure stays, and
-/// the lossiness line says what went. Since 2026-09-23 `shadow` reduces
+/// A large returned field the decision model reads as a log is shortened by
+/// the rules before the model sees it (`session/returned.rs`): the passing
+/// lines go, the failure stays, and the lossiness line says what went. Since 2026-09-23 `shadow` reduces
 /// too: the whole value stays bound, so a shortened log stops nothing.
 #[test]
 fn a_large_returned_log_is_reduced_when_the_decision_model_reads_it_as_one() {
@@ -2194,14 +1179,7 @@ fn a_large_returned_log_is_reduced_when_the_decision_model_reads_it_as_one() {
         ("reduce-shadow", DECISIONS_SHADOW, true),
     ] {
         let root = root(label);
-        write_config(
-            &root,
-            // `acceptance_list` off: that helper's own `/v1/messages` request
-            // would otherwise consume the scripted first cell.
-            &format!(
-                "{decisions_toml}[helpers]\nmodel = \"helper-tier\"\nreduce_returns = true\nacceptance_list = false\n"
-            ),
-        );
+        write_config(&root, decisions_toml);
         let (endpoint, messages, decisions, _headers) = providers(
             vec![cell("c1", LOG_CELL), cell("c2", "answer(\"done\");")],
             vec![],
@@ -2271,153 +1249,19 @@ fn a_large_returned_log_is_reduced_when_the_decision_model_reads_it_as_one() {
     }
 }
 
-/// A return that names in-project files the program does not hold is
-/// enriched with them when the decision model says the return is not
-/// enough (`session/returned.rs::enrich`): each arrives as a numbered block
-/// under `### [prefetched] path`, read-only and within the return budget,
-/// and the ledger says which. When the answer is enough, or in `shadow`
-/// mode, nothing is fetched and the ledger says that instead.
-#[test]
-fn a_return_that_names_files_is_enriched_when_the_decision_model_says_it_is_not_enough() {
-    const LISTING_CELL: &str = "return { listing: [\"README.md\", \"scripts/setup.sh\", \"missing.txt\"].join(\"\\n\"), n: 3 };";
-    for (label, decisions_toml, request, fetched) in [
-        (
-            "prefetch-on",
-            DECISIONS_ON,
-            "read everything and tell me how to start",
-            true,
-        ),
-        ("prefetch-enough", DECISIONS_ON, "list the files", false),
-        (
-            "prefetch-shadow",
-            DECISIONS_SHADOW,
-            "read everything and tell me how to start",
-            false,
-        ),
-    ] {
-        let root = root(label);
-        write_config(
-            &root,
-            &format!(
-                "{decisions_toml}[helpers]\nprefetch_returns = true\nacceptance_list = false\n"
-            ),
-        );
-        std::fs::write(
-            root.join("README.md"),
-            "# Demo\n\nRun scripts/setup.sh first.\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join("scripts")).unwrap();
-        std::fs::write(
-            root.join("scripts/setup.sh"),
-            "#!/bin/sh\necho setting up\n",
-        )
-        .unwrap();
-        let (endpoint, messages, decisions, _headers) = providers(
-            vec![cell("c1", LISTING_CELL), cell("c2", "answer(\"done\");")],
-            vec![],
-            vec![],
-        );
-        let result = exec_bounded(&root, &endpoint, request, None).expect("the task finishes");
-        let messages = messages.lock().unwrap();
-        assert_eq!(messages.len(), 2, "{label}: the return buys one more turn");
-        let feedback = &messages[1];
-        assert!(feedback.contains("### listing"), "{label}: {feedback}");
-        if fetched {
-            assert!(
-                feedback.contains("### [prefetched] README.md"),
-                "{label}: {feedback}"
-            );
-            assert!(feedback.contains("1 | # Demo"), "{label}: {feedback}");
-            assert!(
-                feedback.contains("### [prefetched] scripts/setup.sh"),
-                "{label}: {feedback}"
-            );
-            assert!(
-                feedback.contains("2 | echo setting up"),
-                "{label}: {feedback}"
-            );
-            assert!(
-                feedback.contains("prefetched, not held") && feedback.contains("[end of file]"),
-                "{label}: {feedback}"
-            );
-        } else {
-            assert!(
-                !feedback.contains("[prefetched]"),
-                "{label}: nothing fetched: {feedback}"
-            );
-        }
-        assert!(
-            !feedback.contains("[prefetched] missing.txt"),
-            "{label}: {feedback}"
-        );
-        let asked: Vec<String> = decisions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|body| body.contains("\"enough\""))
-            .cloned()
-            .collect();
-        assert_eq!(
-            asked.len(),
-            1,
-            "{label}: one enough question for the one return"
-        );
-        assert!(
-            asked[0].contains("\"candidates\":[\"README.md\",\"scripts/setup.sh\"]"),
-            "{label}: the state names the candidates that exist: {}",
-            asked[0]
-        );
-        let prefetch = &result["telemetry"]["decisions"]["prefetch"];
-        assert_eq!(prefetch[0]["cell"], 1, "{label}: {prefetch}");
-        assert_eq!(
-            prefetch[0]["prefetched"],
-            if fetched {
-                json!(["README.md", "scripts/setup.sh"])
-            } else {
-                json!([])
-            },
-            "{label}: {prefetch}"
-        );
-        assert_eq!(
-            prefetch[0]["would_prefetch"],
-            label == "prefetch-shadow",
-            "{label}: {prefetch}"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-}
-
 /// A confident `explore` kind (2026-09-23) lowers the task's effort to
-/// `low` when the person chose none, runs the Scout with the dissection
-/// brief even with no other signal, and the Scout's tasks, files and needs
-/// reach the system prompt. In `shadow` mode the same answer is recorded as
-/// what would have happened and nothing changes.
+/// `low` when the person chose none. In `shadow` mode the same answer is
+/// recorded as what would have happened and nothing changes.
 #[test]
-fn an_explore_request_lowers_effort_and_briefs_the_scout_to_dissect() {
-    const DISSECTION: &str = "## Tasks\n1. Find the entry point — the command that starts the server is known\n2. Read the setup — every step scripts/setup.sh takes is listed\n\n## Files\nREADME.md:1 — task 1, the quick start\nscripts/setup.sh:1 — task 2, the setup script\n\n## Accept\nrun: bash -n scripts/setup.sh exits 0\n\n## Needs\nwhich backend the person runs on\n\n## Skip\n(none found)\n";
+fn an_explore_request_lowers_effort() {
     for (label, config, acting) in [
-        // No `preflight = true`: a confident explore runs the dissection on
-        // its own -- the A/B of 2026-09-23 ran three arms with the Scout
-        // silently off because this arm set it.
-        ("kind-explore-on", DECISIONS_ON_WITH_HELPERS, true),
-        (
-            "kind-explore-shadow",
-            DECISIONS_SHADOW_WITH_PREFLIGHT,
-            false,
-        ),
+        ("kind-explore-on", DECISIONS_ON, true),
+        ("kind-explore-shadow", DECISIONS_SHADOW, false),
     ] {
         let root = root(label);
         write_config(&root, config);
-        std::fs::write(root.join("README.md"), "# Demo\n").unwrap();
-        std::fs::create_dir_all(root.join("scripts")).unwrap();
-        std::fs::write(root.join("scripts/setup.sh"), "#!/bin/sh\n").unwrap();
-        let mut cells = vec![cell("c1", "answer(\"done\");")];
-        if acting {
-            cells.insert(0, prose(DISSECTION));
-        }
         let (endpoint, messages, _decisions, _headers) = providers(
-            cells,
+            vec![cell("c1", "answer(\"done\");")],
             vec![Decision::Answer(decision_answer_with_kind(
                 "read_only",
                 0.94,
@@ -2426,46 +1270,23 @@ fn an_explore_request_lowers_effort_and_briefs_the_scout_to_dissect() {
             ))],
             vec![],
         );
-        let result =
-            exec_bounded(&root, &endpoint, NO_SIGNAL_TASK, None).expect("the task finishes");
+        let result = exec_bounded(&root, &endpoint, "how does the setup work here", None)
+            .expect("the task finishes");
         let messages = messages.lock().unwrap();
         let telemetry = &result["telemetry"]["decisions"];
         assert_eq!(
             telemetry["kind"]["choice"], "explore",
             "{label}: {telemetry}"
         );
+        assert_eq!(messages.len(), 1, "{label}: one turn");
         if acting {
-            assert_eq!(
-                messages.len(),
-                2,
-                "{label}: the Scout, then the task's own turn"
-            );
-            let scout = &messages[0];
             assert!(
-                scout.contains("## Tasks") && scout.contains("under 300 words"),
-                "{label}: {scout}"
+                messages[0].contains("\"effort\":\"low\""),
+                "{label}: the turn carries low effort: {}",
+                messages[0]
             );
-            let turn = &messages[1];
-            assert!(
-                turn.contains("\"effort\":\"low\""),
-                "{label}: the turn carries low effort: {turn}"
-            );
-            assert!(
-                turn.contains("## Tasks") && turn.contains("1. Find the entry point"),
-                "{label}: {turn}"
-            );
-            assert!(
-                turn.contains("## Needs") && turn.contains("which backend"),
-                "{label}: {turn}"
-            );
-            assert!(turn.contains("scout (dissection)"), "{label}: {turn}");
             assert_eq!(telemetry["effort"]["set"], "low", "{label}: {telemetry}");
-            assert_eq!(
-                telemetry["scout_brief"], "dissection",
-                "{label}: {telemetry}"
-            );
         } else {
-            assert_eq!(messages.len(), 1, "{label}: no signal, no Scout, one turn");
             assert!(
                 !messages[0].contains("\"effort\""),
                 "{label}: shadow sets nothing: {}",
@@ -2475,8 +1296,6 @@ fn an_explore_request_lowers_effort_and_briefs_the_scout_to_dissect() {
                 telemetry["effort"]["would_set"], "low",
                 "{label}: {telemetry}"
             );
-            assert_eq!(telemetry["would_dissect"], true, "{label}: {telemetry}");
-            assert!(telemetry["scout_brief"].is_null(), "{label}: {telemetry}");
         }
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,6 +1,5 @@
 //! One thread owns the terminal and keys; the task thread only sends view state.
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -28,13 +27,6 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static DRAWING: Mutex<()> = Mutex::new(());
 thread_local! { static OUTPUT: RefCell<Option<mpsc::Sender<Update>>> = const { RefCell::new(None) }; }
 thread_local! { static STARTUP: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; }
-
-/// A handle on the terminal's update channel for a thread that finishes
-/// after the task that started it (`after.rs`), or `None` outside a
-/// terminal session.
-pub(super) fn sender() -> Option<mpsc::Sender<Update>> {
-    OUTPUT.with(|output| output.borrow().clone())
-}
 
 /// Whether this screen is reached over SSH, where a browser or a file
 /// viewer would open on the wrong machine.
@@ -232,8 +224,8 @@ pub(super) enum Update {
     /// channel and on nothing else.
     Form(Box<tui::Form>),
     Model(String),
-    /// Whether helpers run and what the subagents are, after a change.
-    Tiers(bool, String),
+    /// What the subagents are, after a change.
+    Tiers(String),
     /// A chip offered first on the opening screen: its label, and what it types.
     Suggest(String, String),
     /// Take away the opening chip that sends this.
@@ -249,8 +241,6 @@ pub(super) enum Update {
     Effort(crate::wire::Effort),
     Panel(Box<tui::Panel>),
     Notice(String),
-    /// Work behind the answer started (`true`) or ended, by lane name.
-    Behind(&'static str, bool),
     Stop,
 }
 enum Input {
@@ -477,12 +467,6 @@ impl LiveUi {
             None,
         ))));
     }
-    /// A publisher onto this terminal's channel that borrows nothing.
-    pub(super) fn publisher(&self) -> Publisher {
-        Publisher {
-            updates: self.updates.clone(),
-        }
-    }
     pub(super) fn append_delta(&self, text: &str) {
         let _ = self.updates.send(Update::Delta(text.into()));
     }
@@ -519,48 +503,10 @@ impl LiveUi {
         let _ = self.updates.send(Update::Unsuggest(types.into()));
     }
 
-    pub(super) fn tiers(&self, helpers_on: bool, subagents: &str) {
-        let _ = self
-            .updates
-            .send(Update::Tiers(helpers_on, subagents.into()));
+    pub(super) fn tiers(&self, subagents: &str) {
+        let _ = self.updates.send(Update::Tiers(subagents.into()));
     }
 }
-/// Publishes a snapshot while holding no borrow of the [`LiveUi`] it came from.
-///
-/// The invariant: a caller deeper in the stack than the session loop can draw
-/// the screen. A cell blocks the task thread for as long as it runs, so
-/// anything it wants shown while it runs -- a helper call in flight -- must
-/// publish through a handle it owns; the channel is already `Send`-free and
-/// cheap to clone, so this is that same channel without the borrow.
-#[derive(Clone)]
-pub(super) struct Publisher {
-    updates: mpsc::Sender<Update>,
-}
-impl Publisher {
-    pub(super) fn publish(
-        &self,
-        conversation: &Conversation,
-        notebook: &Notebook,
-        served: &ServedBy,
-        activity: Activity,
-    ) {
-        let _ = self.updates.send(Update::Snapshot(Box::new((
-            conversation.clone(),
-            notebook.clone(),
-            served.clone(),
-            Some(activity),
-        ))));
-    }
-}
-
-/// A publisher with no terminal thread behind it, paired with the receiving
-/// end, so `session`'s tests can read what a publish would have drawn.
-#[cfg(test)]
-pub(super) fn test_publisher() -> (Publisher, mpsc::Receiver<Update>) {
-    let (updates, receiver) = mpsc::channel();
-    (Publisher { updates }, receiver)
-}
-
 /// The line a live session leaves in the terminal once its screen is gone.
 static FAREWELL: Mutex<Option<String>> = Mutex::new(None);
 /// What ended the live session, said with the farewell: a session that
@@ -595,49 +541,6 @@ impl Drop for LiveUi {
                 eprintln!("sterna: ended by {reason}");
             }
             eprintln!("{line}");
-        }
-    }
-}
-
-/// Dates every helper call still in flight from the frame it first appeared
-/// in, and writes that wall clock into the copy of the notebook this thread
-/// is about to draw.
-///
-/// The invariant: **a running call's elapsed comes from the clock, not from
-/// its record.** The cell owns the task thread until the call returns, so
-/// the record reaches the screen once, with `elapsed_ms` still zero, and
-/// cannot be republished while it runs. `little-helpers.md` makes elapsed
-/// text rather than animation precisely so it keeps counting under
-/// `/motion off`, where the glyph is frozen and *is it alive* is the only
-/// question left. Presentation only: this notebook is the terminal thread's
-/// own clone, and a resolved record carries its real duration already.
-fn tick_helper_clocks(notebook: &mut Notebook, since: &mut HashMap<(usize, usize), Instant>) {
-    const PREFLIGHT: (usize, usize) = (usize::MAX, 0);
-    since.retain(|(cell, call), _| {
-        if (*cell, *call) == PREFLIGHT {
-            return notebook
-                .preflight
-                .as_ref()
-                .is_some_and(tui::helper_in_flight);
-        }
-        notebook
-            .cells
-            .get(*cell)
-            .and_then(|cell| cell.helpers.get(*call))
-            .is_some_and(tui::helper_in_flight)
-    });
-    if let Some(record) = notebook.preflight.as_mut()
-        && tui::helper_in_flight(record)
-    {
-        let started = since.entry(PREFLIGHT).or_insert_with(Instant::now);
-        record.outcome.elapsed_ms = started.elapsed().as_millis() as u64;
-    }
-    for (index, cell) in notebook.cells.iter_mut().enumerate() {
-        for (call, record) in cell.helpers.iter_mut().enumerate() {
-            if tui::helper_in_flight(record) {
-                let started = since.entry((index, call)).or_insert_with(Instant::now);
-                record.outcome.elapsed_ms = started.elapsed().as_millis() as u64;
-            }
         }
     }
 }
@@ -740,7 +643,6 @@ fn run(
     // When an idle Ctrl-C armed the quit: a second one within the window
     // ends the session, and the notice that says so goes when it lapses.
     let mut quit_armed: Option<Instant> = None;
-    let mut helper_clocks: HashMap<(usize, usize), Instant> = HashMap::new();
     let mut previous_rows = 0usize;
     let mut viewport_height = 10usize;
     // Where the left button went down, so a release knows whether the
@@ -916,10 +818,7 @@ fn run(
                     state.signing_in = None;
                     let _ = answers.inputs.send(Input::Changed);
                 }
-                Update::Tiers(helpers_on, subagents) => {
-                    state.helpers_on = helpers_on;
-                    state.subagents = Some(subagents);
-                }
+                Update::Tiers(subagents) => state.subagents = Some(subagents),
                 Update::Effort(effort) => state.effort = effort,
                 // The screen's inbox: the workbench opens it as a sheet on the
                 // next frame, as the child of the row that asked for it.
@@ -929,7 +828,6 @@ fn run(
                     state.note(message);
                     state.landed_note();
                 }
-                Update::Behind(lane, running) => state.lane(lane, running),
                 // The form draws over the sheet that opened it, which is
                 // still there when the form is done or put back.
                 Update::Form(form) => {
@@ -977,7 +875,7 @@ fn run(
         }
         // Frames are owed only while something changes state; an idle
         // screen draws its one heartbeat, or nothing (`tui/look.rs`).
-        let moving = busy || state.activity == Activity::Starting || state.settling_or_behind();
+        let moving = busy || state.activity == Activity::Starting || state.settling();
         let period = if moving {
             Some(state.frame_period())
         } else {
@@ -1024,7 +922,6 @@ fn run(
         // more input is already waiting, consume it and draw once.
         let waiting = input.queued() || event::poll(Duration::ZERO)?;
         if dirty && (!waiting || last_drawn.elapsed() >= FRAME) {
-            tick_helper_clocks(&mut notebook, &mut helper_clocks);
             state.input = editor.text.clone();
             state.cursor = Some(editor.cursor);
             state.completions = editor.completions().rows();
@@ -1974,57 +1871,5 @@ mod tests {
         keep_sending(&mut recorded, &mut sending, Activity::Thinking);
         assert_eq!(recorded.messages.len(), 1);
         assert!(sending.is_none());
-    }
-
-    /// A call in flight is dated from the frame it first appeared in, so its
-    /// lane's seconds keep counting while the cell that made it blocks the
-    /// task thread. A call that has resolved keeps what it actually took.
-    #[test]
-    fn a_running_helper_is_timed_by_the_clock_and_a_resolved_one_by_its_record() {
-        use crate::helpers::{HelperOutcome, HelperRecord};
-        let running = HelperRecord {
-            helper: "reduce".into(),
-            verb: "reducing".into(),
-            asked: "cargo build log".into(),
-            ..HelperRecord::default()
-        };
-        let resolved = HelperRecord {
-            outcome: HelperOutcome {
-                text: "3 distinct root failures".into(),
-                ok: true,
-                cancelled: false,
-                elapsed_ms: 120,
-            },
-            ..running.clone()
-        };
-        let mut notebook = Notebook::default();
-        // `set` numbers cells from one; this is the notebook's first cell.
-        notebook.set(
-            1,
-            tui::CellView {
-                helpers: vec![running, resolved],
-                ..tui::CellView::default()
-            },
-        );
-        let mut clocks = HashMap::new();
-        clocks.insert((0, 0), Instant::now() - Duration::from_millis(1500));
-        clocks.insert((0, 1), Instant::now());
-
-        tick_helper_clocks(&mut notebook, &mut clocks);
-
-        let helpers = &notebook.cells[0].helpers;
-        assert!(
-            helpers[0].outcome.elapsed_ms >= 1500,
-            "a running call's elapsed comes from the clock: {}",
-            helpers[0].outcome.elapsed_ms
-        );
-        assert_eq!(
-            helpers[1].outcome.elapsed_ms, 120,
-            "a resolved call keeps the duration it actually took"
-        );
-        assert!(
-            !clocks.contains_key(&(0, 1)),
-            "a call that resolved no longer holds a clock"
-        );
     }
 }

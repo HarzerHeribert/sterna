@@ -187,22 +187,18 @@ fn provider_failure_produces_machine_error_and_nonzero_exit() {
     }
 }
 
+/// A project file that still configures the retired helpers runs as usual,
+/// and the task's tokens are the parent's, by model, with no helper column.
 #[test]
-fn machine_telemetry_splits_preflight_helper_and_parent_usage_by_model() {
-    let root = root("preflight-telemetry");
+fn machine_telemetry_counts_the_parent_by_model_and_names_no_helpers() {
+    let root = root("retired-helper-telemetry");
     std::fs::create_dir_all(root.join(".sterna")).unwrap();
     std::fs::write(
         root.join(".sterna/config.toml"),
-        "[helpers]\nacceptance_list = false\nmodel = \"helper/model\"\npreflight = true\npreflight_scope = \"always\"\n",
+        "[helpers]\nmodel = \"helper/model\"\npreflight = true\n",
     )
     .unwrap();
-    let helper = json!({
-        "role": "assistant",
-        "content": [{"type": "text", "text": "```sterna\nanswer('fixture.rs:1 relevant');\n```"}],
-        "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 3,
-            "cache_creation_input_tokens": 2}
-    });
-    let endpoint = providers(vec![(200, helper), (200, native_return())]);
+    let endpoint = providers(vec![(200, native_return())]);
     let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
         .args([
             "exec",
@@ -226,28 +222,17 @@ fn machine_telemetry_splits_preflight_helper_and_parent_usage_by_model() {
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     let telemetry = &result["telemetry"];
-    assert_eq!(telemetry["provider_requests"]["total"], 2);
-    assert_eq!(telemetry["tokens"]["known_total"], 52);
-    assert_eq!(telemetry["tokens"]["parent"]["known_tokens"], 32);
-    assert_eq!(telemetry["tokens"]["helpers"]["known_tokens"], 20);
-    assert_eq!(telemetry["tokens"]["helpers"]["calls"], 1);
+    assert_eq!(telemetry["provider_requests"]["total"], 1);
     assert_eq!(
-        telemetry["tokens"]["helpers"]["models"][0]["model"],
-        "helper/model"
+        telemetry["tokens"]["known_total"],
+        telemetry["tokens"]["parent"]["known_tokens"]
     );
-    assert_eq!(telemetry["preflight_helpers"].as_array().unwrap().len(), 1);
-    assert_eq!(telemetry["preflight_helpers"][0]["call_site"], "preflight");
     assert_eq!(
-        telemetry["preflight_helpers"][0]["record"]["helper"],
-        "find"
+        telemetry["tokens"]["parent"]["models"][0]["model"],
+        "test/model"
     );
-    assert!(
-        result["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event["type"] == "helper" && event["data"]["call_site"] == "preflight")
-    );
+    assert!(telemetry["tokens"].get("helpers").is_none(), "{telemetry}");
+    assert!(telemetry.get("preflight_helpers").is_none(), "{telemetry}");
 }
 
 #[test]
@@ -385,7 +370,6 @@ fn provider_selected_interface_is_counted_and_every_v1_field_stays() {
         telemetry["tokens"]["parent"]["models"][0]["model"],
         "test/model"
     );
-    assert_eq!(telemetry["preflight_helpers"].as_array().unwrap().len(), 0);
     assert!(telemetry["wall_time_ms"].is_u64());
     let events = result["events"].as_array().unwrap();
     assert_eq!(events[0]["type"], "session_started");

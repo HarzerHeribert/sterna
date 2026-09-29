@@ -8,7 +8,6 @@ pub mod output;
 mod ui;
 
 use std::cell::{Cell, Ref, RefCell};
-use std::fs;
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -41,10 +40,7 @@ use crate::session::context::{
 use crate::telemetry::RequestMeasurement;
 use crate::tools::invoke::{self, Args, ToolContext, ToolError};
 use crate::tools::registry;
-use crate::tui::{
-    self, CellError, CellView, ContextTokens, Counted, HelperModelTokens, HelperTokens, Notebook,
-    TaskTokens,
-};
+use crate::tui::{self, CellError, CellView, ContextTokens, Counted, Notebook, TaskTokens};
 use crate::wire;
 
 const REQUEST_MEASUREMENT_CAP: usize = 64;
@@ -53,7 +49,6 @@ macro_rules! session_println {
     ($($arg:tt)*) => { ui::output(format!($($arg)*)) };
 }
 
-mod after;
 mod args;
 mod ask;
 mod cell_view;
@@ -77,9 +72,7 @@ mod test_check;
 mod usage;
 
 pub use system::{MANIFEST_PROBE, session_facts, session_facts_with, system_manifest};
-use system::{
-    append_acceptance, apply_decision_hold, build_system_prompt, preflight_block, task_decision,
-};
+use system::{apply_decision_hold, build_system_prompt, task_decision};
 use task::{Observed, TaskSpend, TaskState, partial_effects};
 
 /// The longest a turn waits for an open event window to close before it is
@@ -329,37 +322,6 @@ fn render(
     }
 }
 
-/// The signal a helper call reaches the screen through while its own cell is
-/// still running.
-///
-/// **The notebook it draws is a snapshot taken before the cell started.** The
-/// loop's transcript is being mutated by the cell that is blocking, so the
-/// lane cannot borrow it; what the lane needs from it -- the conversation, the
-/// cells already finished -- cannot change until the cell returns anyway. The
-/// running cell's own view is the calls made so far, which is exactly what
-/// `tui`'s lane renders and what the folded header summarises after it.
-fn helper_lane(
-    publisher: ui::Publisher,
-    transcript: &Transcript,
-    served: &ServedBy,
-    ordinal: usize,
-) -> crate::runtime::state::HelperProgress {
-    let conversation = transcript.conversation.clone();
-    let notebook = transcript.notebook.clone();
-    let served = served.clone();
-    std::rc::Rc::new(move |records: &[crate::helpers::HelperRecord]| {
-        let mut notebook = notebook.clone();
-        notebook.set(
-            ordinal,
-            CellView {
-                helpers: records.to_vec(),
-                ..CellView::default()
-            },
-        );
-        publisher.publish(&conversation, &notebook, &served, tui::Activity::Executing);
-    })
-}
-
 /// Runs `session`, in the order the packet's OBJECTIVE fixes: load the
 /// project, resume or start the rollout, `SessionStart`, then one input (or
 /// stdin's, one per line) at a time until the input source is exhausted.
@@ -373,11 +335,6 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         .iter()
         .map(|path| crate::images::load(&args.root, path))
         .collect::<Result<Vec<_>, _>>()?;
-    // `little-helpers.md`: a malformed roster is a refusal with one sentence,
-    // and it is made here because this is the last moment before anything a
-    // helper can be called from exists. A guardrail checked after the first
-    // cell runs is not a guardrail.
-    crate::helpers::validate().map_err(|reason| format!("sterna cannot start: {reason}"))?;
     // First, so a `--resume <id>` refusal is about which session to open
     // rather than arriving under two lines of startup notes. Said at the end
     // too: a crash or a closed terminal pane never reaches `/exit`.
@@ -411,7 +368,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         );
     }
     project.settings = settings_store.permissions()?;
-    // Shared and mutable because `/model helper <id>` changes it mid-session:
+    // Shared and mutable because `/model <tier> <id>` changes it mid-session:
     // the next cell's runtime must be built from the choice just made, not
     // from what the file said at startup.
     let config = RefCell::new(loaded_settings.config);
@@ -494,6 +451,9 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     // in force, and the bypass and the proxy applied above change what it
     // says.
     let manifest = system_manifest(&profile, &config.borrow());
+    if crate::verification::load(&profile).is_ok_and(|checks| !checks.checker.is_empty()) {
+        session_println!("{}", crate::verification::CHECKER_GONE);
+    }
 
     let resuming = rollout_path.exists();
     let (conversation, provider_checkpoint, provider_start) = if resuming {
@@ -516,7 +476,6 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
                     &config.borrow().limits,
                     &config.borrow().web,
                     &config.borrow().agents,
-                    &config.borrow().helpers,
                     &config.borrow().decisions,
                     &roster,
                     &profile,
@@ -598,8 +557,7 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
                             profile.rule_count(),
                             profile.pre_approved().len(),
                         )),
-                        helpers_on: controls::tier_status(&config.borrow()).0,
-                        subagents: Some(controls::tier_status(&config.borrow()).1),
+                        subagents: Some(controls::tier_status(&config.borrow())),
                         // The third half, which until 2026-09-19 no surface
                         // carried: a rung and a grant are two choices, and
                         // whether Sterna confines what it spawns is the one
@@ -727,8 +685,7 @@ struct Session<'a> {
     /// The entry points this session shows the parent model.
     interface: Cell<crate::abi::Interface>,
     /// The environment manifest collected once at session start from the
-    /// compiled profile; rendered into the system block and read by the
-    /// scouting preflight.
+    /// compiled profile; rendered into the system block.
     manifest: crate::manifest::Manifest,
     /// The subagent roster, resolved once beside the manifest (`startup`).
     roster: Vec<crate::models::RosterModel>,
@@ -807,7 +764,7 @@ fn drive(
     rollout: &mut Rollout,
 ) -> Result<(), String> {
     if let Some(task) = &args.task {
-        return after::around(|| process_input(task, session, transcript, rollout).result());
+        return process_input(task, session, transcript, rollout).result();
     }
 
     if let Some(ui) = session.ui {
@@ -1025,8 +982,6 @@ fn run_task(
         return Err(refused.into());
     }
     transcript.notebook.handlers.clear();
-    transcript.notebook.preflight = None;
-    transcript.notebook.acceptance.clear();
     // Moves made while the last task ran reach the file here, at the boundary:
     // the UI thread that made them writes nothing itself.
     rollout.record_moves(session.level.as_ref());
@@ -1093,45 +1048,10 @@ fn run_task_inner(
     let mut budget = TaskSpend::new(session.config().limits.cells);
     session.routing.clear();
     system::keep_session_system(session, transcript);
-    let mut task_context = system::task_lines(session);
-    // Preflight: `little-helpers.md`'s *Pushed* hook, and the same consumer
-    // the static orientation already has. It fires **once per task**, before
-    // the model's first turn, so the block is paid for as one cache write
-    // against the read turns it removes — and it appends nothing at all when
-    // no scout ran or none answered.
+    let task_context = system::task_lines(session);
     let has_history = !transcript.conversation.messages.is_empty();
     let (decision, decision_failures, pending_decision) = task_decision(task, session, has_history);
     let effort_lease = system::EffortLease::for_kind(session, decision.as_ref());
-    // The acceptance lister runs beside the Scout: two independent reads of
-    // the same request, and in series the person waited for both. A
-    // dissection writes the list itself, so the lister waits for it.
-    let dissecting = system::dissects(session, decision.as_ref());
-    let (preflight_outcome, acceptance_record) = std::thread::scope(|scope| {
-        let lister = (!dissecting)
-            .then(|| system::start_acceptance(task, session))
-            .flatten()
-            .map(|pending| scope.spawn(move || pending.call()));
-        let preflight = preflight_block(task, session, transcript, decision.as_ref());
-        (
-            preflight,
-            lister.and_then(|handle| handle.join().ok().flatten()),
-        )
-    });
-    if let Some(block) = &preflight_outcome.block {
-        task_context.push_str(block);
-    }
-    if let Some(preflight) = transcript.notebook.preflight.as_ref() {
-        budget.add_helpers(std::slice::from_ref(preflight));
-    }
-    let (acceptance_items, acceptance_from) = append_acceptance(
-        task,
-        session,
-        preflight_outcome.acceptance.clone(),
-        (acceptance_record, dissecting),
-        &mut task_context,
-        &mut budget,
-    );
-    transcript.notebook.acceptance_from = acceptance_from;
     {
         let _line = session.interrupt.writing();
         rollout
@@ -1205,21 +1125,10 @@ fn run_task_inner(
     let mut last_cell_threw = false;
     let mut task_state = TaskState::new(task, &request_profile, &session.config())
         .with_session(session.id)
-        .with_acceptance(acceptance_items, acceptance_from)
-        .with_decision(
-            decision,
-            decision_failures,
-            preflight_outcome.scout_signal,
-            preflight_outcome.would_scout,
-        )
-        .with_kind_effects(
-            &effort_lease,
-            preflight_outcome.brief.map(crate::preflight::Brief::as_str),
-            preflight_outcome.would_dissect,
-        );
+        .with_decision(decision, decision_failures)
+        .with_kind_effects(&effort_lease);
     task_state.pending_decision = pending_decision;
     output::decisions(task_state.decisions_telemetry(&session.config().decisions));
-    transcript.notebook.acceptance = task_state.standing(session);
 
     loop {
         // **The cell boundary, which is where a requested stop is honoured.**
@@ -1367,14 +1276,6 @@ fn run_task_inner(
         if let Some(ui) = session.ui {
             ui.publish(transcript, &served, tui::Activity::Executing);
         }
-        // The cell owns this thread until it returns, so a helper it calls can
-        // only be seen while it runs through a signal installed before it
-        // starts. Uninstalled on the way out, including the error path.
-        let previous = crate::runtime::state::install_helper_progress(
-            session
-                .ui
-                .map(|ui| helper_lane(ui.publisher(), transcript, &served, ordinal)),
-        );
         budget.begin_turn(return_budget(&transcript.notebook, &session.model.borrow()));
         let step = act_on(
             &assistant_message,
@@ -1387,7 +1288,6 @@ fn run_task_inner(
             session,
             &mut task_state,
         );
-        crate::runtime::state::install_helper_progress(previous);
         let mut step = step?;
         // The approval hint answers on its own thread (approval.rs), so this
         // cell's own confirmation may still be pending when the cell returns;
@@ -1398,10 +1298,6 @@ fn run_task_inner(
             task_state.approval_hints = asked.saturating_sub(approval_hint_baseline.0);
             task_state.approval_hint_failures = failed.saturating_sub(approval_hint_baseline.1);
         }
-        // RuntimeState clears this ledger at each cell boundary, so each
-        // record belongs to this step and enters cumulative spend once here.
-        budget.add_helpers(&step.view.helpers);
-        output::cell_helpers(&step.view.helpers);
         transcript.notebook.handlers = runtime.handlers();
         transcript.notebook.inbox_depth = window.depth() + runtime.batch_rolling_depth();
         transcript.notebook.decision = task_state.decision_line(&session.config().decisions);
@@ -1416,7 +1312,7 @@ fn run_task_inner(
                 .rollback
                 .as_ref()
                 .map(|(before, after)| (before, after));
-            observed = task_state.observe(record, error, &runtime.plan(), snapshots);
+            observed = task_state.observe(record, error, snapshots);
             step.view.capsule = Some(task_state.capsule.to_json());
         }
         task_state.previous_failed = step.view.error.is_some();
@@ -1506,18 +1402,11 @@ fn run_task_inner(
                 .stall
                 .observe(&crate::progress::prose_fingerprint(said));
         }
-        let helper_delivered_interrupt = step
-            .view
-            .helpers
-            .iter()
-            .any(|helper| helper.outcome.cancelled);
         if let Some(record) = step.record.take() {
-            if delivered_the_interrupt(&record) || helper_delivered_interrupt {
+            if delivered_the_interrupt(&record) {
                 session.interrupt.consumed();
             }
             last_cell_threw = record.outcome == crate::runtime::outcome::CellOutcomeKind::Threw;
-        } else if helper_delivered_interrupt {
-            session.interrupt.consumed();
         }
 
         let poisoned = runtime.poisoned();
@@ -1567,7 +1456,6 @@ fn run_task_inner(
         step.view.answered = step.answer.is_some();
         transcript.notebook.tokens = budget.tokens();
         transcript.notebook.set(ordinal, step.view.clone());
-        transcript.notebook.acceptance = task_state.standing(session);
         {
             let _line = session.interrupt.writing();
             rollout
@@ -2046,10 +1934,6 @@ fn act_on(
     .map_err(|e| format!("could not record the cell: {e}"))?;
 
     let mut view = CellView {
-        // Read after the cell rather than from the trajectory: the record
-        // carries what came back and how long it took, which is what the
-        // lane and the `HELPERS` inspector section both draw.
-        helpers: runtime.helper_records(),
         description: description.clone(),
         executed_source: (native.is_some() || repaired_from.is_some() || lowered.is_some())
             .then(|| source.clone()),
@@ -2086,7 +1970,6 @@ fn act_on(
         handle_table: turn.table.clone(),
         stdout_tail: (!turn.stdout_tail.is_empty()).then(|| turn.stdout_tail.clone()),
         budget: budget.line(&session.model.borrow()),
-        plan: turn.plan.clone(),
     };
 
     let mut response = None;
@@ -2099,32 +1982,16 @@ fn act_on(
     if outcome.ends_the_task()
         && let Some(text) = outcome.answer().map(str::to_string)
     {
-        {
-            if let Some(handoff) = crate::agent::checker_handoff(&view.helpers, &text) {
-                // A completion guard answered during this cell, after the
-                // candidate was authored. Keep the candidate as notebook
-                // output and feed the unparsed observations to a later model
-                // turn; this is not yet a terminal response.
-                view.output = Some(handoff.clone());
-                result.output = Some(handoff);
-            } else {
-                // The evidence gate: fresh contradictory evidence overrides
-                // `done` (`smarter-cheaper-roadmap.md`, *Evidence-gated
-                // completion*). The candidate is kept as notebook output and
-                // the findings reach the next turn.
-                let (gate, checker) =
-                    task_state.gate(&text, turn.record.cell, &before, &after, session);
-                if let Some(checker) = checker {
-                    view.helpers.push(checker);
-                }
-                if let Some(gate) = gate {
-                    view.output = Some(gate.clone());
-                    result.output = Some(gate);
-                } else {
-                    view.returned = Some(text.clone());
-                    response = Some(text);
-                }
-            }
+        // The evidence gate: fresh contradictory evidence overrides `done`
+        // (`smarter-cheaper-roadmap.md`, *Evidence-gated completion*). The
+        // candidate is kept as notebook output and the findings reach the
+        // next turn.
+        if let Some(gate) = task_state.gate(&text, turn.record.cell, &before, &after, session) {
+            view.output = Some(gate.clone());
+            result.output = Some(gate);
+        } else {
+            view.returned = Some(text.clone());
+            response = Some(text);
         }
     }
     match &outcome {
@@ -2132,16 +1999,7 @@ fn act_on(
         // its JSON -- never `marshal`'s sample. Every one of them is notebook
         // output for the next turn; none of them is an ending.
         CellOutcome::Returned { terminal, .. } if response.is_none() => {
-            let text = returned::show(
-                session,
-                runtime,
-                task_state,
-                budget,
-                profile,
-                turn,
-                terminal,
-                &mut result,
-            );
+            let text = returned::show(session, runtime, task_state, budget, terminal, &mut result);
             view.output = Some(text);
         }
         CellOutcome::Returned { .. } => {}
@@ -2438,16 +2296,16 @@ fn answer_command(
     // has a caller and the binary actually *offers* what 2450 names.
     if name == "model" {
         if let Some(argument) = argument.filter(|value| !value.is_empty()) {
-            // A session is three models. `/model <id>` stays what it always
-            // was -- the parent's -- and a leading tier word assigns one of
-            // the other two.
+            // A session is two models. `/model <id>` stays what it always
+            // was -- the parent's -- and a leading tier word assigns the
+            // other.
             // The first sentence is the one a mistyped slug has always got;
             // the second is the tiers it can now also name.
             const USAGE: &str = "/model expects one model name\n\
-                /model parent|helper|subagent <id> assigns one tier\n\
-                /model helper off · /model subagent auto|off (inherit is an alias for auto)";
+                /model parent|subagent <id> assigns one tier\n\
+                /model subagent auto|off (inherit is an alias for auto)";
             // A tier word alone opens the picker on that tier, rather than
-            // naming the Main model `helper`.
+            // naming the Main model `subagent`.
             if let Some(tier) = crate::spend::Tier::parse(argument.trim()) {
                 controls::models_at(session, tier);
                 return;
@@ -3250,86 +3108,6 @@ mod tests {
         assert!(blocks.iter().all(|(_, _, is_error)| *is_error));
     }
 
-    /// The roster is checked where the session starts, and this pins the call
-    /// rather than the predicate: `helpers::validate()` passes for the shipped
-    /// roster whether or not anything calls it, so only reading `fn run` can
-    /// tell a startup refusal from a unit test nobody's production path runs.
-    #[test]
-    fn the_session_start_refuses_a_malformed_helper_roster() {
-        const SOURCE: &str = include_str!("session.rs");
-        let after = SOURCE
-            .split_once("fn run(args: SessionArgs)")
-            .expect("`fn run` must still be session start")
-            .1;
-        let (body, _) = after
-            .split_once("\n}\n")
-            .expect("`fn run` must still close at column zero");
-        assert!(
-            body.contains("helpers::validate()"),
-            "session start must validate the helper roster before any helper can be called"
-        );
-        crate::helpers::validate().expect("the shipped roster must pass its own guardrails");
-    }
-
-    /// A call in flight reaches the screen under the cell that made it, with
-    /// the screen still executing -- the state `tui`'s lane draws and the
-    /// only state a helper that has not answered yet can be shown in.
-    #[test]
-    fn a_helper_call_in_flight_is_published_under_its_own_cell() {
-        let (publisher, updates) = ui::test_publisher();
-        let transcript = Transcript {
-            conversation: Conversation::default(),
-            notebook: Notebook::default(),
-            provider_checkpoint: None,
-            provider_start: 0,
-        };
-        let lane = helper_lane(publisher, &transcript, &ServedBy::default(), 3);
-
-        lane(&[crate::helpers::HelperRecord {
-            helper: "reduce".into(),
-            verb: "reducing".into(),
-            asked: "cargo build log · 4118 lines".into(),
-            ..crate::helpers::HelperRecord::default()
-        }]);
-
-        let (notebook, activity) = match updates.try_recv() {
-            Ok(ui::Update::Snapshot(snapshot)) => (snapshot.1, snapshot.3),
-            _ => panic!("a helper call in flight must publish a snapshot"),
-        };
-        assert_eq!(activity, Some(tui::Activity::Executing));
-        assert_eq!(notebook.cells.len(), 3, "the lane hangs under cell 3");
-        let helpers = &notebook.cells[2].helpers;
-        assert_eq!(helpers.len(), 1, "the call in flight must be in the view");
-        assert_eq!(helpers[0].helper, "reduce");
-        assert!(
-            !helpers[0].outcome.ok,
-            "a call that has not answered yet must not publish as one that has"
-        );
-    }
-
-    /// The lane is installed **before** the cell runs, and a cell blocks this
-    /// thread until it returns, so an install that came after it would show
-    /// only finished calls. `helper_lane` is provable on its own; that it is
-    /// reached at all is only readable here.
-    #[test]
-    fn the_cell_loop_installs_the_helper_lane_before_the_cell_runs() {
-        const SOURCE: &str = include_str!("session.rs");
-        let installed = SOURCE
-            .find("install_helper_progress(")
-            .expect("the cell loop must install a helper progress signal");
-        let ran = SOURCE
-            .find("let step = act_on(")
-            .expect("the cell loop must still run the cell through `act_on`");
-        assert!(
-            installed < ran,
-            "the signal must be installed before the cell runs, or no call can be seen in flight"
-        );
-        assert!(
-            SOURCE[installed..ran].contains("helper_lane("),
-            "the installed signal must be the lane"
-        );
-    }
-
     #[test]
     fn only_a_tool_line_is_a_tool_invocation() {
         assert_eq!(tool_invocation("tool read path=x"), Some("read path=x"));
@@ -3375,78 +3153,6 @@ mod tests {
             999,
         );
         assert_eq!(absent.used(), 7);
-    }
-
-    #[test]
-    fn task_spend_adds_parent_and_helper_usage_once_with_honest_coverage() {
-        let mut spend = TaskSpend::new(Some(10));
-        spend.add(
-            &ServedBy::default(),
-            Some(&wire::Usage {
-                input_tokens: 118_751,
-                output_tokens: 8_773,
-                cache_read_input_tokens: Some(46_336),
-                cache_creation_input_tokens: Some(0),
-            }),
-            0,
-        );
-        let helper = crate::helpers::HelperRecord {
-            usage: crate::helpers::HelperUsage {
-                coverage_known: true,
-                model: "gpt-5.6-luna".into(),
-                requests: 6,
-                responses: 6,
-                reported_requests: 6,
-                input_tokens: 20_329,
-                output_tokens: 2_492,
-                cache_read_input_tokens: 5_120,
-                cache_creation_input_tokens: 0,
-                cache_read_reported_requests: 6,
-                cache_creation_reported_requests: 6,
-            },
-            ..crate::helpers::HelperRecord::default()
-        };
-        spend.add_helpers(&[helper]);
-
-        assert_eq!(spend.parent_used, 173_860);
-        assert_eq!(spend.helpers.used, 27_941);
-        assert_eq!(spend.used(), 201_801);
-        assert_eq!(spend.helpers.requests, 6);
-        assert_eq!(spend.helpers.input_tokens, 20_329);
-        assert_eq!(spend.helpers.output_tokens, 2_492);
-        assert_eq!(spend.helpers.cache_read_input_tokens, 5_120);
-        assert_eq!(spend.helpers.models.len(), 1);
-        assert_eq!(spend.helpers.models[0].model, "gpt-5.6-luna");
-        assert_eq!(spend.helpers.models[0].used, 27_941);
-        assert!(spend.helpers.complete());
-        let first = spend.tokens();
-        assert_eq!(
-            spend.tokens(),
-            first,
-            "reading the meter must not recount helpers"
-        );
-    }
-
-    #[test]
-    fn task_spend_marks_missing_and_historical_helper_usage_partial() {
-        let mut spend = TaskSpend::new(Some(10));
-        spend.add_helpers(&[
-            crate::helpers::HelperRecord {
-                usage: crate::helpers::HelperUsage {
-                    coverage_known: true,
-                    model: "helper-tier".into(),
-                    requests: 1,
-                    ..crate::helpers::HelperUsage::default()
-                },
-                ..crate::helpers::HelperRecord::default()
-            },
-            crate::helpers::HelperRecord::default(),
-        ]);
-
-        assert_eq!(spend.used(), 0, "missing usage must never invent tokens");
-        assert_eq!(spend.helpers.calls, 2);
-        assert_eq!(spend.helpers.usage_known_calls, 1);
-        assert!(!spend.helpers.complete());
     }
 
     #[test]

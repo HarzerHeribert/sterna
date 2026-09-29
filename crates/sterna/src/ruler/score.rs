@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use super::interface::{self, CreditRatios, RegretRow};
+use super::interface::{self, RegretRow};
 use super::model::{Attempt, Harness, Outcome, Program, Tier, Tokens};
 
 /// One aggregated row: the three numbers `ruler.md` §3 names, grouped over
@@ -86,20 +86,12 @@ pub struct Score {
     /// ablation arm, so a run without `--sterna-interface` renders exactly as
     /// before.
     pub regret: Vec<RegretRow>,
-    /// The credit ratios `regret`'s weighted spend used.
-    pub ratios: CreditRatios,
 }
 
 impl Score {
-    /// Scores a slice of attempts at all three levels, weighting helper
-    /// tokens at the assumed 1:1 ratio.
-    pub fn of(attempts: &[Attempt]) -> Score {
-        Score::with_ratios(attempts, CreditRatios::default())
-    }
-
     /// Scores a slice of attempts at all three levels, and the interface
-    /// regret of any `sterna:<mode>` arms under `ratios`.
-    pub fn with_ratios(attempts: &[Attempt], ratios: CreditRatios) -> Score {
+    /// regret of any `sterna:<mode>` arms.
+    pub fn of(attempts: &[Attempt]) -> Score {
         let mut by_task: BTreeMap<(Tier, &'static str), BTreeMap<Harness, Vec<&Attempt>>> =
             BTreeMap::new();
         let mut by_tier: BTreeMap<Tier, BTreeMap<Harness, Vec<&Attempt>>> = BTreeMap::new();
@@ -159,8 +151,7 @@ impl Score {
             task_rows,
             tier_rows,
             aggregate_rows,
-            regret: interface::regret(attempts, &ratios),
-            ratios,
+            regret: interface::regret(attempts),
         }
     }
 }

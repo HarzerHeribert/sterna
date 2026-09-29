@@ -43,8 +43,7 @@ fn an_unconfigured_session_binds_no_web_and_declares_none() {
 }
 
 #[test]
-fn web_is_withheld_from_helpers_and_declared_to_parent() {
-    assert!(!sterna::runtime::bindings::HostGlobals::Helper(&[]).installs("web"));
+fn web_is_declared_to_the_parent() {
     assert!(
         sterna::prompt::declarations::RUNTIME
             .iter()

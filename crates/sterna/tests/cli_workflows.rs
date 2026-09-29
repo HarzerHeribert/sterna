@@ -116,10 +116,10 @@ fn doctor_warns_about_a_feature_enabled_without_its_prerequisite() {
             .as_nanos()
     ));
     std::fs::create_dir_all(root.join(".sterna")).unwrap();
-    // Exactly the benchmark's configuration: helpers on, no helper model.
+    // Decisions switched on with no decision model to ask.
     std::fs::write(
         root.join(".sterna/config.toml"),
-        "[model]\nparent = \"gpt-5.6-sol\"\n\n[helpers]\nenabled = true\npreflight = true\n",
+        "[model]\nparent = \"gpt-5.6-sol\"\n\n[decisions]\nmode = \"on\"\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sterna"))
@@ -138,9 +138,9 @@ fn doctor_warns_about_a_feature_enabled_without_its_prerequisite() {
         .expect("doctor reports a settings check");
     assert_eq!(settings["status"], "warning", "{stdout}");
     let detail = settings["detail"].as_str().unwrap();
-    assert!(detail.contains("[helpers]"), "{detail}");
+    assert!(detail.contains("[decisions]"), "{detail}");
     assert!(
-        detail.contains("helpers.model"),
+        detail.contains("decisions.model"),
         "the warning must name the key that fixes it: {detail}"
     );
     std::fs::remove_dir_all(root).unwrap();

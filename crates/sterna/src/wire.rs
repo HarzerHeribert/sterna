@@ -540,8 +540,6 @@ pub fn request_body_on_model(conversation: &Conversation, model: &str) -> Vec<u8
 /// interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
-    /// A side errand (a helper): no tools at all, so it cannot act.
-    TextOnly,
     /// A request that may act, and the façade it acts through.
     Acting {
         interface: crate::abi::Interface,
@@ -552,10 +550,9 @@ pub enum Surface {
 impl Surface {
     /// `execute_cell` and nothing else.
     ///
-    /// The surface for every narrowed context — a helper or a subagent —
-    /// because a dialect row advertises a capability such a context may not
-    /// bind, and a declared-but-absent tool is the one failure the
-    /// narrowing exists to avoid.
+    /// The surface for a subagent, because a dialect row advertises a
+    /// capability a subagent may not bind, and a declared-but-absent tool is
+    /// the one failure its narrowing exists to avoid.
     #[must_use]
     pub fn cells() -> Self {
         Self::Acting {
@@ -571,9 +568,7 @@ impl Surface {
     /// cells-only surface that is `execute_cell`, exactly as before.
     #[must_use]
     pub fn tool_definitions(self) -> Vec<serde_json::Value> {
-        let Self::Acting { interface, dialect } = self else {
-            return Vec::new();
-        };
+        let Self::Acting { interface, dialect } = self;
         let mut tools = Vec::new();
         if interface.declares_cell() {
             tools.push(serde_json::json!({
@@ -626,9 +621,8 @@ pub fn request_body_configured(
 
 /// [`request_body_configured`] for a caller that knows its own tool surface.
 ///
-/// The task path passes the session's; helpers and subagents keep
-/// [`Surface::cells`], because a narrowed context binds fewer capabilities
-/// than a dialect row would advertise.
+/// The task path passes the session's; a subagent keeps [`Surface::cells`],
+/// because it binds fewer capabilities than a dialect row would advertise.
 pub fn request_body_for_surface(
     conversation: &Conversation,
     model: &str,
@@ -640,52 +634,11 @@ pub fn request_body_for_surface(
         build_request_body(model, max_tokens, conversation, surface),
         model,
         effort,
-        Allowance::Model(max_tokens),
+        max_tokens,
     )
 }
 
-/// The smallest `budget_tokens` a provider will accept, and the reason a
-/// small [`Allowance::Capped`] asks for no thinking at all.
-///
-/// The Anthropic-shaped leg requires `budget_tokens` to be **at least this
-/// and strictly less than `max_tokens`**. Those two together are unsatisfiable
-/// below 2 x this value, so a helper that declares a 1,024-token answer is
-/// not a helper that reasons a little -- it is one that does not reason.
-pub const THINKING_MIN_BUDGET: u32 = 1024;
-
-/// What a request's `max_tokens` means to the caller who supplied it.
-///
-/// The distinction exists because one number was being read two ways.
-/// [`configure_effort`] adds a reasoning budget on top of it, which is right
-/// for the model's own published maximum and inverts the intent of a
-/// deliberately small cap: `REDUCER` declares 1,024 tokens to keep a
-/// reduction terse, and the same arithmetic put **17,408** on the wire at
-/// `medium` -- sixteen seventeenths of it reasoning. Measured against 77
-/// lines of test output on 2026-09-19: `6886 in, 4227 out`. A reducer that
-/// emits 4,227 tokens has not reduced anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Allowance {
-    /// The model's own maximum ([`max_tokens_for`]). A thinking budget is
-    /// space the provider needs *beside* the answer, so it is added on top.
-    Model(u32),
-    /// A caller's ceiling on the whole response. Thinking fits inside it or
-    /// is not asked for; the number the caller wrote is the number that
-    /// bounds the answer.
-    Capped(u32),
-}
-
-impl Allowance {
-    /// The figure the caller supplied, whichever meaning it carries.
-    #[must_use]
-    pub fn declared(self) -> u32 {
-        match self {
-            Allowance::Model(tokens) | Allowance::Capped(tokens) => tokens,
-        }
-    }
-}
-
-/// The reasoning budget one effort level asks for, before any allowance
-/// narrows it.
+/// The reasoning budget one effort level asks for.
 fn effort_budget(effort: Effort) -> u32 {
     match effort {
         Effort::Low => 4096,
@@ -699,25 +652,9 @@ fn effort_budget(effort: Effort) -> u32 {
     }
 }
 
-/// What `max_tokens` a request built from this allowance will actually carry.
-///
-/// **The one answer, so a caller reasoning about cost cannot disagree with
-/// the wire.** `reduce_oversized` spends a helper request only when the
-/// saving is positive, and it computed that against the *declared* 1,024
-/// while 17,408 went out -- an economics test written to prevent exactly the
-/// waste it then permitted. It asks this function now.
-#[must_use]
-pub fn wire_max_tokens(model: &str, allowance: Allowance, effort: Effort) -> u32 {
-    if effort == Effort::Auto || model.contains("claude") {
-        return allowance.declared();
-    }
-    match allowance {
-        Allowance::Model(response_tokens) => effort_budget(effort) + response_tokens,
-        Allowance::Capped(cap) => cap,
-    }
-}
-
-fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, allowance: Allowance) -> Vec<u8> {
+/// The effort word on every request, and on a translated leg a thinking
+/// budget with `response_tokens` of room for the answer above it.
+fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, response_tokens: u32) -> Vec<u8> {
     if effort == Effort::Auto {
         return body;
     }
@@ -731,35 +668,10 @@ fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, allowance: Allow
         // A budget as well, for the Anthropic-shaped leg that reads one --
         // Glasshouse's codec keeps both and gives each target the form it
         // uses.
-        let ladder = effort_budget(effort);
-        let budget = match allowance {
-            // Leave response space above the thinking allocation.
-            Allowance::Model(response_tokens) => {
-                value["max_tokens"] = serde_json::json!(ladder + response_tokens);
-                Some(ladder)
-            }
-            // **A declared cap is a cap.** `max_tokens` stays what the caller
-            // wrote and the budget is measured inside it, leaving half the
-            // allowance for the answer the caller actually asked for. Below
-            // [`THINKING_MIN_BUDGET`] no budget is expressible inside the cap
-            // at all, so none is asked for -- the effort word still rides
-            // along, and a provider that reasons adaptively still may.
-            Allowance::Capped(cap) => {
-                value["max_tokens"] = serde_json::json!(cap);
-                Some(ladder.min(cap / 2)).filter(|budget| *budget >= THINKING_MIN_BUDGET)
-            }
-        };
-        match budget {
-            Some(budget) => {
-                value["thinking"] = serde_json::json!({"type":"enabled", "budget_tokens":budget});
-            }
-            None => {
-                value
-                    .as_object_mut()
-                    .expect("request is an object")
-                    .remove("thinking");
-            }
-        }
+        // Leave response space above the thinking allocation.
+        let budget = effort_budget(effort);
+        value["max_tokens"] = serde_json::json!(budget + response_tokens);
+        value["thinking"] = serde_json::json!({"type":"enabled", "budget_tokens":budget});
     }
     serde_json::to_vec(&value).expect("serialized request")
 }
@@ -1082,43 +994,19 @@ pub fn send_turn_configured(
     send_turn_bounded(conversation, model, effort, None)
 }
 
-/// A task turn, optionally bounded.
-///
-/// The task path passes `None`: a person is watching it and can stop it. A
-/// **helper's** loop passes [`SIDE_ERRAND_TIMEOUT`], because it runs inside a
-/// native callback on another thread. Its caller can stop waiting, but the
-/// owned provider request still needs this ceiling before its thread ends —
-/// the same reason [`send_turn_with`] carries the ceiling.
+/// A task turn, optionally bounded by a whole-answer ceiling. The task path
+/// and a subagent pass `None`: a person is watching one, and the other's
+/// parent can cancel it.
 pub fn send_turn_bounded(
     conversation: &Conversation,
     model: &str,
     effort: Effort,
     timeout: Option<std::time::Duration>,
 ) -> Result<Turn, WireError> {
-    send_turn_bounded_with(conversation, model, effort, timeout, None)
+    send_turn_bounded_on(conversation, model, effort, timeout, None, Surface::cells())
 }
 
-/// [`send_turn_bounded`] with one caller-owned routing header. Narrowed
-/// helpers use this to retain their helper identity even though they take the
-/// multi-turn agent path; ordinary task and subagent traffic passes `None`.
-pub fn send_turn_bounded_with(
-    conversation: &Conversation,
-    model: &str,
-    effort: Effort,
-    timeout: Option<std::time::Duration>,
-    extra_header: Option<(&str, &str)>,
-) -> Result<Turn, WireError> {
-    send_turn_bounded_on(
-        conversation,
-        model,
-        effort,
-        timeout,
-        extra_header,
-        Surface::cells(),
-    )
-}
-
-/// [`send_turn_bounded_with`] for a caller that knows its own tool surface.
+/// [`send_turn_bounded`] for a caller that knows its own tool surface.
 pub fn send_turn_bounded_on(
     conversation: &Conversation,
     model: &str,
@@ -1200,249 +1088,7 @@ pub fn send_turn_bounded_routed(
     parse_response(&text)
 }
 
-/// A side errand's hard ceiling.
-///
-/// A side errand -- a little helper's question -- is not the task path. It
-/// is a quick question answered on a cheap model, and a helper's call runs inside
-/// a native v8 callback where `terminate_execution` cannot reach it: without
-/// this, a provider that accepts and never answers outlives the cell's
-/// `cell_wall_clock_s` and `/stop` both. Generous against a real answer
-/// (measured: 7.5s for `gpt-5.6-luna`, 32s for a reasoning model) and finite
-/// against a hang.
-pub const SIDE_ERRAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// How long a streamed side errand may go with the socket saying **nothing
-/// at all** before Sterna stops waiting for it.
-///
-/// The invariant: **a helper is cut off for going silent, never for taking
-/// its time.** [`SIDE_ERRAND_TIMEOUT`] measures a whole answer, which is the
-/// wrong quantity — on a non-streamed call a model that is thinking and a
-/// socket that is dead produce the same observation, so the ceiling written
-/// against the dead socket lands on the thinking model instead. Measured
-/// 2026-09-19: `helper.reduce` on `gpt-5.6-luna`, a reasoning model, died at
-/// exactly 120.0s having done nothing wrong.
-///
-/// A gap *between* events is a far smaller quantity than a whole answer: a
-/// provider sends `message_start` at once, `ping` keepalives throughout, and
-/// a delta per token. 45s sits above the largest complete-answer figure this
-/// module ever measured (32s for a reasoning model), so any errand that used
-/// to fit inside the old whole-answer ceiling fits inside a single silence
-/// window now, and it stays finite against a socket that has died.
-pub const SIDE_ERRAND_SILENCE: std::time::Duration = std::time::Duration::from_secs(45);
-
-/// The allowance before the **first** event of a streamed side errand.
-///
-/// Time to first token is the one window where a reasoning model really is
-/// silent: the request is out, the provider may be queuing it, and nothing
-/// has come back. An inactivity ceiling cannot tell that from a hang either,
-/// so this window is deliberately the old [`SIDE_ERRAND_TIMEOUT`] unchanged.
-///
-/// That equality is the point, and it is what makes this change incapable of
-/// a regression: 120s used to have to cover the *whole answer* and now has
-/// only to cover the *first byte*, so every errand that succeeded before
-/// still succeeds, and the ones that died mid-answer no longer do.
-pub const SIDE_ERRAND_FIRST_EVENT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// The absolute ceiling on the request thread a streamed side errand owns.
-///
-/// [`SIDE_ERRAND_SILENCE`] is what the *model* experiences; this is what
-/// guarantees the *thread* ends, which is the whole reason a side errand was
-/// ever bounded: it runs inside a native v8 callback that
-/// `terminate_execution` cannot reach. The two ceilings have different jobs
-/// and neither replaces the other.
-///
-/// It can afford to be generous precisely because it is no longer what stops
-/// a cell. Once the silence window fires the caller returns, drops the
-/// receiving end, and the worker stops at its very next line — so this only
-/// governs a socket so dead that no further line ever arrives, where the
-/// cost is one parked thread holding one socket rather than a cell that
-/// cannot continue.
-pub const SIDE_ERRAND_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(900);
-
-/// A one-shot side errand over a stream, ended by silence rather than by
-/// duration (`SIDE_ERRAND_SILENCE`, `SIDE_ERRAND_FIRST_EVENT`).
-///
-/// A task request's body apart from its model, `max_tokens` and
-/// [`Surface::TextOnly`]: a helper reaches no tool.
-///
-/// The provider request runs on its own thread and reports liveness over a
-/// channel, because the reading side blocks in the socket and cannot be
-/// interrupted from outside — ureq offers a total body deadline, never a
-/// per-read one. The thread is bounded by [`SIDE_ERRAND_BACKSTOP`] and, when
-/// this function has already given up, by the dropped receiver that makes
-/// its next line the last.
-///
-/// What bounds a provider that streams forever is the request's own
-/// `max_tokens`, which [`configure_effort`] may enlarge but always leaves
-/// finite; [`SIDE_ERRAND_BACKSTOP`] is the floor under that.
-pub fn send_errand_streaming(
-    conversation: &Conversation,
-    model: &str,
-    effort: Effort,
-    max_tokens: u32,
-    extra_header: Option<(&str, &str)>,
-) -> Result<Turn, WireError> {
-    send_errand_within(
-        conversation,
-        model,
-        effort,
-        Allowance::Capped(max_tokens),
-        Surface::TextOnly,
-        extra_header,
-        SIDE_ERRAND_FIRST_EVENT,
-        SIDE_ERRAND_SILENCE,
-    )
-}
-
-/// One turn of a **narrowed agent loop**, streamed, and ended by silence
-/// rather than by duration.
-///
-/// The invariant it restores: **a helper is cut off for going silent, never
-/// for taking its time** — which [`send_errand_streaming`] already gave the
-/// one-shot errand and the loop did not have. A narrowed loop used to pass
-/// [`SIDE_ERRAND_TIMEOUT`] to [`send_turn_bounded_with`], where it became a
-/// `timeout_global` on a non-streamed request: a whole-answer ceiling, the
-/// quantity [`SIDE_ERRAND_SILENCE`] is written against. Measured 2026-09-19:
-/// `CHECKER` died at exactly that ceiling with the answer still arriving,
-/// and the quality miss it ran to catch shipped.
-///
-/// The two differences from a one-shot errand are the whole point of it
-/// being a separate entry rather than an argument: this request carries a
-/// real tool surface, and its allowance is [`Allowance::Model`] — a
-/// per-turn cap belongs to an errand that declared its answer short, and on
-/// a loop it would truncate a turn mid-`tool_use`, throwing away a call the
-/// provider had already finished.
-///
-/// [`SIDE_ERRAND_BACKSTOP`] still bounds the request thread, because the
-/// reason a narrowed loop was ever bounded is unchanged: it runs inside a
-/// native v8 callback that `terminate_execution` cannot reach.
-pub fn send_narrowed_turn_streaming(
-    conversation: &Conversation,
-    model: &str,
-    effort: Effort,
-    extra_header: Option<(&str, &str)>,
-    surface: Surface,
-) -> Result<Turn, WireError> {
-    send_errand_within(
-        conversation,
-        model,
-        effort,
-        Allowance::Model(max_tokens_for(model)),
-        surface,
-        extra_header,
-        SIDE_ERRAND_FIRST_EVENT,
-        SIDE_ERRAND_SILENCE,
-    )
-}
-
-/// The streamed request both entries above are, with its two windows
-/// supplied so a test can exercise the reset without spending the real
-/// ones. Private on purpose: the constants above are the only windows
-/// production has.
-#[allow(clippy::too_many_arguments)]
-fn send_errand_within(
-    conversation: &Conversation,
-    model: &str,
-    effort: Effort,
-    allowance: Allowance,
-    surface: Surface,
-    extra_header: Option<(&str, &str)>,
-    first_event: std::time::Duration,
-    silence: std::time::Duration,
-) -> Result<Turn, WireError> {
-    enum Tick {
-        Alive,
-        Done(Box<Result<Turn, WireError>>),
-    }
-
-    let url = format!("{}{MESSAGES_PATH}", base_url());
-    let mut body = RequestBody::new(
-        model,
-        allowance.declared(),
-        conversation,
-        surface.tool_definitions(),
-    );
-    body.stream = Some(true);
-    let body = configure_effort(
-        serde_json::to_vec(&body).expect("Conversation has no non-serialisable field"),
-        model,
-        effort,
-        allowance,
-    );
-
-    // Read on this thread, where the env lock a test may hold still applies.
-    let credential = credential_header();
-    let model = model.to_string();
-    let extra_header = extra_header.map(|(name, value)| (name.to_string(), value.to_string()));
-
-    let (sender, receiver) = std::sync::mpsc::channel::<Tick>();
-    let liveness = sender.clone();
-    std::thread::spawn(move || {
-        let mut request = ureq::post(&url)
-            .config()
-            .http_status_as_error(false)
-            .timeout_global(Some(SIDE_ERRAND_BACKSTOP))
-            .build()
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header(MODEL_HEADER, &model);
-        if let Some(key) = CACHE_KEY.get() {
-            request = request.header(SESSION_HEADER, key.as_str());
-        }
-        if let Some((name, value)) = &extra_header {
-            request = request.header(name.as_str(), value.as_str());
-        }
-        if let Some((name, value)) = &credential {
-            request = request.header(*name, value.as_str());
-        }
-        let outcome = (|| {
-            let mut response = request
-                .send(body.as_slice())
-                .map_err(|err| WireError::Http(Box::new(err)))?;
-            let status = response.status().as_u16();
-            if !response.status().is_success() {
-                let text = response
-                    .body_mut()
-                    .read_to_string()
-                    .map_err(|err| WireError::Http(Box::new(err)))?;
-                return Err(WireError::Status {
-                    status,
-                    body_head: body_head(&text),
-                });
-            }
-            read_sse_stream(
-                &mut response,
-                &mut || liveness.send(Tick::Alive).is_ok(),
-                &mut |_| {},
-            )
-        })();
-        let _ = sender.send(Tick::Done(Box::new(outcome)));
-    });
-
-    let mut window = first_event;
-    loop {
-        match receiver.recv_timeout(window) {
-            Ok(Tick::Alive) => window = silence,
-            Ok(Tick::Done(outcome)) => return *outcome,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                return Err(WireError::Stream(format!(
-                    "the provider sent nothing for {}s",
-                    window.as_secs()
-                )));
-            }
-            // The worker always sends `Done` before it ends, so a bare
-            // disconnect means it panicked rather than answered.
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(WireError::Stream(
-                    "the request thread ended without a reply".to_string(),
-                ));
-            }
-        }
-    }
-}
-
-/// Shared serialization for task requests and side errands.
+/// Shared serialization for task requests.
 fn build_request_body(
     model: &str,
     max_tokens: u32,
@@ -2121,7 +1767,7 @@ fn send_turn_streaming_while(
         serde_json::to_vec(&body).expect("Conversation has no non-serialisable field"),
         model,
         effort,
-        Allowance::Model(max_tokens),
+        max_tokens,
     );
     let body = match routing {
         Some(routing) if routing.wants_summary() => {
@@ -2171,8 +1817,7 @@ fn send_turn_streaming_while(
 }
 
 /// The SSE half of a streamed turn, shared by the task path
-/// ([`send_turn_streaming_on`]) and a side errand
-/// ([`send_errand_streaming`]).
+/// ([`send_turn_streaming_on`]).
 ///
 /// **`on_line` fires for every line the socket yields, `on_delta` only for
 /// the ones that carry text.** The two are not the same signal and a caller
@@ -2181,9 +1826,9 @@ fn send_turn_streaming_while(
 /// blocks that produce no delta at all. A reasoning model is therefore
 /// *noisy* on the wire while it is silent in the transcript, which is
 /// exactly what lets an inactivity ceiling tell working from hung.
-/// `on_line` returns whether to keep reading: a side errand whose caller has
-/// already stopped waiting says `false` and the socket is dropped at the next
-/// line, rather than dribbling into a channel nobody holds.
+/// `on_line` returns whether to keep reading: a caller that has already
+/// stopped waiting says `false` and the socket is dropped at the next line,
+/// rather than dribbling into a channel nobody holds.
 fn read_sse_stream(
     response: &mut ureq::http::Response<ureq::Body>,
     on_line: &mut dyn FnMut() -> bool,
@@ -2197,7 +1842,7 @@ fn read_sse_stream(
         let line = line.map_err(|err| WireError::Http(Box::new(err.into())))?;
         if !on_line() {
             return Err(WireError::Stream(
-                "the caller stopped waiting for this errand".to_string(),
+                "the caller stopped waiting for this request".to_string(),
             ));
         }
         // SSE: `event:` names the type, `data:` carries it, a blank line ends
@@ -2267,7 +1912,7 @@ mod tests {
 
     /// `ANTHROPIC_BASE_URL` is process-global, so the tests here that point
     /// it at a fixture serialise against each other exactly as `turns.rs`
-    /// and `tests/helpers.rs` serialise their own. Nothing else in this
+    /// serialises its own. Nothing else in this
     /// crate's unit tests writes it.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -2329,7 +1974,7 @@ mod tests {
         format!("http://{address}")
     }
 
-    fn errand_frames(text: &str) -> Vec<String> {
+    fn text_frames(text: &str) -> Vec<String> {
         vec![
             r#"{"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":9,"output_tokens":0}}}"#.to_string(),
             r#"{"type":"ping"}"#.to_string(),
@@ -2343,62 +1988,6 @@ mod tests {
         ]
     }
 
-    /// The contract: an errand whose provider keeps talking is never cut off,
-    /// however long the whole answer takes. Seven frames 120ms apart run the
-    /// call well past the 300ms silence window it is given, and every one of
-    /// them resets it.
-    #[test]
-    fn a_talking_provider_outlives_any_single_silence_window() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let url = streaming_provider(
-            errand_frames("reduced"),
-            std::time::Duration::from_millis(120),
-            false,
-        );
-        // SAFETY: `_guard` serialises every base-url mutation in this module.
-        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
-        let turn = send_errand_within(
-            &sample_conversation(),
-            "a-test-model",
-            Effort::Auto,
-            Allowance::Capped(128),
-            Surface::TextOnly,
-            None,
-            std::time::Duration::from_millis(600),
-            std::time::Duration::from_millis(300),
-        );
-        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
-        let turn = turn.expect("a provider that keeps talking must not be cut off");
-        assert_eq!(turn.message.content, vec![Block::Text("reduced".into())]);
-    }
-
-    /// The other half: silence still ends the call, and says so.
-    #[test]
-    fn a_provider_that_goes_quiet_is_ended_by_the_silence_window() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let mut frames = errand_frames("never finished");
-        frames.truncate(2);
-        let url = streaming_provider(frames, std::time::Duration::from_millis(10), true);
-        // SAFETY: `_guard` serialises every base-url mutation in this module.
-        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
-        let outcome = send_errand_within(
-            &sample_conversation(),
-            "a-test-model",
-            Effort::Auto,
-            Allowance::Capped(128),
-            Surface::TextOnly,
-            None,
-            std::time::Duration::from_millis(600),
-            std::time::Duration::from_millis(250),
-        );
-        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
-        let error = outcome.expect_err("a silent provider must not be waited on forever");
-        assert!(
-            error.to_string().contains("sent nothing for"),
-            "the refusal must name the silence: {error}"
-        );
-    }
-
     /// A caller that has stopped waiting takes the socket with it at the next
     /// line, rather than leaving the worker dribbling into a channel nobody
     /// holds until the backstop.
@@ -2406,7 +1995,7 @@ mod tests {
     fn a_reader_whose_caller_gave_up_stops_at_the_next_line() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let url = streaming_provider(
-            errand_frames("unwanted"),
+            text_frames("unwanted"),
             std::time::Duration::from_millis(1),
             false,
         );
@@ -2458,30 +2047,6 @@ mod tests {
         assert_eq!(value["system"][0]["text"], conversation.system);
         assert_eq!(value["messages"][0]["role"], "user");
         assert_eq!(value["messages"][1]["role"], "assistant");
-    }
-
-    #[test]
-    fn a_side_errand_names_the_model_it_is_given() {
-        let conversation = sample_conversation();
-        let body = build_request_body(
-            "cheap-model-for-the-test",
-            200,
-            &conversation,
-            Surface::TextOnly,
-        );
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["model"], "cheap-model-for-the-test");
-        assert_eq!(value["max_tokens"], 200);
-        assert_ne!(
-            value["model"], MODEL,
-            "a side errand must not fall back to the task's own model"
-        );
-        assert!(
-            value.get("tools").is_none(),
-            "side errands must stay text-only"
-        );
-        let task: serde_json::Value = serde_json::from_slice(&request_body(&conversation)).unwrap();
-        assert_eq!(task["tools"][0]["name"], "execute_cell");
     }
 
     /// The real event sequence a Messages stream sends, captured from the
@@ -2717,14 +2282,6 @@ mod tests {
         let conversation = sample_conversation();
         let body = String::from_utf8(request_body(&conversation)).unwrap();
         assert!(!body.contains("stream"), "{body}");
-        let errand = String::from_utf8(build_request_body(
-            "m",
-            200,
-            &conversation,
-            Surface::TextOnly,
-        ))
-        .unwrap();
-        assert!(!errand.contains("stream"), "{errand}");
     }
 
     #[test]
@@ -3132,65 +2689,8 @@ mod effort_tests {
         assert_eq!(translated["output_config"]["effort"], "medium");
     }
 
-    /// **A declared cap is a cap, at every level a person can pick.**
-    ///
-    /// `REDUCER` names 1,024 tokens to keep a reduction terse and the wire
-    /// carried 17,408 at `medium` -- the thinking ladder, sized for the task
-    /// model's 8,192-token response half, added on top of a cap that exists
-    /// to be small. Measured against 77 lines of test output on 2026-09-19:
-    /// `6886 in, 4227 out`. This is the invariant that makes that impossible.
-    #[test]
-    fn a_declared_cap_bounds_the_whole_response_at_every_effort() {
-        let conversation = Conversation {
-            system: "system".into(),
-            messages: vec![],
-        };
-        let levels = [
-            Effort::Low,
-            Effort::Medium,
-            Effort::High,
-            Effort::Xhigh,
-            Effort::Max,
-        ];
-        // REDUCER's and ACCEPTANCE's real caps, plus two either side.
-        for cap in [512u32, 1024, 2048, 8192] {
-            for effort in levels {
-                let value: serde_json::Value = serde_json::from_slice(&configure_effort(
-                    build_request_body("deepseek-v4-flash", cap, &conversation, Surface::TextOnly),
-                    "deepseek-v4-flash",
-                    effort,
-                    Allowance::Capped(cap),
-                ))
-                .unwrap();
-
-                assert_eq!(
-                    value["max_tokens"].as_u64().unwrap(),
-                    u64::from(cap),
-                    "cap {cap} at {} must bound the whole response",
-                    effort.name()
-                );
-                assert_eq!(value["output_config"]["effort"], effort.name());
-                assert_eq!(
-                    wire_max_tokens("deepseek-v4-flash", Allowance::Capped(cap), effort),
-                    cap,
-                    "the figure a caller can reason about must equal the wire's"
-                );
-                if let Some(budget) = value
-                    .get("thinking")
-                    .and_then(|thinking| thinking["budget_tokens"].as_u64())
-                {
-                    assert!(
-                        budget >= u64::from(THINKING_MIN_BUDGET) && budget < u64::from(cap),
-                        "a budget must be at least {THINKING_MIN_BUDGET} and below the cap, got {budget} inside {cap}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The task model keeps every token it had. Tuning a helper's allowance
-    /// must not quietly narrow the model that does the work, so the figures
-    /// are spelled out rather than derived -- a future reader changing the
+    /// The task model keeps every token it had. The figures are spelled out
+    /// rather than derived -- a future reader changing the
     /// ladder has to change this test on purpose.
     #[test]
     fn the_task_paths_allowance_is_unchanged_at_every_effort() {

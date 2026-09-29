@@ -7,7 +7,6 @@ pub mod declarations;
 use crate::abi::{self, types};
 use crate::contract::{Block, Conversation};
 use crate::runtime::bindings::HostGlobals;
-use crate::runtime::outcome::PlanItem;
 use crate::tools::registry::{Arg, Tool};
 
 /// `model-contract.md` §2, verbatim. Compared byte for byte by
@@ -41,7 +40,7 @@ pub const PREAMBLE: &str = concat!(
     "  // the next cell: the edits those results earned, and the check for them\n",
     "  await edit({path: \"src/config.rs\", old: OLD, replacement: REPLACEMENT});\n",
     "  const run = await bash({command: \"cargo test -p sterna --lib config\"});\n",
-    "  const failures = await helper.reduce(run.stdout);\n",
+    "  const failures = run.stdout.split(\"\\n\").filter(line => line.includes(\"FAILED\"));\n",
     "  return {passed: run.exit_code === 0, failures};\n",
     "\n",
     "  // judge what the cell already holds, and branch on it, in the same turn\n",
@@ -52,10 +51,9 @@ pub const PREAMBLE: &str = concat!(
     "    diff.stdout);\n",
     "  if (call.choice === \"wider\" && call.confidence > 0.85) { /* inspect */ }\n",
     "\n",
-    "`helper.<name>` and `decide.choice` answer from inside the cell and cost no\n",
-    "turn, so a summary or a judgement belongs in the step that needs it rather\n",
-    "than in a turn of its own; the Runtime block below declares the ones this\n",
-    "session has.\n",
+    "`decide.choice` answers from inside the cell and costs no turn, so a\n",
+    "judgement belongs in the step that needs it rather than in a turn of its\n",
+    "own; the Runtime block below declares it when this session has it.\n",
     "\n",
     "Changing existing source has a rhythm worth knowing before you start: `edit`\n",
     "writes against lines a previous completed cell showed you — a `context`, or the\n",
@@ -229,7 +227,7 @@ const VARIANTS: &[Variant] = &[
             "  // the next cell: the edits those results earned, and the check for them\n",
             "  await edit({path: \"src/config.rs\", old: OLD, replacement: REPLACEMENT});\n",
             "  const run = await bash({command: \"cargo test -p sterna --lib config\"});\n",
-            "  const failures = await helper.reduce(run.stdout);\n",
+            "  const failures = run.stdout.split(\"\\n\").filter(line => line.includes(\"FAILED\"));\n",
             "  return {passed: run.exit_code === 0, failures};\n",
             "\n",
             "  // judge what the cell already holds, and branch on it, in the same turn\n",
@@ -246,19 +244,18 @@ const VARIANTS: &[Variant] = &[
     },
     Variant {
         cells: concat!(
-            "`helper.<name>` and `decide.choice` answer from inside the cell and cost no\n",
-            "turn, so a summary or a judgement belongs in the step that needs it rather\n",
-            "than in a turn of its own; the Runtime block below declares the ones this\n",
-            "session has.\n",
+            "`decide.choice` answers from inside the cell and costs no turn, so a\n",
+            "judgement belongs in the step that needs it rather than in a turn of its\n",
+            "own; the Runtime block below declares it when this session has it.\n",
             "\n",
         ),
         hybrid: Some(concat!(
-            "`helper.<name>` and `decide.choice` answer from inside the cell and cost no\n",
-            "turn, so a summary or a judgement belongs in the step that needs it rather\n",
-            "than in a turn of its own; the Runtime block below declares the ones this\n",
-            "session has. A direct call spends a whole turn on one operation, which suits\n",
-            "an independent step whose result needs nothing further this turn; dependent,\n",
-            "branching or repeated work is what a cell is for.\n",
+            "`decide.choice` answers from inside the cell and costs no turn, so a\n",
+            "judgement belongs in the step that needs it rather than in a turn of its\n",
+            "own; the Runtime block below declares it when this session has it. A direct\n",
+            "call spends a whole turn on one operation, which suits an independent step\n",
+            "whose result needs nothing further this turn; dependent, branching or\n",
+            "repeated work is what a cell is for.\n",
             "\n",
         )),
         tools: Some(""),
@@ -614,8 +611,8 @@ pub fn render_system(instructions: &str, tools: &[&Tool], facts: &SessionFacts) 
 /// [`render_system`] for a context whose host globals are narrowed.
 ///
 /// The invariant: **the Runtime block declares what the context actually
-/// binds.** A helper told about `bg` it does not hold gets a `TypeError` on a
-/// name the system block promised, where the point of the narrowing is that
+/// binds.** A context told about `bg` it does not hold gets a `TypeError` on
+/// a name the system block promised, where the point of the narrowing is that
 /// the capability is absent and the refusal is clean.
 pub fn render_system_for(
     instructions: &str,
@@ -640,14 +637,6 @@ pub struct Reach<'a> {
     /// `None` renders the table's generic `agent` text: no roster is claimed
     /// where the session has not resolved one.
     pub agents: Option<&'a declarations::AgentRoster>,
-    /// Whether `[helpers]` can actually run a helper — `Some(false)` is a
-    /// session with no `[helpers] model`, whose `helper.*` calls are all
-    /// refused and whose declaration says so where it is read.
-    ///
-    /// `None` is a caller that does not know, and renders the table form
-    /// unchanged; it is the default so that no existing caller silently
-    /// starts claiming helpers are missing.
-    pub helpers: Option<bool>,
     /// Whether `[decisions]` names a model, which is the one predicate
     /// `decide` is bound on.
     ///
@@ -665,7 +654,6 @@ impl<'a> Reach<'a> {
         Self {
             web,
             agents: None,
-            helpers: None,
             decisions: false,
         }
     }
@@ -796,10 +784,6 @@ pub fn render_runtime_reaching(globals: HostGlobals, reach: Reach<'_>) -> String
                 || binding.declaration.to_string(),
                 declarations::agent_declaration,
             ),
-            "helper" => reach.helpers.map_or_else(
-                || binding.declaration.to_string(),
-                declarations::helper_declaration,
-            ),
             _ => binding.declaration.to_string(),
         })
         .collect::<Vec<_>>()
@@ -861,10 +845,6 @@ pub struct CellResult {
     pub handle_table: String,
     pub stdout_tail: Option<String>,
     pub budget: Budget,
-    /// The model's own plan as the cell left it. Rendered as `## Plan` so a
-    /// task longer than one cell is re-shown its checklist every turn, which
-    /// is the whole reason a model keeps one.
-    pub plan: Vec<PlanItem>,
     /// The person's answer to the question this cell asked, rendered by
     /// [`crate::ask::Answer::rendered`]. `None` for every cell that asked
     /// nothing, which is almost all of them.
@@ -1025,21 +1005,11 @@ fn render_result_with_state(result: &CellResult, include_state: bool) -> String 
         }
     }
 
-    // Before the plan and the output: the answer is why this turn exists, and
+    // Before the output: the answer is why this turn exists, and
     // a model reading top to bottom should meet it before the bookkeeping.
     if let Some(answer) = &result.ask_answer {
         out.push_str("\n\n## Answer\n");
         out.push_str(answer);
-    }
-
-    if include_state && !result.plan.is_empty() {
-        out.push_str("\n\n## Plan\n");
-        let rows: Vec<String> = result
-            .plan
-            .iter()
-            .map(|item| format!("{} {}", item.status.mark(), item.text))
-            .collect();
-        out.push_str(&rows.join("\n"));
     }
 
     if let Some(output) = &result.output {
@@ -1153,11 +1123,11 @@ impl Compaction {
 ///
 /// The invariant: **a section listed here is rendered complete every turn, so
 /// an older copy tells the model nothing the latest message does not.**
-/// `## Handles` is the whole live table, `## Plan` the whole plan, `## Usage`
-/// the current figures — each is a snapshot of now, not a record of then.
+/// `## Handles` is the whole live table, `## Usage` and `## Budget` the
+/// current figures — each is a snapshot of now, not a record of then.
 /// `## Error` and `## stdout` are the opposite: they belong to the cell that
 /// produced them and appear nowhere else, so they are never dropped.
-const SUPERSEDED_SECTIONS: [&str; 4] = ["## Handles", "## Plan", "## Usage", "## Budget"];
+const SUPERSEDED_SECTIONS: [&str; 3] = ["## Handles", "## Usage", "## Budget"];
 
 /// Removes the superseded sections from one rendered cell result.
 ///
@@ -1270,14 +1240,9 @@ pub fn drop_reasoning(conversation: &mut Conversation) {
 /// checkpoint therefore names the handles rather than describing them — the
 /// table that follows it is authoritative and complete.
 ///
-/// Its four parts are what the task was, where it got to, what it ruled out,
-/// and what to do next.
-pub fn checkpoint(
-    task: &str,
-    plan: &[PlanItem],
-    live_handles: &[String],
-    last_error: Option<&str>,
-) -> String {
+/// Its three parts are what the task was, what went wrong last, and what it
+/// still holds.
+pub fn checkpoint(task: &str, live_handles: &[String], last_error: Option<&str>) -> String {
     let mut out = String::new();
     out.push_str(
         "The conversation before this point was dropped because it no longer fit. **Your \
@@ -1286,20 +1251,6 @@ pub fn checkpoint(
     );
     out.push_str("## The task\n");
     out.push_str(task.trim());
-
-    if plan.is_empty() {
-        out.push_str(
-            "\n\n## Where you got to\nNo plan was written before the drop. Write one with \
-             `todo.write` before going further, so the next drop has something to carry.",
-        );
-    } else {
-        out.push_str("\n\n## Where you got to\n");
-        let rows: Vec<String> = plan
-            .iter()
-            .map(|item| format!("{} {}", item.status.mark(), item.text))
-            .collect();
-        out.push_str(&rows.join("\n"));
-    }
 
     if let Some(error) = last_error {
         out.push_str("\n\n## What went wrong last\n");

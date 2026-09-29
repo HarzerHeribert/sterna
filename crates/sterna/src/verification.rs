@@ -17,6 +17,9 @@ use crate::sandbox::profile::{Access, Profile};
 use crate::tools::invoke::{self, Args, CancellationToken, ToolContext};
 
 const CONFIG_BYTES: u64 = 64 * 1024;
+
+/// What a session says when `checks.toml` still names `checker` checks.
+pub const CHECKER_GONE: &str = "checks.toml: `checker` is no longer used: the checker behind the answer is gone, and the named checks still run through `checks.run`. Remove the `checker` line.";
 const FILE_BYTES: u64 = 1024 * 1024;
 const SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const NODES: usize = 4096;
@@ -25,6 +28,9 @@ const OUTPUT_CHARS: usize = 8000;
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CheckConfig {
+    /// Retired with the checker behind the answer: still read, so a
+    /// `checks.toml` that names it keeps loading, and otherwise ignored. A
+    /// session that finds it says [`CHECKER_GONE`].
     #[serde(default)]
     pub checker: Vec<String>,
     #[serde(default)]

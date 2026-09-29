@@ -32,8 +32,7 @@ pub const DEFAULT_MODEL: &str = "jev-latest";
 const MODEL_HEADER: &str = "x-glasshouse-model";
 
 /// The purpose header, so the gateway and the ledger can tell a decision
-/// request from a task turn or a helper call (`helpers.rs::PURPOSE_HEADER`
-/// is the same shape for `"helper"`).
+/// request from a task turn.
 const PURPOSE_HEADER: (&str, &str) = ("x-glasshouse-purpose", "decision");
 
 /// The decision request's own bound: past it an answer is lost, not late.
@@ -271,12 +270,6 @@ pub const READ_ONLY: &str = "read_only";
 
 const INTENT_KEY: &str = "intent";
 
-/// The choice `preflight::should_scout`'s decided signal fires on -- the
-/// criterion's own key below, mirroring [`READ_ONLY`]'s shape for the other
-/// question this package asks in the same request.
-pub const NEEDS_EXPLORATION: &str = "needs_exploration";
-
-const COMPLEXITY_KEY: &str = "complexity";
 /// The kind question's key (2026-09-23).
 const KIND_KEY: &str = "kind";
 
@@ -308,30 +301,6 @@ fn intent_question() -> Question {
     }
 }
 
-/// The complexity question (F2, map 2614/2615's paragraph): asked in the
-/// same request as [`intent_question`], never a second round trip
-/// (`docs/decisions.md`).
-fn complexity_question() -> Question {
-    let mut criteria = BTreeMap::new();
-    criteria.insert(
-        "trivial".to_string(),
-        "one obvious edit or answer, no exploration needed".to_string(),
-    );
-    criteria.insert(
-        "routine".to_string(),
-        "a known shape of change in a known place".to_string(),
-    );
-    criteria.insert(
-        NEEDS_EXPLORATION.to_string(),
-        "the request needs the project read or searched before any change is safe".to_string(),
-    );
-    Question::Choice {
-        instructions: "How much exploration does this request need before it is safe to act?"
-            .to_string(),
-        criteria,
-    }
-}
-
 /// What the decision model answered about one request's intent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Intent {
@@ -340,28 +309,17 @@ pub struct Intent {
     pub latency_ms: u64,
 }
 
-/// What the decision model answered about how much exploration one request
-/// needs -- asked beside [`Intent`] in the same request, never on its own
-/// (`preflight::should_scout`'s fifth signal, F2).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Complexity {
-    pub choice: String,
-    pub confidence: f64,
-}
-
 /// What the decision model answered about what kind of work one request is
-/// (2026-09-23): asked beside [`Intent`] and [`Complexity`] in the same
-/// request. `explore` and `question` lower the task's effort when the
-/// person chose none; `explore` briefs the Scout to dissect the request
-/// (`preflight::Brief::Dissection`).
+/// (2026-09-23): asked beside [`Intent`] in the same request. `explore` and
+/// `question` lower the task's effort when the person chose none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Kind {
     pub choice: String,
     pub confidence: f64,
 }
 
-/// The confidence at or above which a [`Kind`] answer acts: lowers the
-/// effort, briefs the Scout to dissect.
+/// The confidence at or above which a [`Kind`] answer acts: it lowers the
+/// effort.
 pub const KIND_ABOVE: f64 = 0.7;
 
 /// Understand, survey or explain a project or an area of it.
@@ -375,13 +333,12 @@ pub const KIND_QUESTION: &str = "question";
 /// Run, build, test or execute something and report.
 pub const KIND_RUN: &str = "run";
 
-/// All three answers to the one request asked before a task's first turn.
-/// `kind` is `None` when the decision model answered the older two questions
-/// and not the third.
+/// Both answers to the one request asked before a task's first turn.
+/// `kind` is `None` when the decision model answered the intent question
+/// and not the kind.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDecision {
     pub intent: Intent,
-    pub complexity: Complexity,
     pub kind: Option<Kind>,
 }
 
@@ -397,9 +354,8 @@ impl TaskDecision {
 }
 
 /// The kind question (2026-09-23), asked in the same request as
-/// [`intent_question`] and [`complexity_question`]: what kind of work is
-/// this, which is what decides how much thinking the first turn needs and
-/// what the Scout is briefed to do.
+/// [`intent_question`]: what kind of work is this, which is what decides
+/// how much thinking the first turn needs.
 fn kind_question() -> Question {
     let mut criteria = BTreeMap::new();
     criteria.insert(
@@ -430,7 +386,7 @@ fn kind_question() -> Question {
     }
 }
 
-/// Asks the intent and complexity questions about `request` in one request
+/// Asks the intent and kind questions about `request` in one request
 /// and answers with what came back, or the reason it did not. Never
 /// surfaced as a task failure -- the caller records the error in a notice
 /// and proceeds exactly as if no decision model were configured.
@@ -501,7 +457,6 @@ pub fn task_questions_in(
     };
     let questions = [
         (INTENT_KEY.to_string(), intent_question()),
-        (COMPLEXITY_KEY.to_string(), complexity_question()),
         (KIND_KEY.to_string(), kind_question()),
     ];
     let answers = decide(model, state, &questions)?;
@@ -512,7 +467,6 @@ pub fn task_questions_in(
 /// exercise it against a scripted [`Answers`] with no network involved.
 fn task_decision_of(answers: Answers) -> Result<TaskDecision, DecideError> {
     let mut intent = None;
-    let mut complexity = None;
     let mut kind = None;
     for decision in answers.decisions {
         let Answer::Choice {
@@ -532,9 +486,6 @@ fn task_decision_of(answers: Answers) -> Result<TaskDecision, DecideError> {
                     latency_ms: decision.latency_ms,
                 });
             }
-            key if key == COMPLEXITY_KEY => {
-                complexity = Some(Complexity { choice, confidence });
-            }
             key if key == KIND_KEY => {
                 kind = Some(Kind { choice, confidence });
             }
@@ -547,13 +498,7 @@ fn task_decision_of(answers: Answers) -> Result<TaskDecision, DecideError> {
     }
     let intent =
         intent.ok_or_else(|| DecideError::Parse(format!("no answer for `{INTENT_KEY}`")))?;
-    let complexity = complexity
-        .ok_or_else(|| DecideError::Parse(format!("no answer for `{COMPLEXITY_KEY}`")))?;
-    Ok(TaskDecision {
-        intent,
-        complexity,
-        kind,
-    })
+    Ok(TaskDecision { intent, kind })
 }
 
 /// The completion question's key, mirroring [`INTENT_KEY`]'s shape for the
@@ -648,31 +593,6 @@ fn hygiene_questions() -> [(&'static str, Question); 5] {
     ]
 }
 
-fn judge_key(index: usize) -> String {
-    format!("judge_{index}")
-}
-
-/// One judge item's question (2642): the item's own text and whatever
-/// evidence the acceptance list already gathered for it -- embedded in the
-/// instructions, since [`decide`]'s `state` is shared across every question
-/// in the request.
-fn judge_question(item: &str, evidence: &str) -> Question {
-    let instructions = if evidence.is_empty() {
-        format!(
-            "Does this acceptance item hold, given the diff or answer above? Answer near \
-             1.0 when it clearly holds; answer near 0.0 when it clearly does not. \
-             Item: {item}"
-        )
-    } else {
-        format!(
-            "Does this acceptance item hold, given the diff or answer above? Answer near \
-             1.0 when it clearly holds; answer near 0.0 when it clearly does not. \
-             Item: {item}\nEvidence already gathered: {evidence}"
-        )
-    };
-    Question::Noul { instructions }
-}
-
 /// The five diff-hygiene questions' answers (2641), `None` for
 /// [`CompletionState::Answer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -684,10 +604,9 @@ pub struct HygieneAnswer {
     pub changes_signature: f64,
 }
 
-/// What the completion question answered (2616, extended 2641/2642): a
-/// probability that the diff or answer satisfies the request, the five
-/// diff-hygiene answers when a diff was asked about, and one noul per
-/// acceptance judge item asked in the same request. `session/task.rs::gate`
+/// What the completion question answered (2616, extended 2641): a
+/// probability that the diff or answer satisfies the request, and the five
+/// diff-hygiene answers when a diff was asked about. `session/task.rs::gate`
 /// decides what to do with the numbers -- this module only asks and parses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionAnswer {
@@ -695,9 +614,6 @@ pub struct CompletionAnswer {
     pub latency_ms: u64,
     pub truncated: bool,
     pub hygiene: Option<HygieneAnswer>,
-    /// One noul per judge item, in the same order they were given to
-    /// [`completion_satisfied`].
-    pub judge: Vec<f64>,
 }
 
 /// Cuts `diff` to at most [`DIFF_STATE_BYTES`], at the last hunk header
@@ -731,8 +647,8 @@ fn extract_noul(answers: &mut BTreeMap<String, Answer>, key: &str) -> Result<f64
 /// Asks whether `state` satisfies `request` -- the diff, or the model's own
 /// answer when there is no diff to show or the task's intent was read-only
 /// -- together with the diff-hygiene questions (2641, only for
-/// [`CompletionState::Diff`]) and one question per `judge_items` (2642),
-/// all in the one request 2616 already bounds to [`DECISION_TIMEOUT`].
+/// [`CompletionState::Diff`]), in the one request 2616 already bounds to
+/// [`DECISION_TIMEOUT`].
 /// Never surfaced as a task failure -- the caller (`session/task.rs::gate`)
 /// records the error and proceeds exactly as it would with no decision
 /// model.
@@ -740,7 +656,6 @@ pub fn completion_satisfied(
     model: &str,
     request: &str,
     state: CompletionState<'_>,
-    judge_items: &[(String, String)],
 ) -> Result<CompletionAnswer, DecideError> {
     let (shared_state, truncated, ask_hygiene) = match &state {
         CompletionState::Diff { diff, findings } => {
@@ -771,9 +686,6 @@ pub fn completion_satisfied(
                 .map(|(key, question)| (key.to_string(), question)),
         );
     }
-    for (index, (item, evidence)) in judge_items.iter().enumerate() {
-        questions.push((judge_key(index), judge_question(item, evidence)));
-    }
 
     let answers = decide(model, shared_state, &questions)?;
     let latency_ms = answers
@@ -798,17 +710,11 @@ pub fn completion_satisfied(
     } else {
         None
     };
-    let mut judge = Vec::with_capacity(judge_items.len());
-    for index in 0..judge_items.len() {
-        judge.push(extract_noul(&mut by_key, &judge_key(index))?);
-    }
-
     Ok(CompletionAnswer {
         noul,
         latency_ms,
         truncated,
         hygiene,
-        judge,
     })
 }
 
@@ -925,121 +831,6 @@ fn held_block(confidence: f64, name: &str, line: Option<u32>) -> String {
          The request reads as read-only (intent read_only, confidence {confidence:.2}). {what}\n\
          If the request needs it, run the cell again unchanged and it will run. Otherwise answer \
          without changing anything.\n"
-    )
-}
-
-/// The drift question's key (2643), mirroring [`SATISFIED_KEY`]'s shape for
-/// the other single-question request this package asks mid-task.
-const DRIFT_KEY: &str = "drift";
-
-/// The most of a cell's source the drift question's `state.cell` carries
-/// (2643). Cut at the last newline at or before the bound (never
-/// [`bound_diff`]'s hunk boundary -- a cell is plain source, not a diff), so
-/// a kept prefix never splits a line mid-way.
-pub const DRIFT_CELL_BYTES: usize = 8 * 1024;
-
-fn bound_cell(cell: &str) -> String {
-    if cell.len() <= DRIFT_CELL_BYTES {
-        return cell.to_string();
-    }
-    let mut cut = DRIFT_CELL_BYTES;
-    while cut > 0 && !cell.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let head = &cell[..cut];
-    match head.rfind('\n') {
-        Some(newline) => cell[..=newline].to_string(),
-        None => head.to_string(),
-    }
-}
-
-fn drift_question() -> Question {
-    Question::Noul {
-        instructions: "The cell does what the plan's current step says and nothing else. \
-                        Answer near 1.0 when it does; answer near 0.0 when it clearly does not."
-            .to_string(),
-    }
-}
-
-/// Asks whether `cell` does what `step` (the plan's current `Active` item)
-/// says, given `request` -- one question, synchronous, bounded to
-/// [`DECISION_TIMEOUT`] exactly as every other call into [`decide`]. Never
-/// surfaced as a task failure -- the caller (`session/system.rs::
-/// apply_decision_hold`) counts the error and runs the cell exactly as it
-/// would with no decision model.
-pub fn drift_satisfied(
-    model: &str,
-    request: &str,
-    step: &str,
-    cell: &str,
-) -> Result<f64, DecideError> {
-    let state = serde_json::json!({
-        "request": request,
-        "step": step,
-        "cell": bound_cell(cell),
-    });
-    let questions = [(DRIFT_KEY.to_string(), drift_question())];
-    let answers = decide(model, state, &questions)?;
-    let decision = answers
-        .decisions
-        .into_iter()
-        .next()
-        .ok_or_else(|| DecideError::Parse(format!("no answer for `{DRIFT_KEY}`")))?;
-    match decision.answer {
-        Answer::Noul(value) => Ok(value),
-        Answer::Choice { .. } => Err(DecideError::Parse(format!(
-            "the `{DRIFT_KEY}` question was answered as a choice, not a noul"
-        ))),
-    }
-}
-
-/// What one effectful cell or frame does about the plan's current step,
-/// given the task's drift state (2643).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Drift {
-    /// Nothing about this cell is held.
-    Run,
-    /// `mode = shadow`: the caller runs the cell as it would have anyway and
-    /// counts a would-be hold; the noul that would have held it.
-    Shadow(f64),
-    /// `mode = on`, held for the first time this task: the caller does not
-    /// run the cell and answers with this block instead.
-    Held(String),
-}
-
-/// Decides what happens to one effectful cell or frame, mirroring
-/// [`hold_for`]'s once rule: `already_held` (`Held` already returned once
-/// this task) always runs the cell, exactly as `Hold::Overridden` does for
-/// the intent hold, even if `answer` is a fresh confident no -- the once
-/// rule wins over the answer, not the other way round. `answer` is `None`
-/// when the request failed, which also leaves the cell running. `step` is
-/// the active plan item's own text, carried through only to build the held
-/// block.
-pub fn drift_for(
-    mode: DecisionMode,
-    answer: Option<f64>,
-    drift_no_below: f64,
-    step: &str,
-    already_held: bool,
-) -> Drift {
-    if mode == DecisionMode::Off || already_held {
-        return Drift::Run;
-    }
-    let Some(noul) = answer else {
-        return Drift::Run;
-    };
-    match mode {
-        DecisionMode::Off => Drift::Run,
-        DecisionMode::Shadow => Drift::Shadow(noul),
-        DecisionMode::On if noul <= drift_no_below => Drift::Held(drift_block(noul, step)),
-        DecisionMode::On => Drift::Run,
-    }
-}
-
-fn drift_block(confidence: f64, step: &str) -> String {
-    format!(
-        "decision: this cell may not do what the plan's current step says ({confidence:.2}) — \
-         step: {step}. Held once; run it again if it does, or update the plan first.\n"
     )
 }
 
@@ -1194,7 +985,7 @@ pub fn field_shape(model: &str, name: &str, text: &str) -> Result<FieldShape, De
     } else {
         Vec::new()
     };
-    let shapes = crate::runtime::reduce_sample::shapes_of(text);
+    let shapes = crate::runtime::line_shapes::shapes_of(text);
     let histogram: Vec<Value> = shapes
         .shapes
         .iter()
@@ -1228,96 +1019,6 @@ pub fn field_shape(model: &str, name: &str, text: &str) -> Result<FieldShape, De
         }),
         Answer::Noul(_) => Err(DecideError::Parse(format!(
             "the `{FIELD_SHAPE_KEY}` question was answered as a noul, not a choice"
-        ))),
-    }
-}
-
-// --- enough to go on? --------------------------------------------------------
-
-const ENOUGH_KEY: &str = "enough";
-/// The most fields, and the most head lines per field, the question's state
-/// carries.
-const ENOUGH_FIELDS: usize = 8;
-const ENOUGH_HEAD_LINES: usize = 4;
-
-/// The question: does this return give the agent enough to take its next
-/// step, or will it first have to read the files the return names?
-#[must_use]
-pub fn enough_question() -> Question {
-    Question::Noul {
-        instructions: "A coding agent's program returned this to read next, while working on \
-             the request and the plan step shown. The return names the files listed as \
-             candidates. Does what it returned give the agent enough to take its next step \
-             without first reading those files? Answer near 1.0 when it has enough; answer \
-             near 0.0 when its next step will be to read what the return names."
-            .to_string(),
-    }
-}
-
-/// One returned field, as the enough question sees it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FieldGlance {
-    pub name: String,
-    pub tokens: usize,
-    pub head: String,
-}
-
-/// What the decision model answered about a return: its probability that
-/// the agent has enough, and the request's latency.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Enough {
-    pub noul: f64,
-    pub latency_ms: u64,
-}
-
-/// Asks whether a cell's return is enough to go on -- once per return that
-/// names files the agent has not read, after the cell, before the value is
-/// rendered (`session/returned.rs`).
-///
-/// One `Noul` question, synchronous, bounded by [`DECISION_TIMEOUT`] like
-/// every other call here. The state is the request, the active plan step,
-/// a glance at each field (name, size, first lines) and the candidate paths
-/// the return names; the model reads none of the files.
-pub fn enough(
-    model: &str,
-    request: &str,
-    step: Option<&str>,
-    fields: &[FieldGlance],
-    candidates: &[String],
-) -> Result<Enough, DecideError> {
-    let glance: Vec<Value> = fields
-        .iter()
-        .take(ENOUGH_FIELDS)
-        .map(|field| {
-            let head: Vec<String> = field
-                .head
-                .lines()
-                .take(ENOUGH_HEAD_LINES)
-                .map(|line| self::head(line, FIELD_LINE_BYTES))
-                .collect();
-            serde_json::json!({ "field": field.name, "tokens": field.tokens, "head": head })
-        })
-        .collect();
-    let state = serde_json::json!({
-        "request": head(request, COMMAND_LINE_BYTES),
-        "step": step,
-        "return": glance,
-        "candidates": candidates,
-    });
-    let questions = [(ENOUGH_KEY.to_string(), enough_question())];
-    let answers = decide(model, state, &questions)?;
-    let decision = answers
-        .decisions
-        .into_iter()
-        .next()
-        .ok_or_else(|| DecideError::Parse(format!("no answer for `{ENOUGH_KEY}`")))?;
-    match decision.answer {
-        Answer::Noul(noul) => Ok(Enough {
-            noul,
-            latency_ms: decision.latency_ms,
-        }),
-        Answer::Choice { .. } => Err(DecideError::Parse(format!(
-            "the `{ENOUGH_KEY}` question was answered as a choice, not a noul"
         ))),
     }
 }
@@ -1708,10 +1409,10 @@ mod tests {
     }
 
     #[test]
-    fn the_task_questions_request_carries_intent_and_complexity_in_one_map() {
+    fn the_task_questions_request_carries_intent_and_kind_in_one_map() {
         let questions: BTreeMap<String, Question> = [
             (INTENT_KEY.to_string(), intent_question()),
-            (COMPLEXITY_KEY.to_string(), complexity_question()),
+            (KIND_KEY.to_string(), kind_question()),
         ]
         .into_iter()
         .collect();
@@ -1727,9 +1428,9 @@ mod tests {
             "one request, both questions: {value}"
         );
         assert_eq!(value["questions"]["intent"]["type"], "choice");
-        assert_eq!(value["questions"]["complexity"]["type"], "choice");
+        assert_eq!(value["questions"]["kind"]["type"], "choice");
         assert!(
-            value["questions"]["complexity"]["criteria"][NEEDS_EXPLORATION]
+            value["questions"]["kind"]["criteria"][KIND_EXPLORE]
                 .as_str()
                 .is_some()
         );
@@ -1750,9 +1451,9 @@ mod tests {
                     latency_ms: 640,
                 },
                 Decision {
-                    key: COMPLEXITY_KEY.to_string(),
+                    key: KIND_KEY.to_string(),
                     answer: Answer::Choice {
-                        choice: "routine".to_string(),
+                        choice: KIND_FIX.to_string(),
                         probabilities: BTreeMap::new(),
                         confidence: 0.81,
                     },
@@ -1763,18 +1464,19 @@ mod tests {
         let decision = task_decision_of(answers).unwrap();
         assert_eq!(decision.intent.choice, "read_only");
         assert_eq!(decision.intent.confidence, 0.94);
-        assert_eq!(decision.complexity.choice, "routine");
-        assert_eq!(decision.complexity.confidence, 0.81);
+        let kind = decision.kind.expect("the kind was answered");
+        assert_eq!(kind.choice, KIND_FIX);
+        assert_eq!(kind.confidence, 0.81);
     }
 
     #[test]
-    fn task_decision_of_missing_complexity_is_a_parse_error() {
+    fn task_decision_of_missing_intent_is_a_parse_error() {
         let answers = Answers {
             model: "jev-latest".to_string(),
             decisions: vec![Decision {
-                key: INTENT_KEY.to_string(),
+                key: KIND_KEY.to_string(),
                 answer: Answer::Choice {
-                    choice: "read_only".to_string(),
+                    choice: KIND_FIX.to_string(),
                     probabilities: BTreeMap::new(),
                     confidence: 0.94,
                 },
@@ -1782,7 +1484,7 @@ mod tests {
             }],
         };
         let error = task_decision_of(answers).unwrap_err();
-        assert!(error.to_string().contains("complexity"), "{error}");
+        assert!(error.to_string().contains("intent"), "{error}");
     }
 
     #[test]
@@ -1873,72 +1575,6 @@ mod tests {
     }
 
     #[test]
-    fn drift_for_applies_the_threshold_and_the_once_rule() {
-        assert!(matches!(
-            drift_for(
-                DecisionMode::On,
-                Some(0.06),
-                0.10,
-                "write the README",
-                false
-            ),
-            Drift::Held(_)
-        ));
-        assert_eq!(
-            drift_for(DecisionMode::On, Some(0.06), 0.10, "write the README", true),
-            Drift::Run,
-            "the once rule wins even if a caller mistakenly asks again"
-        );
-        assert_eq!(
-            drift_for(
-                DecisionMode::On,
-                Some(0.50),
-                0.10,
-                "write the README",
-                false
-            ),
-            Drift::Run,
-            "an in-between answer is not confident enough to hold"
-        );
-        assert_eq!(
-            drift_for(
-                DecisionMode::Shadow,
-                Some(0.06),
-                0.10,
-                "write the README",
-                false
-            ),
-            Drift::Shadow(0.06)
-        );
-        assert_eq!(
-            drift_for(DecisionMode::On, None, 0.10, "write the README", false),
-            Drift::Run,
-            "no answer (skipped or failed) leaves the cell running"
-        );
-        assert_eq!(
-            drift_for(
-                DecisionMode::Off,
-                Some(0.06),
-                0.10,
-                "write the README",
-                false
-            ),
-            Drift::Run
-        );
-    }
-
-    #[test]
-    fn drift_block_names_the_step_and_the_confidence() {
-        let block = drift_block(0.06, "write the README");
-        assert!(block.contains("write the README"), "{block}");
-        assert!(block.contains("0.06"), "{block}");
-        assert!(
-            block.contains("this cell may not do what the plan's current step says"),
-            "{block}"
-        );
-    }
-
-    #[test]
     fn the_satisfied_body_serializes_to_the_documented_shape() {
         let (bounded, truncated) = bound_diff("+one line\n");
         assert!(!truncated);
@@ -1992,25 +1628,6 @@ mod tests {
                 "changes_signature",
             ]
         );
-    }
-
-    #[test]
-    fn a_judge_question_embeds_the_item_and_its_evidence() {
-        let Question::Noul { instructions } =
-            judge_question("the tone is friendly", "no evidence gathered")
-        else {
-            panic!("expected a noul question");
-        };
-        assert!(
-            instructions.contains("the tone is friendly"),
-            "{instructions}"
-        );
-        assert!(
-            instructions.contains("no evidence gathered"),
-            "{instructions}"
-        );
-        assert_eq!(judge_key(0), "judge_0");
-        assert_eq!(judge_key(3), "judge_3");
     }
 
     fn command_answer(choice: &str, confidence: f64) -> CommandJudgement {

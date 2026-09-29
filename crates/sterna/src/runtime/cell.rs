@@ -68,9 +68,8 @@ const IMPLICIT_FUNCTION_BINDINGS: [&str; 1] = ["arguments"];
 /// `console` is deliberately absent: it is not a capability, shadowing it
 /// costs the model only its own logging, and a program that assigns to it is
 /// doing something it can undo.
-const NON_TOOL_HOST_FUNCTIONS: [&str; 12] = [
-    "keep", "free", "handles", "yieldNow", "answer", "ask", "mcp", "on", "off", "helper", "checks",
-    "web",
+const NON_TOOL_HOST_FUNCTIONS: [&str; 11] = [
+    "keep", "free", "handles", "yieldNow", "answer", "ask", "mcp", "on", "off", "checks", "web",
 ];
 
 /// Whether `name` is one the isolate puts on the persistent scope. A

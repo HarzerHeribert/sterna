@@ -11,7 +11,7 @@ never become Sterna's settings unless you import them.
 | your defaults, including permissions | `$XDG_CONFIG_HOME/sterna/config.toml`, otherwise `~/.config/sterna/config.toml` |
 | this project's overrides and named profiles | `<project>/.sterna/config.toml` |
 | your global instructions (not settings) | `AGENTS.md` in the same user directory |
-| verification commands for the checker | `<project>/.sterna/checks.toml` |
+| declared checks (`checks.run`) | `<project>/.sterna/checks.toml` |
 | subagent templates | `<project>/.sterna/agents/<name>.toml` |
 
 *Project* is the folder Sterna started in, or `--root`, Git repository or
@@ -25,10 +25,9 @@ is ignored and says so.
 
 ## Changing a setting
 
-- **`/settings`** (or F2) opens the settings sheet in five sections:
+- **`/settings`** (or F2) opens the settings sheet in four sections:
   Everyday (what you change most), Models (which model does which job,
-  Main's effort, subagents, Jev and accounts), Little helpers, Display and
-  Advanced (limits, the web, permissions, and the confidence thresholds
+  Main's effort, subagents, Jev and accounts), Display and Advanced (limits, the web, permissions, and the confidence thresholds
   last). It opens on Global; a choice is written to the
   project only when the Project tab (F6) is chosen, and a row the project
   overrides says so. Each row shows what the running session uses now. A
@@ -61,7 +60,6 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `sandbox.level` | global only: `ask`, `sandboxed` (default) or `full` ([sandbox](sandbox.md)) |
 | `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |
-| `helpers.model`, `helpers.enabled` | the cheap model the helpers run on ([helpers](helpers.md)) |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
@@ -69,9 +67,15 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `web.enabled`, `web.allow_domains`, `web.search_endpoint`, … | the web broker ([web](web.md)) |
 | `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits; nothing caps a task's cells unless you set it |
 
-`sterna config --help` lists the rest: per-helper effort, the decision
-thresholds and the prompt
-experiments under `limits.*` (off until measured).
+`sterna config --help` lists the rest: the decision thresholds, when output
+is shortened (`limits.reduce_above_tokens`, `decisions.reduce_returns`) and
+the prompt experiments under `limits.*` (off until measured).
+
+A setting an upgrade removed is read as unset, taken out of its file and
+reported once; it never stops Sterna from starting. The `helpers.*` keys
+went this way on 2026-09-30, apart from `helpers.reduce_above_tokens` and
+`helpers.reduce_returns`, whose saved values moved to
+`limits.reduce_above_tokens` and `decisions.reduce_returns`.
 
 ## Named profiles
 
@@ -82,8 +86,8 @@ parent = "your-usual-model"
 [profiles.review.model]
 parent = "your-review-model"
 
-[profiles.review.helpers.effort]
-check = "high"
+[profiles.review.limits]
+cells = 40
 ```
 
 `sterna --profile review` overlays the table on the base settings. An

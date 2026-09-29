@@ -15,8 +15,6 @@ use crate::changes::ChangeKind;
 use crate::verification::{CheckConfig, ContractSpec};
 
 const CONFIG_BYTES: u64 = 64 * 1024;
-/// The diff the fresh checker sees; the rest is named as omitted.
-pub const DIFF_CAP: usize = 24 * 1024;
 /// How many directory entries the coverage search will visit.
 const WALK_CAP: usize = 20_000;
 const ARTIFACT_EXTENSIONS: &[&str] = &[
@@ -374,125 +372,6 @@ pub fn check(
         }
     }
     findings
-}
-
-/// What an independent checker is shown: the request, the diff, the exact
-/// facts and the findings — never the parent's narrative, which is the
-/// thing it exists to disbelieve.
-pub fn fresh_checker_evidence(
-    task: &str,
-    answer: &str,
-    diff: &str,
-    facts: &[String],
-    findings: &[Finding],
-    judge: &[String],
-) -> String {
-    let mut out = String::from("## Original request\n");
-    out.push_str(task);
-    // The answer is what the person reads: a claim in it that the work does
-    // not bear out is exactly what a second look is for.
-    out.push_str("\n\n## The answer\n");
-    if answer.trim().is_empty() {
-        out.push_str("(no answer text)\n");
-    } else {
-        out.push_str(answer.trim_end());
-        out.push('\n');
-    }
-    out.push_str("\n## Diff\n");
-    if diff.chars().count() > DIFF_CAP {
-        let kept: String = diff.chars().take(DIFF_CAP).collect();
-        out.push_str(&kept);
-        out.push_str(&format!(
-            "\n[diff truncated: {} characters omitted]\n",
-            diff.chars().count() - DIFF_CAP
-        ));
-    } else if diff.trim().is_empty() {
-        out.push_str("(no observed file changes)\n");
-    } else {
-        out.push_str(diff);
-        if !diff.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    out.push_str("\n## Facts\n");
-    if facts.is_empty() {
-        out.push_str("(none recorded)\n");
-    }
-    for fact in facts {
-        out.push_str(&format!("- {fact}\n"));
-    }
-    out.push_str("\n## Final-state findings\n");
-    if findings.is_empty() {
-        out.push_str("(none)\n");
-    }
-    for finding in findings {
-        out.push_str(&format!("- {}\n", finding.sentence));
-    }
-    if !judge.is_empty() {
-        out.push_str("\n## Acceptance items to judge\n");
-        for item in judge {
-            out.push_str(&format!("- {item}\n"));
-        }
-    }
-    out.push_str("\nDoes the answer hold, and does the current state satisfy the original request");
-    if judge.is_empty() {
-        out.push_str("?\n");
-    } else {
-        out.push_str(", and does each acceptance item above hold? Name any that does not.\n");
-    }
-    out
-}
-
-/// What the work behind an answer amounted to, for [`wants_check`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Work {
-    /// Files the task created, modified or deleted.
-    pub files: usize,
-    /// Lines added plus lines removed in the task's diff.
-    pub lines: usize,
-    /// Cells the task ran.
-    pub cells: u64,
-    /// Whether the Scout wrote the task's acceptance list.
-    pub scout_list: bool,
-}
-
-/// Big work, for [`crate::config::CompletionCheck::Auto`]. Starting points,
-/// not measurements: the check's cost is on screen so they can be tuned.
-pub const BIG_FILES: usize = 4;
-pub const BIG_LINES: usize = 150;
-pub const BIG_CELLS: u64 = 10;
-
-/// Whether the checker reads this answer. **A turn that changed nothing is
-/// never checked**: a question or a read-only answer leaves nothing in the
-/// files to check, and the checker spent its three turns finding that out
-/// before it said it could not tell.
-#[must_use]
-pub fn wants_check(check: crate::config::CompletionCheck, work: &Work) -> bool {
-    use crate::config::CompletionCheck;
-    if work.files == 0 {
-        return false;
-    }
-    match check {
-        CompletionCheck::Off => false,
-        CompletionCheck::Always => true,
-        CompletionCheck::Auto => {
-            work.scout_list
-                || work.files >= BIG_FILES
-                || work.lines >= BIG_LINES
-                || work.cells >= BIG_CELLS
-        }
-    }
-}
-
-/// Lines added plus lines removed in a unified diff, its file headers aside.
-#[must_use]
-pub fn changed_lines(diff: &str) -> usize {
-    diff.lines()
-        .filter(|line| {
-            (line.starts_with('+') && !line.starts_with("+++"))
-                || (line.starts_with('-') && !line.starts_with("---"))
-        })
-        .count()
 }
 
 /// `relative` under `root`, spelled with the platform's one separator. A

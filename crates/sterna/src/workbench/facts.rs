@@ -149,24 +149,6 @@ pub fn shown(key: &str, value: &str) -> String {
             other => other,
         }
         .to_string(),
-        "helpers.completion" => match value {
-            "silent" => "say nothing",
-            "recap" => "a short recap",
-            other => other,
-        }
-        .to_string(),
-        "helpers.preflight_scope" => match value {
-            "auto" => "when it helps",
-            "always" => "every request",
-            other => other,
-        }
-        .to_string(),
-        "helpers.completion_check" => match value {
-            "auto" => "after big work",
-            "always" => "every change",
-            other => other,
-        }
-        .to_string(),
         _ => value.to_string(),
     }
 }

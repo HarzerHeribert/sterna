@@ -210,7 +210,6 @@ fn base_opts(scratch: PathBuf, harness_program: PathBuf) -> RunOpts {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     }
 }
 
@@ -492,7 +491,6 @@ fn the_sterna_row_launches_session_with_the_attempts_root_and_the_statement() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
     let harness = Harness::new("sterna");
 
@@ -549,7 +547,6 @@ fn the_claude_code_row_still_carries_the_statement_as_a_bare_argument() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
     let harness = Harness::new("claude-code");
 
@@ -597,7 +594,6 @@ fn the_codex_row_runs_exec_with_the_bypass_and_the_statement() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
     let harness = Harness::new("codex");
 
@@ -658,7 +654,6 @@ fn a_statement_with_spaces_and_braces_reaches_the_child_as_one_argument() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
     let harness = Harness::new("sterna");
 
@@ -710,12 +705,10 @@ fn the_accepted_flags_are_exactly_these() {
             "--gateway",
             "--meter",
             "--sterna-interface",
-            "--credit-ratio",
             "--sterna-decisions",
             "--decisions-model",
             "--parent-model",
             "--sterna-feedback",
-            "--helpers-model",
             "--out"
         ]
     );
@@ -1047,7 +1040,7 @@ fn sterna_interface_without_the_sterna_row_is_refused() {
 fn a_sterna_arm_captures_its_stdout_and_carries_the_metrics() {
     let scratch = scratch_dir("sterna-arm-metrics");
     let argv_record = scratch.join("argv.txt");
-    let document = r#"{"type":"result","telemetry":{"wall_time_ms":1234,"tokens":{"parent":{"requests":7,"known_tokens":900},"helpers":{"known_tokens":300}},"interface":{"provider_selected":{"execute_cell_calls":5,"direct_tool_calls":2}},"cells":{"executed":6,"failed":1},"failures":{"by_kind":{"denied":1}},"recovery":{"by_cause":{"repair":{"requests":2}}},"observation":{"bytes_rendered":4096},"completion":{"verified":true}}}"#;
+    let document = r#"{"type":"result","telemetry":{"wall_time_ms":1234,"tokens":{"parent":{"requests":7,"known_tokens":900}},"interface":{"provider_selected":{"execute_cell_calls":5,"direct_tool_calls":2}},"cells":{"executed":6,"failed":1},"failures":{"by_kind":{"denied":1}},"recovery":{"by_cause":{"repair":{"requests":2}}},"observation":{"bytes_rendered":4096},"completion":{"verified":true}}}"#;
     let fake_sterna = write_stdout_script(&scratch, "fake_sterna.sh", &argv_record, document);
     let noop_cwd = scratch.join("noop_cwd.txt");
     let test_script = write_script(&scratch, "noop_test.sh", &noop_cwd, 0);
@@ -1071,7 +1064,6 @@ fn a_sterna_arm_captures_its_stdout_and_carries_the_metrics() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
     let harness = Harness::new("sterna:hybrid");
 
@@ -1092,7 +1084,6 @@ fn a_sterna_arm_captures_its_stdout_and_carries_the_metrics() {
         .expect("the captured document is parsed");
     assert_eq!(metrics.parent_requests, Some(7));
     assert_eq!(metrics.parent_known_tokens, Some(900));
-    assert_eq!(metrics.helper_known_tokens, Some(300));
     assert_eq!(metrics.execute_cell_calls, Some(5));
     assert_eq!(metrics.direct_tool_calls, Some(2));
     assert_eq!(metrics.frames_failed, Some(1));
@@ -1137,7 +1128,6 @@ fn a_sterna_arm_without_a_telemetry_document_is_unmeasured_not_zero() {
         harnesses,
         rollouts: None,
         parent_model: None,
-        helpers_model: None,
     };
 
     let result = attempt::run_one(&task, &Harness::new("sterna:cells"), 1, &opts);
@@ -1380,7 +1370,6 @@ fn a_decisions_off_arm_gets_no_config_file_while_shadow_and_on_get_the_exact_tom
             harnesses,
             rollouts: None,
             parent_model: None,
-            helpers_model: None,
         };
 
         let result = attempt::run_one(&task, &Harness::new(arm_name.as_str()), 1, &opts);
@@ -1401,15 +1390,14 @@ fn a_decisions_off_arm_gets_no_config_file_while_shadow_and_on_get_the_exact_tom
 
 /// Contract 3: [`DecisionFigures`] reads every documented key, and
 /// `decisions` absent from the telemetry document leaves the whole
-/// `decisions.*` family `None` rather than reading a missing spare as
-/// "not spared".
+/// `decisions.*` family `None` rather than reading a missing figure as a
+/// zero.
 #[test]
 fn the_decision_figures_reader_reads_every_key_and_leaves_decisions_absent_as_none() {
-    let full = r#"{"telemetry":{"wall_time_ms":555,"tokens":{"parent":{"known_tokens":900}},"completion":{"verified":true,"findings":["a","b"]},"decisions":{"asked":1,"answered":1,"failed":0,"latency_ms_total":180,"would_hold":2,"holds":1,"overrides":1,"completion":{"noul":0.93,"latency_ms":40,"truncated":false,"finding_added":false,"checker_skipped":"decision 0.93"}}}}"#;
+    let full = r#"{"telemetry":{"wall_time_ms":555,"tokens":{"parent":{"known_tokens":900}},"completion":{"verified":true,"findings":["a","b"]},"decisions":{"asked":1,"answered":1,"failed":0,"latency_ms_total":180,"would_hold":2,"holds":1,"overrides":1,"completion":{"noul":0.93,"latency_ms":40,"truncated":false,"finding_added":false}}}}"#;
     let figures = DecisionFigures::from_result_json(full).expect("a telemetry document is present");
     assert_eq!(figures.verified, Some(true));
     assert_eq!(figures.findings, Some(2));
-    assert_eq!(figures.checker_skipped, Some(true));
     assert_eq!(figures.finding_added, Some(false));
     assert_eq!(figures.holds, Some(1));
     assert_eq!(figures.overrides, Some(1));
@@ -1426,10 +1414,9 @@ fn the_decision_figures_reader_reads_every_key_and_leaves_decisions_absent_as_no
     assert_eq!(figures.verified, Some(false));
     assert_eq!(figures.findings, Some(0));
     assert_eq!(
-        figures.checker_skipped, None,
-        "no decisions object means never asked, not spared=false"
+        figures.finding_added, None,
+        "no decisions object means never asked, not a false"
     );
-    assert_eq!(figures.finding_added, None);
     assert_eq!(figures.holds, None);
     assert_eq!(figures.overrides, None);
     assert_eq!(figures.would_hold, None);
@@ -1470,30 +1457,29 @@ fn decision_attempt(
     }
 }
 
-/// Contract 4: the `checker spared` column counts attempts whose completion
-/// decision was a confident yes, `Some(true)` -- three attempts with
-/// `true, true, false` spare exactly two, not three.
+/// Contract 4: the `holds` column sums the holds of every attempt of one
+/// task and arm -- three attempts with `2, 1, 0` hold three times.
 #[test]
-fn the_decisions_table_counts_checker_spared_from_three_attempts() {
-    let figures = |checker_skipped: Option<bool>| DecisionFigures {
-        checker_skipped,
+fn the_decisions_table_sums_holds_from_three_attempts() {
+    let figures = |holds: u64| DecisionFigures {
+        holds: Some(holds),
         ..DecisionFigures::default()
     };
     let attempts = vec![
-        decision_attempt("L1", "sterna:decisions-on", 1, Some(figures(Some(true)))),
-        decision_attempt("L1", "sterna:decisions-on", 2, Some(figures(Some(true)))),
-        decision_attempt("L1", "sterna:decisions-on", 3, Some(figures(Some(false)))),
+        decision_attempt("L1", "sterna:decisions-on", 1, Some(figures(2))),
+        decision_attempt("L1", "sterna:decisions-on", 2, Some(figures(1))),
+        decision_attempt("L1", "sterna:decisions-on", 3, Some(figures(0))),
     ];
 
     let rows = decisions::rows(&attempts);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].checker_spared, 2);
+    assert_eq!(rows[0].holds_sum, 3);
     assert_eq!(rows[0].excluded, 0);
 
     let table = report::render_decisions_table(&rows);
     assert!(table.contains("-- decisions"), "{table}");
     assert!(
-        table.contains("L1  sterna:decisions-on  0/0  0  2  0  0  0  0"),
+        table.contains("L1  sterna:decisions-on  0/0  0  3  0  0  0"),
         "{table}"
     );
 }
@@ -1506,7 +1492,7 @@ fn a_decisions_attempt_without_a_telemetry_document_is_excluded_not_zero() {
     let rows = decisions::rows(&attempts);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].excluded, 1);
-    assert_eq!(rows[0].checker_spared, 0);
+    assert_eq!(rows[0].holds_sum, 0);
     assert_eq!(rows[0].tokens_mean, None);
 }
 
@@ -1579,7 +1565,6 @@ fn a_sterna_attempt_writes_the_parent_model_into_its_own_project_config() {
         harnesses,
         rollouts: None,
         parent_model: Some("gpt-5-6-sol".to_string()),
-        helpers_model: None,
     };
 
     let result = attempt::run_one(&task, &Harness::new("sterna"), 1, &opts);
@@ -1703,8 +1688,8 @@ fn a_foreign_row_alone_needs_no_parent_model() {
 
 /// An explore task is judged by the facts its answer states, and a
 /// `--sterna-feedback` arm's worktree carries the decision mode and the
-/// `[helpers]` switches of its arm: the `reduce` arm reads `on` with
-/// `reduce_returns`, and every sterna row gets the helper model.
+/// lines of its arm: the `unreduced` arm reads `on` with returned logs left
+/// whole.
 #[test]
 fn a_rubric_task_is_scored_on_its_answer_and_a_feedback_arm_writes_its_switches() {
     use sterna::ruler::model::Fact;
@@ -1730,16 +1715,16 @@ fn a_rubric_task_is_scored_on_its_answer_and_a_feedback_arm_writes_its_switches(
     let mut table = attempt::default_harnesses();
     let rows = cli::expand_sterna_feedback(
         &["sterna".to_string()],
-        &["reduce".to_string()],
+        &["unreduced".to_string()],
         "jev-latest",
         &mut table,
     )
     .unwrap();
-    assert_eq!(rows, vec!["sterna:feedback-reduce"]);
-    let mut arm = table.remove("sterna:feedback-reduce").unwrap();
+    assert_eq!(rows, vec!["sterna:feedback-unreduced"]);
+    let mut arm = table.remove("sterna:feedback-unreduced").unwrap();
     arm.program = path;
     let mut harnesses = HashMap::new();
-    harnesses.insert("sterna:feedback-reduce".to_string(), arm);
+    harnesses.insert("sterna:feedback-unreduced".to_string(), arm);
 
     const FACTS: &[Fact] = &[
         Fact {
@@ -1766,12 +1751,11 @@ fn a_rubric_task_is_scored_on_its_answer_and_a_feedback_arm_writes_its_switches(
     };
     let opts = RunOpts {
         parent_model: Some("gpt-5-6-sol".to_string()),
-        helpers_model: Some("gpt-5.6-luna".to_string()),
         ..base_opts(scratch.clone(), PathBuf::from("unused"))
     };
     let opts = RunOpts { harnesses, ..opts };
 
-    let result = attempt::run_one(&task, &Harness::new("sterna:feedback-reduce"), 1, &opts);
+    let result = attempt::run_one(&task, &Harness::new("sterna:feedback-unreduced"), 1, &opts);
     let score = result.rubric.clone().expect("the answer was scored");
     assert_eq!(
         score.found,
@@ -1794,17 +1778,17 @@ fn a_rubric_task_is_scored_on_its_answer_and_a_feedback_arm_writes_its_switches(
     );
     let table = sterna::ruler::report::render_rubric_table(std::slice::from_ref(&result));
     assert!(
-        table.contains("T1 | sterna:feedback-reduce | 3.0/4 | 1/1"),
+        table.contains("T1 | sterna:feedback-unreduced | 3.0/4 | 1/1"),
         "{table}"
     );
 
     // The config the attempt was launched with: decisions on with Jev, the
-    // reducer switched on, the parent and helper models written.
+    // arm's line continuing the `[decisions]` table, the parent model
+    // written.
     let config = fs::read_to_string(&seen).unwrap();
     for expected in [
         "[model]\nparent = \"gpt-5-6-sol\"",
-        "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"",
-        "[helpers]\nenabled = true\nmodel = \"gpt-5.6-luna\"\nreduce_returns = true",
+        "[decisions]\nmodel = \"jev-latest\"\nmode = \"on\"\nreduce_returns = false",
     ] {
         assert!(config.contains(expected), "{expected} in {config}");
     }

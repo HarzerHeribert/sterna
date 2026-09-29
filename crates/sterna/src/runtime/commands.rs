@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn a_broad_tool_is_found_by_name_member_or_dialect_and_nothing_else_is() {
         for source in [
-            "const [a, b] = await Promise.all([helper.find('x'), bash({command: 'git status'})]);",
+            "const [a, b] = await Promise.all([read({path: 'x'}), bash({command: 'git status'})]);",
             "await context({path: 'src/a.rs', symbol: 'f'});",
             "const job = bg.run('cargo test');",
             "await mcp.call('server', 'tool', {});",

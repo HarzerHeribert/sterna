@@ -58,9 +58,6 @@ pub struct Assignment {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TierModels {
     pub parent: String,
-    /// `None` when helpers are off, which is a state rather than a missing
-    /// value: no helper model means no helper ever runs.
-    pub helper: Option<String>,
     /// `None` when a delegated goal inherits the parent's model.
     pub subagent: Option<String>,
 }
@@ -71,7 +68,6 @@ impl TierModels {
     pub fn describe(&self, tier: Tier) -> &str {
         match tier {
             Tier::Parent => &self.parent,
-            Tier::Helpers => self.helper.as_deref().unwrap_or("off"),
             Tier::Subagents => self.subagent.as_deref().unwrap_or("auto"),
         }
     }

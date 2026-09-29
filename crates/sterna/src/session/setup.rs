@@ -4,7 +4,7 @@
 //!
 //! **Every step is read from what is true now, never from a flag saying it
 //! was done**: signed in means the gateway holds a login or a key, models
-//! means the three tiers are set, Jev means a TypeSafe account can answer
+//! means both tiers are set, Jev means a TypeSafe account can answer
 //! and decisions are on. So a step undone elsewhere reappears here, and a
 //! step done by hand needs no wizard.
 
@@ -27,14 +27,6 @@ const MAIN: &[&str] = &[
     "claude-sonnet-5",
 ];
 
-/// Fast, cheap models for helpers -- summaries, checks, reductions.
-const HELPERS: &[&str] = &[
-    "gpt-6-luna",
-    "claude-haiku-4-5",
-    "claude-sonnet-5",
-    "gpt-5-6-luna",
-];
-
 /// Sterna's recommended settings, versioned. **An entry is never edited in
 /// place**: a change is a new entry with the next `since`, and
 /// [`VERSION`] moves to it -- so a person who saw version N is shown exactly
@@ -50,24 +42,14 @@ pub(super) struct Recommended {
     current: fn(&crate::config::SternaConfig) -> String,
 }
 
-pub(super) const RECOMMENDED: &[Recommended] = &[
-    Recommended {
-        key: "helpers.enabled",
-        value: "true",
-        since: 1,
-        why: "helpers read long outputs on a fast model, so the main model's context stays small and cheap",
-        needs_jev: false,
-        current: |config| config.helpers.enabled.to_string(),
-    },
-    Recommended {
-        key: "decisions.mode",
-        value: "on",
-        since: 1,
-        why: "Jev answers quick questions -- does a call fit the request, is the task finished -- on a small, fast model",
-        needs_jev: true,
-        current: |config| config.decisions.mode.as_str().to_string(),
-    },
-];
+pub(super) const RECOMMENDED: &[Recommended] = &[Recommended {
+    key: "decisions.mode",
+    value: "on",
+    since: 1,
+    why: "Jev answers quick questions -- does a call fit the request, is the task finished -- on a small, fast model",
+    needs_jev: true,
+    current: |config| config.decisions.mode.as_str().to_string(),
+}];
 
 /// The newest `since` in [`RECOMMENDED`].
 pub(super) const VERSION: u32 = 1;
@@ -91,7 +73,6 @@ pub(super) fn changes_since(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Picks {
     pub main: String,
-    pub helpers: String,
     pub subagents: String,
 }
 
@@ -108,11 +89,9 @@ pub(super) fn recommend(served: &[String]) -> Option<Picks> {
         })
     };
     let main = first(MAIN).or_else(|| served.first().cloned())?;
-    let helpers = first(HELPERS).unwrap_or_else(|| main.clone());
     Some(Picks {
         subagents: main.clone(),
         main,
-        helpers,
     })
 }
 
@@ -120,7 +99,7 @@ pub(super) fn recommend(served: &[String]) -> Option<Picks> {
 struct Progress {
     /// The subscriptions and providers signed in, by name; empty is not yet.
     signed_in: Vec<String>,
-    /// The three tiers, when every one is set.
+    /// Both tiers, when both are set.
     models: Option<Picks>,
     /// A TypeSafe account can answer.
     jev_key: bool,
@@ -170,16 +149,11 @@ fn progress(session: &Session<'_>) -> Progress {
     }
 }
 
-/// The three tiers as the configuration sets them, when every one is set.
+/// Both tiers as the configuration sets them, when both are set.
 /// Subagents are set by one pinned model or by favourites: a roster with a
 /// model in it is as chosen as a pin.
 fn chosen(config: &crate::config::SternaConfig) -> Option<Picks> {
     let main = config.model.parent.clone()?;
-    let helpers = config
-        .helpers
-        .enabled
-        .then(|| config.helpers.model.clone())
-        .flatten()?;
     let subagents = match config.agents.mode {
         crate::config::AgentsMode::Pinned => config.agents.model.clone()?,
         crate::config::AgentsMode::Roster if !config.agents.slots.is_empty() => {
@@ -188,11 +162,7 @@ fn chosen(config: &crate::config::SternaConfig) -> Option<Picks> {
         }
         _ => return None,
     };
-    Some(Picks {
-        main,
-        helpers,
-        subagents,
-    })
+    Some(Picks { main, subagents })
 }
 
 const STEPS: usize = 3;
@@ -207,10 +177,7 @@ fn overview(progress: &Progress) -> Panel {
         progress.signed_in.join(", ")
     };
     let models = match (&progress.models, recommend(&progress.served)) {
-        (Some(picks), _) => format!(
-            "main {} · helpers {} · subagents {}",
-            picks.main, picks.helpers, picks.subagents
-        ),
+        (Some(picks), _) => format!("main {} · subagents {}", picks.main, picks.subagents),
         (None, Some(_)) => "recommended picks ready".to_string(),
         (None, None) => "after you sign in".to_string(),
     };
@@ -264,14 +231,12 @@ fn models_panel(progress: &Progress) -> Panel {
         vec![
             PanelRow::command(
                 format!(
-                    "Use Sterna's picks · main {} · helpers {} · subagents {}",
-                    picks.main, picks.helpers, picks.subagents
+                    "Use Sterna's picks · main {} · subagents {}",
+                    picks.main, picks.subagents
                 ),
                 "/wizard models apply",
             ),
-            PanelRow::info(
-                "Sets these three models for every project, and helpers run on theirs. Jev is step 3.",
-            ),
+            PanelRow::info("Sets these two models for every project. Jev is step 3."),
             PanelRow::opens("Choose each one myself", "/models"),
         ],
     )
@@ -280,7 +245,7 @@ fn models_panel(progress: &Progress) -> Panel {
 /// The Jev step: what it is for, then the key and the switch.
 fn jev_panel(progress: &Progress) -> Panel {
     let mut rows = vec![PanelRow::info(
-        "Jev answers Sterna's quick decisions: whether a call you are asked to approve fits your request (the approval shows its view), which files matter to a request, whether a task is finished, and a cell's question when you let Sterna decide. It is a TypeSafe model and needs a TypeSafe API key.",
+        "Jev answers Sterna's quick decisions: whether a call you are asked to approve fits your request (the approval shows its view), whether a task is finished, and a cell's question when you let Sterna decide. It is a TypeSafe model and needs a TypeSafe API key.",
     )];
     if !progress.jev_key {
         rows.push(PanelRow::opens(
@@ -340,11 +305,7 @@ fn apply_recommended(session: &Session<'_>, jev: bool) {
     if !edits.is_empty() {
         match controls::save_home(session, &edits, None) {
             Ok(loaded) => {
-                let mut live = session.config.borrow_mut();
-                live.helpers.enabled = loaded.config.helpers.enabled;
-                live.decisions.mode = loaded.config.decisions.mode;
-                drop(live);
-                controls::publish_tiers(session);
+                session.config.borrow_mut().decisions.mode = loaded.config.decisions.mode;
             }
             Err(error) => session_println!("ERROR: {error}"),
         }
@@ -393,14 +354,12 @@ fn apply_models(session: &Session<'_>) {
     controls::show(session, overview(&progress(session)));
 }
 
-/// Sets the three models the way `/model` does: saved for every project and
-/// in force now -- the header, the sidebar and /status name the main one at
-/// once. Nothing else is switched on: helpers run on the helper model they
-/// are given, and Jev stays step 3.
+/// Sets both models the way `/model` does: saved for every project and in
+/// force now -- the header, the sidebar and /status name the main one at
+/// once. Nothing else is switched on: Jev stays step 3.
 fn apply_picks(session: &Session<'_>, picks: &Picks) -> Result<(), String> {
     for (tier, model) in [
         (Tier::Parent, &picks.main),
-        (Tier::Helpers, &picks.helpers),
         (Tier::Subagents, &picks.subagents),
     ] {
         controls::use_model(session, tier, model)?;
@@ -503,14 +462,12 @@ mod tests {
     fn favourites_finish_the_models_step() {
         let mut config = crate::config::SternaConfig::default();
         config.model.parent = Some("main-model".into());
-        config.helpers.enabled = true;
-        config.helpers.model = Some("helper-model".into());
         config.agents.mode = crate::config::AgentsMode::Roster;
         assert!(chosen(&config).is_none(), "an empty roster chose nothing");
         config.agents.slots.insert(
             "quick".into(),
             crate::config::AgentSlot {
-                model: "helper-model".into(),
+                model: "quick-model".into(),
                 effort: crate::wire::Effort::Low,
             },
         );
@@ -531,7 +488,6 @@ mod tests {
         super::super::controls::tests::with_session(&root, |session| {
             let picks = Picks {
                 main: "claude-opus-4-8".into(),
-                helpers: "gpt-5.6-luna".into(),
                 subagents: "claude-sonnet-5".into(),
             };
             apply_picks(session, &picks).unwrap();
@@ -564,46 +520,47 @@ mod tests {
             recommend(&served(&["gpt-6-luna", "gpt-6-sol", "claude-opus-5-5"])),
             Some(Picks {
                 main: "gpt-6-sol".into(),
-                helpers: "gpt-6-luna".into(),
                 subagents: "gpt-6-sol".into(),
             }),
-            "ChatGPT leads; helpers get the fast model"
+            "ChatGPT leads"
         );
-        let claude = recommend(&served(&["claude-haiku-4-5-20251001", "claude-opus-5-5"])).unwrap();
-        assert_eq!(claude.main, "claude-opus-5-5");
+        let claude = recommend(&served(&["claude-haiku-4-5", "claude-opus-5-5-20260901"])).unwrap();
         assert_eq!(
-            claude.helpers, "claude-haiku-4-5-20251001",
+            claude.main, "claude-opus-5-5-20260901",
             "a dated release answers for its family"
         );
         let unknown = recommend(&served(&["some-local-model"])).unwrap();
         assert_eq!(unknown.main, "some-local-model");
-        assert_eq!(unknown.helpers, "some-local-model");
+        assert_eq!(unknown.subagents, "some-local-model");
         assert_eq!(recommend(&[]), None);
     }
 
     #[test]
     fn an_update_shows_only_the_recommendations_newer_than_the_ones_seen() {
         let mut config = crate::config::SternaConfig::default();
-        config.helpers.enabled = false;
-        let changed = changes_since(0, &config, false);
+        config.decisions.mode = crate::config::DecisionMode::Off;
+        assert!(
+            changes_since(0, &config, false).is_empty(),
+            "decisions only with Jev"
+        );
+        let changed = changes_since(0, &config, true);
         let keys: Vec<&str> = changed.iter().map(|(entry, _)| entry.key).collect();
-        assert_eq!(keys, ["helpers.enabled"], "decisions only with Jev");
         assert_eq!(
-            changed[0].1, "false",
-            "the person's own value is shown beside Sterna's"
+            keys,
+            ["decisions.mode"],
+            "with Jev, decisions are recommended"
         );
         assert_eq!(
-            changes_since(0, &config, true).len(),
-            2,
-            "with Jev, decisions are recommended too"
+            changed[0].1, "off",
+            "the person's own value is shown beside Sterna's"
         );
         assert!(
             changes_since(VERSION, &config, true).is_empty(),
             "seen once, asked once"
         );
-        config.helpers.enabled = true;
+        config.decisions.mode = crate::config::DecisionMode::On;
         assert!(
-            changes_since(0, &config, false).is_empty(),
+            changes_since(0, &config, true).is_empty(),
             "already Sterna's value: nothing to show"
         );
         // Every entry is dated no later than the version it ships in.

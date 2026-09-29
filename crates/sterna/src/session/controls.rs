@@ -65,7 +65,7 @@ pub(super) fn models(session: &Session<'_>) {
 }
 
 /// The model picker, open on `tier`'s section: `/models`, bare `/subagents`
-/// and `/model helper` alike.
+/// and `/model subagent` alike.
 pub(super) fn models_at(session: &Session<'_>, tier: Tier) {
     let mut catalogue = session
         .gateway
@@ -181,19 +181,10 @@ fn unreachable_panel(session: &Session<'_>, title: &str, retry: &str) -> Panel {
 }
 
 /// What each tier of this session runs on right now.
-///
-/// Helpers report `None` when they are off *for any reason* -- no model, or
-/// `enabled = false` -- because from the panel's side those are one state:
-/// no helper will run.
 fn tier_models(session: &Session<'_>) -> TierModels {
     let config = session.config();
     TierModels {
         parent: session.model.borrow().clone(),
-        helper: config
-            .helpers
-            .enabled
-            .then(|| config.helpers.model.clone())
-            .flatten(),
         subagent: match config.agents.mode {
             AgentsMode::Auto => None,
             AgentsMode::Off => Some("off".to_string()),
@@ -203,25 +194,22 @@ fn tier_models(session: &Session<'_>) -> TierModels {
     }
 }
 
-/// What the status line says of the helper and subagent tiers: helpers run
-/// only when switched on **and** given a model, so `enabled` alone reads off.
-pub(super) fn tier_status(config: &crate::config::SternaConfig) -> (bool, String) {
-    let helpers_on = config.helpers.enabled && config.helpers.model.is_some();
-    let subagents = match config.agents.mode {
+/// What the status line says of the subagent tier.
+pub(super) fn tier_status(config: &crate::config::SternaConfig) -> String {
+    match config.agents.mode {
         AgentsMode::Off => "off",
         AgentsMode::Auto => "inherits",
         AgentsMode::Pinned => "pinned",
         AgentsMode::Roster => "favourites",
-    };
-    (helpers_on, subagents.to_string())
+    }
+    .to_string()
 }
 
 /// Tells the screen the tiers changed, so the status line stops showing
 /// what the session started with.
 pub(super) fn publish_tiers(session: &Session<'_>) {
     if let Some(ui) = session.ui {
-        let (helpers_on, subagents) = tier_status(&session.config());
-        ui.tiers(helpers_on, &subagents);
+        ui.tiers(&tier_status(&session.config()));
     }
 }
 
@@ -333,14 +321,6 @@ pub(super) fn assign_model(
     }
     let (section, key, key_removed) = match tier {
         Tier::Parent => ("model", "parent", false),
-        Tier::Helpers => {
-            if matches!(value, "auto" | "inherit") {
-                return Err(format!(
-                    "helper model must be `off` or a concrete model id, not `{value}`"
-                ));
-            }
-            ("helpers", "model", value == "off")
-        }
         Tier::Subagents => ("agents", "model", value == "off"),
     };
     let mut edits = vec![(
@@ -351,9 +331,6 @@ pub(super) fn assign_model(
             Some(value.into())
         },
     )];
-    if tier == Tier::Helpers {
-        edits.push(("helpers.enabled".into(), Some((!key_removed).to_string())));
-    }
     if tier == Tier::Subagents {
         let mode = match value {
             "off" => "off",
@@ -366,10 +343,6 @@ pub(super) fn assign_model(
     let mut live = session.config.borrow_mut();
     match tier {
         Tier::Parent => live.model.parent = loaded.config.model.parent,
-        Tier::Helpers => {
-            live.helpers.model = loaded.config.helpers.model;
-            live.helpers.enabled = loaded.config.helpers.enabled;
-        }
         Tier::Subagents => {
             live.agents.model = loaded.config.agents.model;
             live.agents.mode = loaded.config.agents.mode;
@@ -378,7 +351,6 @@ pub(super) fn assign_model(
     drop(live);
     publish_tiers(session);
     Ok(match (tier, value) {
-        (Tier::Helpers, "off") => "helpers off; no helper will run".to_string(),
         (Tier::Subagents, "off") => "subagents off; no subagent will run".to_string(),
         (tier, _) => format!("{} model set to {value}", tier.singular()),
     })
@@ -1234,7 +1206,7 @@ fn session_sheet(
 ) -> Panel {
     use crate::workbench::Action;
     let config = session.config();
-    let (helpers_on, subagents) = tier_status(&config);
+    let subagents = tier_status(&config);
     let model = session.model.borrow().clone();
     let effort = session.effort.get();
     let sent = effort.sent_for(&model);
@@ -1257,13 +1229,6 @@ fn session_sheet(
             {
                 Some(level) => format!("{} · {}", level.label(), level.sentence()),
                 None => "unknown".to_string(),
-            },
-        ),
-        PanelRow::open("Helpers", Action::Settings).shows(
-            match (helpers_on, config.helpers.model.as_deref()) {
-                (true, Some(helper)) => format!("on · {helper}"),
-                _ if config.helpers.enabled => "on, but no helper model chosen".into(),
-                _ => "off".into(),
             },
         ),
         PanelRow::open("Subagents", Action::Settings).shows(subagents),
@@ -1639,13 +1604,10 @@ pub(super) mod tests {
     #[test]
     fn the_status_line_reports_the_tiers_as_they_are_set_now() {
         let mut config = crate::config::SternaConfig::default();
-        config.helpers.enabled = true;
         config.agents.mode = AgentsMode::Pinned;
-        // Enabled without a model runs nothing, so the status must not say on.
-        assert_eq!(tier_status(&config), (false, "pinned".to_string()));
-        config.helpers.model = Some("gpt-5.4-mini".to_string());
+        assert_eq!(tier_status(&config), "pinned");
         config.agents.mode = AgentsMode::Roster;
-        assert_eq!(tier_status(&config), (true, "favourites".to_string()));
+        assert_eq!(tier_status(&config), "favourites");
     }
 
     #[test]
@@ -1792,6 +1754,7 @@ pub(super) mod tests {
     }
 
     use super::*;
+    use std::fs;
 
     #[test]
     fn model_catalogue_groups_by_provider_then_account_and_preserves_model_ids() {
@@ -2029,7 +1992,7 @@ pub(super) mod tests {
                 refused.contains("does not answer a conversation"),
                 "{refused}"
             );
-            assert!(use_model(session, Tier::Helpers, "whisper-1").is_err());
+            assert!(use_model(session, Tier::Subagents, "whisper-1").is_err());
             assert_eq!(*session.model.borrow(), "opus-5");
             assert!(!root.join("user-settings").join("config.toml").exists());
         });
@@ -2044,11 +2007,7 @@ pub(super) mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".sterna")).unwrap();
         let file = root.join(".sterna").join("config.toml");
-        fs::write(
-            &file,
-            "[limits]\ncells = 42\n\n[helpers]\nenabled = false\n",
-        )
-        .unwrap();
+        fs::write(&file, "[limits]\ncells = 42\n").unwrap();
 
         // What the next session loads: the project and the person's own
         // settings, where a model choice is saved.
@@ -2061,30 +2020,18 @@ pub(super) mod tests {
         };
         with_session(&root, |session| {
             assert_eq!(tier_models(session).parent, "opus-5");
-            assert_eq!(tier_models(session).helper, None, "helpers ship off");
 
-            assign_model(session, Tier::Helpers, "gpt-5.6-luna").unwrap();
-            // Live, with no restart -- the next cell's runtime is built from
-            // this.
-            assert_eq!(tier_models(session).helper.as_deref(), Some("gpt-5.6-luna"));
+            assign_model(session, Tier::Subagents, "claude-sonnet-5").unwrap();
+            // Live, with no restart -- the next subagent is built from this.
+            assert_eq!(
+                tier_models(session).subagent.as_deref(),
+                Some("claude-sonnet-5")
+            );
             // Persisted, because `agent.rs` loads the settings itself when a
             // delegated goal starts.
             let saved = load();
-            assert_eq!(saved.helpers.model.as_deref(), Some("gpt-5.6-luna"));
-            // Choosing a model IS the opt-in, so an earlier `enabled = false`
-            // does not silently swallow it: the project set it, so it is
-            // changed there, where it wins.
-            assert!(saved.helpers.enabled);
-            assert!(
-                fs::read_to_string(&file)
-                    .unwrap()
-                    .contains("enabled = true")
-            );
             // And an unrelated setting survived the edit.
             assert_eq!(saved.limits.cells, Some(42));
-
-            assign_model(session, Tier::Subagents, "claude-sonnet-5").unwrap();
-            let saved = load();
             assert_eq!(saved.agents.mode, AgentsMode::Pinned);
             assert_eq!(saved.agents.model.as_deref(), Some("claude-sonnet-5"));
 
@@ -2095,9 +2042,6 @@ pub(super) mod tests {
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
 
             // Reversible, which is what makes the panel safe to press.
-            assign_model(session, Tier::Helpers, "off").unwrap();
-            assert_eq!(tier_models(session).helper, None);
-            assert_eq!(load().helpers.model, None);
             assert!(assign_model(session, Tier::Subagents, "inherit").is_err());
             assert_eq!(tier_models(session).subagent.as_deref(), Some("off"));
             assert_eq!(load().agents.mode, AgentsMode::Off);
@@ -2105,7 +2049,7 @@ pub(super) mod tests {
             // A value the config refuses fails with the config's own sentence
             // and leaves the file byte-identical: one validator, not two.
             let before = fs::read_to_string(&file).unwrap();
-            assert!(assign_model(session, Tier::Helpers, "../etc/passwd").is_err());
+            assert!(assign_model(session, Tier::Subagents, "../etc/passwd").is_err());
             assert_eq!(fs::read_to_string(&file).unwrap(), before);
 
             // The parent is remembered too: the tier a person changes most
@@ -2124,7 +2068,7 @@ pub(super) mod tests {
         let root = std::env::temp_dir().join(format!("sterna-profile-tier-{}", std::process::id()));
         fs::create_dir_all(root.join(".sterna")).unwrap();
         let file = root.join(".sterna/config.toml");
-        let text = "[model]\nparent='base-parent'\n[limits]\ncells=42\n[helpers]\nmodel='base-helper'\nenabled=true\n[agents]\nmodel='base-agent'\n[profiles.review.limits]\ncells=17\n[profiles.review.web]\nenabled=true\n[profiles.review.helpers]\nmodel='review-helper'\n";
+        let text = "[model]\nparent='base-parent'\n[limits]\ncells=42\n[agents]\nmodel='base-agent'\n[profiles.review.limits]\ncells=17\n[profiles.review.web]\nenabled=true\n[profiles.review.agents]\nmodel='review-agent'\n";
         fs::write(&file, text).unwrap();
         // Loaded, not parsed: the claim below is that the tier changes left
         // the base settings alone, and `load` is what the assertion re-reads.
@@ -2133,15 +2077,13 @@ pub(super) mod tests {
         // the machine it ran on.
         let base = fixture_config(&root, None).unwrap();
         with_selected_session(&root, Some("review"), |session| {
-            assign_model(session, Tier::Helpers, "changed-helper").unwrap();
+            assign_model(session, Tier::Subagents, "changed-agent").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
             assert!(session.config().web.enabled);
             assert_eq!(
-                session.config().helpers.model.as_deref(),
-                Some("changed-helper")
+                session.config().agents.model.as_deref(),
+                Some("changed-agent")
             );
-            assign_model(session, Tier::Helpers, "off").unwrap();
-            assert!(!session.config().helpers.enabled);
             assign_model(session, Tier::Subagents, "off").unwrap();
             assert_eq!(session.config().agents.mode, crate::config::AgentsMode::Off);
             assert!(assign_model(session, Tier::Subagents, "auto").is_err());
@@ -2166,17 +2108,17 @@ pub(super) mod tests {
         let file = root.join(".sterna/config.toml");
         fs::write(&file, "[limits]\ncells=17\n").unwrap();
         with_session(&root, |session| {
-            fs::write(&file, "[limits]\ncells=42\n[helpers]\npreflight=true\n").unwrap();
-            assign_model(session, Tier::Helpers, "explicit-helper").unwrap();
+            fs::write(&file, "[limits]\ncells=42\n[web]\nenabled=true\n").unwrap();
+            assign_model(session, Tier::Parent, "explicit-parent").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
-            assert!(!session.config().helpers.preflight);
+            assert!(!session.config().web.enabled);
             assert_eq!(
-                session.config().helpers.model.as_deref(),
-                Some("explicit-helper")
+                session.config().model.parent.as_deref(),
+                Some("explicit-parent")
             );
             subagents::assign(session, "quick explicit-agent low").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
-            assert!(!session.config().helpers.preflight);
+            assert!(!session.config().web.enabled);
             assert_eq!(
                 session.config().agents.slots["quick"].model,
                 "explicit-agent"

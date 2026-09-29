@@ -90,8 +90,6 @@ pub enum Origin {
     AuthoredCell,
     /// One or more provider-native direct tool calls, lowered.
     DirectTool,
-    /// A Little Helper's own request.
-    LittleHelper,
 }
 
 impl Origin {
@@ -100,7 +98,6 @@ impl Origin {
         match self {
             Self::AuthoredCell => "authored_cell",
             Self::DirectTool => "direct_tool",
-            Self::LittleHelper => "little_helper",
         }
     }
 }
@@ -494,6 +491,5 @@ mod tests {
     fn origins_are_distinguishable_for_the_ledger() {
         assert_eq!(Origin::default().as_str(), "authored_cell");
         assert_eq!(Origin::DirectTool.as_str(), "direct_tool");
-        assert_eq!(Origin::LittleHelper.as_str(), "little_helper");
     }
 }

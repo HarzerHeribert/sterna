@@ -16,7 +16,6 @@ use clap::Parser;
 
 use super::attempt::{self, HarnessCommand, RunOpts};
 use super::decisions;
-use super::interface::CreditRatios;
 use super::meter::Meter;
 use super::model::{Attempt, Harness, Task, Tier};
 use super::report;
@@ -34,12 +33,10 @@ pub const ACCEPTED_FLAGS: &[&str] = &[
     "--gateway",
     "--meter",
     "--sterna-interface",
-    "--credit-ratio",
     "--sterna-decisions",
     "--decisions-model",
     "--parent-model",
     "--sterna-feedback",
-    "--helpers-model",
     "--out",
 ];
 
@@ -77,11 +74,6 @@ pub struct RunArgs {
     /// the interface-regret table. Refused unless `sterna` is a selected row.
     #[arg(long, value_delimiter = ',')]
     pub sterna_interface: Vec<String>,
-    /// Helper-token credit ratios for the regret table's weighted spend,
-    /// `luna=0.2,terra=0.1`. Both default to 1.0 and the table then says
-    /// "assumed ratio"; nothing here is a billed figure.
-    #[arg(long)]
-    pub credit_ratio: Option<String>,
     /// Expands the `sterna` row into one `sterna:decisions-<mode>` arm per
     /// listed mode (`off,shadow,on`), each attempt's worktree getting a
     /// `.sterna/config.toml` written right after `cut_worktree` and before the
@@ -107,18 +99,13 @@ pub struct RunArgs {
     #[arg(long)]
     pub parent_model: Option<String>,
     /// Expands the `sterna` row into one `sterna:feedback-<arm>` arm per listed
-    /// arm of [`attempt::FEEDBACK_ARMS`] (`bare,shadow,scout,dissect,lanes,working,outline,turns,guided,nudge,low,oneshot,reduce,prefetch,all`),
+    /// arm of [`attempt::FEEDBACK_ARMS`] (`bare,shadow,on,unreduced,working,outline,turns,guided,nudge,low`),
     /// each attempt's `.sterna/config.toml` carrying the decision mode and the
-    /// `[helpers]` switches of its arm. The decision model is
+    /// configuration lines of its arm. The decision model is
     /// `--decisions-model`, or Jev's default. Refused beside the other two
     /// expansions: one expansion at a time.
     #[arg(long, value_delimiter = ',')]
     pub sterna_feedback: Vec<String>,
-    /// The helper model every `sterna` row's session runs its Scout, its
-    /// acceptance lister and its checker with, written as `[helpers] model`.
-    /// Without it no helper runs in an attempt.
-    #[arg(long)]
-    pub helpers_model: Option<String>,
     #[arg(long)]
     pub out: PathBuf,
 }
@@ -167,10 +154,6 @@ fn run(flags: &[String]) -> Result<(), String> {
     if let Some(model) = &args.parent_model {
         crate::config::validate_parent_model(model)?;
     }
-    let ratios = match &args.credit_ratio {
-        Some(text) => CreditRatios::parse(text)?,
-        None => CreditRatios::default(),
-    };
 
     let mut harness_table = attempt::default_harnesses();
     let harnesses =
@@ -206,7 +189,6 @@ fn run(flags: &[String]) -> Result<(), String> {
         },
         harnesses: harness_table,
         parent_model: args.parent_model.clone(),
-        helpers_model: args.helpers_model.clone(),
         // Created before the first attempt rather than with the records at
         // the end: an attempt writes its rollout while it runs, and a
         // missing directory would leave every one of them unstated.
@@ -231,10 +213,7 @@ fn run(flags: &[String]) -> Result<(), String> {
         }
     }
 
-    print!(
-        "{}",
-        report::render_table(&Score::with_ratios(&attempts, ratios))
-    );
+    print!("{}", report::render_table(&Score::of(&attempts)));
     print!(
         "{}",
         report::render_decisions_table(&decisions::rows(&attempts))

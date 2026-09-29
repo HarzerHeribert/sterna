@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/sterna-banner.png" alt="sterna — STERNA Trades Endless Round-trips for Nested Actions. one program per turn · a flock of helpers · the longest run on the least" width="100%">
+  <img src="docs/assets/sterna-banner.png" alt="sterna — STERNA Trades Endless Round-trips for Nested Actions. one program per turn · the longest run on the least" width="100%">
 </p>
 
 # Sterna
 
 **STERNA Trades Endless Round-trips for Nested Actions.**
-*one program per turn · a flock of helpers · the longest run on the least*
+*one program per turn · the longest run on the least*
 
 Sterna is a coding agent for your terminal. You give it a task in a project;
 it works the task in turns, the way Claude Code or Codex does. It is named
@@ -26,20 +26,18 @@ the handle in the next cell. A test on every build greps a generated tree
 of about 275 KB and fails if the model is shown 300 tokens or more of it;
 today it is shown about 210.
 
-**A flock of helpers.** Cheap models answer narrow questions from inside a
-cell without costing a turn: the **scout** finds where something lives, the
-**reducer** cuts a log down to its failures, the **checker** tests a claim
-against the evidence before a task is accepted. **Subagents** take a whole
-separable goal and run beside the task. **Jev**, a classifier, answers typed
+**Beside the turn.** **Subagents** take a whole separable goal and run
+beside the task. Long output is folded by rules before the model reads it —
+passing tests, build chatter and repeated lines go, every failure stays —
+and the whole output is still there. **Jev**, a classifier, answers typed
 questions — is this request read-only, is this a log — in about two seconds,
-and a **supervisor** watches for loops.
+and a task that stops producing anything ends on its own.
 
 **The longest run on the least.** History is append-only except when it is
 compacted, the system prompt stays the same between tasks, and a context
 that stops fitting is compacted while the isolate keeps running, so a result
 from turn three is still addressable afterwards. Against the Codex CLI with
-the same model (GPT-6 Sol, 2026-09-29, three attempts each, Sterna with its
-helper models off): on four small tasks both finished 12 of 12, Sterna in
+the same model (GPT-6 Sol, 2026-09-29, three attempts each): on four small tasks both finished 12 of 12, Sterna in
 8 % less time on 31 % fewer tokens; on six hard SWE-bench Verified tasks
 Sterna resolved 7 of 18 to Codex's 9, in 19 % less time at 16 % lower cost
 ([measurements](docs/measurements.md)).
@@ -54,8 +52,8 @@ It also has what you would expect: a wide OS sandbox (Seatbelt on macOS,
 Landlock and seccomp on Linux, an AppContainer on Windows) with package
 registries reachable through an allowed-hosts proxy, one setting for how
 much runs without asking (Ask, Sandboxed or Full access), `/plan` for a
-read-only planning request, background jobs, a to-do
-list, web search and fetch when you enable them, MCP servers, image input,
+read-only planning request, background jobs, web search and fetch when you
+enable them, MCP servers, image input,
 rollback of the agent's changes, and resume.
 
 ## Install and update

@@ -21,10 +21,8 @@ project folder:
   ([runtime](runtime.md), [model contract](model-contract.md)).
 - **The sandbox.** Every tool that spawns a process runs under the OS's own
   confinement, with grants compiled once at session start ([sandbox](sandbox.md)).
-- **The helpers.** Cheap models that answer one question from inside a cell
-  or at a fixed point of a task: the scout (`find`), the reducer, the
-  checker, the acceptance list and the mender. Subagents take a whole goal
-  and run beside the task ([helpers](helpers.md)). A classifier, Jev,
+- **Subagents.** Another model loop that takes a whole goal and runs
+  beside the task ([subagents](subagents.md)). A classifier, Jev,
   answers typed questions in about two seconds in a live session
   ([decisions](decisions.md)). A task that stops producing anything ends
   on its own, without a model deciding so (`progress.rs`).

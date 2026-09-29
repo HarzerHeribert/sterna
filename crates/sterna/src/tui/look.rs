@@ -100,11 +100,11 @@ impl ScreenState {
                 HEARTBEAT
             })
     }
-    /// Whether anything on screen is changing state and so owes frames:
-    /// a result or a verdict settling, or work running behind the answer.
+    /// Whether anything on screen is changing state and so owes frames: a
+    /// result or a note settling.
     #[must_use]
-    pub fn settling_or_behind(&self) -> bool {
-        self.completion_tick.is_some() || self.note_landing.is_some() || !self.behind.is_empty()
+    pub fn settling(&self) -> bool {
+        self.completion_tick.is_some() || self.note_landing.is_some()
     }
     /// One frame's worth of settling: a landed result or verdict counts
     /// down and then goes still for good.
@@ -113,25 +113,14 @@ impl ScreenState {
             .note_landing
             .and_then(|(index, tick)| (tick + 1 < SETTLE_FRAMES).then_some((index, tick + 1)));
     }
-    /// Work behind the answer started (`running`) or ended.
-    pub fn lane(&mut self, name: &str, running: bool) {
-        if running {
-            self.behind.push(name.to_string());
-        } else if let Some(at) = self.behind.iter().position(|lane| lane == name) {
-            self.behind.remove(at);
-        }
-    }
-    /// A note just arrived: a verdict from the work behind the answer is
+    /// A note just arrived: a note the gate left beside the answer is
     /// emphasised for a few frames, then settles.
     pub fn landed_note(&mut self) {
         let Some(last) = self.history.len().checked_sub(1) else {
             return;
         };
-        let lane = matches!(
-            super::NoteKind::of(&self.history[last].text),
-            super::NoteKind::Checked | super::NoteKind::Flagged | super::NoteKind::Learned
-        );
-        if lane && self.motion_live() {
+        let flagged = super::NoteKind::of(&self.history[last].text) == super::NoteKind::Flagged;
+        if flagged && self.motion_live() {
             self.note_landing = Some((last, 0));
         }
     }
@@ -156,12 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn a_verdict_settles_and_a_notice_does_not() {
+    fn a_gate_note_settles_and_a_notice_does_not() {
         let mut s = ScreenState::default();
         s.note("Theme: amber");
         s.landed_note();
         assert!(s.note_landing.is_none());
-        s.note(format!("{}holds", super::super::history::CHECKED));
+        s.note(format!("{}no test ran", super::super::history::NOTED));
         s.landed_note();
         assert_eq!(s.note_landing, Some((1, 0)));
         for _ in 0..SETTLE_FRAMES {

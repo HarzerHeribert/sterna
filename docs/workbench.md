@@ -12,15 +12,12 @@ terminal is wide enough; Ctrl-B), and the **composer dock** at the
 bottom.
 
 - **The conversation is turns.** Your message under a bar labelled `you`,
-  exactly as you wrote it: the context Sterna sends with it (the Scout's
-  brief, the acceptance list) is the model's, not yours. Sterna's turn under
-  its mark. A cell is a card whose top edge carries its state and whose
-  bottom edge says how it ended; helpers hang under the card; notices are
-  tagged rows; a finished turn ends in an answer block with a stats line
-  and, on the latest turn, chips for what to do next.
-- **The Scout sits under the request it read**, above the work, as one
-  line once it has answered (`◇ PREFLIGHT · SCOUT  named 2 files  2.1s ▸`);
-  a click opens its report.
+  exactly as you wrote it: the context Sterna sends with it (the mode, an
+  approved plan) is the model's, not yours. Sterna's turn under its mark. A
+  cell is a card whose top edge carries its state and whose bottom edge
+  says how it ended; notices are tagged rows; a finished turn ends in an
+  answer block with a stats line and, on the latest turn, chips for what to
+  do next.
 - **Every line ends where the cards end.** Your turn, the answers, the words
   around a cell and the notes stop at the cards' right corner, so the text
   keeps the same padding on both sides at every width; tables and code keep
@@ -29,21 +26,13 @@ bottom.
 - **Nothing is cut with "…".** A cell's intent is normal text that wraps
   under its first word, the state word on the first line; your turn wraps
   between words, as the composer showed it.
-- **A check's note is one line**, `checked after the answer: cannot tell ·
-  11.2k tokens ▸`: the verdict and what the check used. A click opens its
-  reasons.
-- **The acceptance list** (`helpers.acceptance_list`) is one line of
-  progress, `≡ 4 of 7 met · 1 failed ▸`: under SO FAR in the session card,
-  or without the card as one chip at the far end of the dock's top edge.
-  Either opens the list in a panel, grouped by what needs attention first
-  (not met, could not check, open, met), each item with what its check
-  found and where the list came from. Files are read after every cell;
-  commands and judged items are decided when the model says it is done,
-  and only that check marks an item met.
+- **A note the completion gate left beside the answer is one line**,
+  `noted, not held: no test ran after the last change ▸`; a click opens the
+  rest of it.
 - **A cell shows what really happened.** The program the model wrote (a
   frame Sterna lowered from a direct tool call is marked as such), the calls
-  it actually made and how each ended, its output, its before/after diff
-  and its helpers. While a cell is still being written, each action gets a
+  it actually made and how each ended, its output and its before/after
+  diff. While a cell is still being written, each action gets a
   row with a live character count (`ui.stream = actions | code | raw`).
   Every cell carries the model's one-line description of what it is for.
   A summary of the model's reasoning is asked for on a task's first turn
@@ -81,15 +70,13 @@ surface behaves like every other.
 - Answers read as Markdown: strong and code text keep their tone without
   their markers, a code span is never broken at a wrap, fences and tables
   are shown as written, and a link opens after asking first.
-- A cell's helper calls are listed inside its card; the Helpers tab shows
-  each one's whole account. A cell `/rollback` undid says ↶ ROLLED BACK.
+- A cell `/rollback` undid says ↶ ROLLED BACK.
 
 | key | does |
 |---|---|
 | F2 | settings |
 | F3 | models |
 | F4 | the selected cell's before/after diff |
-| F5 | the selected cell's helpers |
 | Ctrl-O | expand the selected cell, else the newest that ran |
 | Alt-↑ / Alt-↓ | select the previous or next cell |
 | Ctrl-T | live telemetry and activity |
@@ -134,8 +121,7 @@ where its value comes from (bottom edge).
 
 Setup is a designed sheet, never a one-line prompt: `/login` (a
 subscription, an API key or your own endpoint, each with its warnings),
-`/key`, `/models` (the model navigator: main, helpers and subagents kept
-apart; connected subscriptions first; search; measured intelligence from
+`/key`, `/models` (the model navigator: main and subagents kept apart; connected subscriptions first; search; measured intelligence from
 the gateway where it exists, unknown where it does not), `/theme`,
 `/wizard` and `/settings`. A choice saves at once and Undo reverses it; see
 [configuration](configuration.md). The Sandbox sheet (the level chip) holds
@@ -173,15 +159,15 @@ from photographs; the credits are in the [README](../README.md#art).
 
 - **Nothing black on black.** Every surface keeps the terminal's own
   background; the terminal owns opacity and blur. Normal prose and returned
-  helper evidence are never muted; foreground roles are normal, accent,
-  failure, warning, success and muted technical detail.
+  evidence are never muted; foreground roles are normal, accent, failure,
+  warning, success and muted technical detail.
 - **Plain copy.** Say what happened in plain words, in one voice. No puns.
 - **Motion is decoration, not state.** `ui.motion` (full, calm, off)
   freezes decoration only; real state and elapsed times stay visible. The
   retired `ui.reduced_motion` is removed from a settings file with a
   one-time notice that names `/motion off`.
-- **Unknown stays unknown.** A missing measurement, an unfinished helper or
-  a context window nobody reported is shown as unknown, never as zero.
+- **Unknown stays unknown.** A missing measurement or a context window
+  nobody reported is shown as unknown, never as zero.
 - **The diff is this cell's.** Before/after this cell, not against `HEAD`
   and not a proposal; missing captured bytes are reported as missing.
 

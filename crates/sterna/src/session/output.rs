@@ -8,7 +8,6 @@ use crate::abi::lift::Family;
 use crate::abi::telemetry::{self as taxonomy, FailureKind, RequestCause};
 use crate::abi::{Dialect, Interface, Origin};
 use crate::contract::{Block, Message, Role};
-use crate::helpers::HelperRecord;
 use crate::runtime::observation::{ObservationStats, ReductionStats};
 use crate::runtime::outcome::{CellOutcomeKind, CellRecord, Ended};
 use crate::telemetry::RequestMeasurement;
@@ -52,7 +51,6 @@ struct ModelUsage {
     model: String,
     calls: u64,
     usage_known_calls: u64,
-    failed_calls: u64,
     usage: Usage,
 }
 
@@ -89,11 +87,7 @@ struct OriginStats {
     failures: KindCounts,
 }
 
-const ORIGINS: [Origin; 3] = [
-    Origin::AuthoredCell,
-    Origin::DirectTool,
-    Origin::LittleHelper,
-];
+const ORIGINS: [Origin; 2] = [Origin::AuthoredCell, Origin::DirectTool];
 
 const FAMILIES: [Family; 5] = [
     Family::Search,
@@ -146,12 +140,6 @@ struct Telemetry {
     started: Instant,
     parent: Usage,
     parent_models: Vec<ModelUsage>,
-    helpers: Usage,
-    helper_calls: u64,
-    helper_usage_known_calls: u64,
-    helper_failures: u64,
-    helper_models: Vec<ModelUsage>,
-    preflight_helpers: Vec<Value>,
     cells: u64,
     cell_failures: u64,
     tool_calls: u64,
@@ -161,7 +149,7 @@ struct Telemetry {
     direct_tool_calls: u64,
     direct_tools_by_name: BTreeMap<String, u64>,
     /// Indexed in [`ORIGINS`] order.
-    by_origin: [OriginStats; 3],
+    by_origin: [OriginStats; 2],
     single_intent_cells: u64,
     failures: KindCounts,
     shell_shaped: u64,
@@ -174,31 +162,10 @@ struct Telemetry {
     recovery: [CauseUsage; 4],
     current_cause: RequestCause,
     completion: Option<Value>,
-    /// What the gate noted without holding, and what the checker behind
-    /// the answer said (`after.rs`).
-    after_answer: Option<Value>,
     no_progress_notices: u64,
     stall_notices: u64,
-    acceptance: Option<Value>,
     capsule: Option<Value>,
     decisions: Option<Value>,
-    /// Every candidate a Scout ranking answered (2644), across the whole
-    /// session -- counted here rather than on `TaskState` because the
-    /// ranking runs in `preflight_block`, before a task exists to carry it.
-    helpers_ranked: u32,
-    /// Candidates a Scout ranking answered below the floor (2644).
-    helpers_skipped: u32,
-    /// Judged helper returns, from either call site the judge reaches: the
-    /// preflight Scout's own result and the completion gate's fresh
-    /// checker (2645).
-    helpers_checked: u32,
-    /// Judged returns whose `noul` crossed the floor -- counted the same in
-    /// `shadow` and `on`, since `shadow` asks and counts every question
-    /// this project's decisions make.
-    helpers_flagged: u32,
-    /// Total latency of every ranking and judge request folded into the
-    /// four counters above.
-    helpers_latency_ms: u64,
 }
 
 impl Default for Telemetry {
@@ -207,12 +174,6 @@ impl Default for Telemetry {
             started: Instant::now(),
             parent: Usage::default(),
             parent_models: Vec::new(),
-            helpers: Usage::default(),
-            helper_calls: 0,
-            helper_usage_known_calls: 0,
-            helper_failures: 0,
-            helper_models: Vec::new(),
-            preflight_helpers: Vec::new(),
             cells: 0,
             cell_failures: 0,
             tool_calls: 0,
@@ -232,17 +193,10 @@ impl Default for Telemetry {
             recovery: Default::default(),
             current_cause: RequestCause::Implementation,
             completion: None,
-            after_answer: None,
             no_progress_notices: 0,
             stall_notices: 0,
-            acceptance: None,
             capsule: None,
             decisions: None,
-            helpers_ranked: 0,
-            helpers_skipped: 0,
-            helpers_checked: 0,
-            helpers_flagged: 0,
-            helpers_latency_ms: 0,
         }
     }
 }
@@ -348,28 +302,10 @@ fn usage_model_value(model: &ModelUsage) -> Value {
     value
 }
 
-fn helper_model_value(model: &ModelUsage) -> Value {
-    let mut value = usage_model_value(model);
-    value["calls"] = json!(model.calls);
-    value["usage_known_calls"] = json!(model.usage_known_calls);
-    value["request_count_coverage_complete"] = json!(model.usage_known_calls == model.calls);
-    value["failed_calls"] = json!(model.failed_calls);
-    value
-}
-
 fn telemetry_value(telemetry: &Telemetry) -> Value {
-    let provider_requests = telemetry
-        .parent
-        .requests
-        .saturating_add(telemetry.helpers.requests);
-    let reported_requests = telemetry
-        .parent
-        .reported_requests
-        .saturating_add(telemetry.helpers.reported_requests);
-    let responses = telemetry
-        .parent
-        .responses
-        .saturating_add(telemetry.helpers.responses);
+    let provider_requests = telemetry.parent.requests;
+    let reported_requests = telemetry.parent.reported_requests;
+    let responses = telemetry.parent.responses;
     let mut parent = usage_value(&telemetry.parent);
     parent["models"] = Value::Array(
         telemetry
@@ -378,32 +314,8 @@ fn telemetry_value(telemetry: &Telemetry) -> Value {
             .map(usage_model_value)
             .collect(),
     );
-    let mut helpers = usage_value(&telemetry.helpers);
-    helpers["calls"] = json!(telemetry.helper_calls);
-    helpers["usage_known_calls"] = json!(telemetry.helper_usage_known_calls);
-    helpers["request_count_coverage_complete"] =
-        json!(telemetry.helper_usage_known_calls == telemetry.helper_calls);
-    helpers["coverage_complete"] = json!(
-        telemetry.helper_usage_known_calls == telemetry.helper_calls
-            && telemetry.helpers.reported_requests == telemetry.helpers.requests
-            && telemetry.helpers.cache_read_reported_requests
-                == telemetry.helpers.reported_requests
-            && telemetry.helpers.cache_creation_reported_requests
-                == telemetry.helpers.reported_requests
-    );
-    helpers["failed_calls"] = json!(telemetry.helper_failures);
-    helpers["models"] = Value::Array(
-        telemetry
-            .helper_models
-            .iter()
-            .map(helper_model_value)
-            .collect(),
-    );
     json!({
-        // Time to the answer: the wait for the work behind it is its own
-        // figure (`after_answer.wait_ms`), not the task's.
-        "wall_time_ms": (telemetry.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
-            .saturating_sub(telemetry.after_answer.as_ref().and_then(|a| a["wait_ms"].as_u64()).unwrap_or(0)),
+        "wall_time_ms": telemetry.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         "cells": {"executed": telemetry.cells, "failed": telemetry.cell_failures},
         "tools": {"calls": telemetry.tool_calls, "failures": telemetry.tool_failures},
         "provider_requests": {
@@ -412,22 +324,17 @@ fn telemetry_value(telemetry: &Telemetry) -> Value {
             "requests_without_successful_response": provider_requests.saturating_sub(responses),
             "reported": reported_requests,
             "coverage_complete": reported_requests == provider_requests
-                && telemetry.helper_usage_known_calls == telemetry.helper_calls
                 && telemetry.parent.cache_read_reported_requests == telemetry.parent.reported_requests
-                && telemetry.parent.cache_creation_reported_requests == telemetry.parent.reported_requests
-                && telemetry.helpers.cache_read_reported_requests == telemetry.helpers.reported_requests
-                && telemetry.helpers.cache_creation_reported_requests == telemetry.helpers.reported_requests,
+                && telemetry.parent.cache_creation_reported_requests == telemetry.parent.reported_requests,
         },
         "tokens": {
-            "known_total": known_tokens(&telemetry.parent).saturating_add(known_tokens(&telemetry.helpers)),
-            "input_tokens": telemetry.parent.input_tokens.saturating_add(telemetry.helpers.input_tokens),
-            "output_tokens": telemetry.parent.output_tokens.saturating_add(telemetry.helpers.output_tokens),
-            "cache_read_input_tokens": telemetry.parent.cache_read_input_tokens.saturating_add(telemetry.helpers.cache_read_input_tokens),
-            "cache_creation_input_tokens": telemetry.parent.cache_creation_input_tokens.saturating_add(telemetry.helpers.cache_creation_input_tokens),
+            "known_total": known_tokens(&telemetry.parent),
+            "input_tokens": telemetry.parent.input_tokens,
+            "output_tokens": telemetry.parent.output_tokens,
+            "cache_read_input_tokens": telemetry.parent.cache_read_input_tokens,
+            "cache_creation_input_tokens": telemetry.parent.cache_creation_input_tokens,
             "parent": parent,
-            "helpers": helpers,
         },
-        "preflight_helpers": telemetry.preflight_helpers,
         "interface": {
             "mode": telemetry.interface.map(|(mode, _)| mode.as_str()),
             "dialect": telemetry.interface.map(|(_, dialect)| dialect.as_str()),
@@ -477,42 +384,13 @@ fn telemetry_value(telemetry: &Telemetry) -> Value {
             "repair_usage": telemetry.recovery[cause_index(RequestCause::Repair)].value(),
         },
         "completion": telemetry.completion,
-        "after_answer": telemetry.after_answer,
         "progress": {
             "no_progress_notices": telemetry.no_progress_notices,
             "stall_notices": telemetry.stall_notices,
         },
-        "acceptance": telemetry.acceptance,
         "capsule": telemetry.capsule,
-        "decisions": decisions_value(telemetry),
+        "decisions": telemetry.decisions,
     })
-}
-
-/// `telemetry.decisions` with `helpers: {ranked, skipped, checked, flagged,
-/// latency_ms}` folded in (2644, 2645). Those five counters live on
-/// [`Telemetry`] itself rather than `TaskState`: the Scout's own ranking
-/// happens in `preflight_block`, before a task exists to carry it, so they
-/// are recorded here at the point they happen ([`helpers_ranking`],
-/// [`helpers_checked`]) and merged in at render time instead of round-
-/// tripping through the per-task `decisions_telemetry` this forwards
-/// otherwise verbatim.
-fn decisions_value(telemetry: &Telemetry) -> Value {
-    let Some(mut decisions) = telemetry.decisions.clone() else {
-        return Value::Null;
-    };
-    if let Some(object) = decisions.as_object_mut() {
-        object.insert(
-            "helpers".to_string(),
-            json!({
-                "ranked": telemetry.helpers_ranked,
-                "skipped": telemetry.helpers_skipped,
-                "checked": telemetry.helpers_checked,
-                "flagged": telemetry.helpers_flagged,
-                "latency_ms": telemetry.helpers_latency_ms,
-            }),
-        );
-    }
-    decisions
 }
 
 fn by_origin(telemetry: &Telemetry, render: impl Fn(&OriginStats) -> Value) -> Value {
@@ -676,85 +554,6 @@ pub(super) fn parent_response(measurement: &RequestMeasurement) {
     });
 }
 
-fn add_helper_usage(usage: &mut Usage, record: &HelperRecord) {
-    let measured = &record.usage;
-    usage.requests = usage.requests.saturating_add(u64::from(measured.requests));
-    usage.responses = usage
-        .responses
-        .saturating_add(u64::from(measured.responses));
-    usage.reported_requests = usage
-        .reported_requests
-        .saturating_add(u64::from(measured.reported_requests));
-    usage.input_tokens = usage.input_tokens.saturating_add(measured.input_tokens);
-    usage.output_tokens = usage.output_tokens.saturating_add(measured.output_tokens);
-    usage.cache_read_input_tokens = usage
-        .cache_read_input_tokens
-        .saturating_add(measured.cache_read_input_tokens);
-    usage.cache_creation_input_tokens = usage
-        .cache_creation_input_tokens
-        .saturating_add(measured.cache_creation_input_tokens);
-    usage.input_reported_requests = usage
-        .input_reported_requests
-        .saturating_add(u64::from(measured.reported_requests));
-    usage.output_reported_requests = usage
-        .output_reported_requests
-        .saturating_add(u64::from(measured.reported_requests));
-    usage.cache_read_reported_requests = usage
-        .cache_read_reported_requests
-        .saturating_add(u64::from(measured.cache_read_reported_requests));
-    usage.cache_creation_reported_requests = usage
-        .cache_creation_reported_requests
-        .saturating_add(u64::from(measured.cache_creation_reported_requests));
-}
-
-fn helper(call_site: &str, record: &HelperRecord) {
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        state.telemetry.helper_calls = state.telemetry.helper_calls.saturating_add(1);
-        if record.usage.coverage_known {
-            state.telemetry.helper_usage_known_calls =
-                state.telemetry.helper_usage_known_calls.saturating_add(1);
-        }
-        if !record.outcome.ok {
-            state.telemetry.helper_failures = state.telemetry.helper_failures.saturating_add(1);
-        }
-        add_helper_usage(&mut state.telemetry.helpers, record);
-        let model_name = if record.usage.model.is_empty() {
-            "unknown"
-        } else {
-            &record.usage.model
-        };
-        let model = model(&mut state.telemetry.helper_models, model_name);
-        model.calls = model.calls.saturating_add(1);
-        if record.usage.coverage_known {
-            model.usage_known_calls = model.usage_known_calls.saturating_add(1);
-        }
-        if !record.outcome.ok {
-            model.failed_calls = model.failed_calls.saturating_add(1);
-        }
-        add_helper_usage(&mut model.usage, record);
-        if call_site == "preflight" {
-            state.telemetry.preflight_helpers.push(json!({
-                "call_site": call_site,
-                "record": record,
-            }));
-        }
-    });
-    emit("helper", json!({"call_site": call_site, "record": record}));
-}
-
-pub(super) fn preflight(record: &HelperRecord) {
-    helper("preflight", record);
-}
-
-/// The acceptance lister ran before the first turn.
-pub(super) fn acceptance_helper(record: &HelperRecord) {
-    helper("acceptance", record);
-}
-
 /// Counts a stall notice at the head of a feedback.
 pub(super) fn stall_notice() {
     STATE.with(|state| {
@@ -762,26 +561,6 @@ pub(super) fn stall_notice() {
             state.telemetry.stall_notices = state.telemetry.stall_notices.saturating_add(1);
         }
     });
-}
-
-/// Stores the acceptance list's latest evaluation on the result and emits
-/// it as one `acceptance` event; a later evaluation replaces it.
-pub(super) fn acceptance(value: Value) {
-    if !active() {
-        return;
-    }
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            state.telemetry.acceptance = Some(value.clone());
-        }
-    });
-    emit("acceptance", value);
-}
-
-pub(super) fn cell_helpers(records: &[HelperRecord]) {
-    for record in records {
-        helper("cell", record);
-    }
 }
 
 pub(super) fn message(message: &Message) {
@@ -952,52 +731,6 @@ pub(super) fn cell_frame(
 }
 
 /// Records the findings the gate noted without holding the answer.
-pub(super) fn completion_notes(notes: &[String]) {
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            let entry = state
-                .telemetry
-                .after_answer
-                .get_or_insert_with(|| json!({"notes": [], "checks": []}));
-            if let Some(list) = entry["notes"].as_array_mut() {
-                list.extend(notes.iter().map(|note| json!(note)));
-            }
-        }
-    });
-}
-
-/// Records the checks that finished behind the answer.
-/// `wait_ms` is how long the exit waited for them: the answer was already
-/// out, so time-to-answer is the run's wall time less it.
-pub(super) fn after_checks(
-    notes: &[super::after::Note],
-    learned: &[String],
-    failed: &[String],
-    wait_ms: u64,
-) {
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            let entry = state
-                .telemetry
-                .after_answer
-                .get_or_insert_with(|| json!({"notes": [], "checks": []}));
-            entry["learned"] = json!(learned);
-            entry["wait_ms"] = json!(wait_ms);
-            entry["failed"] = json!(failed);
-            if let Some(list) = entry["checks"].as_array_mut() {
-                list.extend(notes.iter().map(|note| {
-                    json!({
-                        "verdict": note.verdict,
-                        "text": note.text,
-                        "input_tokens": note.record.usage.input_tokens,
-                        "output_tokens": note.record.usage.output_tokens,
-                    })
-                }));
-            }
-        }
-    });
-}
-
 /// Records the completion claim and what verified it.
 pub(super) fn completion(claimed: bool, verified: bool, findings: &[String], deferred: u32) {
     STATE.with(|state| {
@@ -1033,42 +766,6 @@ pub(super) fn decisions(value: Option<Value>) {
     STATE.with(|state| {
         if let Some(state) = state.borrow_mut().as_mut() {
             state.telemetry.decisions = Some(value);
-        }
-    });
-}
-
-/// Counts one Scout candidate ranking (2644): every candidate the question
-/// actually answered, however many of them cleared the floor, plus the
-/// request's own latency -- folded into `decisions.helpers` at render time
-/// ([`decisions_value`]).
-pub(super) fn helpers_ranking(ranking: &crate::helpers::ScoutRanking) {
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            let telemetry = &mut state.telemetry;
-            telemetry.helpers_ranked = telemetry.helpers_ranked.saturating_add(ranking.ranked);
-            telemetry.helpers_skipped = telemetry.helpers_skipped.saturating_add(ranking.skipped);
-            telemetry.helpers_latency_ms = telemetry
-                .helpers_latency_ms
-                .saturating_add(ranking.latency_ms);
-        }
-    });
-}
-
-/// Counts one judged helper return (2645), from either call site the judge
-/// reaches -- the preflight Scout's own result or the completion gate's
-/// fresh checker. `flagged` is the judge's own signal (`noul <= floor`),
-/// counted the same in `shadow` and `on`: `shadow` asks and counts every
-/// question this project's decisions make, and never changes what a
-/// helper's own result carries.
-pub(super) fn helpers_checked(noul: f64, floor: f64, latency_ms: u64) {
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            let telemetry = &mut state.telemetry;
-            telemetry.helpers_checked = telemetry.helpers_checked.saturating_add(1);
-            if noul <= floor {
-                telemetry.helpers_flagged = telemetry.helpers_flagged.saturating_add(1);
-            }
-            telemetry.helpers_latency_ms = telemetry.helpers_latency_ms.saturating_add(latency_ms);
         }
     });
 }
@@ -1211,11 +908,9 @@ mod tests {
                 repeated_observations: 0,
             },
             ReductionStats {
-                attempted: 1,
-                made: 1,
+                ruled: 1,
                 bytes_in: 5_000,
                 bytes_out: 200,
-                ..ReductionStats::default()
             },
             true,
         );
@@ -1255,7 +950,7 @@ mod tests {
         assert_eq!(value["observation"]["bytes_suppressed"], 300);
         assert_eq!(value["observation"]["full_inventories"], 1);
         assert_eq!(value["observation"]["repeated_observations"], 1);
-        assert_eq!(value["reductions"]["attempted"], 1);
+        assert_eq!(value["reductions"]["ruled"], 1);
         assert_eq!(value["reductions"]["bytes_out"], 200);
         let origins: Vec<Value> = STATE.with(|state| {
             state

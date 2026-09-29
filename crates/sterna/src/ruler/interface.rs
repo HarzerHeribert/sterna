@@ -26,7 +26,6 @@ pub const RESULT_FILE: &str = "sterna-result.json";
 pub struct Metrics {
     pub parent_requests: Option<u64>,
     pub parent_known_tokens: Option<u64>,
-    pub helper_known_tokens: Option<u64>,
     pub execute_cell_calls: Option<u64>,
     pub direct_tool_calls: Option<u64>,
     pub frames_failed: Option<u64>,
@@ -54,7 +53,6 @@ impl Metrics {
         Metrics {
             parent_requests: at(&["tokens", "parent", "requests"]).and_then(Value::as_u64),
             parent_known_tokens: at(&["tokens", "parent", "known_tokens"]).and_then(Value::as_u64),
-            helper_known_tokens: at(&["tokens", "helpers", "known_tokens"]).and_then(Value::as_u64),
             execute_cell_calls: at(&["interface", "provider_selected", "execute_cell_calls"])
                 .and_then(Value::as_u64),
             direct_tool_calls: at(&["interface", "provider_selected", "direct_tool_calls"])
@@ -74,15 +72,6 @@ impl Metrics {
             wall_time_ms: at(&["wall_time_ms"]).and_then(Value::as_u64),
             completion_verified: at(&["completion", "verified"]).and_then(Value::as_bool),
         }
-    }
-
-    /// Parent known tokens plus `ratios.luna` times helper known tokens.
-    /// Absent when either lane is absent: a spend with one lane unread is
-    /// not a spend.
-    pub fn weighted_spend(&self, ratios: &CreditRatios) -> Option<f64> {
-        let parent = self.parent_known_tokens? as f64;
-        let helpers = self.helper_known_tokens? as f64;
-        Some(parent + ratios.luna * helpers)
     }
 }
 
@@ -105,68 +94,6 @@ fn lookup<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(value, |node, key| node.get(key))
 }
 
-/// Credit ratios for the weighted-spend dimension: how much one helper
-/// token costs relative to one parent token. Both default to 1.0, and a
-/// report built from defaults says "assumed ratio" -- nothing here is billed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CreditRatios {
-    pub luna: f64,
-    pub terra: f64,
-}
-
-impl Default for CreditRatios {
-    fn default() -> Self {
-        CreditRatios {
-            luna: 1.0,
-            terra: 1.0,
-        }
-    }
-}
-
-impl CreditRatios {
-    /// Parses `--credit-ratio luna=0.2,terra=0.1`. A key other than `luna`
-    /// or `terra`, a value that is not a non-negative number, or a key given
-    /// twice is refused.
-    pub fn parse(text: &str) -> Result<CreditRatios, String> {
-        let mut ratios = CreditRatios::default();
-        let mut seen = Vec::new();
-        for entry in text.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-            let Some((key, value)) = entry.split_once('=') else {
-                return Err(format!(
-                    "--credit-ratio entry `{entry}` is not <lane>=<ratio> (want luna=<n>,terra=<n>)"
-                ));
-            };
-            let ratio: f64 = value
-                .trim()
-                .parse()
-                .ok()
-                .filter(|r: &f64| r.is_finite() && *r >= 0.0)
-                .ok_or_else(|| {
-                    format!("--credit-ratio {key} wants a non-negative number, got `{value}`")
-                })?;
-            let key = key.trim();
-            if seen.contains(&key) {
-                return Err(format!("--credit-ratio names {key} twice"));
-            }
-            seen.push(key);
-            match key {
-                "luna" => ratios.luna = ratio,
-                "terra" => ratios.terra = ratio,
-                other => {
-                    return Err(format!(
-                        "--credit-ratio knows luna and terra, not `{other}`"
-                    ));
-                }
-            }
-        }
-        Ok(ratios)
-    }
-
-    pub fn is_assumed(&self) -> bool {
-        *self == CreditRatios::default()
-    }
-}
-
 /// The dimensions a hybrid arm is judged on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dimension {
@@ -175,7 +102,7 @@ pub enum Dimension {
     RepairRequests,
     FramesFailed,
     ObservationBytes,
-    WeightedSpend,
+    Spend,
 }
 
 impl Dimension {
@@ -185,7 +112,7 @@ impl Dimension {
         Dimension::RepairRequests,
         Dimension::FramesFailed,
         Dimension::ObservationBytes,
-        Dimension::WeightedSpend,
+        Dimension::Spend,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -195,7 +122,7 @@ impl Dimension {
             Dimension::RepairRequests => "repair requests",
             Dimension::FramesFailed => "frames failed",
             Dimension::ObservationBytes => "observation bytes",
-            Dimension::WeightedSpend => "weighted spend",
+            Dimension::Spend => "spend",
         }
     }
 
@@ -205,7 +132,7 @@ impl Dimension {
         matches!(self, Dimension::VerifiedPasses)
     }
 
-    fn measure(self, metrics: &Metrics, ratios: &CreditRatios) -> Option<f64> {
+    fn measure(self, metrics: &Metrics) -> Option<f64> {
         match self {
             Dimension::VerifiedPasses => metrics
                 .completion_verified
@@ -214,7 +141,7 @@ impl Dimension {
             Dimension::RepairRequests => metrics.repair_requests.map(|n| n as f64),
             Dimension::FramesFailed => metrics.frames_failed.map(|n| n as f64),
             Dimension::ObservationBytes => metrics.observation_bytes_rendered.map(|n| n as f64),
-            Dimension::WeightedSpend => metrics.weighted_spend(ratios),
+            Dimension::Spend => metrics.parent_known_tokens.map(|n| n as f64),
         }
     }
 }
@@ -241,7 +168,7 @@ pub struct RegretRow {
 
 /// Six rows per task that has a `sterna:hybrid` arm, in task then dimension
 /// order. Attempts of rows that are not `sterna:<mode>` arms are ignored.
-pub fn regret(attempts: &[Attempt], ratios: &CreditRatios) -> Vec<RegretRow> {
+pub fn regret(attempts: &[Attempt]) -> Vec<RegretRow> {
     let mut by_task: BTreeMap<&'static str, BTreeMap<&str, Vec<&Attempt>>> = BTreeMap::new();
     for attempt in attempts.iter().filter(|a| a.interface.is_some()) {
         by_task
@@ -264,7 +191,7 @@ pub fn regret(attempts: &[Attempt], ratios: &CreditRatios) -> Vec<RegretRow> {
                 let measured: Vec<f64> = group
                     .iter()
                     .filter_map(|a| a.metrics.as_ref())
-                    .filter_map(|m| dimension.measure(m, ratios))
+                    .filter_map(|m| dimension.measure(m))
                     .collect();
                 excluded += (group.len() - measured.len()) as u32;
                 if !measured.is_empty() {

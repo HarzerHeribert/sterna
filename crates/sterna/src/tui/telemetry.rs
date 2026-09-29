@@ -1,6 +1,6 @@
 //! Local instruments. Measurements and decorative motion have separate inputs.
 //!
-//! **Drawn in the workbench's roles**: accent, helper, failure, muted, rule
+//! **Drawn in the workbench's roles**: accent, evidence, failure, muted, rule
 //! and the one filled chip, in the chosen theme and on the terminal's own
 //! ground. Named ANSI colours made this the one screen that ignored the
 //! theme, and grey text all but vanished on a light terminal.
@@ -59,17 +59,6 @@ fn metric(value: Option<u64>) -> String {
         .unwrap_or_else(|| "unreported".into())
 }
 
-fn helper_metric(value: u64, reported: u32, expected: u32, known_calls: u32, calls: u32) -> String {
-    if known_calls == 0 || reported == 0 && expected > 0 {
-        "unreported".into()
-    } else if reported < expected {
-        format!("{} ({reported}/{expected})", super::compact_tokens(value))
-    } else if known_calls < calls {
-        format!("{} (known subtotal)", super::compact_tokens(value))
-    } else {
-        super::compact_tokens(value)
-    }
-}
 fn graph(samples: &[usize], width: usize, height: usize) -> Vec<Line<'static>> {
     let glyphs = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let tail = &samples[samples.len().saturating_sub(width)..];
@@ -89,7 +78,7 @@ fn graph(samples: &[usize], width: usize, height: usize) -> Vec<Line<'static>> {
                     if i + 1 == tail.len() {
                         ink(Tone::Accent)
                     } else {
-                        ink(Tone::Helper)
+                        ink(Tone::Evidence)
                     },
                 ));
             }
@@ -103,130 +92,21 @@ fn graph(samples: &[usize], width: usize, height: usize) -> Vec<Line<'static>> {
 /// to carry `cumulative task spend · no cap`, `counted: reported`, `coverage
 /// partial`, `responses 9/9 · calls 3/3` and `cache create unreported` all at
 /// once -- five lines about the accounting's own confidence, four of which
-/// said the healthy thing and so said nothing. What survives is the total,
-/// the split a reader actually asked for, and the two caveats that are true
-/// rarely enough to mean something. The dropped detail is not gone: it is in
-/// [`task_spend_detail`], which the expanded view (Ctrl-T) draws.
+/// said the healthy thing and so said nothing. What survives is the total
+/// and the one caveat that is true rarely enough to mean something.
 ///
-/// **The caveats fold into the number rather than sitting beside it.** A
-/// partial figure carries `+`, read as *at least this much*, because a
-/// separate line saying "partial" leaves the headline looking exact; and
-/// provenance appears only when it is not the gateway's own row, since
+/// Provenance appears only when it is not the gateway's own row, since
 /// `reported` on every session is what makes `estimated` invisible.
-fn task_spend(notebook: &Notebook, _width: usize) -> Vec<Line<'static>> {
+fn task_spend(notebook: &Notebook) -> Vec<Line<'static>> {
     let Some(tokens) = notebook.tokens.as_ref() else {
         return vec![muted("No task spend yet")];
     };
-    let partial = tokens.helpers.calls > 0 && !tokens.helpers.complete();
     let mut lines = vec![Line::styled(
-        format!(
-            "Σ {}{} tokens",
-            super::compact_tokens(tokens.used),
-            if partial { "+" } else { "" }
-        ),
+        format!("Σ {} tokens", super::compact_tokens(tokens.used)),
         ink(Tone::Accent),
     )];
-    if tokens.helpers.calls > 0 {
-        // One helper model is the ordinary case, and then its name belongs on
-        // the split rather than on a line of its own repeating the same
-        // figure. Several models earn their own rows.
-        let single = match tokens.helpers.models.as_slice() {
-            [only] if !only.model.is_empty() => Some(only.model.as_str()),
-            _ => None,
-        };
-        lines.push(muted(format!(
-            "parent {} · helpers {}{}",
-            super::compact_tokens(tokens.parent_used),
-            super::compact_tokens(tokens.helpers.used),
-            single.map(|name| format!(" · {name}")).unwrap_or_default()
-        )));
-        if single.is_none() {
-            for model in &tokens.helpers.models {
-                let name = if model.model.is_empty() {
-                    "model unreported"
-                } else {
-                    &model.model
-                };
-                lines.push(muted(format!(
-                    "{name} · {}{}",
-                    super::compact_tokens(model.used),
-                    if model.complete() { "" } else { "+" }
-                )));
-            }
-        }
-    }
     if tokens.counted != super::Counted::Gateway {
         lines.push(muted(tokens.counted.as_str()));
-    }
-    lines
-}
-
-/// The spend panel with its coverage arithmetic, for the expanded view.
-///
-/// Everything the rail sheds is here, where a reader went looking for it:
-/// per-model input and output, cache read and creation, and the reported
-/// fractions behind a `+`. A figure nobody reported is omitted rather than
-/// printed as `unreported` -- an absent line and a line saying "absent" carry
-/// the same fact, and only one of them costs a row.
-fn task_spend_detail(notebook: &Notebook, width: usize) -> Vec<Line<'static>> {
-    let mut lines = task_spend(notebook, width);
-    let Some(tokens) = notebook.tokens.as_ref() else {
-        return lines;
-    };
-    for model in &tokens.helpers.models {
-        let name = if model.model.is_empty() {
-            "model unreported"
-        } else {
-            &model.model
-        };
-        lines.push(muted(format!(
-            "{name} · {} of {} calls counted",
-            model.usage_known_calls, model.calls
-        )));
-        lines.push(muted(format!(
-            "in {} · out {}",
-            helper_metric(
-                model.input_tokens,
-                model.reported_requests,
-                model.requests,
-                model.usage_known_calls,
-                model.calls,
-            ),
-            helper_metric(
-                model.output_tokens,
-                model.reported_requests,
-                model.requests,
-                model.usage_known_calls,
-                model.calls,
-            )
-        )));
-        // **`unreported` is not `0`, and this view is where that matters.**
-        // A helper that reported its tokens and not its cache figures is a
-        // different fact from one that cached nothing, and a reader who
-        // opened the instruments is the reader entitled to the difference --
-        // `telemetry_calls_missing_cache_classes_unreported_instead_of_zero`
-        // exists because that distinction was once lost. So both classes are
-        // always drawn here, however they came back.
-        lines.push(muted(format!(
-            "cache read {}",
-            helper_metric(
-                model.cache_read_input_tokens,
-                model.cache_read_reported_requests,
-                model.reported_requests,
-                model.usage_known_calls,
-                model.calls,
-            )
-        )));
-        lines.push(muted(format!(
-            "cache create {}",
-            helper_metric(
-                model.cache_creation_input_tokens,
-                model.cache_creation_reported_requests,
-                model.reported_requests,
-                model.usage_known_calls,
-                model.calls,
-            )
-        )));
     }
     lines
 }
@@ -358,7 +238,7 @@ pub(super) fn rail(
     } else {
         "02 / TASK SPEND"
     }));
-    lines.extend(task_spend(notebook, width.min(30)));
+    lines.extend(task_spend(notebook));
     // Inbox, batches and handlers: **a zero earns no row.** All three are
     // zero for the whole of an ordinary session, and three zeroes across two
     // lines is the shape a reader learns to skip -- which is how they come to
@@ -465,7 +345,7 @@ fn execution(conversation: &Conversation, notebook: &Notebook, cell: usize) -> V
             let tone = if row.contains(" · failed") || row.contains(" · denied") {
                 Tone::Failure
             } else {
-                Tone::Helper
+                Tone::Evidence
             };
             lines.push(Line::styled(row.to_owned(), ink(tone)));
         }
@@ -684,7 +564,7 @@ pub(crate) fn expanded(
     ));
     instruments.push(Line::default());
     instruments.push(label("03 / TASK SPEND"));
-    instruments.extend(task_spend_detail(notebook, usize::from(left.width).min(34)));
+    instruments.extend(task_spend(notebook));
     if wide {
         instruments.push(Line::default());
         instruments.push(label("04 / REQUEST HISTORY"));
@@ -774,11 +654,11 @@ mod tests {
     #[test]
     fn telemetry_wraps_between_words() {
         let rows = wrap(
-            vec![Line::from("parent 2.1k · helpers 6.2k · helper-tier")],
-            38,
+            vec![Line::from("parent 2.1k · subagents 6.2k · subagent-tier")],
+            40,
         );
         let text: Vec<String> = rows.iter().map(ToString::to_string).collect();
-        assert_eq!(text, ["parent 2.1k · helpers 6.2k ·", "helper-tier"]);
+        assert_eq!(text, ["parent 2.1k · subagents 6.2k ·", "subagent-tier"]);
     }
 
     /// A changed file is named by its real path, and a new or deleted one

@@ -101,7 +101,7 @@ fn a_start_moves_the_old_folders_once_with_everything_in_them() {
     write(&old_global.join("AGENTS.md"), "Prefer small commits.\n");
     write(
         &old_project.join("config.toml"),
-        "[helpers]\nmodel = \"project-helper\"\n",
+        "[agents]\nmodel = \"project-agent\"\n",
     );
     write(
         &old_project.join("sessions/s1.jsonl"),
@@ -136,7 +136,7 @@ fn a_start_moves_the_old_folders_once_with_everything_in_them() {
     );
     assert_eq!(
         read(&new_project.join("config.toml")),
-        "[helpers]\nmodel = \"project-helper\"\n"
+        "[agents]\nmodel = \"project-agent\"\n"
     );
     assert_eq!(
         read(&new_project.join("sessions/s1.jsonl")),
@@ -155,7 +155,7 @@ fn a_start_moves_the_old_folders_once_with_everything_in_them() {
         "the folder the checks left is empty and goes"
     );
     assert!(
-        stdout.contains("global-model") && stdout.contains("project-helper"),
+        stdout.contains("global-model") && stdout.contains("project-agent"),
         "the moved settings are the ones read: {stdout}"
     );
 

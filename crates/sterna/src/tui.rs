@@ -18,7 +18,6 @@ pub use selection::Selection;
 pub(crate) use selection::draw as draw_selection;
 
 pub mod form;
-mod lane;
 mod look;
 pub(crate) mod theme;
 pub use form::Form;
@@ -37,8 +36,6 @@ use regions::{
 use status::{compact_tokens, context_summary, footer_row};
 pub(crate) mod telemetry;
 pub use controls::{Assignment, Catalogue, ModelGroup, Panel, PanelRow, StatusLine, TierModels};
-pub(crate) use lane::helper_in_flight;
-use lane::{helper_fold, helper_lane, push_helper_lane};
 pub use telemetry::Pulse;
 
 use crate::commands::{BUILT_INS, BuiltIn};
@@ -49,7 +46,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::contract::{Block as ContentBlock, Conversation, Message, Role, ServedBy};
-use crate::helpers::HelperRecord;
 use crate::prompt::{Extracted, extract_program};
 use crate::runtime::handles::{HandleTable, render_table};
 use crate::runtime::preview::PREVIEW_TOKEN_CAP;
@@ -83,15 +79,13 @@ pub struct ScreenState {
     /// startup line and `sterna doctor` say it in full on every width.
     pub confinement: Option<String>,
     pub network: Option<String>,
-    /// Whether the little helpers are configured to run, and how work is
-    /// handed to a subagent -- the two facts the status strip offers as
-    /// controls.
+    /// How work is handed to a subagent -- the fact the status strip offers
+    /// as a control.
     ///
-    /// They are on the screen's own state rather than read from the config
-    /// at draw time because the renderer may not touch a `RefCell` the
-    /// session thread owns; the session sets them when it starts and
-    /// whenever they change.
-    pub helpers_on: bool,
+    /// It is on the screen's own state rather than read from the config at
+    /// draw time because the renderer may not touch a `RefCell` the session
+    /// thread owns; the session sets it when it starts and whenever it
+    /// changes.
     pub subagents: Option<String>,
     pub connected: Option<bool>,
     pub input: String,
@@ -213,19 +207,9 @@ pub struct ScreenState {
     /// carry `after == 0`, so only the moment they were produced tells them
     /// apart. `None` means nothing has frozen it yet.
     pub startup_notes: Option<usize>,
-    /// The completion gate's recap of the task just accepted, when
-    /// `[helpers] completion = "recap"` asked for one.
-    ///
-    /// `None` -- the silent default, no helper model, or a call that never
-    /// came back -- renders nothing at all, and neither does a record that
-    /// failed: a recap must never replace or delay the answer it follows.
-    /// The caller clears it when the next task begins.
-    pub recap: Option<HelperRecord>,
     /// How much moves (`ui.motion`); `reduced_motion` is kept equal to `Off`.
     pub motion: Motion,
-    /// Work running behind the answer (the checker, the notes writer), by name.
-    pub behind: Vec<String>,
-    /// A verdict that just landed in `history`, and its settle frame.
+    /// A note that just landed in `history`, and its settle frame.
     pub note_landing: Option<(usize, usize)>,
     /// What is shown of a cell while the model is still writing it.
     pub stream: Stream,
@@ -522,7 +506,7 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
             (
                 format!("/{}", command.name()),
                 match command {
-                    BuiltIn::Model => "set the parent, helper or subagent model",
+                    BuiltIn::Model => "set the parent or subagent model",
                     BuiltIn::Models => "browse models by agent, provider or intelligence",
                     BuiltIn::Login => "sign in: a subscription, an API key or your own endpoint",
                     BuiltIn::Setup => "set Sterna up: sign in, models for each workload, Jev",
@@ -634,9 +618,6 @@ pub fn slash_matches(input: &str) -> Vec<(String, &'static str)> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct CellView {
-    /// Helper calls this cell made, in call order -- the lane while they run
-    /// and the `HELPERS` inspector section afterwards read this one field.
-    pub helpers: Vec<crate::helpers::HelperRecord>,
     /// Corrected source for an executed sterna-edit; display only, never another model message.
     pub executed_source: Option<String>,
     /// The one line the model wrote about what this cell is for, drawn above
@@ -747,66 +728,7 @@ impl Counted {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskTokens {
     pub used: u64,
-    /// Parent task turns only. `used - parent_used` is never needed to infer
-    /// helper spend because the complete helper breakdown is carried below.
-    pub parent_used: u64,
-    pub helpers: HelperTokens,
     pub counted: Counted,
-}
-
-/// Known helper usage and the coverage required to interpret it honestly.
-/// Missing provider usage contributes no invented tokens.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HelperTokens {
-    pub calls: u32,
-    pub usage_known_calls: u32,
-    pub used: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub requests: u32,
-    pub reported_requests: u32,
-    pub cache_read_input_tokens: u64,
-    pub cache_creation_input_tokens: u64,
-    pub cache_read_reported_requests: u32,
-    pub cache_creation_reported_requests: u32,
-    pub models: Vec<HelperModelTokens>,
-}
-
-impl HelperTokens {
-    pub fn complete(&self) -> bool {
-        self.usage_known_calls == self.calls
-            && self.reported_requests == self.requests
-            && self.cache_read_reported_requests == self.reported_requests
-            && self.cache_creation_reported_requests == self.reported_requests
-    }
-}
-
-/// One helper model's contribution to [`HelperTokens`]. The model name is
-/// provider configuration, not a price tier: Sterna reports what ran and never
-/// infers a rate from it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HelperModelTokens {
-    pub model: String,
-    pub calls: u32,
-    pub usage_known_calls: u32,
-    pub used: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub requests: u32,
-    pub reported_requests: u32,
-    pub cache_read_input_tokens: u64,
-    pub cache_creation_input_tokens: u64,
-    pub cache_read_reported_requests: u32,
-    pub cache_creation_reported_requests: u32,
-}
-
-impl HelperModelTokens {
-    pub fn complete(&self) -> bool {
-        self.usage_known_calls == self.calls
-            && self.reported_requests == self.requests
-            && self.cache_read_reported_requests == self.reported_requests
-            && self.cache_creation_reported_requests == self.reported_requests
-    }
 }
 
 /// Occupancy of the most recent (or currently assembling) provider request.
@@ -827,14 +749,6 @@ pub struct ContextTokens {
 /// token total.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Notebook {
-    /// The pushed Scout running before the task model's first turn. This is
-    /// presentation-only and is never persisted as a model-authored cell.
-    pub preflight: Option<HelperRecord>,
-    /// The task's acceptance list as it stands (`acceptance::standing`),
-    /// empty when no list was derived. Presentation only, like `preflight`.
-    pub acceptance: Vec<crate::acceptance::Verdict>,
-    /// Where that list came from: the request's words, or the Scout's look.
-    pub acceptance_from: crate::acceptance::Origin,
     pub inbox_depth: usize,
     pub batches_delivered: u64,
     pub handlers: Vec<crate::runtime::handlers::HandlerInfo>,
@@ -881,16 +795,6 @@ impl Notebook {
     /// no card is selected.
     pub fn last_program_cell(&self) -> Option<usize> {
         self.program_cells().next_back().map(|(cell, _)| cell)
-    }
-
-    /// The newest cell that called a helper: what F5 and the sidebar's
-    /// helper rows show when no card is selected.
-    pub fn last_with_helpers(&self) -> Option<usize> {
-        // A running cell counts: its helpers are working now.
-        self.cells
-            .iter()
-            .rposition(|view| !view.helpers.is_empty())
-            .map(|index| index + 1)
     }
 
     /// The program cell before or after `from`; the newest one from none.
@@ -1168,22 +1072,11 @@ pub fn render_screen(
         .as_ref()
         .filter(|_| width >= 78)
         .map(|tokens| {
-            let scopes = if tokens.helpers.calls == 0 {
-                format!("spent {}", compact_tokens(tokens.used))
-            } else {
-                format!(
-                    "spent {} · parent {} + helpers {}{}",
-                    compact_tokens(tokens.used),
-                    compact_tokens(tokens.parent_used),
-                    compact_tokens(tokens.helpers.used),
-                    if tokens.helpers.complete() {
-                        ""
-                    } else {
-                        " partial"
-                    }
-                )
-            };
-            format!("{scopes} · {}", tokens.counted.as_str())
+            format!(
+                "spent {} · {}",
+                compact_tokens(tokens.used),
+                tokens.counted.as_str()
+            )
         });
     let context = notebook.context.map(|tokens| {
         context_summary(
@@ -1480,7 +1373,6 @@ fn conversation_lines(
             content.extend(markdown::code(code));
         }
     }
-    push_recap(&mut content, state.recap.as_ref());
     bands::decorate(&mut content, state, width.saturating_sub(2));
     wrap_lines(content, width.saturating_sub(2))
 }
@@ -1558,41 +1450,6 @@ fn turn_header(lines: &mut Vec<Line<'static>>, label: String, color: Color) -> u
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     ));
     lines.len() - 1
-}
-
-/// The recap's own header. It names the author and denies the mistake,
-/// because a recap read as the assistant's answer is worse than no recap:
-/// the answer is the model's, this is a cheap helper's summary of it.
-const RECAP_LABEL: &str = "RECAP · a helper's summary, not the assistant";
-
-/// The session's closing output when `[helpers] completion = "recap"` asked
-/// for one: what the session did, then the `Next:` line the preamble asks
-/// for, under the transcript they summarise.
-///
-/// **Nothing at all unless a recap was asked for and came back.** A missing
-/// or failed record renders no header, no reason and no blank frame -- the
-/// screen is the one the silent default already draws, because a recap must
-/// never replace or delay the answer above it.
-///
-/// It is drawn in [`MUTED`] with the helper lane's indent rather than in the
-/// model's own prose style, and nothing here adds a tick, a colour or a word
-/// that would claim more than the sentences themselves do.
-fn push_recap(lines: &mut Vec<Line<'static>>, recap: Option<&HelperRecord>) {
-    let Some(record) = recap.filter(|record| record.outcome.ok) else {
-        return;
-    };
-    let text = record.outcome.text.trim();
-    if text.is_empty() {
-        return;
-    }
-    turn_header(lines, RECAP_LABEL.to_string(), MUTED);
-    for line in text.lines() {
-        lines.push(Line::styled(
-            format!("  {}", line.trim_end()),
-            Style::default().fg(MUTED),
-        ));
-    }
-    lines.push(Line::styled("╰─", Style::default().fg(MUTED)));
 }
 
 /// A cell's regions, in the order `runtime-contract.md` §1 and §5 put them:
@@ -1742,13 +1599,6 @@ fn notebook_lines(
                                 lines.push(poster::field_header(
                                     cell, state, width, theme, cell_tick,
                                 ));
-                                let fold = helper_fold(view);
-                                if !fold.is_empty() {
-                                    lines.push(Line::styled(
-                                        format!(" {}", fold.trim()),
-                                        Style::default().fg(MUTED),
-                                    ));
-                                }
                                 // The one line the model wrote about what this
                                 // cell is for, directly under its header and
                                 // above the record of what ran — the order is
@@ -1763,7 +1613,6 @@ fn notebook_lines(
                                     lines.extend(poster::intent_block(description, width, theme));
                                     lines.push(Line::from(""));
                                 }
-                                push_helper_lane(&mut lines, view, tick, width);
                                 let none_ran = view
                                     .and_then(|v| v.execution.as_deref())
                                     .is_some_and(|calls| calls.starts_with("No tool"));
@@ -1949,12 +1798,11 @@ fn notebook_lines(
                 headers.push((
                     turn_header(
                         &mut lines,
-                        format!("{role}  [{cell}] in{execution}{}", helper_fold(view)),
+                        format!("{role}  [{cell}] in{execution}"),
                         ACCENT,
                     ),
                     cell,
                 ));
-                push_helper_lane(&mut lines, view, tick, width);
                 if let Some(target) = view.and_then(|v| v.repaired_from) {
                     lines.push(Line::styled(
                         format!("Amends syntax-failed cell {target}"),
@@ -2082,13 +1930,6 @@ fn notebook_lines(
         }
     }
 
-    // Preflight belongs to the newest submitted request, after all completed
-    // history. Keeping it at the tail also keeps it in the followed viewport
-    // during a later task in the same session.
-    if let Some(record) = notebook.preflight.as_ref() {
-        turn_header(&mut lines, "PREFLIGHT · SCOUT".into(), MUTED);
-        lines.push(helper_lane(record, tick, width));
-    }
     history::push_notes(&mut lines, notes, &mut next_note, usize::MAX);
 
     if !lines.is_empty() {

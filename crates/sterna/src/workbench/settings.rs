@@ -6,23 +6,16 @@ use crate::tui::ScreenState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Five sections, in the order a person reaches for them.
-pub const CATEGORIES: [&str; 5] = [
-    "Everyday",
-    "Models",
-    "Little helpers",
-    "Display",
-    "Advanced",
-];
+/// Four sections, in the order a person reaches for them.
+pub const CATEGORIES: [&str; 4] = ["Everyday", "Models", "Display", "Advanced"];
 
 /// Each section's place in [`CATEGORIES`], by name, for every route that
 /// opens the sheet on one.
 pub mod section {
     pub const EVERYDAY: usize = 0;
     pub const MODELS: usize = 1;
-    pub const HELPERS: usize = 2;
-    pub const DISPLAY: usize = 3;
-    pub const ADVANCED: usize = 4;
+    pub const DISPLAY: usize = 2;
+    pub const ADVANCED: usize = 3;
 }
 
 /// The first category, and the only one chosen by how often a person reaches
@@ -30,59 +23,40 @@ pub mod section {
 ///
 /// **A settings surface is split by frequency of use, not by taxonomy.** What
 /// was here was three keys called "Workspace", while the model you talk to
-/// sat two categories away under "Models & accounts" and whether helpers run
-/// at all sat under another. Someone opening settings wants the five things
-/// they change; every one of those five is on this list, and everything else
-/// is still exactly one Tab away.
-const EVERYDAY: [&str; 6] = [
+/// sat two categories away under "Models & accounts". Someone opening
+/// settings wants the few things they change; every one of those is on this
+/// list, and everything else is still exactly one Tab away.
+const EVERYDAY: [&str; 5] = [
     "model.parent",
     "session.effort",
     "sandbox.level",
-    "helpers.enabled",
     "ui.theme",
     "ui.motion",
-];
-/// What the little helpers do, and how hard each job works. Every other
-/// helper key is a number or a switch tuned rarely, in Advanced.
-const HELPERS: [&str; 8] = [
-    "helpers.enabled",
-    "helpers.completion",
-    "helpers.preflight",
-    "helpers.completion_check",
-    "helpers.learn",
-    "helpers.effort.find",
-    "helpers.effort.reduce",
-    "helpers.effort.check",
 ];
 
 /// Which model does which job, and how hard Main works: the models, their
 /// effort, whether subagents run, and Jev.
-const MODELS: [&str; 6] = [
+const MODELS: [&str; 5] = [
     "model.parent",
     "session.effort",
-    "helpers.model",
     "agents.mode",
     "decisions.model",
     "decisions.mode",
 ];
 
 /// Every group, in the order its section lists them.
-const GROUPS: [&str; 19] = [
+const GROUPS: [&str; 15] = [
     "Model",
-    "Sandbox and helpers",
+    "Sandbox",
     "Look",
     "Main",
-    "Helpers and subagents",
+    "Subagents",
     "Decisions",
-    "What they do",
-    "How hard they work",
     "Colour",
     "Layout",
     "Motion",
     "Limits",
-    "Helpers",
     "Subagent favourites",
-    "Sandbox",
     "Web",
     "Asking you",
     "Permissions",
@@ -95,13 +69,11 @@ const GROUPS: [&str; 19] = [
 fn group_of(category: usize, key: &str) -> &'static str {
     match (category, key) {
         (section::EVERYDAY, "model.parent" | "session.effort") => "Model",
-        (section::EVERYDAY, "sandbox.level" | "helpers.enabled") => "Sandbox and helpers",
+        (section::EVERYDAY, "sandbox.level") => "Sandbox",
         (section::EVERYDAY, _) => "Look",
         (section::MODELS, "model.parent" | "session.effort") => "Main",
-        (section::MODELS, "helpers.model" | "agents.mode") => "Helpers and subagents",
+        (section::MODELS, "agents.mode") => "Subagents",
         (section::MODELS, _) => "Decisions",
-        (section::HELPERS, k) if k.starts_with("helpers.effort.") => "How hard they work",
-        (section::HELPERS, _) => "What they do",
         (section::DISPLAY, "ui.theme" | "ui.background") => "Colour",
         (section::DISPLAY, "ui.statusline" | "ui.sidebar") => "Layout",
         (section::DISPLAY, _) => "Motion",
@@ -112,7 +84,7 @@ fn group_of(category: usize, key: &str) -> &'static str {
         (_, k) if k.starts_with("ask.") => "Asking you",
         (_, k) if k.starts_with("permissions.") => "Permissions",
         (_, k) if k.starts_with("decisions.") => "Confidence thresholds",
-        _ => "Helpers",
+        _ => "Limits",
     }
 }
 
@@ -125,8 +97,6 @@ pub(super) fn category_of(spec: &SettingSpec) -> usize {
         section::DISPLAY
     } else if MODELS.contains(&k) {
         section::MODELS
-    } else if HELPERS.contains(&k) {
-        section::HELPERS
     } else if EVERYDAY.contains(&k) {
         section::EVERYDAY
     } else {
@@ -644,31 +614,9 @@ pub(super) fn items(sheet: &mut Sheet, p: &mut Preferences, s: &ScreenState) -> 
                 .iter()
                 .map(|v| (word(spec.key, v), Action::Setting(i, Some(v.clone()))))
                 .collect();
-            // Helpers switched on with no model to run them on do nothing,
-            // and the row says so instead of a bare On.
-            if spec.key == "helpers.enabled"
-                && effective == "true"
-                && p.effective("helpers.model") == "unset"
-            {
-                detail = format!("On, but no helper model chosen · {detail}");
-            }
             Item::value(id, spec.label, values, current).detail(detail)
         };
         items.push(item.card(when, source).disabled(disabled));
-        if spec.key == "helpers.enabled"
-            && effective == "true"
-            && p.effective("helpers.model") == "unset"
-        {
-            items.push(
-                Item::run(
-                    "setting:helpers.enabled:choose",
-                    "choose a helper model",
-                    Action::SettingsAt(section::MODELS),
-                )
-                .tone(super::Tone::Warning)
-                .trail(),
-            );
-        }
         // The way back to Sterna's own value, at the end of the focused
         // row and only when this scope holds a value to remove.
         if is_focused && p.saved(spec.key).is_some() {

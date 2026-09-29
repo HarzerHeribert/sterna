@@ -301,8 +301,8 @@ fn decisions_check(decisions: &sterna::config::DecisionsConfig) -> Check {
 ///
 /// The invariant: **a setting that does nothing says so where a person
 /// looks.** `sterna config local` saves any key it recognises and `doctor`
-/// only asked whether the file parsed, so on 2026-09-19 five `[helpers]`
-/// keys were set, saved, reported `ok`, and did nothing all session — the
+/// only asked whether the file parsed, so on 2026-09-19 five keys were set,
+/// saved, reported `ok`, and did nothing all session — the
 /// only place the truth appeared was inside the system prompt, which a
 /// person never reads.
 ///
@@ -315,25 +315,7 @@ fn inert_settings(
     origins: &std::collections::BTreeMap<String, String>,
 ) -> Check {
     let chosen = |key: &str| origins.get(key).is_some_and(|origin| origin != "built-in");
-    let any_chosen = |keys: &[&str]| keys.iter().any(|key| chosen(key));
     let mut inert: Vec<String> = Vec::new();
-    // `session::system::system_manifest` writes the matching `Unavailable:`
-    // line on exactly this predicate.
-    if config.helpers.enabled
-        && config.helpers.model.is_none()
-        && any_chosen(&[
-            "helpers.enabled",
-            "helpers.preflight",
-            "helpers.preflight_scope",
-            "helpers.completion_check",
-            "helpers.acceptance_list",
-        ])
-    {
-        inert.push(
-            "[helpers] is enabled but names no model, so preflight, completion_check, acceptance_list and every helper.* call are inert; set `helpers.model`"
-                .into(),
-        );
-    }
     // `[decisions] mode` beyond `off` needs a model for the same reason the
     // runtime binds `decide` on one.
     if config.decisions.mode != sterna::config::DecisionMode::Off

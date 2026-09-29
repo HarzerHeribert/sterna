@@ -4,8 +4,7 @@
 //!
 //! **No test here reaches a real provider.** Each one points
 //! `ANTHROPIC_BASE_URL` at a loopback fake this file owns, answering
-//! `/v1/systemone` with a `choice` for whatever key the request named, exactly
-//! as `tests/helpers_judged.rs` does and for the same reason.
+//! `/v1/systemone` with a `choice` for whatever key the request named.
 
 use serde_json::Value as Json;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -13,7 +12,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use sterna::config::{DecisionsConfig, HelpersConfig};
+use sterna::config::DecisionsConfig;
 use sterna::contract::SessionId;
 use sterna::runtime::isolate::Runtime;
 use sterna::runtime::outcome::CellOutcome;
@@ -127,13 +126,6 @@ fn decisions(model: Option<&str>) -> DecisionsConfig {
     }
 }
 
-fn helpers() -> HelpersConfig {
-    HelpersConfig {
-        model: Some("gpt-5.6-luna".to_string()),
-        ..HelpersConfig::default()
-    }
-}
-
 fn returned_string(outcome: &CellOutcome) -> String {
     match outcome {
         CellOutcome::Returned { value, .. } => match value {
@@ -155,9 +147,8 @@ fn a_cell_asks_for_a_judgement_and_branches_on_the_answer() {
     }
     let fixture = Fixture::new("branch");
     let session = SessionId::new("judgement-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &session)
-        .with_helpers(helpers())
-        .with_decisions(decisions(Some("jev-latest")));
+    let mut runtime =
+        Runtime::new(&fixture.profile(), &session).with_decisions(decisions(Some("jev-latest")));
 
     let outcome = runtime.run_cell(
         "const call = await decide.choice(\n\
@@ -190,32 +181,36 @@ fn the_question_and_its_answer_reach_the_cells_record() {
     }
     let fixture = Fixture::new("record");
     let session = SessionId::new("record-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &session)
-        .with_helpers(helpers())
-        .with_decisions(decisions(Some("jev-latest")));
+    let mut runtime =
+        Runtime::new(&fixture.profile(), &session).with_decisions(decisions(Some("jev-latest")));
 
-    let _ = runtime.run_cell(
+    let outcome = runtime.run_cell(
         "return (await decide.choice(\"Is this a rename?\",\n\
          \x20 {rename_only: \"only a rename\", wider: \"more than a rename\"}, \"a diff\")).choice;\n",
     );
 
-    let records = runtime.helper_records();
-    let judgement = records
+    assert_eq!(returned_string(&outcome), "rename_only", "what came back");
+    let (CellOutcome::Returned { turn, .. }
+    | CellOutcome::Threw { turn, .. }
+    | CellOutcome::Yielded { turn }) = &outcome;
+    let judgement = turn
+        .record
+        .calls
         .iter()
-        .find(|record| record.helper == "decide")
-        .expect("the judgement is recorded where a helper call is recorded");
+        .find(|call| call.tool == "decide.choice")
+        .expect("the judgement is in the cell's record");
     assert!(
-        judgement.asked.contains("Is this a rename?"),
+        judgement
+            .args
+            .get("asked")
+            .is_some_and(|asked| asked.contains("Is this a rename?")),
         "the record says what was asked: {:?}",
-        judgement.asked
+        judgement.args
     );
-    assert!(judgement.outcome.ok);
-    assert!(
-        judgement.outcome.text.contains("rename_only"),
-        "the record says what came back: {:?}",
-        judgement.outcome.text
-    );
-    assert_eq!(judgement.usage.model, "jev-latest");
+    assert!(matches!(
+        judgement.ended,
+        sterna::runtime::outcome::Ended::Ok
+    ));
     unsafe {
         std::env::remove_var("ANTHROPIC_BASE_URL");
     }
@@ -227,9 +222,7 @@ fn the_question_and_its_answer_reach_the_cells_record() {
 fn a_session_with_no_decision_model_binds_nothing_and_is_told_of_nothing() {
     let fixture = Fixture::new("unconfigured");
     let session = SessionId::new("unconfigured-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &session)
-        .with_helpers(helpers())
-        .with_decisions(decisions(None));
+    let mut runtime = Runtime::new(&fixture.profile(), &session).with_decisions(decisions(None));
 
     let outcome = runtime.run_cell("return typeof decide;\n");
     assert_eq!(
@@ -267,9 +260,8 @@ fn a_question_that_fails_throws_rather_than_answering() {
     }
     let fixture = Fixture::new("failed");
     let session = SessionId::new("failed-session");
-    let mut runtime = Runtime::new(&fixture.profile(), &session)
-        .with_helpers(helpers())
-        .with_decisions(decisions(Some("jev-latest")));
+    let mut runtime =
+        Runtime::new(&fixture.profile(), &session).with_decisions(decisions(Some("jev-latest")));
 
     let outcome = runtime.run_cell(
         "try {\n\
@@ -287,10 +279,10 @@ fn a_question_that_fails_throws_rather_than_answering() {
     }
 }
 
-/// Judgements and helpers spend one budget, so a cell that has used its
-/// allowance on helpers cannot keep buying judgements.
+/// A cell asks a bounded number of questions, so a loop cannot keep buying
+/// judgements.
 #[test]
-fn a_judgement_spends_the_same_per_cell_allowance_a_helper_does() {
+fn a_cell_asks_a_bounded_number_of_judgements() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (url, hits) = fake("a", 0.9);
     unsafe {
@@ -298,19 +290,13 @@ fn a_judgement_spends_the_same_per_cell_allowance_a_helper_does() {
     }
     let fixture = Fixture::new("allowance");
     let session = SessionId::new("allowance-session");
-    let ceiling = HelpersConfig {
-        model: Some("gpt-5.6-luna".to_string()),
-        calls_per_cell: 2,
-        ..HelpersConfig::default()
-    };
-    let mut runtime = Runtime::new(&fixture.profile(), &session)
-        .with_helpers(ceiling)
-        .with_decisions(decisions(Some("jev-latest")));
+    let mut runtime =
+        Runtime::new(&fixture.profile(), &session).with_decisions(decisions(Some("jev-latest")));
 
     let outcome = runtime.run_cell(
         "let made = 0;\n\
          try {\n\
-         \x20 for (let i = 0; i < 6; i++) {\n\
+         \x20 for (let i = 0; i < 12; i++) {\n\
          \x20   await decide.choice(\"q\", {a: \"one\", b: \"two\"}, \"x\");\n\
          \x20   made++;\n\
          \x20 }\n\
@@ -319,13 +305,13 @@ fn a_judgement_spends_the_same_per_cell_allowance_a_helper_does() {
     );
     assert_eq!(
         returned_string(&outcome),
-        "stopped:2",
-        "the cell's helper-call ceiling is the judgement ceiling too"
+        "stopped:8",
+        "a cell asks at most eight questions"
     );
     assert_eq!(
         hits.load(Ordering::SeqCst),
-        2,
-        "the refusal happens before the request, so nothing was spent on the third"
+        8,
+        "the refusal happens before the request, so nothing was spent on the ninth"
     );
     unsafe {
         std::env::remove_var("ANTHROPIC_BASE_URL");

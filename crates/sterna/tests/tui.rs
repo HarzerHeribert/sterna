@@ -8,12 +8,11 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use sterna::contract::{Conversation, Message, Role, ServedBy};
-use sterna::helpers::{HelperOutcome, HelperRecord};
 use sterna::runtime::handles::{HandleTable, render_table};
 use sterna::runtime::preview::{ArrayValue, FileValue, PREVIEW_TOKEN_CAP, TABLE_TOKEN_CAP, Value};
 use sterna::tui::{
-    CellError, CellView, Counted, HelperModelTokens, HelperTokens, Notebook, ScreenState,
-    TaskTokens, cell_ordinal, render, render_screen,
+    CellError, CellView, Counted, Notebook, ScreenState, TaskTokens, cell_ordinal, render,
+    render_screen,
 };
 
 fn conversation(messages: Vec<Message>) -> Conversation {
@@ -116,39 +115,11 @@ fn buffer_text(buffer: &Buffer) -> String {
 }
 
 #[test]
-fn the_status_meter_names_parent_and_complete_helper_spend() {
+fn the_status_meter_names_the_tasks_spend_and_where_it_was_counted() {
     let conversation = conversation(vec![Message::text(Role::User, "measure this task")]);
     let notebook = Notebook {
         tokens: Some(TaskTokens {
-            used: 201_801,
-            parent_used: 173_860,
-            helpers: HelperTokens {
-                calls: 3,
-                usage_known_calls: 3,
-                used: 27_941,
-                input_tokens: 20_329,
-                output_tokens: 2_492,
-                requests: 6,
-                reported_requests: 6,
-                cache_read_input_tokens: 5_120,
-                cache_creation_input_tokens: 0,
-                cache_read_reported_requests: 6,
-                cache_creation_reported_requests: 6,
-                models: vec![HelperModelTokens {
-                    model: "gpt-5.6-luna".into(),
-                    calls: 3,
-                    usage_known_calls: 3,
-                    used: 27_941,
-                    input_tokens: 20_329,
-                    output_tokens: 2_492,
-                    requests: 6,
-                    reported_requests: 6,
-                    cache_read_input_tokens: 5_120,
-                    cache_creation_input_tokens: 0,
-                    cache_read_reported_requests: 6,
-                    cache_creation_reported_requests: 6,
-                }],
-            },
+            used: 173_860,
             counted: Counted::Gateway,
         }),
         ..Notebook::default()
@@ -168,12 +139,7 @@ fn the_status_meter_names_parent_and_complete_helper_spend() {
         })
         .unwrap();
     let text = buffer_text(terminal.backend().buffer());
-    assert!(text.contains("spent 201.8k"), "{text}");
-    assert!(
-        text.contains("parent 173.9k + helpers 27.9k · reported"),
-        "{text}"
-    );
-    assert!(!text.contains("helpers 27.9k partial"), "{text}");
+    assert!(text.contains("spent 173.9k · reported"), "{text}");
 }
 
 /// The column each cell in row `y` holds, as one symbol per column -- used
@@ -629,16 +595,6 @@ fn the_tui_renders_no_handle_itself() {
     }
 }
 
-/// The helper lane lives in `tui/lane.rs` since the Phase 59 ratchet move of
-/// 2026-09-13; the scan above follows it there.
-#[test]
-fn the_helper_lane_renders_no_handle_itself() {
-    let source = include_str!("../src/tui/lane.rs");
-    assert!(!source.contains("runtime::preview::"), "{source}");
-    assert!(!source.contains("render_preview"), "{source}");
-    assert!(!source.contains("Value::"), "{source}");
-}
-
 #[test]
 fn the_sidebar_is_unchanged_by_the_notebook() {
     let baseline = rendered(
@@ -689,7 +645,6 @@ fn a_cell_shows_its_program_as_the_input_region_and_a_return_as_the_last_cells_v
         1,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -757,7 +712,6 @@ fn a_throw_renders_as_the_cells_error_region() {
         1,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -826,7 +780,6 @@ fn the_runtimes_answer_to_a_cell_is_not_drawn_as_a_person_typing() {
         1,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -881,7 +834,6 @@ fn a_person_typing_after_a_task_ended_is_still_drawn() {
         1,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -940,7 +892,6 @@ fn a_terminal_response_is_the_assistants_turn_and_a_yield_reason_sits_by_the_tab
         1,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -963,7 +914,6 @@ fn a_terminal_response_is_the_assistants_turn_and_a_yield_reason_sits_by_the_tab
         2,
         CellView {
             description: None,
-            helpers: Vec::new(),
             executed_source: None,
             origin: sterna::abi::Origin::AuthoredCell,
             repaired_from: None,
@@ -1046,311 +996,6 @@ fn sidebar_shows_real_inbox_and_batch_counts_without_changing_narrow_layout() {
     assert!(!buffer_text(&narrow).contains("inbox 7"));
 }
 
-// --- docs/helpers.md, "In the TUI": the lane --------
-
-/// One helper call, as the runtime records it once the call has resolved.
-fn resolved_helper(asked: &str, gave: &str, elapsed_ms: u64) -> HelperRecord {
-    HelperRecord {
-        helper: "reduce".to_string(),
-        verb: "reducing".to_string(),
-        asked: asked.to_string(),
-        outcome: HelperOutcome {
-            text: gave.to_string(),
-            ok: true,
-            cancelled: false,
-            elapsed_ms,
-        },
-        turns: 1,
-        looked: Vec::new(),
-        usage: Default::default(),
-    }
-}
-
-/// A call still in flight: no answer and no failure sentence yet.
-fn running_helper(asked: &str, elapsed_ms: u64) -> HelperRecord {
-    HelperRecord {
-        outcome: HelperOutcome {
-            text: String::new(),
-            ok: false,
-            cancelled: false,
-            elapsed_ms,
-        },
-        ..resolved_helper(asked, "", 0)
-    }
-}
-
-/// A call that came back with a failure rather than an answer.
-fn failed_helper(asked: &str, reason: &str, elapsed_ms: u64) -> HelperRecord {
-    HelperRecord {
-        outcome: HelperOutcome {
-            text: reason.to_string(),
-            ok: false,
-            cancelled: false,
-            elapsed_ms,
-        },
-        ..resolved_helper(asked, "", 0)
-    }
-}
-
-#[test]
-fn pushed_scout_keeps_the_submitted_request_and_live_status_visible() {
-    let task = "find where helper cancellation is handled";
-    let conversation = conversation(vec![
-        Message::text(Role::User, "an earlier task"),
-        Message::text(Role::Assistant, "Earlier work finished."),
-        Message::text(Role::User, task),
-    ]);
-    let mut scout = running_helper(task, 2_400);
-    scout.helper = "find".into();
-    scout.verb = "scanning".into();
-    let notebook = Notebook {
-        preflight: Some(scout),
-        ..Notebook::default()
-    };
-
-    let text = buffer_text(&rendered_notebook(
-        &conversation,
-        &known_served_by(),
-        &HandleTable::new(),
-        &notebook,
-        32,
-    ));
-
-    assert!(
-        text.contains(task),
-        "the submitted request disappeared:\n{text}"
-    );
-    assert!(text.contains("PREFLIGHT · SCOUT"), "{text}");
-    assert!(text.contains("find"), "{text}");
-    assert!(text.contains("scanning"), "{text}");
-    assert!(text.contains("2.4s"), "{text}");
-    assert!(
-        text.find(&format!("you: {task}")).unwrap() < text.find("PREFLIGHT · SCOUT").unwrap(),
-        "preflight was attached to old history instead of the newest request:\n{text}"
-    );
-    assert!(
-        !text.contains("Cell 1") && !text.contains("cell 1"),
-        "preflight was presented as a model-authored cell:\n{text}"
-    );
-}
-
-/// One executed cell whose view carries `helpers`, rendered at a width that
-/// leaves the lane room for its own line.
-fn helper_screen(helpers: Vec<HelperRecord>) -> String {
-    let conversation = conversation(vec![
-        Message::text(Role::User, "the task"),
-        Message::text(Role::Assistant, "```sterna\nconst n = 1;\n```"),
-    ]);
-    let mut notebook = Notebook::default();
-    notebook.set(
-        1,
-        CellView {
-            helpers,
-            execution: Some("No tool calls ran in this cell.".to_string()),
-            table: Some("n  number  1".to_string()),
-            ..CellView::default()
-        },
-    );
-    buffer_text(&rendered_notebook(
-        &conversation,
-        &known_served_by(),
-        &HandleTable::new(),
-        &notebook,
-        32,
-    ))
-}
-
-/// The lane's whole point: while a helper runs, the user can see what is
-/// happening on their behalf -- what it is doing, and what it was handed.
-///
-/// **Elapsed zero and still a lane.** A call that has not answered has no
-/// duration yet, so the 300ms floor cannot be what decides whether it is
-/// drawn; the floor is about a resolved call whose lane would vanish.
-#[test]
-fn a_running_helper_shows_its_verb_and_what_it_was_asked() {
-    let text = helper_screen(vec![running_helper("cargo build log · 4118 lines", 0)]);
-
-    let lane = text
-        .lines()
-        .find(|line| line.contains("reduce"))
-        .unwrap_or_else(|| panic!("the lane renders under the cell header:\n{text}"));
-    assert!(lane.contains("reducing"), "the verb renders: {lane}");
-    assert!(
-        lane.contains("cargo build log · 4118 lines"),
-        "what it was asked renders: {lane}"
-    );
-    assert!(
-        lane.contains("-."),
-        "a running call carries the reaching-out frame: {lane}"
-    );
-    assert!(lane.contains("0.0s"), "elapsed is text: {lane}");
-    assert!(
-        !text.contains("· 1 helper"),
-        "a call still in flight is not folded into the header yet:\n{text}"
-    );
-}
-
-/// `little-helpers.md`'s order, and the reason the lane exists at all: the
-/// running lane appears, resolves to what the caller got, and only then
-/// folds into the cell header.
-#[test]
-fn a_helper_lane_runs_then_resolves_then_folds() {
-    let asked = "cargo build log · 4118 lines";
-    let running = helper_screen(vec![running_helper(asked, 1200)]);
-    assert!(
-        running.lines().any(|line| line.contains("reducing")),
-        "the lane runs first:\n{running}"
-    );
-    assert!(
-        !running.contains("· 1 helper"),
-        "the header does not count a call that has not resolved:\n{running}"
-    );
-
-    let resolved = helper_screen(vec![resolved_helper(
-        asked,
-        "3 distinct root failures",
-        1200,
-    )]);
-    let lane = resolved
-        .lines()
-        .find(|line| line.contains("reduce"))
-        .unwrap_or_else(|| panic!("the resolved call keeps its lane:\n{resolved}"));
-    assert!(lane.contains("OK"), "it resolves to OK: {lane}");
-    assert!(
-        lane.contains("3 distinct root failures"),
-        "and says what the caller got: {lane}"
-    );
-    assert!(
-        resolved.contains("· 1 helper"),
-        "and only then folds into the header:\n{resolved}"
-    );
-}
-
-/// A helper that failed renders ` !! ` with its reason and stays there: a
-/// failing request must never render as a healthy one, collapsed or not.
-#[test]
-fn a_failed_helper_shows_its_reason_and_survives_the_collapse() {
-    let failed = failed_helper("4118 lines", "request failed: 429", 400);
-    let alone = helper_screen(vec![failed.clone()]);
-    let lane = alone
-        .lines()
-        .find(|line| line.contains("reduce"))
-        .unwrap_or_else(|| panic!("a failed call renders its own lane:\n{alone}"));
-    assert!(lane.contains("!!"), "a failure is not an OK: {lane}");
-    assert!(
-        lane.contains("request failed: 429"),
-        "the failure names its reason: {lane}"
-    );
-    assert!(lane.contains("4118 lines"), "and what was asked: {lane}");
-
-    let crowded = helper_screen(vec![
-        resolved_helper("first log", "1 root error", 1000),
-        resolved_helper("second log", "2 root errors", 1000),
-        failed,
-        resolved_helper("fourth log", "4 root errors", 1000),
-    ]);
-    assert!(
-        crowded.contains("4 helpers"),
-        "four lanes collapse to a count:\n{crowded}"
-    );
-    assert!(
-        crowded.contains("request failed: 429"),
-        "a failed helper does not fold into the count:\n{crowded}"
-    );
-}
-
-/// A lane that appears and vanishes on every cheap call is the banner nobody
-/// reads, so a call this short leaves only the header's folded summary.
-#[test]
-fn a_helper_that_resolved_under_three_hundred_milliseconds_renders_no_lane() {
-    let text = helper_screen(vec![resolved_helper("a short log", "no failures", 120)]);
-    assert!(
-        !text.contains("no failures"),
-        "a sub-300ms call renders no lane:\n{text}"
-    );
-    assert!(!text.contains("0.1s"), "and no elapsed of its own:\n{text}");
-    assert!(
-        text.contains("· 1 helper"),
-        "but the header still says it happened:\n{text}"
-    );
-}
-
-/// Helpers run in parallel; past three lanes the cell itself would be pushed
-/// off screen.
-#[test]
-fn four_helpers_collapse_to_a_count_and_a_total() {
-    let text = helper_screen(vec![
-        resolved_helper("first log", "1 root error", 1000),
-        resolved_helper("second log", "2 root errors", 1000),
-        resolved_helper("third log", "3 root errors", 1000),
-        resolved_helper("fourth log", "4 root errors", 1100),
-    ]);
-    assert!(
-        text.contains("4 helpers · 4.1s"),
-        "four lanes collapse to a count and a total:\n{text}"
-    );
-    assert!(
-        !text.contains("2 root errors"),
-        "the individual lanes are gone:\n{text}"
-    );
-}
-
-// --- little-helpers.md, "In the TUI": the completion gate's recap ------
-
-/// What the session actually did, and one specific next prompt -- the shape
-/// `helpers::RECAP_PREAMBLE` asks the helper for.
-const RECAP_TEXT: &str = "Renamed the parser entry point and updated its two callers.\n\
-                          Next: run the full gate before pushing.";
-
-/// The recap as the completion gate hands it over: one helper call that
-/// either came back (`ok`) or did not.
-fn recap_record(text: &str, ok: bool) -> HelperRecord {
-    HelperRecord {
-        helper: "recap".to_string(),
-        verb: "recapping".to_string(),
-        asked: "the finished task".to_string(),
-        outcome: HelperOutcome {
-            text: text.to_string(),
-            ok,
-            cancelled: false,
-            elapsed_ms: 900,
-        },
-        turns: 1,
-        looked: Vec::new(),
-        usage: Default::default(),
-    }
-}
-
-/// A finished task -- a request and the model's own answer -- with `recap`
-/// as the session's closing output. `None` is `completion = "silent"`.
-fn recap_screen(recap: Option<HelperRecord>) -> Buffer {
-    let conversation = conversation(vec![
-        Message::text(Role::User, "rename the parser entry point"),
-        Message::text(Role::Assistant, ASSISTANT_ANSWER),
-    ]);
-    let state = ScreenState {
-        recap,
-        ..ScreenState::default()
-    };
-    let backend = TestBackend::new(120, 32);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| {
-            render_screen(
-                frame,
-                &conversation,
-                &known_served_by(),
-                &HandleTable::new(),
-                &Notebook::default(),
-                &state,
-            )
-        })
-        .unwrap();
-    terminal.backend().buffer().clone()
-}
-
-const ASSISTANT_ANSWER: &str = "I renamed it and updated the callers.";
-
 /// The foreground colour a row is drawn in: the first glyph of that row that
 /// is neither blank nor part of a border.
 fn fg_of_row(buffer: &Buffer, needle: &str) -> Color {
@@ -1367,90 +1012,6 @@ fn fg_of_row(buffer: &Buffer, needle: &str) -> Color {
         }
     }
     panic!("row {y} carries no glyph:\n{text}");
-}
-
-/// `completion = "recap"`: one or two sentences on what the session did and
-/// one suggested next prompt, rendered where the session's closing output
-/// belongs -- under the transcript it summarises.
-///
-/// **Visually distinct, deliberately.** A recap the reader takes for the
-/// assistant's answer is worse than no recap, so it carries its own header
-/// naming its author and is drawn muted rather than in the model's own
-/// prose style.
-#[test]
-fn a_recap_renders_its_sentences_and_its_next_line() {
-    let buffer = recap_screen(Some(recap_record(RECAP_TEXT, true)));
-    let text = buffer_text(&buffer);
-
-    assert!(
-        text.contains("Renamed the parser entry point and updated its two callers."),
-        "the recap says what the session did:\n{text}"
-    );
-    let next = text
-        .lines()
-        .find(|line| line.trim_start_matches(['│', ' ']).starts_with("Next:"))
-        .unwrap_or_else(|| panic!("the recap suggests one next prompt:\n{text}"));
-    assert!(
-        next.contains("run the full gate before pushing."),
-        "and says which one: {next}"
-    );
-
-    let header = text
-        .lines()
-        .find(|line| line.contains("RECAP"))
-        .unwrap_or_else(|| panic!("the recap carries its own header:\n{text}"));
-    assert!(
-        header.contains("not the assistant"),
-        "which says whose words these are not: {header}"
-    );
-
-    assert_eq!(
-        fg_of_row(&buffer, "Renamed the parser entry point"),
-        Color::Gray,
-        "the recap is muted:\n{text}"
-    );
-    assert_ne!(
-        fg_of_row(&buffer, ASSISTANT_ANSWER),
-        Color::Gray,
-        "and the model's own prose is not, so the two cannot be confused:\n{text}"
-    );
-    assert!(
-        text.contains(ASSISTANT_ANSWER),
-        "the answer itself is untouched:\n{text}"
-    );
-}
-
-/// The default. A line printed after every task is a line nobody reads, so
-/// an accepted task says nothing at all unless it was asked to.
-#[test]
-fn silent_renders_nothing_at_all() {
-    let text = buffer_text(&recap_screen(None));
-    assert!(!text.contains("RECAP"), "no header:\n{text}");
-    assert!(!text.contains("Next:"), "no suggestion:\n{text}");
-    assert!(
-        text.contains(ASSISTANT_ANSWER),
-        "the answer still renders:\n{text}"
-    );
-}
-
-/// A recap that failed prints nothing -- not its failure, not a header, not
-/// a blank frame. It must never replace or delay the answer above it, and
-/// the screen is the one `completion = "silent"` already draws.
-#[test]
-fn a_failed_recap_prints_nothing() {
-    let failed = buffer_text(&recap_screen(Some(recap_record(
-        "request failed: 429",
-        false,
-    ))));
-    assert!(
-        !failed.contains("429"),
-        "the failure is not the answer:\n{failed}"
-    );
-    assert_eq!(
-        failed,
-        buffer_text(&recap_screen(None)),
-        "a failed recap draws exactly the silent screen"
-    );
 }
 
 /// A recurring notice answers one question rather than stacking: the second

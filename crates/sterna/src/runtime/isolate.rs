@@ -158,17 +158,6 @@ static V8_ONCE: Once = Once::new();
 /// [`DEFAULT_CELL_WALL_CLOCK_LIMIT`] exists.
 const V8_FLAGS: &str = "--no-turbofan";
 
-/// [`initialize_v8`] for the one other place in this crate that runs a
-/// model's JavaScript: [`super::reduce_run`]'s filter isolate.
-///
-/// It is the same initialisation and deliberately not a second one — the
-/// flags above are set once per process, so a filter isolate built without
-/// going through here would inherit whichever tier the first caller happened
-/// to choose. `--no-turbofan` is the reason a filter can be stopped at all.
-pub(crate) fn initialize_v8_for_filter() {
-    initialize_v8();
-}
-
 fn initialize_v8() {
     V8_ONCE.call_once(|| {
         // Before the platform, because a flag read at initialisation is
@@ -519,8 +508,9 @@ impl Drop for Runtime {
 impl Runtime {
     /// Effective session configuration, retained for delegated child runtimes.
     pub fn with_config(self, config: crate::config::SternaConfig) -> Result<Self, String> {
+        self.state
+            .set_reduce_above_tokens(config.limits.reduce_above_tokens);
         let runtime = self
-            .with_helpers(config.helpers.clone())
             .with_agents(config.agents.clone())
             .with_decisions(config.decisions.clone())
             .with_web(config.web.clone())?;
@@ -563,20 +553,6 @@ impl Runtime {
         }
         self.state.set_agents(agents);
         self
-    }
-
-    pub fn with_helpers(self, helpers: crate::config::HelpersConfig) -> Self {
-        if let Some(config) = self.state.effective_config.borrow_mut().as_mut() {
-            config.helpers = helpers.clone();
-        }
-        self.state.set_helpers(helpers);
-        self
-    }
-
-    /// Every helper call the cell that just ran made, in call order — the one
-    /// field `CellView.helpers` is built from.
-    pub fn helper_records(&self) -> Vec<crate::helpers::HelperRecord> {
-        self.state.helper_records()
     }
 
     pub fn pending_instructions(
@@ -622,31 +598,6 @@ impl Runtime {
             session,
             heap_limit_bytes,
             DEFAULT_CELL_WALL_CLOCK_LIMIT,
-        )
-    }
-
-    /// [`Runtime::new`] for one helper's nested loop, and the whole of what
-    /// makes a helper's toolset a capability boundary rather than a list.
-    ///
-    /// The invariant: **a helper's runtime holds only what its spec named,
-    /// and nothing that can cause an effect.** `spec.tools` narrows
-    /// `registry::ALL`; `bg`, `send` and `mcp` are not in it, so narrowing
-    /// the toolset alone left a helper able to execute a command.
-    ///
-    /// `tools` is the spec's own list, and a name absent from it is a name
-    /// this context does not bind — a helper that named no tool reaches
-    /// nothing at all.
-    pub fn for_helper(
-        profile: &Profile,
-        session: &SessionId,
-        tools: &'static [&'static str],
-    ) -> Self {
-        Self::with_limits_and_globals(
-            profile,
-            session,
-            DEFAULT_HEAP_LIMIT_BYTES,
-            DEFAULT_CELL_WALL_CLOCK_LIMIT,
-            bindings::HostGlobals::Helper(tools),
         )
     }
 
@@ -862,12 +813,6 @@ impl Runtime {
     /// again rather than pointed back to.
     pub fn forget_shown_contexts(&self) {
         self.state.forget_shown_contexts();
-    }
-
-    /// The model's own plan for this task, for the checkpoint a compaction
-    /// writes. Task-scoped like the handles beside it.
-    pub fn plan(&self) -> Vec<crate::runtime::outcome::PlanItem> {
-        self.state.plan()
     }
 
     pub fn handle_names(&self) -> Vec<String> {
@@ -1191,19 +1136,9 @@ impl Runtime {
     /// (`sandbox-grants.md` §1.4), and a program that will not compile is a
     /// throw in the same turn slot. Nothing about a cell is an error of the
     /// runtime's.
-    /// One cell the model sent, with one chance at having its punctuation
-    /// repaired before the failure costs the parent a turn — see
-    /// [`crate::runtime::repair::mend`] for what that is and why the single
-    /// attempt is structural rather than counted.
+    /// One cell the model sent.
     pub fn run_cell(&mut self, source: &str) -> CellOutcome {
-        let outcome = self.run_program(source, None);
-        let failed = self.syntax_failure.as_ref();
-        let Some(mended) = repair::mend_after(&self.state, failed, &outcome) else {
-            return outcome;
-        };
-        let mut repaired = self.run_program(&mended.amended, None);
-        repair::announce(&mut repaired, &mended.note);
-        repaired
+        self.run_program(source, None)
     }
 
     /// Runs one frame lowered from direct provider tool calls.
@@ -1966,7 +1901,6 @@ impl Runtime {
             answer,
             ask: asked,
             record,
-            plan: self.state.plan(),
             capability_results: self.trace().take_results(),
             observation,
         };
@@ -2316,13 +2250,12 @@ mod tests {
     const AGENT_SOURCE: &str = include_str!("bindings/agent.rs");
     const BINDINGS_DECIDE_SOURCE: &str = include_str!("bindings/decide.rs");
     const BINDINGS_WEB_SOURCE: &str = include_str!("bindings/web.rs");
-    const HELPER_SOURCE: &str = include_str!("bindings/helper.rs");
     const SEARCH_SOURCE: &str = include_str!("bindings/search.rs");
     const ISOLATE_DECIDE_SOURCE: &str = include_str!("isolate/decide.rs");
     const ISOLATE_WEB_SOURCE: &str = include_str!("isolate/web.rs");
     const RESPONSE_SOURCE: &str = include_str!("isolate/response.rs");
 
-    const SOURCES: [(&str, &str); 15] = [
+    const SOURCES: [(&str, &str); 14] = [
         ("isolate.rs", ISOLATE_SOURCE),
         ("bindings.rs", BINDINGS_SOURCE),
         ("state.rs", STATE_SOURCE),
@@ -2333,7 +2266,6 @@ mod tests {
         ("bindings/agent.rs", AGENT_SOURCE),
         ("bindings/decide.rs", BINDINGS_DECIDE_SOURCE),
         ("bindings/web.rs", BINDINGS_WEB_SOURCE),
-        ("bindings/helper.rs", HELPER_SOURCE),
         ("bindings/search.rs", SEARCH_SOURCE),
         ("isolate/decide.rs", ISOLATE_DECIDE_SOURCE),
         ("isolate/web.rs", ISOLATE_WEB_SOURCE),
@@ -2418,7 +2350,6 @@ mod tests {
         }
         assert!(production(ISOLATE_SOURCE).contains("pub fn run_cell"));
         assert!(production(BINDINGS_SOURCE).contains("invoke::run"));
-        assert!(production(HELPER_SOURCE).contains("fn helper_callback"));
         assert!(production(RESPONSE_SOURCE).contains("fn returned"));
         assert!(production(CELL_SOURCE).contains("fn compile"));
     }

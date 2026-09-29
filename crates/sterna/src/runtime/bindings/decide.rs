@@ -32,12 +32,9 @@ pub(crate) fn install_decide(scope: &mut v8::PinScope) {
 
 /// `decide.choice(instructions, criteria, subject?)`.
 ///
-/// The per-cell ceiling is `[helpers] calls_per_cell`, claimed through
-/// [`RuntimeState::claim_helper_call`] — **the same budget the helpers spend,
-/// deliberately**: both are cheap-model errands a program can put inside a
-/// loop, and one shared ceiling is what a model can reason about. A second
-/// budget would mean a cell refused for helpers could still spend on
-/// judgements, which is not a limit anybody could hold in their head.
+/// A cell may ask [`crate::runtime::state::DECISIONS_PER_CELL`] of these,
+/// claimed through [`RuntimeState::claim_decision`]: a program can put a
+/// question inside a loop, and the refusal is what it catches.
 fn decide_choice_callback(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -72,28 +69,14 @@ fn decide_choice_callback(
             return;
         }
     };
-    if let Err(reason) = state.claim_helper_call() {
+    if let Err(reason) = state.claim_decision() {
         throw_tool_error(scope, &reason);
         return;
     }
 
-    // A judgement is recorded where a helper call is recorded, so the lane,
-    // the inspector and the rollout show it with the same shape: the question
-    // is what it was `asked`, and the answer is what came back.
-    //
-    // Not `asked_summary`, which counts a blob's lines: a helper is handed
-    // the payload and the useful summary is its size, while a judgement is
-    // handed a *question* and the useful summary is the question. The
-    // subject stays out of the record, as a helper's payload does.
+    // The trace records the question, never the subject: the question is the
+    // useful summary of what was asked.
     let asked = question_summary(&instructions);
-    let slot = state.begin_helper(crate::helpers::HelperRecord {
-        helper: "decide".to_string(),
-        verb: "deciding".to_string(),
-        asked: asked.clone(),
-        ..crate::helpers::HelperRecord::default()
-    });
-
-    let started = std::time::Instant::now();
     // Waiting on the decision model is the cell waiting, not the cell
     // computing (`RuntimeState::away_from_js`); the question carries
     // `decide::DECISION_TIMEOUT` of its own.
@@ -101,34 +84,7 @@ fn decide_choice_callback(
         let _away = state.away_from_js();
         crate::decide::judgement(&model, &instructions, &subject, criteria)
     };
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let (ok, text) = match &answered {
-        Ok(judgement) => (
-            true,
-            format!("{} ({:.2})", judgement.choice, judgement.confidence),
-        ),
-        Err(error) => (false, error.to_string()),
-    };
-    state.finish_helper(
-        slot,
-        crate::helpers::HelperCall {
-            outcome: crate::helpers::HelperOutcome {
-                text: text.clone(),
-                ok,
-                cancelled: false,
-                elapsed_ms,
-            },
-            turns: 1,
-            looked: Vec::new(),
-            usage: crate::helpers::HelperUsage {
-                coverage_known: true,
-                model: model.clone(),
-                requests: 1,
-                responses: u32::from(ok),
-                ..crate::helpers::HelperUsage::default()
-            },
-        },
-    );
+    let ok = answered.is_ok();
     trace(scope).record(CallRecord {
         tool: "decide.choice".to_string(),
         args: [("asked".to_string(), asked)].into_iter().collect(),

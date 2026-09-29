@@ -43,7 +43,6 @@ pub enum CellTab {
     Code,
     Diff,
     Output,
-    Helpers,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -58,18 +57,9 @@ pub enum Action {
     Draft(String),
     Path(String),
     Tab(usize, CellTab),
-    Helper(usize, usize),
-    /// A helper call's raw record -- its preparation steps and the excerpt
-    /// block written for the model -- shown or put away.
-    HelperRaw(usize, usize),
-    /// The Scout's whole report, under the request it read, shown or put
-    /// away.
-    Scout,
-    /// A check's reasons, under its verdict line, shown or put away: the
+    /// A gate note's further lines, under its first, shown or put away: the
     /// index of the note in the session's history.
     Note(usize),
-    /// The task's acceptance list, whole, on its own sheet.
-    Acceptance,
     Latest,
     Settings,
     Models,
@@ -241,8 +231,6 @@ pub enum Source {
     Keys,
     /// Local notices, newest last.
     Activity,
-    /// The task's acceptance list: each item and what the last check found.
-    Acceptance,
     /// Every theme; `before` is what Esc and Undo go back to.
     Themes {
         before: crate::tui::Theme,
@@ -282,12 +270,7 @@ pub struct Workbench {
     pub expanded: BTreeSet<usize>,
     pub collapsed: BTreeSet<usize>,
     pub tabs: std::collections::BTreeMap<usize, CellTab>,
-    pub helper: Option<(usize, usize)>,
-    /// The helper call whose raw record is open.
-    pub helper_raw: Option<(usize, usize)>,
-    /// Whether the Scout's report is open under its request.
-    pub scout: bool,
-    /// The check notes whose reasons are open under their verdict.
+    /// The gate notes whose further lines are open.
     pub notes_open: BTreeSet<usize>,
     pub selected_cell: Option<usize>,
     /// Every open surface, the top one last.
@@ -518,13 +501,7 @@ impl Workbench {
                 model.assignment = loaded.config.agents;
             }
             if let Some(key) = self.browsing.take() {
-                model.role = if key.starts_with("agents.") {
-                    2
-                } else if key == "helpers.model" {
-                    1
-                } else {
-                    0
-                };
+                model.role = usize::from(key.starts_with("agents."));
                 model.slot = key
                     .strip_prefix("agents.slots.")
                     .and_then(|k| k.strip_suffix(".model"))

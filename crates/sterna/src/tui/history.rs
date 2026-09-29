@@ -43,25 +43,17 @@ impl ScreenState {
     }
 }
 
-/// The first words of the lines Sterna's work behind an answer leaves
-/// (`session/after.rs`, the gate's notes); [`NoteKind::of`] reads them.
-pub const CHECKED: &str = "checked after the answer: ";
-/// What separates a check's verdict from what the check used, on its line.
-pub const COST: &str = " · ";
-pub const LEARNED: &str = "learned: ";
+/// The first words of the line the completion gate leaves when it noted
+/// something without holding the answer; [`NoteKind::of`] reads them.
 pub const NOTED: &str = "noted, not held: ";
 
-/// What a note is, from its first line, so each lane behind an answer has
-/// its own mark and a check reads differently from a notice at a glance.
+/// What a note is, from its first line, so the gate's notes read
+/// differently from a notice at a glance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteKind {
     Error,
-    /// The checker behind the answer found it holds.
-    Checked,
-    /// The checker could not confirm it, or the gate noted something.
+    /// The gate noted something beside the answer.
     Flagged,
-    /// Lines added to `.sterna/learned.md`.
-    Learned,
     Plain,
 }
 
@@ -70,12 +62,8 @@ impl NoteKind {
     pub fn of(text: &str) -> Self {
         if text.starts_with("ERROR:") {
             Self::Error
-        } else if text.starts_with(&format!("{CHECKED}holds")) {
-            Self::Checked
-        } else if text.starts_with(CHECKED) || text.starts_with(NOTED) {
+        } else if text.starts_with(NOTED) {
             Self::Flagged
-        } else if text.starts_with(LEARNED) {
-            Self::Learned
         } else {
             Self::Plain
         }
@@ -86,17 +74,15 @@ impl NoteKind {
     pub fn mark(self) -> &'static str {
         match self {
             Self::Error => "✕",
-            Self::Checked => "✓",
             Self::Flagged => "!",
-            Self::Learned => "✎",
             Self::Plain => "·",
         }
     }
 }
 
 /// Draws the notes from `next` on that belong at or before message `upto`.
-/// An `ERROR:` note is red, a check behind the answer green or yellow, a
-/// learned note in the helpers' colour; every other note is muted.
+/// An `ERROR:` note is red, a gate's note yellow; every other note is
+/// muted.
 pub(super) fn push_notes(
     lines: &mut Vec<Line<'static>>,
     notes: &[HistoryNote],
@@ -112,9 +98,7 @@ pub(super) fn push_notes(
         let kind = NoteKind::of(&note.text);
         let style = Style::default().fg(match kind {
             NoteKind::Error => Color::Red,
-            NoteKind::Checked => Color::Green,
             NoteKind::Flagged => Color::Yellow,
-            NoteKind::Learned => Color::Cyan,
             NoteKind::Plain => MUTED,
         });
         for (index, line) in note.text.lines().enumerate() {

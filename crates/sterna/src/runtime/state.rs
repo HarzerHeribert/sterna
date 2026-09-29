@@ -16,38 +16,15 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::config::HelpersConfig;
 use crate::contract::SessionId;
-use crate::helpers::{HelperCall, HelperRecord};
 use crate::project::source_context::SourceContext;
 use crate::runtime::handles::{HandleMeta, HandleTable, Provenance};
 use crate::runtime::instructions::{InstructionContext, PendingInstructions};
 use crate::runtime::observation::ReductionStats;
-use crate::runtime::outcome::{PlanItem, SourceEvidence};
+use crate::runtime::outcome::SourceEvidence;
 use crate::runtime::preview::{self, Value};
 use crate::sandbox::profile::{Access, Profile};
 use crate::tools::invoke::CancellationToken;
-
-/// Told when a helper call starts and again when it ends, with every call
-/// this cell has made so far.
-pub(crate) type HelperProgress = Rc<dyn Fn(&[HelperRecord])>;
-
-thread_local! {
-    static HELPER_PROGRESS: RefCell<Option<HelperProgress>> = const { RefCell::new(None) };
-}
-
-/// Installs the signal helper progress is reported through on this thread,
-/// and answers with whatever it replaced.
-///
-/// **Thread-local, and it is the seam `session::ui`'s `OUTPUT` already is**: a
-/// task's cells run on the session's own thread, so the terminal a running
-/// helper must reach is the one belonging to the thread the call is made
-/// from, and `runtime/**` names no terminal type of its own. A runtime built
-/// without a session -- `agent.rs`'s subagents, every test -- finds none,
-/// which is the absent case rather than a special one.
-pub(crate) fn install_helper_progress(signal: Option<HelperProgress>) -> Option<HelperProgress> {
-    HELPER_PROGRESS.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), signal))
-}
 
 /// A `console` capture bounded ahead of rendering.
 ///
@@ -70,14 +47,6 @@ const KEEP_CHARS: usize = preview::STDOUT_TOKEN_CAP * 4;
 /// promoted as visible can have its beginning cut off by the renderer that
 /// writes that marker. Reserved whatever else is queued.
 const CONTEXT_MARKER_RESERVE: usize = 256;
-
-/// How many `CallSite::PostResult` reductions one task remembers, so a
-/// repeated command is served rather than reduced again.
-///
-/// Small on purpose: this answers "did *this* task already reduce exactly
-/// this output", which is a question about the last few tool calls, not a
-/// cache of the session.
-const REDUCTIONS_KEPT: usize = 16;
 
 impl ConsoleCapture {
     pub(crate) fn write_line(&mut self, line: &str) {
@@ -168,14 +137,10 @@ pub(crate) struct CellState {
     /// one is skipped: `runtime-contract.md` §2 makes `free` a lifetime
     /// event, and re-capturing at the end of the cell would undo it.
     pub(crate) freed: Vec<String>,
-    /// Every helper call this cell completed, in call order — the one field
-    /// `CellView.helpers` is built from.
-    pub(crate) helpers: Vec<HelperRecord>,
-    /// Helper calls **claimed** this cell, which is what the per-cell ceiling
-    /// counts. A call in flight has claimed its slot and left no record yet,
-    /// so counting the records instead would let a loop overrun the ceiling
-    /// by whatever is outstanding.
-    pub(crate) helper_calls: u32,
+    /// `decide.choice` calls **claimed** this cell, which is what the
+    /// per-cell ceiling counts. A call in flight has claimed its slot, so a
+    /// loop cannot overrun the ceiling by whatever is outstanding.
+    pub(crate) decisions: u32,
 }
 
 /// What every host callback can reach.
@@ -238,12 +203,6 @@ pub(crate) struct RuntimeState {
     /// lifetime `runtime-contract.md` §2 gives a handle.
     calls: RefCell<HashMap<u64, RecordedCall>>,
     next_call: std::cell::Cell<u64>,
-    /// The model's own plan, replaced whole by each `todo.write`.
-    ///
-    /// **Task-scoped, like [`calls`](Self::calls) and for the same reason**:
-    /// a plan is the shape of the task in hand, so it is cleared with the
-    /// task rather than carried into the next one.
-    plan: RefCell<Vec<PlanItem>>,
     /// Whether this runtime belongs to a subagent, which may not start one.
     pub(crate) subagent: std::cell::Cell<bool>,
     /// What the parent task has left to spend, in tokens, refreshed each turn.
@@ -254,40 +213,15 @@ pub(crate) struct RuntimeState {
     /// than silently falling back to the compiled-in default.
     pub(crate) model: RefCell<String>,
     pub(crate) instructions: RefCell<InstructionContext>,
-    /// `[helpers]` as the session read it. The default carries no `model`,
-    /// which is helpers **off**: a runtime nobody configured spends nothing
-    /// on the user's behalf.
-    helpers: RefCell<HelpersConfig>,
+    /// `[limits] reduce_above_tokens`: the estimated size above which a
+    /// command result is shortened by the reduction rules.
+    reduce_above_tokens: std::cell::Cell<usize>,
     /// `[agents]` as the session read it: what a delegated goal runs on when
     /// the cell does not name a model.
     agents: RefCell<crate::config::AgentsConfig>,
     /// `[decisions]`, for the one question a *cell* may ask: `decide.choice`
     /// routes on `model`, and an unset model is why the global is not bound.
     decisions: RefCell<crate::config::DecisionsConfig>,
-    /// What `CallSite::PostResult` has already reduced this task, keyed by
-    /// the SHA-256 of the text it reduced.
-    ///
-    /// The invariant: **no value is reduced twice.** A cell is code, so the
-    /// same command inside a loop is ordinary; without this, each identical
-    /// result would buy an answer the task already holds. A hit is served
-    /// from here and claims no helper call, so the ceiling is spent on
-    /// distinct outputs only.
-    ///
-    /// Bounded by discarding the oldest. What is stored is the reduction, not
-    /// the output -- one helper `max_tokens` each -- so a long task pays a
-    /// small fixed cost rather than one that grows with it.
-    reductions: RefCell<Vec<(String, String)>>,
-    /// Filters this task has written, by the shape signature of the output
-    /// each was written for.
-    ///
-    /// **This is the cache that pays.** [`reductions`](Self::reductions) is
-    /// keyed by the digest of the exact bytes, so it answers "has this task
-    /// already reduced *this* output" — true inside a loop and almost never
-    /// otherwise, because two runs of one command differ in their counts. A
-    /// filter is written for a *shape*, and two runs of one tool share one:
-    /// so a filter written in an early cell answers every later run of the
-    /// same tool for nothing.
-    filters: RefCell<Vec<(String, String)>>,
     /// Versions whose exact editing context has crossed a completed cell
     /// boundary and therefore reached the model.
     visible_sources: RefCell<HashMap<PathBuf, String>>,
@@ -382,9 +316,10 @@ fn rendering_key(rendered: &str) -> String {
     format!("{:x}", Sha256::digest(rendered.as_bytes()))
 }
 
-/// Slots a pushed helper may never take, so the model's own `helper.*` calls
-/// survive an automatic reduction that fired several times first.
-const RESERVED_FOR_THE_MODEL: u32 = 2;
+/// How many `decide.choice` questions one cell may ask. A cell is code, so a
+/// question sits inside a loop, and the refusal is what the program catches
+/// instead of the loop running away.
+pub(crate) const DECISIONS_PER_CELL: u32 = 8;
 
 impl RuntimeState {
     /// Stops the cell's compute clock until the guard is dropped.
@@ -434,16 +369,13 @@ impl RuntimeState {
             token: RefCell::new(CancellationToken::new()),
             calls: RefCell::new(HashMap::new()),
             next_call: std::cell::Cell::new(0),
-            plan: RefCell::new(Vec::new()),
             subagent: std::cell::Cell::new(false),
             budget_remaining: std::cell::Cell::new(0),
             model: RefCell::new(crate::wire::MODEL.to_string()),
             instructions: RefCell::new(InstructionContext::default()),
-            helpers: RefCell::new(HelpersConfig::default()),
+            reduce_above_tokens: std::cell::Cell::new(crate::config::REDUCE_ABOVE_TOKENS_DEFAULT),
             agents: RefCell::new(crate::config::AgentsConfig::default()),
             decisions: RefCell::new(crate::config::DecisionsConfig::default()),
-            reductions: RefCell::new(Vec::new()),
-            filters: RefCell::new(Vec::new()),
             visible_sources: RefCell::new(HashMap::new()),
             pending_sources: RefCell::new(Vec::new()),
             pending_incomplete: RefCell::new(Vec::new()),
@@ -506,16 +438,6 @@ impl RuntimeState {
         self.instructions.borrow_mut().acknowledge();
     }
 
-    /// Replaces the plan whole — `todo.write`'s only effect.
-    pub(crate) fn set_plan(&self, items: Vec<PlanItem>) {
-        *self.plan.borrow_mut() = items;
-    }
-
-    /// The plan as it stands, for `todo.read` and for the turn the cell ends.
-    pub(crate) fn plan(&self) -> Vec<PlanItem> {
-        self.plan.borrow().clone()
-    }
-
     /// The ordinal the next cell will take.
     ///
     /// Read before the frame runs so a lowered direct call can name its
@@ -548,19 +470,18 @@ impl RuntimeState {
         current.captures.clear();
         current.freed.clear();
         current.pinned.clear();
-        current.helpers.clear();
-        current.helper_calls = 0;
+        current.decisions = 0;
         cell
     }
 
-    pub(crate) fn set_helpers(&self, helpers: HelpersConfig) {
-        *self.helpers.borrow_mut() = helpers;
+    pub(crate) fn set_reduce_above_tokens(&self, tokens: usize) {
+        self.reduce_above_tokens.set(tokens);
     }
 
-    /// `[helpers] reduce_above_tokens`: the estimated size above which a
-    /// command result is worth a pushed reduction.
+    /// `[limits] reduce_above_tokens`: the estimated size above which a
+    /// command result is shortened by the reduction rules.
     pub(crate) fn reduce_above_tokens(&self) -> usize {
-        self.helpers.borrow().reduce_above_tokens
+        self.reduce_above_tokens.get()
     }
 
     /// Adds to this task's reduction figures.
@@ -624,12 +545,6 @@ impl RuntimeState {
         self.repeated_observations.get()
     }
 
-    /// The model helpers run on, or the sentence saying why there is none.
-    ///
-    /// The invariant: **a helper never runs unasked.** `[helpers] model`
-    /// unset is off, because a
-    /// helper spends money on the user's behalf and the fail-closed direction
-    /// is *not configured, not run*.
     /// Resolves a delegated goal only inside the explicitly configured assignment.
     #[cfg(test)]
     pub(crate) fn agent_model(&self, asked: Option<String>) -> Result<String, String> {
@@ -693,171 +608,18 @@ impl RuntimeState {
         *self.agents.borrow_mut() = agents;
     }
 
-    pub(crate) fn helper_route(
-        &self,
-        helper: &str,
-    ) -> Result<(String, crate::wire::Effort), String> {
-        let helpers = self.helpers.borrow();
-        if !helpers.enabled {
-            return Err(
-                "helpers are off: `[helpers] enabled` is false in .sterna/config.toml".to_string(),
-            );
-        }
-        let model = helpers.model.clone().ok_or_else(|| {
-            "helpers are not configured: set `[helpers] model` in .sterna/config.toml".to_string()
-        })?;
-        let effort = helpers.effort.for_helper(helper).ok_or_else(|| {
-            format!("helper `{helper}` has no reasoning effort policy in .sterna/config.toml")
-        })?;
-        Ok((model, effort))
-    }
-
-    /// Takes one of this cell's helper-call slots, or says the ceiling is
-    /// reached. `little-helpers.md`'s *cost is bounded per cell*: a program
-    /// is code, so a helper call sits inside a loop, and the refusal is what
-    /// the model catches instead of the loop running away.
-    pub(crate) fn claim_helper_call(&self) -> Result<(), String> {
-        self.claim_helper_slot(0)
-    }
-
-    /// A slot claimed by a helper the MODEL DID NOT ASK FOR — today the
-    /// post-result reduction.
-    ///
-    /// The invariant: **a pushed helper never starves a pulled one.** Both
-    /// spend the same per-cell budget, so an automatic reduction firing on
-    /// several oversized results could leave a model that then reaches for
-    /// `helper.find` refused for a call it never made. `reserved` slots stay
-    /// for the model's own calls.
-    pub(crate) fn claim_pushed_helper_call(&self) -> Result<(), String> {
-        self.claim_helper_slot(RESERVED_FOR_THE_MODEL)
-    }
-
-    fn claim_helper_slot(&self, reserved: u32) -> Result<(), String> {
-        let ceiling = self.helpers.borrow().calls_per_cell;
-        // Reserve only what there is room to reserve. At a ceiling of one or
-        // two there is nothing to protect — the model is refused either way —
-        // so a pushed call still gets its single slot rather than the feature
-        // silently turning itself off on a small budget.
-        let available = if ceiling == 0 {
-            0
-        } else {
-            ceiling.saturating_sub(reserved).max(1)
-        };
+    /// Takes one of this cell's `decide.choice` slots, or says the ceiling is
+    /// reached. The refusal throws into the cell rather than ending it, so
+    /// the control flow stays the program's own.
+    pub(crate) fn claim_decision(&self) -> Result<(), String> {
         let mut current = self.current.borrow_mut();
-        if current.helper_calls >= available {
-            // Names the ceiling and the key that sets it, and does not tell
-            // the program what to do about it. This refusal throws into the
-            // cell rather than ending it, so the control flow is the
-            // program's own; a message that said "yield" was the ceiling
-            // dictating a round trip it had no business dictating.
+        if current.decisions >= DECISIONS_PER_CELL {
             return Err(format!(
-                "this cell has spent its {ceiling} helper call(s); `[helpers] calls_per_cell` sets that ceiling and accepts up to 64"
+                "this cell has asked its {DECISIONS_PER_CELL} decide.choice questions"
             ));
         }
-        current.helper_calls += 1;
+        current.decisions += 1;
         Ok(())
-    }
-
-    /// A helper call starting: the record is kept with its outcome unfilled
-    /// and the progress signal fires, so the lane can show the call **while
-    /// it is in flight**. Answers with the slot [`finish_helper`] resolves.
-    ///
-    /// The invariant: a call is visible from the moment it starts. Its wire
-    /// call blocks this thread, so a record kept only on return can never be
-    /// rendered as running -- which is the whole of `little-helpers.md`'s
-    /// lane. `record.outcome` and `record.turns` are what the call has
-    /// produced so far, which at the start is nothing: leave them at their
-    /// defaults rather than at the spec's ceiling.
-    ///
-    /// [`finish_helper`]: RuntimeState::finish_helper
-    pub(crate) fn begin_helper(&self, record: HelperRecord) -> usize {
-        let slot = {
-            let mut current = self.current.borrow_mut();
-            current.helpers.push(record);
-            current.helpers.len() - 1
-        };
-        self.report_helper_progress();
-        slot
-    }
-
-    /// The call in `slot` resolving: what came back and the turns it actually
-    /// took replace the unfilled ones, and the progress signal fires again.
-    ///
-    /// It takes the whole [`HelperCall`] rather than its outcome because
-    /// `turns` is only known once the call has answered, and a record left at
-    /// the turns it was allowed is exactly what the inspector section exists
-    /// to make visible.
-    pub(crate) fn finish_helper(&self, slot: usize, call: HelperCall) {
-        if let Some(record) = self.current.borrow_mut().helpers.get_mut(slot) {
-            record.outcome = call.outcome;
-            record.turns = call.turns;
-            record.looked = call.looked;
-            record.usage = call.usage;
-        }
-        self.report_helper_progress();
-    }
-
-    /// Hands this cell's calls to the installed signal, if there is one. The
-    /// signal is cloned out before it runs, so it may install another.
-    fn report_helper_progress(&self) {
-        let Some(signal) = HELPER_PROGRESS.with(|slot| slot.borrow().clone()) else {
-            return;
-        };
-        let records = self.current.borrow().helpers.clone();
-        signal(&records);
-    }
-
-    /// The reduction already made for text with this digest, if there is one.
-    ///
-    /// Answering from here is what makes the second identical result free:
-    /// it is read before [`claim_helper_call`] so a hit spends neither a
-    /// request nor a slot of the cell's ceiling.
-    ///
-    /// [`claim_helper_call`]: RuntimeState::claim_helper_call
-    pub(crate) fn reduction_of(&self, digest: &str) -> Option<String> {
-        self.reductions
-            .borrow()
-            .iter()
-            .find(|(seen, _)| seen == digest)
-            .map(|(_, reduction)| reduction.clone())
-    }
-
-    /// Keeps one reduction against the digest of the text it reduced,
-    /// discarding the oldest once [`REDUCTIONS_KEPT`] are held.
-    pub(crate) fn remember_reduction(&self, digest: String, reduction: String) {
-        let mut reductions = self.reductions.borrow_mut();
-        if reductions.len() >= REDUCTIONS_KEPT {
-            reductions.remove(0);
-        }
-        reductions.push((digest, reduction));
-    }
-
-    /// The filter this task already wrote for output of this shape.
-    ///
-    /// Read before the economics test and before any slot is claimed, so a
-    /// hit costs neither a request nor a wait -- it is one `run_filter` over
-    /// the new text, and the provenance line is recomputed from *that* text
-    /// rather than served with the filter.
-    pub(crate) fn filter_of(&self, signature: &str) -> Option<String> {
-        self.filters
-            .borrow()
-            .iter()
-            .find(|(seen, _)| seen == signature)
-            .map(|(_, filter)| filter.clone())
-    }
-
-    /// Keeps one filter against the shape signature it was written for.
-    pub(crate) fn remember_filter(&self, signature: String, filter: String) {
-        let mut filters = self.filters.borrow_mut();
-        if filters.len() >= REDUCTIONS_KEPT {
-            filters.remove(0);
-        }
-        filters.push((signature, filter));
-    }
-
-    /// Every helper call the cell that just ran completed, in call order.
-    pub(crate) fn helper_records(&self) -> Vec<HelperRecord> {
-        self.current.borrow().helpers.clone()
     }
 
     /// Records a call whose result became a live object, and answers with the
@@ -879,14 +641,6 @@ impl RuntimeState {
     pub(crate) fn forget_calls(&self) {
         self.calls.borrow_mut().clear();
         self.next_call.set(0);
-        // The plan is the shape of the task that just ended, so it goes with
-        // it: a next task inheriting the last one's checklist would be
-        // reporting work it never did.
-        self.plan.borrow_mut().clear();
-        // Reductions describe results that were held behind the handles this
-        // just dropped, so they end with them.
-        self.reductions.borrow_mut().clear();
-        self.filters.borrow_mut().clear();
         self.visible_sources.borrow_mut().clear();
         self.pending_sources.borrow_mut().clear();
         self.pending_incomplete.borrow_mut().clear();
@@ -1455,7 +1209,6 @@ impl HeapGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::HelperOutcome;
 
     #[test]
     fn console_output_is_bounded_and_says_how_much_it_dropped() {
@@ -1516,84 +1269,17 @@ mod tests {
         );
     }
 
-    fn asked(name: &str) -> HelperRecord {
-        HelperRecord {
-            helper: name.to_string(),
-            verb: "reducing".to_string(),
-            asked: "4118 lines".to_string(),
-            ..HelperRecord::default()
+    /// A cell asks `decide.choice` at most [`DECISIONS_PER_CELL`] times, and
+    /// the next cell starts with the full allowance again.
+    #[test]
+    fn a_cell_asks_decide_choice_a_bounded_number_of_times() {
+        let state = state();
+        for _ in 0..DECISIONS_PER_CELL {
+            assert!(state.claim_decision().is_ok());
         }
-    }
-
-    /// The lane exists to say a helper is running, so the signal must arrive
-    /// **before** the answer does: one call, two reports, the first carrying a
-    /// record nothing has resolved yet.
-    #[test]
-    fn a_helper_call_reports_its_start_and_then_its_end() {
-        let seen: Rc<RefCell<Vec<Vec<HelperRecord>>>> = Rc::new(RefCell::new(Vec::new()));
-        let recorder = Rc::clone(&seen);
-        let previous = install_helper_progress(Some(Rc::new(move |records: &[HelperRecord]| {
-            recorder.borrow_mut().push(records.to_vec());
-        })));
-
-        let state = state();
-        let slot = state.begin_helper(asked("reduce"));
-        state.finish_helper(
-            slot,
-            HelperCall {
-                outcome: HelperOutcome {
-                    text: "3 distinct root failures".to_string(),
-                    ok: true,
-                    cancelled: false,
-                    elapsed_ms: 1_100,
-                },
-                turns: 1,
-                looked: Vec::new(),
-                usage: crate::helpers::HelperUsage::default(),
-            },
-        );
-        install_helper_progress(previous);
-
-        let seen = seen.borrow();
-        assert_eq!(seen.len(), 2, "one call must report a start and an end");
-        assert_eq!(seen[0].len(), 1);
-        assert!(
-            !seen[0][0].outcome.ok && seen[0][0].outcome.text.is_empty(),
-            "the first report must carry an unresolved call: {:?}",
-            seen[0][0].outcome
-        );
-        assert_eq!(seen[0][0].helper, "reduce");
-        assert!(seen[1][0].outcome.ok, "the second report must be resolved");
-        assert_eq!(seen[1][0].outcome.text, "3 distinct root failures");
-        assert_eq!(state.helper_records().len(), 1, "one call, one record");
-    }
-
-    /// Every runtime built without a session -- `agent.rs`'s subagents and
-    /// every test -- finds no signal, and that is the ordinary case rather
-    /// than a special one.
-    #[test]
-    fn a_helper_call_with_no_terminal_installed_still_records() {
-        let previous = install_helper_progress(None);
-        let state = state();
-        let slot = state.begin_helper(asked("reduce"));
-        state.finish_helper(
-            slot,
-            HelperCall {
-                outcome: HelperOutcome {
-                    text: "nothing failed".to_string(),
-                    ok: true,
-                    cancelled: false,
-                    elapsed_ms: 40,
-                },
-                turns: 1,
-                looked: Vec::new(),
-                usage: crate::helpers::HelperUsage::default(),
-            },
-        );
-        install_helper_progress(previous);
-        let records = state.helper_records();
-        assert_eq!(records.len(), 1);
-        assert!(records[0].outcome.ok);
+        assert!(state.claim_decision().is_err());
+        state.begin_cell();
+        assert!(state.claim_decision().is_ok());
     }
 
     #[test]

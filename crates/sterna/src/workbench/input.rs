@@ -587,7 +587,7 @@ impl Workbench {
                 s.selection = None;
                 self.notice.clear();
                 if !self.sheets.is_empty() {
-                    super::sheets::build(self, s, n);
+                    super::sheets::build(self, s);
                     if self.held_back() {
                         return Effect::Consumed;
                     }
@@ -647,16 +647,12 @@ impl Workbench {
                         s.scrolling = k.code == KeyCode::Home;
                         Effect::Consumed
                     }
-                    // With no card selected, the keys act on the newest cell
-                    // that ran -- or, for helpers, that called one -- never
-                    // on the entry a prose answer leaves in the notebook.
+                    // With no card selected, the key acts on the newest cell
+                    // that ran, never on the entry a prose answer leaves in
+                    // the notebook.
                     KeyCode::F(4) => {
                         let cell = self.selected_cell.or(n.last_program_cell()).unwrap_or(0);
                         self.activate(Action::Tab(cell, CellTab::Diff), s, n, busy, false)
-                    }
-                    KeyCode::F(5) => {
-                        let cell = self.selected_cell.or(n.last_with_helpers()).unwrap_or(0);
-                        self.activate(Action::Tab(cell, CellTab::Helpers), s, n, busy, false)
                     }
                     // Alt-↑ and Alt-↓ move the selection between cards.
                     KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::ALT) => {
@@ -772,7 +768,7 @@ impl Workbench {
                             p.editing = None;
                         }
                         Source::Models(m) if m.target_key.is_none() => {
-                            m.role = section.min(2);
+                            m.role = section.min(1);
                             m.select_current();
                         }
                         _ => {}
@@ -896,27 +892,11 @@ impl Workbench {
                     self.selected_cell = Some(cell);
                 }
             }
-            Action::Helper(cell, h) => {
-                self.helper = if self.helper == Some((cell, h)) {
-                    None
-                } else {
-                    Some((cell, h))
-                };
-            }
-            Action::HelperRaw(cell, h) => {
-                self.helper_raw = if self.helper_raw == Some((cell, h)) {
-                    None
-                } else {
-                    Some((cell, h))
-                };
-            }
-            Action::Scout => self.scout = !self.scout,
             Action::Note(index) => {
                 if !self.notes_open.remove(&index) {
                     self.notes_open.insert(index);
                 }
             }
-            Action::Acceptance => self.show(Source::Acceptance, from_sheet),
             Action::Latest => s.scrollback = 0,
             Action::More(controls) => self.show(Source::More(controls), from_sheet),
             Action::Resume(id) => {
@@ -1084,7 +1064,7 @@ impl Workbench {
                             let model = m.selected_model().unwrap_or_default();
                             // Pinning one model over the favourites turns them
                             // off, so it is asked first.
-                            if m.role == 2
+                            if m.role == 1
                                 && m.slot.is_none()
                                 && m.assignment.mode == crate::config::AgentsMode::Roster
                             {

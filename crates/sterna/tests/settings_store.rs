@@ -347,17 +347,17 @@ fn runtime_defaults_are_shown_before_anything_is_saved() {
 
     // A panel must never show "unset" for a default the runtime applies.
     assert_eq!(
-        loaded.values["helpers"]["enabled"].as_bool(),
-        Some(sterna::config::HelpersConfig::default().enabled)
+        loaded.values["limits"]["reduce_above_tokens"].as_integer(),
+        Some(sterna::config::REDUCE_ABOVE_TOKENS_DEFAULT as i64)
+    );
+    assert_eq!(
+        loaded.values["decisions"]["reduce_returns"].as_bool(),
+        Some(sterna::config::DecisionsConfig::default().reduce_returns)
     );
     assert_eq!(
         loaded.values["limits"]["cells"].as_integer(),
         // `0` is the file's spelling for the default, which is no ceiling.
         Some(sterna::config::Limits::default().cells.unwrap_or(0) as i64)
-    );
-    assert_eq!(
-        string(&loaded.values, "helpers.effort.check").as_deref(),
-        Some(sterna::config::HelperEfforts::default().check.name())
     );
     // The chips mark what runs: Ask weighting, the decision mode and each
     // favourite's effort are the runtime's own defaults, never a guess.
@@ -373,12 +373,12 @@ fn runtime_defaults_are_shown_before_anything_is_saved() {
         sterna::settings::registry::shown_default("agents.slots.deep.effort").as_deref(),
         Some(sterna::config::slot_effort("deep").name())
     );
-    assert_eq!(loaded.origins["helpers.enabled"], "built-in");
+    assert_eq!(loaded.origins["limits.reduce_above_tokens"], "built-in");
     assert_eq!(loaded.origins["limits.cells"], "built-in");
-    // The three model ids have no default: unset is what "off" means for
-    // helpers and agents, and the panel must say so rather than invent one.
+    // The model ids have no default: unset is what "off" means for agents,
+    // and the panel must say so rather than invent one.
     assert!(loaded.values.get("model").is_none());
-    assert!(!loaded.origins.contains_key("helpers.model"));
+    assert!(!loaded.origins.contains_key("agents.model"));
 }
 
 #[test]
@@ -402,14 +402,14 @@ fn a_host_without_a_user_directory_still_has_a_project_scope() {
     let store = Store::with_global(&temp.root(), None).expect("store");
     write(
         &store.path(Scope::Local),
-        "[helpers]\nmodel = \"claude-haiku-4-5-20251001\"\n",
+        "[model]\nparent = \"claude-haiku-4-5-20251001\"\n",
     );
 
     assert!(!store.global_available());
     assert_eq!(store.path(Scope::Global), PathBuf::new());
     let loaded = store.load(None).expect("load");
     assert_eq!(
-        loaded.config.helpers.model.as_deref(),
+        loaded.config.model.parent.as_deref(),
         Some("claude-haiku-4-5-20251001")
     );
     assert!(
@@ -492,7 +492,7 @@ fn an_invalid_value_writes_nothing() {
     assert!(error.contains("between 1 and 1000"), "{error}");
 
     let unknown = store
-        .save(Scope::Local, &snapshot, &[edit("helpers.modle", "x")])
+        .save(Scope::Local, &snapshot, &[edit("limits.celss", "x")])
         .expect_err("unknown key");
     assert!(
         unknown.contains("is not a setting Sterna supports"),
@@ -500,7 +500,7 @@ fn an_invalid_value_writes_nothing() {
     );
 
     let unknown_unset = store
-        .save(Scope::Local, &snapshot, &[unset("helpers.modle")])
+        .save(Scope::Local, &snapshot, &[unset("limits.celss")])
         .expect_err("unknown key");
     assert!(unknown_unset.contains("not a setting"), "{unknown_unset}");
 
@@ -559,7 +559,7 @@ fn unsetting_a_key_falls_back_to_the_inherited_value() {
     );
     write(
         &store.path(Scope::Local),
-        "[model]\nparent = \"claude-sonnet-5\"\n\n[helpers.effort]\nfind = \"high\"\n",
+        "[model]\nparent = \"claude-sonnet-5\"\n\n[web]\ntimeout_seconds = 30\n",
     );
 
     let snapshot = store.read(Scope::Local).expect("read");
@@ -567,17 +567,20 @@ fn unsetting_a_key_falls_back_to_the_inherited_value() {
         .save(
             Scope::Local,
             &snapshot,
-            &[unset("model.parent"), unset("helpers.effort.find")],
+            &[unset("model.parent"), unset("web.timeout_seconds")],
         )
         .expect("unset");
 
     assert_eq!(loaded.config.model.parent.as_deref(), Some("claude-opus-5"));
     assert_eq!(loaded.origins["model.parent"], "global");
-    assert_eq!(loaded.config.helpers.effort.find, sterna::wire::Effort::Low);
+    assert_eq!(
+        loaded.config.web.timeout_seconds,
+        sterna::web::WebConfig::default().timeout_seconds
+    );
     let text = read(&store.path(Scope::Local));
     assert!(!text.contains("parent"), "{text}");
     // The emptied tables go with the keys that were in them.
-    assert!(!text.contains("[helpers.effort]"), "{text}");
+    assert!(!text.contains("[web]"), "{text}");
 }
 
 #[test]
@@ -1004,7 +1007,7 @@ fn every_choice_the_registry_offers_validates() {
 #[test]
 fn typed_values_are_parsed_without_toml_quoting() {
     assert_eq!(
-        registry::validate("helpers.enabled", "true").expect("bool"),
+        registry::validate("limits.evidence_gate", "true").expect("bool"),
         toml::Value::Boolean(true)
     );
     assert_eq!(
@@ -1024,24 +1027,12 @@ fn typed_values_are_parsed_without_toml_quoting() {
     );
     // The runtime parser owns the ranges, the model rules and the domains.
     assert!(registry::validate("decisions.completion_no_below", "0.6").is_err());
-    assert!(registry::validate("decisions.completion_yes_above", "0.4").is_err());
     assert_eq!(
         registry::validate("decisions.completion_no_below", "0.2").expect("in range"),
         toml::Value::Float(0.2)
     );
-    assert!(registry::validate("decisions.scout_above", "0.3").is_err());
-    assert_eq!(
-        registry::validate("decisions.scout_above", "0.9").expect("in range"),
-        toml::Value::Float(0.9)
-    );
     assert!(registry::validate("decisions.hygiene_no_below", "0.6").is_err());
     assert!(registry::validate("decisions.hygiene_yes_above", "0.4").is_err());
-    assert!(registry::validate("decisions.judge_yes_above", "0.4").is_err());
-    assert!(registry::validate("decisions.judge_no_below", "0.6").is_err());
-    assert_eq!(
-        registry::validate("decisions.judge_yes_above", "0.8").expect("in range"),
-        toml::Value::Float(0.8)
-    );
     // `0` is the file's spelling for "no ceiling", so it validates; a figure
     // outside the range and a word still do not.
     assert_eq!(
@@ -1052,7 +1043,7 @@ fn typed_values_are_parsed_without_toml_quoting() {
     assert!(registry::validate("limits.cells", "many").is_err());
     assert!(registry::validate("web.allow_domains", "not a domain").is_err());
     assert!(registry::validate("model.parent", "/etc/passwd").is_err());
-    assert!(registry::validate("helpers.effort.find", "default").is_err());
+    assert!(registry::validate("agents.slots.quick.effort", "auto").is_err());
     assert!(registry::validate("ui.theme", "chartreuse").is_err());
     // Documented aliases are normalised to the spelling that is written.
     assert_eq!(
@@ -1160,46 +1151,158 @@ fn a_global_permission_rung_migrates_to_a_sandbox_level() {
     assert!(!read(&store.path(Scope::Global)).contains("mode"));
 }
 
-/// `helpers.completion_check` was on or off and is now when. A saved word of
-/// the old kind is read as what it means now, rewritten in its own file,
-/// and said once: `true` keeps the check where it pays, `false` stays off.
+/// A setting that kept its job and changed its table is read under its new
+/// key, written there in its own file, and said once.
 #[test]
-fn a_saved_on_or_off_completion_check_becomes_auto_or_off() {
-    let temp = Temp::new("migrate-check");
+fn a_moved_setting_is_read_under_its_new_key_and_rewritten_once() {
+    let temp = Temp::new("migrate-moved");
     let store = temp.store();
     write(
         &store.path(Scope::Global),
-        "[helpers]\ncompletion_check = true\n",
-    );
-    write(
-        &store.path(Scope::Local),
-        "[helpers]\ncompletion_check = false\n",
+        "[helpers]\nreduce_above_tokens = 4096\nreduce_returns = false\n",
     );
     let loaded = store.load(None).expect("loads");
-    assert_eq!(
-        loaded.values["helpers"]["completion_check"].as_str(),
-        Some("off"),
-        "the project's word wins, read as what it means now"
-    );
+    assert_eq!(loaded.config.limits.reduce_above_tokens, 4096);
+    assert!(!loaded.config.decisions.reduce_returns);
     let notices = store.remove_retired(&loaded);
     assert!(
         notices.contains(
-            &"`helpers.completion_check = true` is now `\"auto\"`: the answer is checked after big work only. Set it to `\"always\"` in /settings to check every answer that changed something."
+            &"`helpers.reduce_above_tokens = 4096` is `limits.reduce_above_tokens` now, and your settings were updated; /settings changes it."
                 .to_string()
         ),
         "{notices:?}"
     );
-    assert!(
-        notices.contains(
-            &"`helpers.completion_check = false` is now `\"off\"`; /settings changes it."
-                .to_string()
-        ),
-        "{notices:?}"
-    );
-    assert!(read(&store.path(Scope::Global)).contains("completion_check = \"auto\""));
-    assert!(read(&store.path(Scope::Local)).contains("completion_check = \"off\""));
+    let text = read(&store.path(Scope::Global));
+    assert!(!text.contains("[helpers]"), "{text}");
+    assert!(text.contains("reduce_above_tokens = 4096"), "{text}");
+    assert!(text.contains("reduce_returns = false"), "{text}");
     let after = store.load(None).expect("loads");
     assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+    assert_eq!(after.config.limits.reduce_above_tokens, 4096);
+    assert!(!after.config.decisions.reduce_returns);
+}
+
+/// A moved setting never overwrites a value its new key already holds in
+/// the same file: that is the newer choice.
+#[test]
+fn a_moved_setting_leaves_a_value_already_at_its_new_key() {
+    let temp = Temp::new("migrate-moved-taken");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Local),
+        "[helpers]\nreduce_returns = false\n\n[decisions]\nreduce_returns = true\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    assert!(loaded.config.decisions.reduce_returns, "the new key wins");
+    store.remove_retired(&loaded);
+    let text = read(&store.path(Scope::Local));
+    assert!(!text.contains("[helpers]"), "{text}");
+    assert!(text.contains("reduce_returns = true"), "{text}");
+    assert!(!text.contains("reduce_returns = false"), "{text}");
+}
+
+/// Every other helper setting, and the decision thresholds that tuned the
+/// helpers, is read as unset, removed from its file and said once; none of
+/// them stops Sterna from starting.
+#[test]
+fn a_retired_helper_setting_is_removed_and_said_once() {
+    let temp = Temp::new("migrate-helpers");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Local),
+        "[helpers]\nenabled = true\nmodel = \"gpt-5.6-luna\"\n\n[helpers.effort]\nfind = \"low\"\n\n[decisions]\nscout_above = 0.8\n",
+    );
+    let loaded = store.load(None).expect("a file naming helpers still loads");
+    let notices = store.remove_retired(&loaded);
+    for key in [
+        "helpers.enabled",
+        "helpers.model",
+        "helpers.effort.find",
+        "decisions.scout_above",
+    ] {
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.starts_with(&format!("`{key} = "))
+                    && notice
+                        .contains("is no longer a setting, so it was removed from your settings")
+                    && notice.contains("helpers are gone")),
+            "{key}: {notices:?}"
+        );
+    }
+    let text = read(&store.path(Scope::Local));
+    assert!(!text.contains("helpers"), "{text}");
+    assert!(!text.contains("scout_above"), "{text}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+}
+
+/// A profile overlay that names helper settings still loads: a moved key
+/// applies under its new name inside the overlay, a retired one is dropped,
+/// and both are taken out of the overlay once. The base file setting the new
+/// key does not stop the overlay's own value from moving: only the overlay
+/// holding it already would.
+#[test]
+fn a_profile_overlay_with_helper_settings_still_loads() {
+    let temp = Temp::new("migrate-profile");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Local),
+        "[limits]\ncells = 40\n\n[decisions]\nreduce_returns = true\n\n[profiles.review.limits]\ncells = 12\n\n[profiles.review.helpers]\nmodel = \"gpt-5.6-luna\"\nreduce_returns = false\n",
+    );
+    let loaded = store.load(Some("review")).expect("the overlay loads");
+    assert_eq!(loaded.config.limits.cells, Some(12));
+    assert!(!loaded.config.decisions.reduce_returns);
+    let notices = store.remove_retired(&loaded);
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices.iter().any(|notice| notice.starts_with(
+            "`profiles.review.helpers.reduce_returns = false` is `profiles.review.decisions.reduce_returns` now"
+        )),
+        "{notices:?}"
+    );
+    let text = read(&store.path(Scope::Local));
+    assert!(!text.contains("helpers"), "{text}");
+    assert!(text.contains("reduce_returns = false"), "{text}");
+    let after = store.load(Some("review")).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+    assert!(!after.config.decisions.reduce_returns);
+    assert_eq!(after.config.limits.cells, Some(12));
+    // Moved inside the overlay, not out of it: without the profile the
+    // base file's value still stands.
+    let base = store.load(None).expect("loads");
+    assert!(base.config.decisions.reduce_returns, "{text}");
+}
+
+/// The threshold that checked each cell against the model's to-do list went
+/// with the list: removed from its file and said once, and Sterna still
+/// starts.
+#[test]
+fn the_drift_threshold_is_retired_with_the_to_do_list() {
+    let temp = Temp::new("migrate-drift");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[decisions]
+drift_no_below = 0.2
+hold_above = 0.9
+",
+    );
+    let loaded = store
+        .load(None)
+        .expect("a file naming the drift threshold still loads");
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices.iter().any(
+            |notice| notice.starts_with("`decisions.drift_no_below = 0.2`")
+                && notice.contains("to-do list is gone")
+        ),
+        "{notices:?}"
+    );
+    let text = read(&store.path(Scope::Global));
+    assert!(!text.contains("drift_no_below"), "{text}");
+    assert!(text.contains("hold_above = 0.9"), "{text}");
+    assert!(store.load(None).expect("loads").retired.is_empty());
 }
 
 /// `full_access = true` alone becomes `full`; beside a rung, the rung
@@ -1282,26 +1385,6 @@ fn a_retired_rung_never_overrides_a_saved_level_or_migrates_from_a_project() {
     assert!(
         !store.path(Scope::Global).exists()
             || !read(&store.path(Scope::Global)).contains("sandbox")
-    );
-}
-
-/// 2644/2645: the Scout's relevance floor and the helper judge's floor are
-/// registered and validate through the same runtime parser as every other
-/// `[decisions]` key, out of range refused the same way.
-#[test]
-fn scout_relevance_and_helper_judge_floors_are_known_and_validated() {
-    assert!(registry::spec("decisions.scout_relevance_below").is_some());
-    assert!(registry::spec("decisions.helper_no_below").is_some());
-
-    assert!(registry::validate("decisions.scout_relevance_below", "0.6").is_err());
-    assert_eq!(
-        registry::validate("decisions.scout_relevance_below", "0.2").expect("in range"),
-        toml::Value::Float(0.2)
-    );
-    assert!(registry::validate("decisions.helper_no_below", "0.6").is_err());
-    assert_eq!(
-        registry::validate("decisions.helper_no_below", "0.2").expect("in range"),
-        toml::Value::Float(0.2)
     );
 }
 

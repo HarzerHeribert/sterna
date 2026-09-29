@@ -6,9 +6,8 @@
 //! (and `ANTHROPIC_AUTH_TOKEN` when the gateway wants one) pointing at a
 //! gateway that routes `/v1/systemone`. A case is one of:
 //!
-//! - `{"question":"task","request":…}` → intent, complexity and kind
+//! - `{"question":"task","request":…}` → intent and kind
 //! - `{"question":"shape","name":…,"text":…}` → the field's kind of text
-//! - `{"question":"enough","request":…,"step":…,"fields":[{"name","tokens","head"}],"candidates":[…]}`
 //!
 //! Every other key (the labels) is copied to the output line untouched.
 
@@ -59,7 +58,6 @@ fn main() {
             ) {
                 Ok(d) => json!({
                     "intent": d.intent.choice, "intent_confidence": d.intent.confidence,
-                    "complexity": d.complexity.choice, "complexity_confidence": d.complexity.confidence,
                     "kind": d.kind.as_ref().map(|k| k.choice.clone()),
                     "kind_confidence": d.kind.as_ref().map(|k| k.confidence),
                     "latency_ms": d.intent.latency_ms,
@@ -72,40 +70,6 @@ fn main() {
                 }
                 Err(e) => json!({ "error": e.to_string() }),
             },
-            Some("enough") => {
-                let fields: Vec<decide::FieldGlance> = case["fields"]
-                    .as_array()
-                    .map(|fields| {
-                        fields
-                            .iter()
-                            .map(|f| decide::FieldGlance {
-                                name: f["name"].as_str().unwrap_or_default().to_string(),
-                                tokens: f["tokens"].as_u64().unwrap_or(0) as usize,
-                                head: f["head"].as_str().unwrap_or_default().to_string(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let candidates: Vec<String> = case["candidates"]
-                    .as_array()
-                    .map(|c| {
-                        c.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let step = case["step"].as_str().map(str::to_string);
-                match decide::enough(
-                    &model,
-                    &text("request"),
-                    step.as_deref(),
-                    &fields,
-                    &candidates,
-                ) {
-                    Ok(e) => json!({ "noul": e.noul, "latency_ms": e.latency_ms }),
-                    Err(e) => json!({ "error": e.to_string() }),
-                }
-            }
             other => json!({ "error": format!("unknown question {other:?}") }),
         };
         case["answer"] = answer;

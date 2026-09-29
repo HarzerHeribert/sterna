@@ -27,7 +27,7 @@ output are in the rollout, whose path `session.begin` carries.
 | `span` | the id that pairs an opening with its close |
 
 A **span** opens and closes, its halves sharing one `span`: `session`,
-`task`, `turn`, `cell`, `command`, `helper`, `agent`. A **moment** happens
+`task`, `turn`, `cell`, `command`, `agent`. A **moment** happens
 once. A reader takes a duration by pairing, never by parsing prose.
 
 ## The kinds
@@ -42,7 +42,6 @@ once. A reader takes a duration by pairing, never by parsing prose.
 | `cell.end` | outcome and calls |
 | `command.judge` / `command.end` | a command about to run, with its arguments; how it ended and its exit code |
 | `file.change` | the path |
-| `helper.begin` / `helper.end` | the helper's name |
 | `agent.begin` / `agent.end` | the subagent |
 | `answer.propose` | the text that would end the task, before it has |
 | `ask.raise` | the question put to you |

@@ -194,7 +194,7 @@ fn a_declared_check_that_never_ran_is_a_note_and_never_holds() {
     let result = exec_json(&noted, &endpoint);
     assert_eq!(bodies.lock().unwrap().len(), 1, "no held turn");
     assert_eq!(result["telemetry"]["completion"]["deferred"], 0);
-    let notes = &result["telemetry"]["after_answer"]["notes"];
+    let notes = &result["telemetry"]["completion"]["findings"];
     assert!(
         notes.as_array().is_some_and(|n| n.iter().any(|n| n
             .as_str()
@@ -213,11 +213,11 @@ fn a_declared_check_that_never_ran_is_a_note_and_never_holds() {
     assert_eq!(result["telemetry"]["completion"]["verified"], true);
     assert_eq!(result["telemetry"]["completion"]["deferred"], 0);
     assert!(
-        result["telemetry"]["after_answer"]["notes"]
+        result["telemetry"]["completion"]["findings"]
             .as_array()
             .is_none_or(Vec::is_empty),
         "{}",
-        result["telemetry"]["after_answer"]
+        result["telemetry"]["completion"]
     );
     assert_eq!(bodies.lock().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(plain);
@@ -385,81 +385,6 @@ fn a_prose_completion_with_nothing_to_find_completes_verified_in_one_turn() {
     assert_eq!(completion["deferred"], 0, "{completion}");
     assert_eq!(bodies.lock().unwrap().len(), 2);
     assert_eq!(result["answer"], "Done: notes written.");
-    let _ = std::fs::remove_dir_all(root);
-}
-
-/// The request-derived acceptance list (`acceptance.rs`), opted into: the
-/// lister answers first, its items are shown to the model before its first
-/// turn, and an item the finished tree does not meet is a note beside the
-/// answer with what was observed -- never a hold (2026-09-23: derived items
-/// were the measured false alarms).
-#[test]
-fn an_unmet_acceptance_item_is_a_note_with_what_was_observed_and_never_holds() {
-    let root = root("acceptance");
-    std::fs::create_dir_all(root.join(".sterna")).unwrap();
-    std::fs::write(
-        root.join(".sterna/config.toml"),
-        "[helpers]\nmodel = \"test/helper\"\npreflight = false\nacceptance_list = true\n\
-         completion_check = \"off\"\nlearn = false\n",
-    )
-    .unwrap();
-    let (endpoint, bodies) = providers(vec![
-        // The lister's answer: two file items and one judge item.
-        prose(
-            "file: out/a.txt exists\nfile: out/b.txt exists\njudge: the files are named as requested",
-        ),
-        cell(
-            "c1",
-            "await write({path: \"out/a.txt\", content: \"a\\n\"});\nreturn {ok: true};",
-        ),
-        prose("Done: both files are written."),
-    ]);
-    // Four words or more: a shorter request needs no repository and gets no
-    // lister, the same rule as the preflight.
-    let result = exec_json_task(&root, &endpoint, "write out/a.txt and out/b.txt for me");
-    let bodies = bodies.lock().unwrap();
-    assert_eq!(
-        bodies.len(),
-        3,
-        "lister, first turn, the answer -- no held turn"
-    );
-    assert!(
-        bodies[0].contains("acceptance items"),
-        "the first request is the lister's: {}",
-        &bodies[0][..bodies[0].len().min(600)]
-    );
-    assert!(
-        bodies[1].contains("## Acceptance list") && bodies[1].contains("file `out/b.txt` exists"),
-        "the model sees the list before its first turn: {}",
-        bodies[1]
-    );
-    let notes: Vec<String> = result["telemetry"]["after_answer"]["notes"]
-        .as_array()
-        .map(|n| {
-            n.iter()
-                .map(|n| n.as_str().unwrap_or("").to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.contains("Acceptance item not met: file `out/b.txt` exists — absent")),
-        "the note names the unmet item: {notes:?}"
-    );
-    assert!(
-        !notes
-            .iter()
-            .any(|n| n.contains("out/a.txt` exists — absent")),
-        "the met item is not a note: {notes:?}"
-    );
-    let completion = &result["telemetry"]["completion"];
-    assert_eq!(completion["deferred"], 0, "{completion}");
-    let acceptance = &result["telemetry"]["acceptance"];
-    assert_eq!(acceptance["items"], 3, "{acceptance}");
-    assert_eq!(acceptance["met"], 1, "{acceptance}");
-    assert_eq!(acceptance["unmet"], 1, "{acceptance}");
-    assert_eq!(acceptance["judged"], 1, "{acceptance}");
     let _ = std::fs::remove_dir_all(root);
 }
 

@@ -32,8 +32,7 @@ impl Navigator {
         let mut navigator = Self {
             role: match assignment.active {
                 Tier::Parent => 0,
-                Tier::Helpers => 1,
-                Tier::Subagents => 2,
+                Tier::Subagents => 1,
             },
             slot: None,
             target_key: None,
@@ -52,8 +51,7 @@ impl Navigator {
     }
     pub fn select_current(&mut self) {
         let current = match self.role {
-            1 => self.current.helper.as_deref(),
-            2 => self
+            1 => self
                 .slot
                 .as_deref()
                 .and_then(|name| self.assignment.slots.get(name).map(|s| s.model.as_str()))
@@ -154,7 +152,7 @@ impl Navigator {
     pub fn chosen(&mut self, model: &str) -> String {
         use crate::config::{AgentSlot, AgentsMode, SLOT_NAMES};
         let notice = match (self.role, self.slot.clone()) {
-            (2, Some(slot)) => {
+            (1, Some(slot)) => {
                 let effort = self
                     .assignment
                     .slots
@@ -178,15 +176,11 @@ impl Navigator {
                     .map_or(Some(slot), |name| Some((*name).to_string()));
                 notice
             }
-            (2, None) => {
+            (1, None) => {
                 self.current.subagent = Some(model.to_string());
                 self.assignment.mode = AgentsMode::Pinned;
                 self.assignment.model = Some(model.to_string());
                 format!("Every subagent now runs on {model}")
-            }
-            (1, _) => {
-                self.current.helper = Some(model.to_string());
-                format!("Helper is now {model}")
             }
             _ => {
                 self.current.parent = model.to_string();
@@ -225,10 +219,6 @@ impl Navigator {
                 }
                 format!("{} is empty", slot.to_uppercase())
             }
-            ["/model", "helper", "off"] => {
-                self.current.helper = Some("off".into());
-                "Helpers are off".to_string()
-            }
             ["/model", "subagent", "off"] => {
                 self.current.subagent = Some("off".into());
                 self.assignment.mode = AgentsMode::Off;
@@ -262,7 +252,7 @@ impl Navigator {
     pub fn command_for(&self, model: &str) -> String {
         // The gateway still owns route selection. Never promise an account pin
         // when the serving protocol accepts only a concrete model here.
-        if self.role == 2
+        if self.role == 1
             && let Some(slot) = &self.slot
         {
             let effort = self
@@ -274,11 +264,7 @@ impl Navigator {
         }
         format!(
             "/model {}{model}",
-            match self.role {
-                1 => "helper ",
-                2 => "subagent ",
-                _ => "",
-            }
+            if self.role == 1 { "subagent " } else { "" }
         )
     }
 }
@@ -308,23 +294,19 @@ pub(super) fn items(
     effort: crate::wire::Effort,
 ) -> Vec<super::Item> {
     use super::{Action, Item};
-    const ROLES: [(&str, &str); 3] = [
-        ("Main", "answers you"),
-        ("Helper", "reads and summarises for Main"),
-        ("Subagents", "work in parallel"),
-    ];
+    const ROLES: [(&str, &str); 2] = [("Main", "answers you"), ("Subagents", "work in parallel")];
     if sheet.sections.is_empty() {
         sheet.query = Some(m.query.clone());
     }
     sheet.sections = if m.target_key.is_some() {
-        vec![ROLES[m.role.min(2)].0.to_string()]
+        vec![ROLES[m.role.min(1)].0.to_string()]
     } else {
         ROLES.iter().map(|(name, _)| (*name).to_string()).collect()
     };
     if m.target_key.is_some() {
         sheet.section = 0;
     } else {
-        sheet.section = m.role.min(2);
+        sheet.section = m.role.min(1);
     }
     let query = sheet.query.clone().unwrap_or_default();
     if query != m.query {
@@ -356,7 +338,7 @@ pub(super) fn items(
     if sheet.notice.is_empty() && !m.notice.is_empty() {
         sheet.notice = std::mem::take(&mut m.notice);
     }
-    let (name, purpose) = ROLES[m.role.min(2)];
+    let (name, purpose) = ROLES[m.role.min(1)];
     sheet.status = format!("{name} {purpose}.");
     let mut items = Vec::new();
     // Main's effort sits under its model: how that model works, chosen in
@@ -388,7 +370,7 @@ pub(super) fn items(
             .detail("auto lets the model choose; higher thinks longer and costs more."),
         );
     }
-    if m.role == 2 && m.target_key.is_none() {
+    if m.role == 1 && m.target_key.is_none() {
         // The pinned model, or none: never the favourites' word.
         let pinned = m
             .current
@@ -477,8 +459,7 @@ pub(super) fn items(
         );
     }
     let current = match m.role {
-        1 => m.current.helper.clone(),
-        2 => m
+        1 => m
             .slot
             .as_deref()
             .and_then(|name| m.assignment.slots.get(name).map(|s| s.model.clone()))
@@ -556,7 +537,7 @@ pub(super) fn items(
     }
     let off = if m.target_key.is_some() {
         Some(("Use the inherited value".to_string(), Action::UnsetModel))
-    } else if m.role == 2 && m.slot.is_some() {
+    } else if m.role == 1 && m.slot.is_some() {
         Some((
             "Empty this slot".to_string(),
             Action::Command(format!(
@@ -567,10 +548,7 @@ pub(super) fn items(
     } else if m.role > 0 {
         Some((
             "Turn this tier off".to_string(),
-            Action::Command(format!(
-                "/model {} off",
-                if m.role == 1 { "helper" } else { "subagent" }
-            )),
+            Action::Command("/model subagent off".to_string()),
         ))
     } else {
         None

@@ -86,9 +86,6 @@ pub fn status(activity: Activity, cell: Option<usize>, writing_cell: bool) -> St
         }
     }
 }
-/// The status while the answer is in and its check is still running: the
-/// turn is not complete until the check has had its say.
-pub const CHECKING: &str = "answered · checking it";
 /// The one sentence for a control that waits for the turn to end.
 pub const BETWEEN_TURNS: &str = "Available when this turn ends · Esc stops it";
 /// A model, mode or effort chosen while a turn runs.
@@ -105,21 +102,18 @@ pub const CTRL_D_BUSY: &str = "Ctrl-D quits between turns · /exit stops this tu
 pub const CTRL_C_STOPPING: &str = "Stopping · Ctrl-C again within 2 s quits";
 /// The three lines beside the bird inside a running cell: what is happening,
 /// how long it has been, and at whose cost.
-pub fn working(activity: Activity, helper_waiting: bool, elapsed: &str) -> (&'static str, String) {
+pub fn working(activity: Activity, elapsed: &str) -> (&'static str, String) {
     let label = match activity {
         Activity::Executing => "Executing this cell",
         Activity::Waiting => "Waiting on the provider",
         Activity::Searching => "Searching",
         Activity::Compacting => "Preparing bounded context",
-        _ if helper_waiting => "Little helper working",
         _ => "Model is responding",
     };
-    let detail = if helper_waiting {
-        "Asked · waiting for its answer".to_string()
-    } else {
-        format!("Elapsed {elapsed} · nothing is assumed complete")
-    };
-    (label, detail)
+    (
+        label,
+        format!("Elapsed {elapsed} · nothing is assumed complete"),
+    )
 }
 /// The one line on the composer's edge that teaches. It turns with the
 /// session -- one more cell, one more notice -- rather than with the clock,
@@ -176,15 +170,6 @@ enum Needs {
     Nothing,
     Turn,
     Change,
-}
-/// The row for work still running behind the answer: `check` is the fresh
-/// checker, `learn` the notes writer. The answer above it stands either way.
-pub fn behind(lane: &str) -> String {
-    match lane {
-        "check" => "checking the answer · it stands as given · off in /settings".into(),
-        "learn" => "writing learned notes · .sterna/learned.md".into(),
-        other => format!("{other} · behind the answer"),
-    }
 }
 /// The first line of a finished turn's block, when the model returned no
 /// words of its own to put there.

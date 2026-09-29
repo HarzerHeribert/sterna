@@ -1,7 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};
 use sterna::contract::{Conversation, Message, Role, ServedBy};
-use sterna::helpers::{HelperOutcome, HelperRecord};
 use sterna::runtime::handles::HandleTable;
 use sterna::tui::{
     Activity, CellError, CellView, ContextTokens, Counted, Notebook, ScreenState,
@@ -333,7 +332,7 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
     assert_eq!(
         slash_matches("/mo"),
         vec![
-            ("/model".into(), "set the parent, helper or subagent model"),
+            ("/model".into(), "set the parent or subagent model"),
             (
                 "/models".into(),
                 "browse models by agent, provider or intelligence"
@@ -365,7 +364,7 @@ fn slash_completion_uses_real_commands_and_filters_as_letters_arrive() {
             .unwrap()
             .contains("/model")
     );
-    assert!(rendered.contains("set the parent, helper or subagent model"));
+    assert!(rendered.contains("set the parent or subagent model"));
 }
 #[test]
 fn the_root_view_does_not_draw_an_outer_window_border() {
@@ -416,8 +415,6 @@ fn wide_telemetry_preserves_reported_fields_and_budget_provenance() {
         }),
         tokens: Some(sterna::tui::TaskTokens {
             used: 579,
-            parent_used: 579,
-            helpers: Default::default(),
             counted: sterna::tui::Counted::Gateway,
         }),
         ..Notebook::default()
@@ -461,116 +458,22 @@ fn wide_telemetry_preserves_reported_fields_and_budget_provenance() {
 }
 
 #[test]
-fn telemetry_breaks_exact_task_spend_down_by_parent_helper_model_and_cache() {
+fn telemetry_shows_the_tasks_spend_on_the_rail_and_in_the_instruments() {
     let notebook = Notebook {
         tokens: Some(sterna::tui::TaskTokens {
             used: 201_801,
-            parent_used: 173_860,
-            helpers: sterna::tui::HelperTokens {
-                calls: 3,
-                usage_known_calls: 3,
-                used: 27_941,
-                input_tokens: 20_329,
-                output_tokens: 2_492,
-                requests: 6,
-                reported_requests: 6,
-                cache_read_input_tokens: 5_120,
-                cache_creation_input_tokens: 0,
-                cache_read_reported_requests: 6,
-                cache_creation_reported_requests: 6,
-                models: vec![sterna::tui::HelperModelTokens {
-                    model: "gpt-5.6-luna".into(),
-                    calls: 3,
-                    usage_known_calls: 3,
-                    used: 27_941,
-                    input_tokens: 20_329,
-                    output_tokens: 2_492,
-                    requests: 6,
-                    reported_requests: 6,
-                    cache_read_input_tokens: 5_120,
-                    cache_creation_input_tokens: 0,
-                    cache_read_reported_requests: 6,
-                    cache_creation_reported_requests: 6,
-                }],
-            },
             counted: Counted::Gateway,
         }),
         ..Notebook::default()
     };
 
-    // The glance and the detail are two surfaces now. The rail carries the
-    // total and the split a reader asked for; the per-model arithmetic lives
-    // behind Ctrl-T, where somebody went looking for it.
     let rail = text(&draw(120, 40, &state(), &conversation(), &notebook));
-    for field in ["Σ 201.8k tokens", "parent 173.9k · helpers 27.9k"] {
-        assert!(rail.contains(field), "{field}: {rail}");
-    }
-    assert!(
-        rail.contains("gpt-5.6-luna"),
-        "the one helper model folds onto the split: {rail}"
-    );
+    assert!(rail.contains("Σ 201.8k tokens"), "{rail}");
 
     let mut open = state();
     open.telemetry_open = true;
     let expanded = text(&draw(120, 40, &open, &conversation(), &notebook));
-    for field in [
-        "Σ 201.8k tokens",
-        "in 20.3k · out 2.5k",
-        "cache read 5.1k",
-        "cache create 0",
-        "3 of 3 calls counted",
-    ] {
-        assert!(expanded.contains(field), "{field}: {expanded}");
-    }
-    assert!(!expanded.contains("helper usage partial"), "{expanded}");
-}
-
-#[test]
-fn telemetry_calls_missing_cache_classes_unreported_instead_of_zero() {
-    let notebook = Notebook {
-        tokens: Some(sterna::tui::TaskTokens {
-            used: 173_875,
-            parent_used: 173_860,
-            helpers: sterna::tui::HelperTokens {
-                calls: 1,
-                usage_known_calls: 1,
-                used: 15,
-                input_tokens: 10,
-                output_tokens: 5,
-                requests: 1,
-                reported_requests: 1,
-                models: vec![sterna::tui::HelperModelTokens {
-                    model: "helper-model".into(),
-                    calls: 1,
-                    usage_known_calls: 1,
-                    used: 15,
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    requests: 1,
-                    reported_requests: 1,
-                    ..sterna::tui::HelperModelTokens::default()
-                }],
-                ..sterna::tui::HelperTokens::default()
-            },
-            counted: Counted::Gateway,
-        }),
-        ..Notebook::default()
-    };
-
-    // `unreported` is not `0`, and the instruments are where that is said.
-    let mut open = state();
-    open.telemetry_open = true;
-    let expanded = text(&draw(120, 40, &open, &conversation(), &notebook));
-    assert!(expanded.contains("cache read unreported"), "{expanded}");
-    assert!(expanded.contains("cache create unreported"), "{expanded}");
-    assert!(expanded.contains("1 of 1 calls counted"), "{expanded}");
-    // The rail says the same thing in one character rather than three lines:
-    // the total is a known-low subtotal, so it carries `+`.
-    let rail = text(&draw(120, 40, &state(), &conversation(), &notebook));
-    assert!(
-        rail.contains("173.9k+") || rail.contains("+ tokens"),
-        "an incomplete count must mark the total: {rail}"
-    );
+    assert!(expanded.contains("Σ 201.8k tokens"), "{expanded}");
 }
 
 #[test]
@@ -584,8 +487,6 @@ fn statusline_separates_request_context_from_cumulative_spend() {
         }),
         tokens: Some(sterna::tui::TaskTokens {
             used: 369_178,
-            parent_used: 369_178,
-            helpers: Default::default(),
             counted: Counted::Gateway,
         }),
         ..Notebook::default()
@@ -653,8 +554,6 @@ fn the_sidebar_can_be_hidden_and_the_preference_survives_resize() {
     let notebook = Notebook {
         tokens: Some(sterna::tui::TaskTokens {
             used: 579,
-            parent_used: 579,
-            helpers: Default::default(),
             counted: sterna::tui::Counted::Gateway,
         }),
         ..Notebook::default()
@@ -1420,69 +1319,6 @@ fn ordered_action_blocks_do_not_leak_a_second_raw_code_block_into_narration() {
     );
 }
 
-// --- docs/helpers.md, "In the TUI" ------------------
-
-fn helper_record(gave: &str, ok: bool, elapsed_ms: u64) -> HelperRecord {
-    HelperRecord {
-        helper: "reduce".to_string(),
-        verb: "reducing".to_string(),
-        asked: "cargo build log, 4118 lines".to_string(),
-        outcome: HelperOutcome {
-            text: gave.to_string(),
-            ok,
-            cancelled: false,
-            elapsed_ms,
-        },
-        turns: 1,
-        looked: Vec::new(),
-        usage: Default::default(),
-    }
-}
-
-fn helper_notebook(records: Vec<HelperRecord>) -> Notebook {
-    Notebook {
-        cells: vec![CellView {
-            helpers: records,
-            executed_source: Some("const n = 1;".to_string()),
-            execution: Some("No tool calls ran in this cell.".to_string()),
-            ..CellView::default()
-        }],
-        ..Notebook::default()
-    }
-}
-
-/// *Is it alive* is the question the lane answers, so `/motion off` freezes
-/// the glyph and leaves the seconds counting.
-#[test]
-fn reduced_motion_freezes_the_helper_glyph_and_keeps_its_seconds() {
-    let notebook = helper_notebook(vec![helper_record("", false, 2000)]);
-    let lane = |state: &ScreenState| {
-        let rendered = text(&draw(110, 30, state, &conversation(), &notebook));
-        rendered
-            .lines()
-            .find(|line| line.contains("reducing"))
-            .unwrap_or_else(|| panic!("the lane renders:\n{rendered}"))
-            .to_string()
-    };
-
-    let mut state = state();
-    state.reduced_motion = true;
-    let still = lane(&state);
-    state.animation_frame = 2;
-    assert_eq!(still, lane(&state), "reduced motion must freeze the glyph");
-    assert!(
-        still.contains("2.0s"),
-        "the seconds are text, not animation: {still}"
-    );
-
-    state.reduced_motion = false;
-    assert_ne!(
-        still,
-        lane(&state),
-        "with motion on the glyph must move: {still}"
-    );
-}
-
 /// A long transcript, so the transcript region has more rows than it can show.
 fn long_conversation() -> Conversation {
     let mut messages = Vec::new();
@@ -1937,32 +1773,10 @@ fn the_header_field_draws_in_every_theme() {
 
 #[test]
 fn the_spend_rail_drops_the_qualifiers_that_fire_every_session() {
-    use sterna::tui::{HelperModelTokens, HelperTokens, TaskTokens};
+    use sterna::tui::TaskTokens;
     let mut n = Notebook::default();
     n.tokens = Some(TaskTokens {
         used: 1_100_000,
-        parent_used: 766_000,
-        helpers: HelperTokens {
-            calls: 3,
-            usage_known_calls: 3,
-            used: 285_900,
-            requests: 9,
-            reported_requests: 9,
-            cache_read_reported_requests: 9,
-            cache_creation_reported_requests: 9,
-            models: vec![HelperModelTokens {
-                model: "gpt-5.6-luna".into(),
-                calls: 3,
-                usage_known_calls: 3,
-                used: 285_900,
-                requests: 9,
-                reported_requests: 9,
-                cache_read_reported_requests: 9,
-                cache_creation_reported_requests: 9,
-                ..HelperModelTokens::default()
-            }],
-            ..HelperTokens::default()
-        },
         counted: Counted::Gateway,
     });
     let shown = text(&draw(200, 44, &state(), &conversation(), &n));
@@ -1979,46 +1793,23 @@ fn the_spend_rail_drops_the_qualifiers_that_fire_every_session() {
     ] {
         assert!(!shown.contains(noise), "{noise:?} survived:\n{shown}");
     }
-    assert!(shown.contains("parent"), "the split must survive:\n{shown}");
     assert!(
-        shown.contains("gpt-5.6-luna"),
-        "one helper model folds onto the split rather than vanishing:\n{shown}"
+        shown.contains("Σ 1.1M tokens"),
+        "the total must survive:\n{shown}"
     );
 }
 
-/// A partial count marks the number rather than printing a line beside it, so
-/// the headline never looks exact when it is a known-low subtotal.
+/// Provenance that is not the gateway's row shows on the rail, because a
+/// reader deciding whether to trust the figure needs to know.
 #[test]
-fn an_incomplete_helper_count_marks_the_total_rather_than_captioning_it() {
-    use sterna::tui::{HelperModelTokens, HelperTokens, TaskTokens};
+fn an_estimated_total_says_so_on_the_rail() {
+    use sterna::tui::TaskTokens;
     let mut n = Notebook::default();
     n.tokens = Some(TaskTokens {
         used: 900_000,
-        parent_used: 800_000,
-        helpers: HelperTokens {
-            calls: 4,
-            usage_known_calls: 2,
-            used: 100_000,
-            requests: 4,
-            reported_requests: 2,
-            models: vec![HelperModelTokens {
-                model: "gpt-5.6-luna".into(),
-                calls: 4,
-                usage_known_calls: 2,
-                used: 100_000,
-                requests: 4,
-                reported_requests: 2,
-                ..HelperModelTokens::default()
-            }],
-            ..HelperTokens::default()
-        },
         counted: Counted::Estimated,
     });
     let shown = text(&draw(200, 44, &state(), &conversation(), &n));
-    assert!(
-        shown.contains('+'),
-        "an at-least figure must say so on the number:\n{shown}"
-    );
     assert!(
         shown.contains("estimated"),
         "provenance that is not the gateway's row must show:\n{shown}"

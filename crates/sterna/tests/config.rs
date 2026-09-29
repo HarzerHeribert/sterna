@@ -7,8 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sterna::config::{AgentsMode, CompletionStyle, PreflightScope, SternaConfig};
-use sterna::wire::Effort;
+use sterna::config::{AgentsMode, SternaConfig};
 
 fn unique() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -63,12 +62,6 @@ impl Drop for NoGlobalConfig {
     }
 }
 
-fn write_project_toml(root: &Path, text: &str) {
-    let dir = root.join(".sterna");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("config.toml"), text).unwrap();
-}
-
 fn write_legacy_toml(root: &Path, text: &str) {
     let dir = root.join(".glasshouse");
     fs::create_dir_all(&dir).unwrap();
@@ -93,109 +86,20 @@ fn absent_sterna_toml_means_the_defaults() {
         "no ceiling unless this person sets one: a task ends on evidence that it stopped \
          producing anything, not on a count of cells"
     );
-    assert!(!config.helpers.preflight);
 }
 
-/// The supervisor is gone, and a file that still configures it loads: its
-/// keys are read as unset, never refused, and the rest of the file stands.
+/// The supervisor and the helpers are gone, and a file that still
+/// configures them loads: their keys are read as unset, never refused, and
+/// the rest of the file stands.
 #[test]
-fn a_file_that_still_configures_the_supervisor_loads() {
+fn a_file_that_still_configures_the_supervisor_or_helpers_loads() {
     let root = scratch_dir("supervisor-retired");
     write_legacy_toml(
         &root,
-        "[supervisor]\nenabled = true\nevery = 4\nmodel = \"watcher\"\n\n[helpers]\nmodel = \"helper-tier\"\n",
+        "[supervisor]\nenabled = true\nevery = 4\nmodel = \"watcher\"\n\n[helpers]\nmodel = \"helper-tier\"\npreflight = true\n\n[model]\nparent = \"main-tier\"\n",
     );
     let config = SternaConfig::load(&root).expect("a retired table never stops Sterna");
-    assert_eq!(config.helpers.model.as_deref(), Some("helper-tier"));
-}
-
-#[test]
-fn helper_preflight_is_an_explicit_boolean_opt_in() {
-    let root = scratch_dir("preflight-on");
-    write_legacy_toml(
-        &root,
-        "[helpers]\nmodel = \"helper-tier\"\npreflight = true\n",
-    );
-    assert!(SternaConfig::load(&root).unwrap().helpers.preflight);
-
-    let root = scratch_dir("preflight-not-boolean");
-    write_legacy_toml(&root, "[helpers]\npreflight = \"sometimes\"\n");
-    let error = SternaConfig::load(&root).unwrap_err();
-    assert!(error.contains("preflight"), "{error}");
-    assert_eq!(error.lines().count(), 1);
-}
-
-/// `preflight_scope` defaults to `auto` -- direct execution is the fast path
-/// and a scout runs from a signal -- and `always` is the pre-roadmap
-/// behaviour, spelled out.
-#[test]
-fn helper_preflight_scope_defaults_to_auto_and_parses_always() {
-    let root = scratch_dir("preflight-scope-default");
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.preflight_scope,
-        PreflightScope::Auto
-    );
-
-    let root = scratch_dir("preflight-scope-always");
-    write_legacy_toml(
-        &root,
-        "[helpers]\nmodel = \"helper-tier\"\npreflight = true\npreflight_scope = \"always\"\n",
-    );
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.preflight_scope,
-        PreflightScope::Always
-    );
-
-    // A word that is not a choice -- what an upgrade leaves behind -- does
-    // not stop Sterna: it runs on the default and names what it dropped.
-    let root = scratch_dir("preflight-scope-unknown");
-    write_project_toml(&root, "[helpers]\npreflight_scope = \"sometimes\"\n");
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.preflight_scope,
-        PreflightScope::default()
-    );
-    assert_retired(&root, "helpers.preflight_scope", "sometimes");
-}
-
-/// The settings store reports `key = word` as a choice it dropped.
-fn assert_retired(root: &Path, key: &str, word: &str) {
-    let loaded = sterna::settings::Store::new(root)
-        .unwrap()
-        .load(None)
-        .unwrap();
-    assert!(
-        loaded
-            .retired
-            .iter()
-            .any(|retired| retired.key == key && retired.word == word),
-        "{key} = {word} was not reported: {:?}",
-        loaded.retired
-    );
-}
-
-#[test]
-fn helper_effort_has_role_defaults_and_accepts_partial_hard_overrides() {
-    let defaults = SternaConfig::default().helpers.effort;
-    assert_eq!(defaults.find, Effort::Low);
-    assert_eq!(defaults.reduce, Effort::Medium);
-    assert_eq!(defaults.check, Effort::Medium);
-
-    let configured =
-        SternaConfig::parse("[helpers.effort]\nfind = \"medium\"\ncheck = \"xhigh\"\n")
-            .unwrap()
-            .helpers
-            .effort;
-    assert_eq!(configured.find, Effort::Medium);
-    assert_eq!(configured.reduce, Effort::Medium);
-    assert_eq!(configured.check, Effort::Xhigh);
-    assert_eq!(configured.for_helper("find"), Some(Effort::Medium));
-    assert_eq!(configured.for_helper("unknown"), None);
-
-    // A helper's effort is a hard value: `auto`, the model's own choice,
-    // is refused, and the retired word `default` is no word at all.
-    let error = SternaConfig::parse("[helpers.effort]\nreduce = \"auto\"\n").unwrap_err();
-    assert!(error.contains("hard value"), "{error}");
-    assert!(SternaConfig::parse("[helpers.effort]\nreduce = \"default\"\n").is_err());
+    assert_eq!(config.model.parent.as_deref(), Some("main-tier"));
 }
 
 /// A saved token cap is retired: read as unset, never refused, and it
@@ -246,62 +150,14 @@ fn sterna_toml_names_no_tool_path_or_grant() {
     assert!(err.contains("names no tool, path or grant"), "{err}");
 
     let namespaced = SternaConfig::parse(
-        "[model]\nparent = \"vendor/model-302\"\n\n[helpers]\nmodel = \"vendor/helper-1\"\n",
+        "[model]\nparent = \"vendor/model-302\"\n\n[agents]\nmodel = \"vendor/agent-1\"\n",
     )
     .expect("provider-qualified catalogue ids are model ids, not paths");
     assert_eq!(namespaced.model.parent.as_deref(), Some("vendor/model-302"));
 }
 
-/// `[helpers] completion` -- the only thing that decides whether an accepted
-/// task says anything at all. The default is silence: a line printed after
-/// every task is a line nobody reads, so the recap is opt-in and its key
-/// takes exactly two values.
-#[test]
-fn completion_parses_both_styles_and_defaults_to_silent() {
-    let root = scratch_dir("completion-absent");
-    let config = SternaConfig::load(&root).unwrap();
-    assert_eq!(
-        config.helpers.completion,
-        CompletionStyle::Silent,
-        "an absent key is silence, not a recap nobody asked for"
-    );
-
-    let root = scratch_dir("completion-silent");
-    write_legacy_toml(&root, "[helpers]\ncompletion = \"silent\"\n");
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.completion,
-        CompletionStyle::Silent
-    );
-
-    let root = scratch_dir("completion-recap");
-    write_legacy_toml(&root, "[helpers]\ncompletion = \"recap\"\n");
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.completion,
-        CompletionStyle::Recap
-    );
-}
-
-/// A third completion style is not a choice: Sterna runs on the default and
-/// names what it dropped. A value that is not even a word is still refused.
-#[test]
-fn a_third_completion_style_is_dropped_and_a_non_word_refused() {
-    let root = scratch_dir("completion-bogus");
-    write_project_toml(&root, "[helpers]\ncompletion = \"chatty\"\n");
-    assert_eq!(
-        SternaConfig::load(&root).unwrap().helpers.completion,
-        CompletionStyle::default()
-    );
-    assert_retired(&root, "helpers.completion", "chatty");
-
-    let root = scratch_dir("completion-not-a-string");
-    write_legacy_toml(&root, "[helpers]\ncompletion = true\n");
-    let err = SternaConfig::load(&root).unwrap_err();
-    assert!(err.contains("completion"), "{err}");
-    assert_eq!(err.lines().count(), 1, "refused with one sentence: {err}");
-}
-
-/// The three-tier plumbing: a frontier parent, a cheap helper, and a
-/// separately chosen model for delegated goals.
+/// The two-tier plumbing: a frontier parent, and a separately chosen model
+/// for delegated goals.
 ///
 /// Without `[agents] model` a subagent inherits the parent's model, so a
 /// session driven by a frontier model pays frontier rates for every goal it
@@ -313,7 +169,7 @@ fn agents_take_their_own_model_from_configuration() {
     std::fs::create_dir_all(root.join(".glasshouse")).unwrap();
     std::fs::write(
         root.join(".glasshouse/pane.toml"),
-        "[helpers]\nmodel = \"gpt-5.6-luna\"\n\n[agents]\nmodel = \"claude-sonnet-5\"\n",
+        "[agents]\nmodel = \"claude-sonnet-5\"\n",
     )
     .unwrap();
 
@@ -323,7 +179,6 @@ fn agents_take_their_own_model_from_configuration() {
         .and_then(|store| store.load(None))
         .map(|loaded| loaded.config)
         .expect("the file parses");
-    assert_eq!(config.helpers.model.as_deref(), Some("gpt-5.6-luna"));
     assert_eq!(config.agents.model.as_deref(), Some("claude-sonnet-5"));
 }
 
@@ -386,50 +241,12 @@ fn contradictory_or_incomplete_agent_modes_are_refused() {
 }
 
 #[test]
-fn parent_and_helper_model_fields_require_concrete_ids() {
+fn the_parent_model_field_requires_a_concrete_id() {
     for mode in ["auto", "off", "inherit"] {
         let parent = format!("[model]\nparent = \"{mode}\"\n");
         assert!(
             SternaConfig::parse(&parent).is_err(),
             "parent accepted {mode}"
         );
-
-        let helper = format!("[helpers]\nmodel = \"{mode}\"\n");
-        assert!(
-            SternaConfig::parse(&helper).is_err(),
-            "helper accepted {mode}"
-        );
     }
-}
-
-/// `[helpers] acceptance_list` and `[helpers.effort] accept` (2026-09-14): on
-/// by default with helpers, off by config, and the lister's effort is a hard
-/// value like every helper's.
-#[test]
-fn the_acceptance_list_and_its_effort_are_configurable() {
-    let config = sterna::config::SternaConfig::parse(
-        "[helpers]\nmodel = \"m\"\nacceptance_list = true\n[helpers.effort]\naccept = \"medium\"\n",
-    )
-    .unwrap();
-    assert!(config.helpers.acceptance_list);
-    assert_eq!(
-        config.helpers.effort.for_helper("accept"),
-        Some(sterna::wire::Effort::Medium)
-    );
-    let defaults = sterna::config::SternaConfig::parse("[helpers]\nmodel = \"m\"\n").unwrap();
-    assert!(
-        !defaults.helpers.acceptance_list,
-        "off by default since 2026-09-23: its derived items were the measured false alarms"
-    );
-    assert!(
-        defaults.helpers.completion_check == sterna::config::CompletionCheck::Auto
-            && defaults.helpers.learn,
-        "the checker behind the answer runs after big work, and the learned notes are on, by default"
-    );
-    assert_eq!(
-        defaults.helpers.effort.for_helper("accept"),
-        Some(sterna::wire::Effort::Low)
-    );
-    let refused = sterna::config::SternaConfig::parse("[helpers]\nacceptance_list = \"yes\"\n");
-    assert!(refused.is_err());
 }

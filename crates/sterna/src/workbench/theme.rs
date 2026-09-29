@@ -1,7 +1,7 @@
 //! One palette, read from the workbench mockup, expressed as terminal colour.
 //!
 //! **The background is never painted and normal prose keeps the terminal's own
-//! foreground.** Everything else is a role — accent, helper, failure, warning,
+//! foreground.** Everything else is a role — accent, evidence, failure, warning,
 //! success, muted, rule — and a role is one fixed colour per ground so that
 //! two surfaces drawn by different code cannot disagree about what "muted"
 //! looks like. Only the accent moves with the chosen theme, exactly as the
@@ -69,8 +69,8 @@ const LINE: Role = Role {
     dark: 0x556476,
     light: 0x7d8894,
 };
-/// `--cyan`: little helpers and their returned evidence.
-const HELPER: Role = Role {
+/// `--cyan`: observed evidence, what came back from a call.
+const EVIDENCE: Role = Role {
     dark: 0x8be3ff,
     light: 0x0b6e8a,
 };
@@ -104,15 +104,15 @@ pub(super) fn style(tone: Tone, theme: Theme) -> Style {
     let look = look::get();
     // Never paint a background: Ghostty and other terminals own opacity.
     let base = Style::default().fg(Color::Reset).bg(Color::Reset);
-    // Mono is monochrome: the helper and the person are told apart by weight,
+    // Mono is monochrome: evidence and the person are told apart by weight,
     // not hue.
     let mono = theme == Theme::Mono;
     match tone {
         Tone::Normal | Tone::Code => base,
         Tone::Strong => base.add_modifier(Modifier::BOLD),
         Tone::Accent => base.fg(accent(theme)).add_modifier(Modifier::BOLD),
-        Tone::Helper if mono => base,
-        Tone::Helper => base.fg(role(&HELPER, look)),
+        Tone::Evidence if mono => base,
+        Tone::Evidence => base.fg(role(&EVIDENCE, look)),
         Tone::Failure => base.fg(role(&RED, look)).add_modifier(Modifier::BOLD),
         Tone::Warning => base.fg(role(&WARN, look)).add_modifier(Modifier::BOLD),
         Tone::Success => base.fg(role(&GREEN, look)),
@@ -162,7 +162,7 @@ mod tests {
     fn every_role_reads_on_its_ground() {
         for (role, ratio) in [
             (&MUTED, 4.5),
-            (&HELPER, 4.5),
+            (&EVIDENCE, 4.5),
             (&WARN, 4.5),
             (&RED, 4.5),
             (&GREEN, 4.5),

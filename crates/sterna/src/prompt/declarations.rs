@@ -138,46 +138,6 @@ pub struct Binding {
     pub declaration: &'static str,
 }
 
-/// Whether a cell may invoke `spec` — `little-helpers.md`'s `call_sites`,
-/// consulted rather than described.
-///
-/// The invariant: **the `helper` global and this declaration carry the same
-/// set, and it is the set `call_sites` allows.** `runtime::bindings::install`
-/// binds on this predicate and [`HELPER_DECLARATION`] is generated through it,
-/// so a spec that may only run at preflight is neither installed nor
-/// mentioned — the model is never told about a helper it cannot call, and no
-/// helper is reachable from a call site its spec excludes.
-pub const fn callable_from_a_cell(spec: &crate::helpers::HelperSpec) -> bool {
-    let mut i = 0;
-    while i < spec.call_sites.len() {
-        if matches!(spec.call_sites[i], crate::helpers::CallSite::Cell) {
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
-/// The `helper` binding, **generated from [`crate::helpers::HELPERS`]**, so
-/// appending a `HelperSpec` is the whole of declaring a helper to the model
-/// and there is no second place that can fall behind the roster.
-///
-/// It is assembled at compile time into a fixed buffer because
-/// [`Binding::declaration`] is a `&'static str`: a `LazyLock` would make
-/// [`RUNTIME`] something its callers cannot iterate.
-const HELPER_HEAD: &str = "declare const helper: {\n";
-const HELPER_SIGNATURE: &str = "(text: string): Promise<string>;\n";
-const HELPER_CLOSE: &str = "};\n\
-    // Ask a cheap model one narrow question from inside the cell. It costs no turn,\n\
-    // returns a value, and leaves nothing behind: it holds no tools, writes nothing,\n\
-    // and reports evidence rather than conclusions. It throws ToolError when helpers\n\
-    // are not configured, when this cell has used its call ceiling, or when the call\n\
-    // itself failed — so attempt the work first and pay for a helper only in the\n\
-    // branch that needs one. What it returns is yours to keep or drop.\n\
-    // `helper.find` is the exception: before a broad search whose hits you would\n\
-    // then open, ask it where the thing lives. Its spans come back with the exact\n\
-    // lines attached, read from disk by Sterna, so you act on them without reopening\n\
-    // the files, and its reading never enters your context.\n";
 /// The `decide` declaration: the decision model, offered to the program that
 /// is holding the evidence.
 ///
@@ -201,109 +161,8 @@ const DECIDE_DECLARATION: &str = "declare const decide: {\n  \
     //     diff.stdout);\n\
     //   if (call.choice === \"wider\" && call.confidence > 0.8) { /* look closer */ }\n\
     // Name two to eight criteria, each with a sentence saying when it applies; the\n\
-    // answer is always one of those names. It shares this cell's helper call\n\
-    // allowance and throws ToolError when that is spent or the question failed.\n";
-
-const HELPER_INDENT: &str = "  ";
-const HELPER_BULLET: &str = "// ";
-const HELPER_GAP: &str = ": ";
-const HELPER_NEWLINE: &str = "\n";
-
-const fn copy(out: &mut [u8], at: usize, bytes: &[u8]) -> usize {
-    let mut i = 0;
-    while i < bytes.len() {
-        out[at + i] = bytes[i];
-        i += 1;
-    }
-    at + bytes.len()
-}
-
-const fn helper_declaration_len() -> usize {
-    let mut len = HELPER_HEAD.len() + HELPER_CLOSE.len();
-    let mut i = 0;
-    while i < crate::helpers::HELPERS.len() {
-        let spec = &crate::helpers::HELPERS[i];
-        if callable_from_a_cell(spec) {
-            len += HELPER_INDENT.len() + spec.name.len() + HELPER_SIGNATURE.len();
-            len += HELPER_BULLET.len()
-                + spec.name.len()
-                + HELPER_GAP.len()
-                + spec.summary.len()
-                + HELPER_NEWLINE.len();
-        }
-        i += 1;
-    }
-    len
-}
-
-const HELPER_DECLARATION_LEN: usize = helper_declaration_len();
-
-const fn helper_declaration_bytes() -> [u8; HELPER_DECLARATION_LEN] {
-    let mut out = [0u8; HELPER_DECLARATION_LEN];
-    let mut at = copy(&mut out, 0, HELPER_HEAD.as_bytes());
-    let mut i = 0;
-    while i < crate::helpers::HELPERS.len() {
-        if callable_from_a_cell(&crate::helpers::HELPERS[i]) {
-            at = copy(&mut out, at, HELPER_INDENT.as_bytes());
-            at = copy(&mut out, at, crate::helpers::HELPERS[i].name.as_bytes());
-            at = copy(&mut out, at, HELPER_SIGNATURE.as_bytes());
-        }
-        i += 1;
-    }
-    at = copy(&mut out, at, HELPER_CLOSE.as_bytes());
-    i = 0;
-    while i < crate::helpers::HELPERS.len() {
-        if callable_from_a_cell(&crate::helpers::HELPERS[i]) {
-            at = copy(&mut out, at, HELPER_BULLET.as_bytes());
-            at = copy(&mut out, at, crate::helpers::HELPERS[i].name.as_bytes());
-            at = copy(&mut out, at, HELPER_GAP.as_bytes());
-            at = copy(&mut out, at, crate::helpers::HELPERS[i].summary.as_bytes());
-            at = copy(&mut out, at, HELPER_NEWLINE.as_bytes());
-        }
-        i += 1;
-    }
-    assert!(
-        at == HELPER_DECLARATION_LEN,
-        "the generated helper declaration must fill its buffer exactly"
-    );
-    out
-}
-
-const HELPER_DECLARATION_BYTES: [u8; HELPER_DECLARATION_LEN] = helper_declaration_bytes();
-
-/// The generated `helper` declaration, as [`RUNTIME`] carries it.
-pub const HELPER_DECLARATION: &str = match std::str::from_utf8(&HELPER_DECLARATION_BYTES) {
-    Ok(text) => text,
-    Err(_) => panic!("a roster name or summary is not UTF-8"),
-};
-
-/// The `helper` declaration for one session, told the truth about whether
-/// any helper can actually run.
-///
-/// The invariant: **an interface and its availability are stated in the same
-/// place.** `[helpers]` without a `model` leaves every `helper.*` call
-/// refused, and until 2026-09-19 the block declared the full roster with a
-/// worked example and put the denial in a separate `Unavailable:` line
-/// further down, so a model met the promise and the refusal pages apart and
-/// had to reconcile them itself. This is the same shape
-/// [`web_declaration`] already uses for an unconfigured `web.search`.
-///
-/// It appends rather than withholds because the isolate binds `helper`
-/// whatever `[helpers]` says: a bound global the block never mentions is the
-/// same defect pointing the other way. Binding on the configuration — what
-/// `decide` does — is the deeper fix and it belongs in
-/// `runtime/bindings.rs`.
-#[must_use]
-pub fn helper_declaration(configured: bool) -> String {
-    if configured {
-        return HELPER_DECLARATION.to_string();
-    }
-    format!(
-        "{HELPER_DECLARATION}\n// Unavailable in this session: no helper model is configured \
-         (`[helpers] model`), so every `helper.*` call above is refused. Do the work in the \
-         cell instead, and do not spend a call discovering this."
-    )
-}
+    // answer is always one of those names. A cell may ask eight questions; past\n\
+    // that, or when the question failed, it throws ToolError.\n";
 
 /// The `web` global's types, the half of its declaration that does not
 /// depend on the session: [`web_declaration`] renders the other half — what
@@ -580,25 +439,8 @@ pub const RUNTIME: &[Binding] = &[
         declaration: AGENT_DECLARATION,
     },
     Binding {
-        global: "helper",
-        declaration: HELPER_DECLARATION,
-    },
-    Binding {
         global: "decide",
         declaration: DECIDE_DECLARATION,
-    },
-    Binding {
-        global: "todo",
-        declaration: "declare const todo: {\n  \
-                      write(items: {text: string; status: \"pending\" | \"active\" | \"done\"}[]): void;\n  \
-                      read(): {text: string; status: string}[];\n\
-                      };\n\
-                      // Your own plan for this task, shown to the person and carried across\n\
-                      // cells. `todo.write` replaces the whole list, so read, change, write\n\
-                      // back. Worth writing once the task needs more than two steps, and\n\
-                      // worth updating as each finishes — mark exactly one `active`. A\n\
-                      // malformed write throws and leaves the plan you had. It is cleared\n\
-                      // when the task ends.",
     },
     Binding {
         global: "console",

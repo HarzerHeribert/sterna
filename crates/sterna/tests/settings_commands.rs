@@ -79,13 +79,13 @@ fn cli_removes_root_options_safely_wherever_they_appear() {
     let root = temp_root("cli-root");
     let output = cli(&strings(&[
         "config",
-        "helpers.enabled",
+        "limits.evidence_gate",
         "--root",
         root.to_str().unwrap(),
         "true",
     ]))
     .unwrap();
-    assert!(output.contains("Saved helpers.enabled"));
+    assert!(output.contains("Saved limits.evidence_gate"));
     assert!(root.join(".sterna/config.toml").exists());
     assert!(
         cli(&strings(&["config", "--root"]))

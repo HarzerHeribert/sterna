@@ -4,8 +4,8 @@ This repository builds two programs:
 
 - **`sterna`** (`crates/sterna`) — a coding agent for the terminal. The model
   writes one TypeScript program per turn; tool results stay live in an
-  embedded V8 isolate as named handles. Helpers, scouts and checkers are
-  cheap models it calls from inside that program.
+  embedded V8 isolate as named handles. A subagent takes a whole goal on
+  another model loop beside it.
 - **`inference-gateway`** (`crates/inference-gateway`) — the standalone model
   gateway Sterna starts beside itself: providers, API keys, subscriptions,
   pooling, protocol translation and usage.

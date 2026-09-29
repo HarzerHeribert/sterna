@@ -23,9 +23,7 @@ use crate::runtime::excerpt::{self, SampledLine};
 use crate::runtime::handles::HandleMeta;
 use crate::runtime::isolate::DEFAULT_RESPONSE_BYTE_CAP;
 use crate::runtime::marshal;
-use crate::runtime::outcome::{
-    CallRecord, Ended, PlanItem, PlanStatus, SourceEvidence, SourceRange,
-};
+use crate::runtime::outcome::{CallRecord, Ended, SourceEvidence, SourceRange};
 use crate::runtime::preview::{
     ArrayValue, FileValue, PREVIEW_TOKEN_CAP, StringValue, Value, thousands,
 };
@@ -38,11 +36,9 @@ mod agent;
 mod ask;
 mod console;
 mod decide;
-pub(super) mod helper;
 mod job;
-mod speculate;
-use helper::helper_callback;
 mod search;
+mod speculate;
 use search::{build_glob, build_grep};
 mod web;
 use console::console_callback;
@@ -293,53 +289,20 @@ fn set_fixed_key(
 }
 
 /// Which host globals a context is given.
-///
-/// The invariant: **a helper's context holds only what its spec named, and
-/// nothing that can cause an effect.** `little-helpers.md` makes the toolset
-/// the safety boundary, which is true of the registered tools and false of
-/// the host globals installed beside them — `bg.run` executes a command,
-/// `send` messages another session, `mcp.call` reaches a server, and not one
-/// of the three is in `registry::ALL`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostGlobals {
-    /// Every global: an ordinary cell, and an ordinary subagent.
+    /// Every global: an ordinary cell, and a subagent.
     Every,
-    /// A helper's: exactly the tools its spec named, and no global that can
-    /// cause an effect. The slice is the spec's own `tools`, so
-    /// `little-helpers.md`'s claim — *a Scout cannot write because `write` is
-    /// not in its registry subset* — is true of the binding and not only of
-    /// the validator.
-    Helper(&'static [&'static str]),
 }
 
 impl HostGlobals {
-    /// The globals a helper never holds, whatever else it was given.
-    /// `helper` and `agent` are withheld for a different reason than the
-    /// other four, and it is a lifetime one: `helpers-and-subagents.md` §11
-    /// forbids the `Helper -> Helper` and `Helper -> Subagent` edges, and §19
-    /// forbids a detached helper. `agent.run` was already refused to a helper
-    /// by the subagent depth check, but a capability absent from the binding
-    /// surface cannot be reached by a helper talked into trying, which is the
-    /// standard `little-helpers.md` sets for the toolset.
-    pub const WITHHELD_FROM_A_HELPER: [&'static str; 8] = [
-        "bg",
-        "mcp",
-        "checks",
-        "helper",
-        "agent",
-        "web",
-        "decide",
-        "speculate",
-    ];
-
     /// Whether `global` is installed under this narrowing — the one predicate
     /// [`install`] and [`crate::prompt::render_runtime_for`] both read, so
     /// the block the model is shown cannot name a global its context lacks.
     #[must_use]
-    pub fn installs(self, global: &str) -> bool {
+    pub fn installs(self, _global: &str) -> bool {
         match self {
             Self::Every => true,
-            Self::Helper(_) => !Self::WITHHELD_FROM_A_HELPER.contains(&global),
         }
     }
 
@@ -377,16 +340,10 @@ impl HostGlobals {
     }
 
     /// Whether a **registered tool** is bound under this narrowing.
-    ///
-    /// Separate from [`Self::installs`] because a tool is admitted by the
-    /// spec's own list while a host global is admitted by absence from
-    /// [`Self::WITHHELD_FROM_A_HELPER`]. A helper that named no tool binds
-    /// none, which is why `REDUCER` can reach nothing at all.
     #[must_use]
-    pub fn binds_tool(self, tool: &str) -> bool {
+    pub fn binds_tool(self, _tool: &str) -> bool {
         match self {
             Self::Every => true,
-            Self::Helper(tools) => tools.contains(&tool),
         }
     }
 }
@@ -495,36 +452,6 @@ pub(crate) fn install(scope: &mut v8::PinScope, globals: HostGlobals) {
         crate::runtime::checks::install_aliases(scope, global);
     }
 
-    // Little helpers (`little-helpers.md`, *Pulled*), installed from the
-    // roster so appending a `HelperSpec` is the whole of adding a helper, and
-    // only where `call_sites` says a cell may reach it.
-    //
-    // One shared `fn` item routed by the name in its own data slot, exactly
-    // as the tools above are: `v8::Function::builder` takes a `fn` item, so a
-    // closure per entry built in a loop coerces to a fn pointer and fails
-    // inside the v8 crate, naming none of this code.
-    let helper = v8::Object::new(scope);
-    let install_helpers = globals.installs("helper");
-    for spec in crate::helpers::HELPERS {
-        if !install_helpers {
-            break;
-        }
-        if !crate::prompt::declarations::callable_from_a_cell(spec) {
-            continue;
-        }
-        let data = js_string(scope, spec.name);
-        let Some(function) = v8::Function::builder(helper_callback)
-            .data(data)
-            .build(scope)
-        else {
-            continue;
-        };
-        set_fixed_key(scope, helper, spec.name, function.into());
-    }
-    if install_helpers {
-        set_fixed_key(scope, global, "helper", helper.into());
-    }
-
     // Subagents. Fixed for the same reason as `bg`: a program that replaced
     // `agent` could not stop what it started.
     if globals.installs("agent") {
@@ -534,18 +461,6 @@ pub(crate) fn install(scope: &mut v8::PinScope, globals: HostGlobals) {
         }
         set_fixed_key(scope, global, "agent", agent.into());
     }
-
-    // The model's own plan. Fixed like every other host object: a program
-    // that replaced `todo` would leave the screen showing a checklist nothing
-    // could update.
-    let todo = v8::Object::new(scope);
-    if let Some(function) = v8::Function::builder(todo_write_callback).build(scope) {
-        set_fixed_key(scope, todo, "write", function.into());
-    }
-    if let Some(function) = v8::Function::builder(todo_read_callback).build(scope) {
-        set_fixed_key(scope, todo, "read", function.into());
-    }
-    set_fixed_key(scope, global, "todo", todo.into());
 
     let console = v8::Object::new(scope);
     for method in ["log", "info", "warn", "error", "debug", "trace"] {
@@ -1733,11 +1648,6 @@ fn build_bash<'s>(
             set_key(scope, object, "reduced", value);
             entries.push(("reduced".to_string(), Value::string(reduced)));
         }
-        crate::runtime::reduce::Reduction::Failed(why) => {
-            let value = js_string(scope, why);
-            set_key(scope, object, "reduction_error", value);
-            entries.push(("reduction_error".to_string(), Value::string(why)));
-        }
     }
     (object.into(), Value::object(entries))
 }
@@ -2468,93 +2378,6 @@ fn agent_run_callback(
 /// turn's ceiling, which is the smallest amount that could produce an answer
 /// rather than a truncation.
 const MINIMUM_AGENT_BUDGET: u64 = crate::wire::MAX_TOKENS as u64;
-
-// --- todo.write, todo.read ---------------------------------------------
-
-/// `todo.write(items)` — the model's own plan, replaced whole.
-///
-/// The invariant: **what this stores is renderable.** Every item has text and
-/// one of three statuses, checked here, because the plan is shown to the
-/// person and counted in the turn line; an item that is neither would be a
-/// row nothing can draw. A malformed write throws and changes nothing, so a
-/// program that catches it still holds the plan it had.
-fn todo_write_callback(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let Ok(array) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
-        throw_tool_error(scope, "todo.write takes an array of {text, status}");
-        return;
-    };
-    let mut items = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        let Some(entry) = array.get_index(scope, index) else {
-            continue;
-        };
-        let Ok(object) = v8::Local::<v8::Object>::try_from(entry) else {
-            throw_tool_error(
-                scope,
-                &format!("todo.write item {index} is not an object with text and status"),
-            );
-            return;
-        };
-        let text = read_object_key(scope, object, "text").unwrap_or_default();
-        if text.trim().is_empty() {
-            throw_tool_error(scope, &format!("todo.write item {index} has no text"));
-            return;
-        }
-        let status_text = read_object_key(scope, object, "status")
-            .unwrap_or_else(|| PlanStatus::Pending.as_str().to_string());
-        let Some(status) = PlanStatus::parse(&status_text) else {
-            throw_tool_error(
-                scope,
-                &format!(
-                    "todo.write item {index}: status {status_text:?} is not one of pending, \
-                     active, done"
-                ),
-            );
-            return;
-        };
-        items.push(PlanItem { text, status });
-    }
-    state(scope).set_plan(items);
-}
-
-/// `todo.read()` — the plan as it stands, as plain objects.
-fn todo_read_callback(
-    scope: &mut v8::PinScope,
-    _args: v8::FunctionCallbackArguments,
-    mut retval: v8::ReturnValue,
-) {
-    let plan = state(scope).plan();
-    let array = v8::Array::new(scope, plan.len() as i32);
-    for (index, item) in plan.iter().enumerate() {
-        let object = v8::Object::new(scope);
-        let text = js_string(scope, &item.text);
-        set_key(scope, object, "text", text);
-        let status = js_string(scope, item.status.as_str());
-        set_key(scope, object, "status", status);
-        array.set_index(scope, index as u32, object.into());
-    }
-    retval.set(array.into());
-}
-
-/// One string property of an object, or `None` when it is absent or is not a
-/// string. Distinct from [`read_option`], which reads a property off an
-/// options argument that may itself be absent.
-fn read_object_key(
-    scope: &mut v8::PinScope,
-    object: v8::Local<v8::Object>,
-    key: &str,
-) -> Option<String> {
-    let key = v8::String::new(scope, key)?;
-    let value = object.get(scope, key.into())?;
-    if value.is_null_or_undefined() {
-        return None;
-    }
-    Some(value.to_rust_string_lossy(scope))
-}
 
 // --- bg.run, bg.watch, bg.cancel ---------------------------------------
 

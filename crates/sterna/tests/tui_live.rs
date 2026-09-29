@@ -41,39 +41,29 @@ struct App {
 }
 impl App {
     fn start(base: &str) -> Self {
-        Self::start_with(base, false, None)
+        Self::start_with(base, false)
     }
 
     fn start_bare(base: &str) -> Self {
-        Self::start_with(base, true, None)
+        Self::start_with(base, true)
     }
 
-    fn start_with_helpers(base: &str, model: &str) -> Self {
-        Self::start_with(base, false, Some(model))
+    fn start_with(base: &str, bare: bool) -> Self {
+        Self::start_with_flags(base, bare, &[])
     }
 
-    fn start_with(base: &str, bare: bool, helper_model: Option<&str>) -> Self {
-        Self::start_with_flags(base, bare, helper_model, &[])
-    }
-
-    fn start_with_flags(
-        base: &str,
-        bare: bool,
-        helper_model: Option<&str>,
-        flags: &[&str],
-    ) -> Self {
-        Self::start_seeded(base, bare, helper_model, flags, &|_| {})
+    fn start_with_flags(base: &str, bare: bool, flags: &[&str]) -> Self {
+        Self::start_seeded(base, bare, flags, &|_| {})
     }
 
     /// The same start, with `seed` writing into the project before sterna runs.
     fn start_seeded(
         base: &str,
         bare: bool,
-        helper_model: Option<&str>,
         flags: &[&str],
         seed: &dyn Fn(&std::path::Path),
     ) -> Self {
-        Self::start_in(base, bare, helper_model, flags, seed, &[])
+        Self::start_in(base, bare, flags, seed, &[])
     }
 
     /// The same start in a terminal that says `colours` of itself. Every
@@ -82,7 +72,6 @@ impl App {
     fn start_in(
         base: &str,
         bare: bool,
-        helper_model: Option<&str>,
         flags: &[&str],
         seed: &dyn Fn(&std::path::Path),
         colours: &[(&str, &str)],
@@ -95,14 +84,6 @@ impl App {
         ));
         std::fs::create_dir_all(&root).unwrap();
         seed(&root);
-        if let Some(model) = helper_model {
-            std::fs::create_dir_all(root.join(".sterna")).unwrap();
-            std::fs::write(
-                root.join(".sterna/config.toml"),
-                format!("[helpers]\nacceptance_list = false\nmodel = \"{model}\"\npreflight = true\npreflight_scope = \"always\"\n"),
-            )
-            .unwrap();
-        }
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -615,7 +596,7 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
         return "APPROVAL FINISHED";
     "#,
     );
-    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
+    let mut app = App::start_with_flags(&base, false, &["--sandbox", "ask"]);
     app.ready();
     // The dialog prints the call's resolved path, and at 80 columns a long
     // temp root (Windows: `\\?\C:\Users\<name>\AppData\Local\Temp\…`) wraps
@@ -674,7 +655,7 @@ fn live_approval_once_session_and_deny_gate_actual_writes() {
 fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
     let base =
         approval_provider(r#"write({path: "cancelled.txt", content: "no"}); return "done";"#);
-    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
+    let mut app = App::start_with_flags(&base, false, &["--sandbox", "ask"]);
     app.ready();
     app.send(b"proceed\r");
     app.contains("APPROVE");
@@ -698,7 +679,7 @@ fn live_approval_ctrl_c_denies_pending_write_and_restores_terminal_on_exit() {
 #[test]
 fn an_approval_ignores_keys_typed_before_it_was_shown() {
     let base = approval_provider(r#"write({path: "typed.txt", content: "no"}); return "done";"#);
-    let mut app = App::start_with_flags(&base, false, None, &["--sandbox", "ask"]);
+    let mut app = App::start_with_flags(&base, false, &["--sandbox", "ask"]);
     app.ready();
     app.send(b"write it\r");
     // Alone, so it sends: an Enter with more typing already behind it is a
@@ -736,7 +717,7 @@ fn an_approval_ignores_keys_typed_before_it_was_shown() {
 /// Accept one request and hold its response until the test releases it. The
 /// request notification is sent only after the complete headers and body have
 /// arrived, so a screen assertion made after it observes the actual interval
-/// in which preflight is blocked on the provider.
+/// in which the turn is blocked on the provider.
 fn held_provider() -> (String, mpsc::Receiver<serde_json::Value>, mpsc::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -782,100 +763,26 @@ fn held_provider() -> (String, mpsc::Receiver<serde_json::Value>, mpsc::Sender<(
     (base, requests, release)
 }
 
-/// Answer the task turn with an explicit Scout call, then hold that Scout's
-/// own request so the real PTY can prove the in-flight lane is wired through.
-fn held_cell_helper_provider() -> (String, mpsc::Receiver<serde_json::Value>, mpsc::Sender<()>) {
-    fn read_request(stream: &mut std::net::TcpStream) -> serde_json::Value {
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut len = 0;
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" || line == "\n" {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':')
-                && name.eq_ignore_ascii_case("content-length")
-            {
-                len = value.trim().parse().unwrap();
-            }
-        }
-        let mut body = vec![0; len];
-        reader.read_exact(&mut body).unwrap();
-        serde_json::from_slice(&body).unwrap()
-    }
-
-    fn answer_task(stream: &mut std::net::TcpStream, request: &serde_json::Value) {
-        let program =
-            "```sterna\nconst found = await helper.find(\"find the needle\");\nreturn found;\n```";
-        if request["stream"] == true {
-            let events = [
-                serde_json::json!({"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":12}}}),
-                serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":program}}),
-                serde_json::json!({"type":"message_delta","usage":{"output_tokens":8}}),
-                serde_json::json!({"type":"message_stop"}),
-            ];
-            let body = events
-                .iter()
-                .map(|event| format!("data: {event}\n\n"))
-                .collect::<String>();
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        } else {
-            let body = serde_json::json!({
-                "role":"assistant",
-                "content":[{"type":"text","text":program}],
-            })
-            .to_string();
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        }
-    }
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let (request_sender, requests) = mpsc::channel();
-    let (release, held) = mpsc::channel();
-    thread::spawn(move || {
-        let (mut task, _) = listener.accept().unwrap();
-        let request = read_request(&mut task);
-        answer_task(&mut task, &request);
-
-        let (mut helper, _) = listener.accept().unwrap();
-        let request = read_request(&mut helper);
-        request_sender.send(request).unwrap();
-        let _ = held.recv();
-    });
-    (base, requests, release)
-}
-
+/// While the provider holds the turn, the request is on screen with the
+/// effort it was sent at, and Ctrl-C twice still leaves -- saying how to
+/// come back.
 #[test]
-fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_returns() {
+fn a_held_request_shows_the_task_and_its_effort_before_the_network_returns() {
     let (base, requests, _release) = held_provider();
-    let mut app = App::start_with_helpers(&base, "helper-tier");
+    let mut app = App::start(&base);
     app.ready();
     app.send(b"/effort medium\r");
     app.contains("Effort is now medium");
-    let task = "find where helper cancellation is implemented";
+    let task = "find where cancellation is implemented";
     app.send(format!("{task}\r").as_bytes());
 
     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(request["model"], "helper-tier");
+    assert_eq!(request["model"], "fixture-model");
     app.wait(
-        "submitted request and Scout visible during preflight",
+        "the submitted request while the provider holds it",
         |screen| {
             let text = screen.contents();
-            text.contains(task)
-                && text.contains("PREFLIGHT · SCOUT")
-                && text.contains("scanning")
-                && text.contains("searching")
-                && text.contains("· medium ▾")
+            text.contains(task) && text.contains("· medium ▾")
         },
     );
 
@@ -889,31 +796,6 @@ fn live_preflight_shows_the_request_scout_and_actual_effort_before_network_retur
         String::from_utf8_lossy(&app.bytes).contains("resume it with:  sterna --resume"),
         "a Ctrl-C exit printed no resume line"
     );
-}
-
-#[test]
-fn live_cell_helper_shows_its_lane_before_its_provider_returns() {
-    let (base, requests, _release) = held_cell_helper_provider();
-    let mut app = App::start_with_helpers(&base, "helper-tier");
-    app.ready();
-    app.send(b"find this\r");
-
-    let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(request["model"], "helper-tier");
-    app.wait("in-flight cell helper lane", |screen| {
-        let text = screen.contents();
-        text.contains("find")
-            && text.contains("scanning")
-            && text.contains("scanning find the needle")
-            && text.contains("find · helper-tier")
-            && text.contains("executing")
-    });
-
-    app.send(b"\x03");
-    thread::sleep(Duration::from_millis(100));
-    app.send(b"\x03");
-    assert_eq!(app.exited(), 130);
-    assert!(!app.screen.screen().alternate_screen());
 }
 
 #[test]
@@ -967,7 +849,7 @@ fn live_composition_completion_model_selection_busy_input_resize_and_exit() {
     app.send(b"/effort medium\r");
     app.contains("Effort is now medium");
     app.send(b"/mo");
-    app.contains("set the parent, helper or subagent model");
+    app.contains("set the parent or subagent model");
     app.send(b"\tfixture-next\r");
     app.contains("model changed to fixture-next");
     app.send(b"\x1b[200~first line\nsecond line\x1b[201~");
@@ -1060,7 +942,7 @@ fn a_request_error_is_visible_and_the_editor_remains_usable() {
     app.send(b"/effort medium\r");
     app.contains("Effort is now medium");
     app.send(b"/mo");
-    app.contains("set the parent, helper or subagent model");
+    app.contains("set the parent or subagent model");
     app.send(b"\x15/exit\r");
     assert_eq!(app.exited(), 0);
     assert!(!app.screen.screen().alternate_screen());
@@ -1246,28 +1128,6 @@ fn a_sign_in_runs_beside_the_session_and_ends_with_it() {
     assert!(!alive(), "the sign-in outlived the session");
 }
 
-/// A first start says the recommended settings changed **and** keeps the
-/// way into setup on the opening card: the one line never takes the chip's
-/// place.
-#[test]
-fn a_first_start_keeps_the_setup_chip_beside_the_changed_settings_line() {
-    let (base, _requests) = provider();
-    // Helpers off differs from a recommendation this install has not seen.
-    let mut app = App::start_seeded(&base, false, None, &[], &|root| {
-        std::fs::create_dir_all(root.join(".sterna")).unwrap();
-        std::fs::write(
-            root.join(".sterna/config.toml"),
-            "[helpers]\nenabled = false\n",
-        )
-        .unwrap();
-    });
-    app.ready();
-    app.contains("recommended settings changed");
-    app.contains("finish setup");
-    app.send(b"/exit\r");
-    assert_eq!(app.exited(), 0);
-}
-
 #[cfg(unix)]
 #[test]
 fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
@@ -1280,7 +1140,7 @@ fn model_picker_sorts_accounts_and_selects_a_real_request_model() {
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     app.send(b"/models\r");
     // The agent tabs make every tier directly accessible.
-    app.contains("Helper   Subagents");
+    app.contains("Main   Subagents");
     app.contains("a-model");
     app.contains("z-model");
     // The list's last header, so the snapshot is of a whole frame, not one
@@ -2056,7 +1916,7 @@ fn a_bare_resume_opens_the_resume_sheet_inside_the_session() {
         thread::sleep(Duration::from_millis(1100));
         std::fs::write(sessions.join("tlbbbb-2.jsonl"), turn("fix the flaky test")).unwrap();
     };
-    let mut app = App::start_seeded("http://127.0.0.1:1", false, None, &["--resume"], &seed);
+    let mut app = App::start_seeded("http://127.0.0.1:1", false, &["--resume"], &seed);
     app.contains("RESUME A SESSION");
     app.contains("this session · 1 prompt");
     app.contains("fix the flaky test");
@@ -2473,8 +2333,8 @@ fn workbench_settings_save_directly_and_do_not_consume_the_draft() {
     app.send(b"keep this draft");
     app.send(b"\x1bOQ"); // F2
     app.contains("SETTINGS");
-    // Everyday, Models, Little helpers, then Display.
-    app.send(b"\t\t\t");
+    // Everyday, Models, then Display.
+    app.send(b"\t\t");
     app.contains("Colour ─");
     app.send(b"\x1b[C"); // theme advances, no Apply step
     app.contains("Theme is now");
@@ -2643,19 +2503,14 @@ fn workbench_pointer_opens_settings_only_on_release_and_wheel_stays_local() {
     assert_eq!(app.exited(), 0);
 }
 
-/// Serves a task turn slowly -- the model's prose first, then a cell that
-/// runs for a moment and answers -- and holds every helper request that
-/// arrives after it (the fresh checker behind the answer) until released.
-fn motion_provider() -> (String, mpsc::Sender<()>) {
+/// Serves a task turn slowly: the model's prose first, then a cell that
+/// runs for a moment and answers.
+fn motion_provider() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let (release, held) = mpsc::channel::<()>();
-    let held = std::sync::Arc::new(std::sync::Mutex::new(held));
     thread::spawn(move || {
-        let answered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         for incoming in listener.incoming() {
             let Ok(mut stream) = incoming else { return };
-            let (answered, held) = (answered.clone(), held.clone());
             thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut len = 0;
@@ -2675,24 +2530,15 @@ fn motion_provider() -> (String, mpsc::Sender<()>) {
                     return;
                 }
                 let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                let helper = request["model"] == "helper-tier";
-                let pieces: Vec<(&str, u64)> = if helper {
-                    if answered.load(std::sync::atomic::Ordering::SeqCst) {
-                        let _ = held.lock().unwrap().recv();
-                    }
-                    vec![("holds\nThe run returned the value the answer claims.", 0)]
-                } else {
-                    answered.store(true, std::sync::atomic::Ordering::SeqCst);
-                    vec![
-                        ("Reading the motion guard first; ", 500),
-                        ("the check is cheap, so I will run it ", 500),
-                        ("and report what it says.\n\n", 500),
-                        (
-                            "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nawait write({path:'guard.txt',content:'3 of 3'});\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
-                            0,
-                        ),
-                    ]
-                };
+                let pieces: Vec<(&str, u64)> = vec![
+                    ("Reading the motion guard first; ", 500),
+                    ("the check is cheap, so I will run it ", 500),
+                    ("and report what it says.\n\n", 500),
+                    (
+                        "```sterna\nconst t = Date.now();\nwhile (Date.now() - t < 1800) {}\nawait write({path:'guard.txt',content:'3 of 3'});\nanswer(\"The guard holds: 3 of 3 cases pass.\");\n```",
+                        0,
+                    ),
+                ];
                 if request["stream"] != true {
                     let text: String = pieces.iter().map(|(t, _)| *t).collect();
                     let body = serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"usage":{"input_tokens":20,"output_tokens":9}}).to_string();
@@ -2730,32 +2576,20 @@ fn motion_provider() -> (String, mpsc::Sender<()>) {
             });
         }
     });
-    (base, release)
+    base
 }
 
 /// One turn through a real terminal: the model's prose arrives under a
-/// live rail, the cell runs, the answer lands, and the check behind the
-/// answer is visible while it runs and settles into its verdict. The frames
-/// are printed (`--nocapture`) so the look can be read, not only asserted.
+/// live rail, the cell runs and the answer lands. The frames are printed
+/// (`--nocapture`) so the look can be read, not only asserted.
 fn walk_a_turn(bird: bool) {
-    let (base, release) = motion_provider();
+    let base = motion_provider();
     let colours: &[(&str, &str)] = if bird {
         &[("COLORTERM", "truecolor")]
     } else {
         &[]
     };
-    // The check reads work: the turn writes a file, and every answer that
-    // changed something is checked.
-    let seed = |root: &std::path::Path| {
-        std::fs::create_dir_all(root.join(".sterna")).unwrap();
-        std::fs::write(
-            root.join(".sterna/config.toml"),
-            "[helpers]\nacceptance_list = false\nmodel = \"helper-tier\"\npreflight = true\n\
-             preflight_scope = \"always\"\ncompletion_check = \"always\"\n",
-        )
-        .unwrap();
-    };
-    let mut app = App::start_in(&base, false, None, &[], &seed, colours);
+    let mut app = App::start_in(&base, false, &[], &|_| {}, colours);
     app.ready();
     let frame = |app: &mut App, name: &str| {
         // A whole frame, not one the pty is still delivering.
@@ -2781,22 +2615,14 @@ fn walk_a_turn(bird: bool) {
     app.contains("xecuting this cell");
     frame(&mut app, "cell running");
     app.contains_line("The guard holds: 3 of 3 cases pass.");
-    app.contains("checking the answer");
-    frame(&mut app, "answer landed, check behind it");
-    release.send(()).unwrap();
-    app.contains("checked after the answer: holds");
-    app.refute(
-        "the working row goes when its verdict lands",
-        "checking the answer",
-    );
     app.settle(1200);
-    frame(&mut app, "verdict settled");
+    frame(&mut app, "answer landed");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
 
 #[test]
-fn the_instrument_moves_where_attention_is_and_the_check_lands_behind_the_answer() {
+fn the_instrument_moves_where_attention_is() {
     walk_a_turn(false);
 }
 
@@ -2862,7 +2688,6 @@ fn a_true_colour_terminal_starts_with_a_parrot_perched_on_the_card() {
     let mut app = App::start_in(
         "http://127.0.0.1:1",
         false,
-        None,
         &[],
         &|_| {},
         &[("COLORTERM", "truecolor")],
@@ -2882,14 +2707,7 @@ fn a_true_colour_terminal_starts_with_a_parrot_perched_on_the_card() {
 #[test]
 fn a_terminal_that_answers_light_gets_the_light_colours() {
     let (base, _requests) = provider();
-    let mut app = App::start_in(
-        &base,
-        false,
-        None,
-        &[],
-        &|_| {},
-        &[("COLORTERM", "truecolor")],
-    );
+    let mut app = App::start_in(&base, false, &[], &|_| {}, &[("COLORTERM", "truecolor")]);
     app.ground = Some("rgb:ffff/ffff/ffff");
     app.ready();
     app.send(b"hello there\r");
@@ -2903,92 +2721,6 @@ fn a_terminal_that_answers_light_gets_the_light_colours() {
         })
     });
     app.refute("the reply is not typed", "rgb:ffff");
-    app.send(b"/exit\r");
-    assert_eq!(app.exited(), 0);
-}
-
-/// Answers the acceptance lister with a two-item list and every task turn
-/// with one cell that writes the file the list names and answers.
-fn acceptance_provider() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    thread::spawn(move || {
-        for incoming in listener.incoming() {
-            let Ok(mut stream) = incoming else { return };
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut len = 0;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    len = value.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; len];
-            if reader.read_exact(&mut body).is_err() {
-                continue;
-            }
-            let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else {
-                continue;
-            };
-            let text = if request.to_string().contains("acceptance items") {
-                "file: done.txt exists\njudge: the note says hello"
-            } else {
-                "```sterna\nawait write({path: \"done.txt\", content: \"hello\\n\"});\nanswer(\"WROTE THE NOTE\");\n```"
-            };
-            let reply = if request["stream"] == true {
-                let events = [
-                    serde_json::json!({"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":10}}}),
-                    serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":text}}),
-                    serde_json::json!({"type":"message_delta","usage":{"output_tokens":5}}),
-                    serde_json::json!({"type":"message_stop"}),
-                ];
-                let body = events
-                    .iter()
-                    .map(|e| format!("data: {e}\n\n"))
-                    .collect::<String>();
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-            } else {
-                let body = serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"usage":{"input_tokens":10,"output_tokens":5}}).to_string();
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-            };
-            let _ = stream.write_all(reply.as_bytes());
-        }
-    });
-    base
-}
-
-/// The acceptance list reaches the screen from a real session: the lister's
-/// items stand open before the work, and the file item turns met once the
-/// cell has written it -- counted on the one line an eighty-column
-/// terminal shows on the dock in place of the sidebar.
-#[test]
-fn live_acceptance_list_counts_the_file_the_cell_wrote() {
-    let base = acceptance_provider();
-    let mut app = App::start_seeded(&base, false, None, &[], &|root| {
-        std::fs::create_dir_all(root.join(".sterna")).unwrap();
-        std::fs::write(
-            root.join(".sterna/config.toml"),
-            "[helpers]\nmodel = \"helper-tier\"\npreflight = false\nacceptance_list = true\n\
-             completion_check = \"off\"\nlearn = false\n",
-        )
-        .unwrap();
-    });
-    app.ready();
-    app.send(b"write done.txt with a greeting\r");
-    app.wait_for_file("done.txt");
-    app.contains_line("WROTE THE NOTE");
-    app.contains("≡ 1 of 2 met");
     app.send(b"/exit\r");
     assert_eq!(app.exited(), 0);
 }
@@ -3019,7 +2751,7 @@ fn a_slow_gateway_start_flies_the_tern_until_the_session_is_ready() {
     let (base, _requests) = provider();
     let seed = slow_gateway(&base, 2);
     let colours = [("COLORTERM", "truecolor")];
-    let mut app = App::start_in("", false, None, &[], &seed, &colours);
+    let mut app = App::start_in("", false, &[], &seed, &colours);
     app.wait(
         "the tern and the status line while the gateway starts",
         |screen| {
@@ -3042,7 +2774,7 @@ fn a_slow_gateway_start_flies_the_tern_until_the_session_is_ready() {
 fn ctrl_c_during_the_splash_stops_sterna_and_puts_the_terminal_back() {
     let (base, _requests) = provider();
     let seed = slow_gateway(&base, 30);
-    let mut app = App::start_in("", false, None, &[], &seed, &[]);
+    let mut app = App::start_in("", false, &[], &seed, &[]);
     app.contains("Starting the model gateway");
     app.send(b"\x03");
     app.exited();

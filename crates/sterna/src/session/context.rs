@@ -245,12 +245,7 @@ pub(super) fn send_task_turn_recovering(
         Err(error) => return Err(error.to_string()),
     };
 
-    let checkpoint = prompt::checkpoint(
-        task,
-        &runtime.plan(),
-        &runtime.handle_names(),
-        Some(&first.to_string()),
-    );
+    let checkpoint = prompt::checkpoint(task, &runtime.handle_names(), Some(&first.to_string()));
     transcript.provider_start = transcript.conversation.messages.len();
     transcript.provider_checkpoint = Some(checkpoint.clone());
     runtime.forget_shown_contexts();
@@ -322,7 +317,7 @@ mod sweep_tests {
                 format!("cell-{cell}"),
                 format!(
                     "[cell {cell} yielded]\n\n## stdout\nwhat cell {cell} printed\n\n## Handles\n\
-                     hits n={cell}\n\n## Plan\n[~] the step\n\n## Usage\ncells {cell}"
+                     hits n={cell}\n\n## Usage\ncells {cell}"
                 ),
                 false,
                 format!("[cell {cell} yielded]"),
@@ -468,7 +463,7 @@ mod sweep_tests {
         // The newest result is the copy the others are redundant against, so
         // it keeps everything.
         let newest = text(4);
-        assert!(newest.contains("## Handles") && newest.contains("## Plan"));
+        assert!(newest.contains("## Handles") && newest.contains("## Usage"));
     }
 }
 
