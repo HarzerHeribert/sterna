@@ -58,13 +58,13 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `model.parent` | the model that answers you |
 | `session.effort` | how hard Main thinks: `auto` (the model chooses) or `low` … `max`; a saved `default` is read as `auto` |
 | `sandbox.level` | global only: `ask`, `sandboxed` (default) or `full` ([sandbox](sandbox.md)) |
-| `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands may reach through the proxy, beside the ecosystems switched on |
+| `sandbox.hosts`, `sandbox.ecosystems` | global only: hosts commands reach through the proxy and `web.fetch` reaches without asking, beside the ecosystems switched on |
 | `permissions.allow`, `permissions.deny` | permission patterns; a deny beats every allow, and a `Bash(...)` allow pre-approves a command on Ask |
 | `agents.mode`, `agents.slots.<quick\|balanced\|deep\|heavy>.*` | whether and where subagents run |
 | `decisions.model`, `decisions.mode` | Jev, the classifier ([decisions](decisions.md)) |
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
 | `ui.motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
-| `web.enabled`, `web.allow_domains`, `web.search_endpoint`, … | the web broker ([web](web.md)) |
+| `web.enabled`, `web.deny_domains`, `web.search_endpoint`, … | the web broker, on by default ([web](web.md)) |
 | `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits; nothing caps a task's cells unless you set it |
 
 `sterna config --help` lists the rest: the decision thresholds, when output
@@ -75,7 +75,10 @@ A setting an upgrade removed is read as unset, taken out of its file and
 reported once; it never stops Sterna from starting. The `helpers.*` keys
 went this way on 2026-09-30, apart from `helpers.reduce_above_tokens` and
 `helpers.reduce_returns`, whose saved values moved to
-`limits.reduce_above_tokens` and `decisions.reduce_returns`.
+`limits.reduce_above_tokens` and `decisions.reduce_returns`, and so did
+`decisions.drift_no_below` with the model's to-do list. A global
+`web.allow_domains` moved into `sandbox.hosts`, the one list of allowed
+hosts; a project's copy is removed, because a project cannot allow hosts.
 
 ## Named profiles
 

@@ -16,14 +16,14 @@ pub mod search;
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebConfig {
+    /// On by default. Which hosts `web.fetch` reaches without asking is not
+    /// here: it is the session's one list of allowed hosts
+    /// (`sandbox.hosts`, the ecosystems, and every host a person allowed),
+    /// shared with the command proxy, and a fetch anywhere else asks the
+    /// way leaving the sandbox does.
     pub enabled: bool,
-    /// The domains `web.fetch` may reach; `*.example.org` matches subdomains
-    /// only. **Empty refuses every fetch**: the tool exists once a domain is
-    /// allowed (map 2656). A destination the user configured — the search
-    /// endpoint, a remote MCP server — is reached by being configured and does
-    /// not consult this list; the deny list still wins everywhere.
-    pub allow_domains: Vec<String>,
-    /// Deny wins over allow. Bare names match exactly.
+    /// Never reached, whatever the allowed hosts say. Bare names match
+    /// exactly; `*.example.org` matches subdomains only.
     pub deny_domains: Vec<String>,
     pub allow_http: bool,
     /// SearXNG-compatible JSON endpoint. No implicit search provider or credentials.
@@ -43,8 +43,7 @@ pub struct WebConfig {
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            allow_domains: vec![],
+            enabled: true,
             deny_domains: vec![],
             allow_http: false,
             search_endpoint: None,
@@ -57,11 +56,6 @@ impl Default for WebConfig {
 }
 
 impl WebConfig {
-    /// Whether `web.fetch` reaches anything: enabled, with a domain allowed.
-    pub fn fetch_configured(&self) -> bool {
-        self.enabled && !self.allow_domains.is_empty()
-    }
-
     /// Whether `web.search` reaches anything: enabled, with a provider that
     /// has what it needs to be asked — an endpoint for `searxng`, a key
     /// variable's name for `brave` (the key itself is resolved when a query
@@ -70,17 +64,13 @@ impl WebConfig {
         self.enabled && search::SearchProvider::from_config(self).is_ok_and(|p| p.is_some())
     }
 
-    /// One line for `/config`: what `web.fetch` reaches and who answers
-    /// `web.search`, or `off`.
+    /// One line for `/config`: how `web.fetch` reaches a host and who
+    /// answers `web.search`, or `off`.
     pub fn describe(&self) -> String {
         if !self.configured() {
             return "off".to_string();
         }
-        let fetch = if self.allow_domains.is_empty() {
-            "fetch refused (no domain allowed)".to_string()
-        } else {
-            format!("fetch reaches {}", self.allow_domains.join(", "))
-        };
+        let fetch = "fetch reaches the allowed hosts and asks for others";
         let search = match search::SearchProvider::from_config(self) {
             Ok(Some(provider)) => format!("search via {}", provider.name()),
             _ => "no search".to_string(),
@@ -89,20 +79,24 @@ impl WebConfig {
     }
 
     /// One word for the sidebar's `net:` field: the cell's shell never has a
-    /// network, so the field names the host tools instead — `off` when none
-    /// is configured, `web` when fetch or search is.
+    /// network, so the field names the host tools instead — `off` when the
+    /// broker is, `web` when it is on.
     pub fn posture(&self) -> &'static str {
         if self.configured() { "web" } else { "off" }
     }
 
-    /// Whether the `web` global exists at all for this configuration — the
-    /// one predicate `runtime::bindings::install_web` and the Runtime block
-    /// both read (map 2658), so a session that configured nothing binds no
-    /// `web` and is told of none.
+    /// Whether the `web` global exists at all — the one predicate
+    /// `runtime::bindings::install_web` and the Runtime block both read
+    /// (map 2658). `web.fetch` needs nothing more than the broker being on:
+    /// a host outside the allowed list asks rather than refusing.
     pub fn configured(&self) -> bool {
-        self.fetch_configured() || self.search_configured()
+        self.enabled
     }
 }
+
+/// Whether one host is reached without asking, answered for every hop of a
+/// fetch: the first and each redirect.
+pub type Reaches = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 #[derive(Debug, Serialize)]
 pub struct FetchResult {
@@ -195,9 +189,12 @@ impl WebBroker {
         &self,
         url: &str,
         token: &CancellationToken,
+        reaches: Reaches,
     ) -> Result<FetchResult, String> {
         let url = url.to_owned();
-        self.on_worker(token, move |broker, token| broker.fetch_inner(&url, &token))
+        self.on_worker(token, move |broker, token| {
+            broker.fetch_inner(&url, &token, &reaches)
+        })
     }
 
     pub fn search_cancellable(
@@ -349,7 +346,7 @@ impl WebBroker {
         if !(1..=60).contains(&config.timeout_seconds) {
             return Err("web.timeout_seconds must be between 1 and 60".into());
         }
-        for pattern in config.allow_domains.iter().chain(&config.deny_domains) {
+        for pattern in &config.deny_domains {
             let name = pattern.strip_prefix("*.").unwrap_or(pattern);
             if name.is_empty()
                 || name.starts_with('.')
@@ -367,27 +364,15 @@ impl WebBroker {
             workers: Mutex::new(vec![]),
         };
         if let Some(endpoint) = &broker.config.search_endpoint {
-            broker.validate_destination(endpoint)?;
+            broker.validate_url(endpoint)?;
         }
         search::SearchProvider::from_config(&broker.config)?;
         Ok(broker)
     }
 
-    /// The model's URL: scheme, host, private-address, deny-list and
-    /// allow-list checks.
+    /// Scheme, host, private-address and deny-list checks. Whether the host
+    /// is reached without asking is the caller's [`Reaches`], not this.
     pub fn validate_url(&self, url: &str) -> Result<Uri, String> {
-        self.validate(url, true)
-    }
-
-    /// A destination the user configured — the search endpoint — which is
-    /// reached by being configured: every check but the allow list, which
-    /// is the model's fetch policy and not the user's. The deny list still
-    /// wins.
-    fn validate_destination(&self, url: &str) -> Result<Uri, String> {
-        self.validate(url, false)
-    }
-
-    fn validate(&self, url: &str, consult_allow_list: bool) -> Result<Uri, String> {
         if url.len() > 8192 || url.contains(['\\', '\r', '\n', '\t', '#']) {
             return Err("invalid web URL (use an absolute URL without a fragment)".into());
         }
@@ -421,39 +406,35 @@ impl WebBroker {
             .deny_domains
             .iter()
             .any(|p| domain_matches(p, &host))
-            || (consult_allow_list
-                && !self.config.allow_domains.is_empty()
-                && !self
-                    .config
-                    .allow_domains
-                    .iter()
-                    .any(|p| domain_matches(p, &host)))
         {
             return Err(format!("web domain denied: {host}"));
         }
         Ok(uri)
     }
 
-    pub fn fetch(&self, url: &str) -> Result<FetchResult, String> {
-        self.fetch_inner(url, &CancellationToken::new())
+    /// The host a fetch of `url` would reach first, after every check but
+    /// whether it is allowed: what a caller asks a person about.
+    pub fn host_of(&self, url: &str) -> Result<String, String> {
+        let uri = self.validate_url(url)?;
+        Ok(host_name(&uri))
     }
 
-    /// The model's fetch, which answers to the allow list; a destination the
-    /// user configured — the search endpoint — is reached by
-    /// [`Self::get_endpoint`] instead and does not consult it.
-    fn fetch_inner(&self, url: &str, token: &CancellationToken) -> Result<FetchResult, String> {
+    pub fn fetch(&self, url: &str, reaches: &Reaches) -> Result<FetchResult, String> {
+        self.fetch_inner(url, &CancellationToken::new(), reaches)
+    }
+
+    /// The model's fetch. Every hop's host answers to `reaches`: the first
+    /// one was asked about before this was called, and a redirect to a host
+    /// nobody allowed is refused with the URL to fetch, so asking for it
+    /// is the model's next call rather than a question mid-redirect.
+    fn fetch_inner(
+        &self,
+        url: &str,
+        token: &CancellationToken,
+        reaches: &Reaches,
+    ) -> Result<FetchResult, String> {
         if !self.config.enabled {
-            return Err(
-                "web tools are disabled; enable [web].enabled in host configuration".into(),
-            );
-        }
-        // Refused until a domain is allowed (map 2656): the model's fetch
-        // answers to the allow list, and an empty list is not "everything".
-        if self.config.allow_domains.is_empty() {
-            return Err(
-                "web.fetch refused: no domain is allowed; add the domain to [web] allow_domains"
-                    .into(),
-            );
+            return Err("web tools are off; `web.enabled` turns them on".into());
         }
         let mut current = url.to_owned();
         let deadline = Instant::now() + Duration::from_secs(self.config.timeout_seconds);
@@ -462,6 +443,17 @@ impl WebBroker {
                 return Err("web request cancelled before dispatch".into());
             }
             let uri = self.validate_url(&current)?;
+            let host = host_name(&uri);
+            if !reaches(&host) {
+                return Err(if hop == 0 {
+                    format!("web.fetch refused: {host} is not an allowed host")
+                } else {
+                    format!(
+                        "web.fetch refused: the page redirected to {host}, which is not an allowed \
+                         host; fetch {current} to ask for it"
+                    )
+                });
+            }
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero())
@@ -518,9 +510,7 @@ impl WebBroker {
 
     fn search_inner(&self, query: &str, token: &CancellationToken) -> Result<SearchResult, String> {
         if !self.config.enabled {
-            return Err(
-                "web tools are disabled; enable [web].enabled in host configuration".into(),
-            );
+            return Err("web tools are off; `web.enabled` turns them on".into());
         }
         if query.trim().is_empty() || query.len() > 4096 {
             return Err("web search query must be 1..4096 bytes".into());
@@ -541,7 +531,7 @@ impl WebBroker {
         if token.is_cancelled() {
             return Err("web request cancelled before dispatch".into());
         }
-        self.validate_destination(url)?;
+        self.validate_url(url)?;
         let response = self.transport.get_with_headers(
             url,
             headers,
@@ -571,6 +561,14 @@ impl Drop for WebBroker {
             let _ = worker.join();
         }
     }
+}
+
+/// A URI's host as the policy compares it: lower case, IPv6 brackets off.
+fn host_name(uri: &Uri) -> String {
+    uri.host()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase()
 }
 
 fn domain_matches(pattern: &str, host: &str) -> bool {

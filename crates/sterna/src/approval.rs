@@ -99,6 +99,11 @@ pub enum Decision {
     AllowHostAlways,
 }
 
+/// The action name a fetch to a host outside the allowed list is asked
+/// under: not a registry tool, and leaving the sandbox the way a command's
+/// `outside` is ([`crate::permissions::outside_reason`]).
+pub const WEB_FETCH: &str = "web.fetch";
+
 /// What the gate answered for one call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {
@@ -318,9 +323,13 @@ impl Action {
                 .unwrap_or(path)
                 .to_string()
         };
-        match (self.arguments.get("path"), self.arguments.get("command")) {
-            (Some(path), _) => relative(path),
-            (_, Some(command)) => {
+        match (
+            self.arguments.get("path"),
+            self.arguments.get("command"),
+            self.arguments.get("url"),
+        ) {
+            (Some(path), _, _) => relative(path),
+            (_, Some(command), _) => {
                 let line = command.lines().next().unwrap_or_default();
                 let short: String = line.chars().take(60).collect();
                 let more = if short.len() < command.len() {
@@ -330,6 +339,7 @@ impl Action {
                 };
                 format!("{short}{more}")
             }
+            (_, _, Some(url)) => url.clone(),
             _ => String::new(),
         }
     }
@@ -513,6 +523,12 @@ impl Gate {
         self
     }
 
+    /// The session's one list of allowed hosts, which the proxy, `web.fetch`
+    /// and the hosts sheet share, when this gate was given it.
+    pub fn allowed_hosts(&self) -> Option<crate::sandbox::proxy::Allowed> {
+        self.hosts.as_ref().map(|hosts| hosts.allowed.clone())
+    }
+
     /// The level this gate is judging on, shared with whatever changes it.
     pub fn level(&self) -> &crate::permissions::LiveLevel {
         &self.level
@@ -607,9 +623,16 @@ impl Gate {
         }
         // Every command takes the refusals before it, answered or not; see
         // [`Hosts`]. Unattended, nobody could allow one, and the run's end
-        // names them instead (`startup::refused_hosts`).
+        // names them instead (`startup::refused_hosts`). A fetch names its
+        // one host itself.
         let refused = match &self.hosts {
             Some(hosts) if action.tool() == "bash" && !self.level.is_unattended() => hosts.take(),
+            Some(_) if action.tool() == WEB_FETCH => action
+                .arguments()
+                .get("host")
+                .cloned()
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         };
         if let Some(answer) = self.judged.answer(&action) {

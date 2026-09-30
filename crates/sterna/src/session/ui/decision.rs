@@ -415,9 +415,18 @@ fn approval_items(
         .then(|| "Too large to confirm here: deny it and ask for a smaller call.".to_string());
     // A refused host is offered first: letting one host through keeps the
     // command inside the sandbox, where letting the command out does not.
+    // A fetch has no sandbox to leave, only its host to reach.
+    let fetch = action.tool() == crate::approval::WEB_FETCH;
     if !hosts.is_empty() {
         let names = hosts.join(", ");
-        items.push(Item::info(format!("The sandbox refused {names}.")).tone(Tone::Strong));
+        items.push(
+            Item::info(if fetch {
+                format!("{names} is not an allowed host.")
+            } else {
+                format!("The sandbox refused {names}.")
+            })
+            .tone(Tone::Strong),
+        );
         items.push(
             Item::run(
                 "allow-host",
@@ -426,7 +435,11 @@ fn approval_items(
             )
             .key('h')
             .inline()
-            .detail("Runs the command again inside the sandbox, with this host let through.")
+            .detail(if fetch {
+                "Fetches the page, and lets this host through for the rest of the session."
+            } else {
+                "Runs the command again inside the sandbox, with this host let through."
+            })
             .disabled(too_large.clone()),
         );
         items.push(
@@ -444,7 +457,7 @@ fn approval_items(
     items.push(
         Item::run(
             "allow-once",
-            if hosts.is_empty() {
+            if hosts.is_empty() || fetch {
                 "Allow once"
             } else {
                 "Allow once, outside the sandbox"
@@ -453,7 +466,9 @@ fn approval_items(
         )
         .key('o')
         .inline()
-        .detail(if hosts.is_empty() {
+        .detail(if fetch {
+            "Fetches this page. The next page from this host asks again."
+        } else if hosts.is_empty() {
             "Runs this call. The next identical call asks again."
         } else {
             "Runs the command outside the sandbox, this once."
@@ -960,6 +975,52 @@ mod tests {
         );
         assert_eq!(admitted.join().unwrap(), Admission::HostsAllowed);
         assert!(allowed.permits("registry.example.org"));
+    }
+
+    /// A fetch to a host outside the list asks the same question in a
+    /// fetch's words: the host is not allowed, nothing leaves a sandbox, and
+    /// "once" fetches this page without adding the host.
+    #[test]
+    fn a_fetch_to_a_new_host_is_asked_in_a_fetchs_words() {
+        let allowed = crate::sandbox::proxy::Allowed::new(&[], &[]);
+        let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+        let gate = gate.with_hosts(crate::approval::Hosts::new(allowed.clone(), Vec::new));
+        let arguments = [
+            ("url", "https://docs.rs/ratatui"),
+            ("host", "docs.rs"),
+            (
+                crate::permissions::OUTSIDE,
+                "fetches from docs.rs, which is not an allowed host",
+            ),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let action = crate::approval::Action::new(
+            crate::approval::WEB_FETCH,
+            std::path::Path::new("/tmp/root"),
+            arguments,
+        );
+        let admitted = std::thread::spawn(move || gate.admit(action, || false));
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the person is asked");
+        let mut prompts = armed_with(request);
+        let text = screen(&mut prompts);
+        for shown in [
+            "REACH A NEW HOST",
+            "docs.rs is not an allowed host.",
+            "h · Allow docs.rs for this session",
+            "w · Always allow docs.rs",
+            "o · Allow once",
+        ] {
+            assert!(text.contains(shown), "{shown} is missing:\n{text}");
+        }
+        assert!(!text.contains("outside the sandbox"), "{text}");
+        assert!(!text.contains("The sandbox refused"), "{text}");
+        press(&mut prompts, KeyCode::Char('o'));
+        assert_eq!(admitted.join().unwrap(), Admission::Allowed);
+        assert!(!allowed.permits("docs.rs"), "once is not the list");
     }
 
     /// With no refused host the same call is "leave the sandbox", with the

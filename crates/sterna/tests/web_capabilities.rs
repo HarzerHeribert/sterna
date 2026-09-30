@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use sterna::web::{WebBroker, WebConfig, WebResponse, WebTransport, public_ip};
+use sterna::sandbox::proxy::Allowed;
+use sterna::web::{Reaches, WebBroker, WebConfig, WebResponse, WebTransport, public_ip};
 
 struct Fake {
     replies: Mutex<VecDeque<WebResponse>>,
@@ -37,50 +38,78 @@ fn broker(config: WebConfig, replies: Vec<WebResponse>) -> (WebBroker, Arc<Mutex
         urls,
     )
 }
-/// Enabled with `example.com` allowed: since map 2656 an empty allow list
-/// refuses every fetch, so a fixture that fetches names its domain.
+/// The broker as it ships: on.
 fn enabled() -> WebConfig {
-    WebConfig {
-        enabled: true,
-        allow_domains: vec!["example.com".into(), "*.example.com".into()],
-        ..WebConfig::default()
-    }
+    WebConfig::default()
 }
 
-/// **Map 2656: refused until a domain is allowed.** Enabled with nothing
-/// allowed, a fetch is refused by a sentence naming the setting, and the
-/// transport is never asked — an empty list is not "everything".
+/// What a session reaches without asking, from `sandbox.hosts`-style
+/// entries -- the same list, and the same matching, the proxy uses.
+fn reaching(hosts: &[&str]) -> Reaches {
+    let hosts: Vec<String> = hosts.iter().map(|host| (*host).to_string()).collect();
+    let allowed = Allowed::new(&[], &hosts);
+    Arc::new(move |host: &str| allowed.permits(host))
+}
+
+/// `example.com` and its subdomains, allowed.
+fn allowed() -> Reaches {
+    reaching(&["example.com", "*.example.com"])
+}
+
+/// **On by default, and a host outside the allowed list is refused before
+/// the transport is asked**, by a sentence naming the host -- the session
+/// asks the person first, and only a refused host reaches this. An allowed
+/// host is reached.
 #[test]
-fn an_empty_allow_list_refuses_every_fetch_and_names_the_setting() {
-    let config = WebConfig {
-        enabled: true,
-        ..WebConfig::default()
-    };
-    assert!(!config.fetch_configured());
-    assert!(
-        !config.configured(),
-        "nothing is configured, so `web` does not exist"
-    );
+fn a_host_outside_the_allowed_list_is_refused_before_any_request() {
+    let config = WebConfig::default();
+    assert!(config.configured(), "web is on by default");
     let (web, urls) = broker(config, vec![response(200, "text/plain", "never", None)]);
-    let refusal = web.fetch("https://example.com").unwrap_err();
+    let refusal = web.fetch("https://other.org", &allowed()).unwrap_err();
     assert!(
-        refusal.contains("no domain is allowed") && refusal.contains("allow_domains"),
+        refusal.contains("other.org is not an allowed host"),
         "{refusal}"
     );
     assert!(urls.lock().unwrap().is_empty(), "the transport was asked");
-    // And the same list with one domain reaches it.
     let (web, urls) = broker(enabled(), vec![response(200, "text/plain", "ok", None)]);
-    assert_eq!(web.fetch("https://example.com").unwrap().content, "ok");
+    assert_eq!(
+        web.fetch("https://example.com", &allowed())
+            .unwrap()
+            .content,
+        "ok"
+    );
+    assert_eq!(urls.lock().unwrap().len(), 1);
+}
+
+/// A redirect to a host nobody allowed is not followed: the refusal names
+/// the URL, so asking for it is the model's next fetch rather than a
+/// question in the middle of a redirect.
+#[test]
+fn a_redirect_to_a_host_nobody_allowed_is_refused_with_the_url_to_ask_for() {
+    let (web, urls) = broker(
+        enabled(),
+        vec![response(302, "", "", Some("https://other.org/page"))],
+    );
+    let refusal = web.fetch("https://example.com", &allowed()).unwrap_err();
+    assert!(
+        refusal.contains("redirected to other.org")
+            && refusal.contains("fetch https://other.org/page"),
+        "{refusal}"
+    );
     assert_eq!(urls.lock().unwrap().len(), 1);
 }
 
 #[test]
 fn disabled_and_unconfigured_search_do_not_touch_transport() {
-    let (web, urls) = broker(WebConfig::default(), vec![]);
+    let off = WebConfig {
+        enabled: false,
+        ..WebConfig::default()
+    };
+    let (web, urls) = broker(off, vec![]);
     assert!(
-        web.fetch("https://example.com")
+        web.fetch("https://example.com", &allowed())
             .unwrap_err()
-            .contains("disabled")
+            .contains("web tools are off")
     );
     assert!(urls.lock().unwrap().is_empty());
     let (web, urls) = broker(enabled(), vec![]);
@@ -95,19 +124,26 @@ fn disabled_and_unconfigured_search_do_not_touch_transport() {
 #[test]
 fn domain_deny_wins_and_wildcards_require_boundary() {
     let config = WebConfig {
-        allow_domains: vec!["*.example.com".into()],
         deny_domains: vec!["secret.example.com".into()],
         ..enabled()
     };
-    let (web, _) = broker(config, vec![]);
+    let (web, urls) = broker(config, vec![]);
     assert!(web.validate_url("https://docs.example.com/a").is_ok());
-    for url in [
-        "https://example.com",
-        "https://fakeexample.com",
-        "https://secret.example.com",
-        "https://docs.example.com.evil.com",
+    assert!(web.validate_url("https://secret.example.com").is_err());
+    // Denied even where the allowed hosts would reach it.
+    assert!(
+        web.fetch("https://secret.example.com", &reaching(&["*.example.com"]))
+            .is_err()
+    );
+    assert!(urls.lock().unwrap().is_empty());
+    let subdomains = reaching(&["*.example.com"]);
+    assert!(subdomains("docs.example.com"));
+    for host in [
+        "example.com",
+        "fakeexample.com",
+        "docs.example.com.evil.com",
     ] {
-        assert!(web.validate_url(url).is_err(), "{url}");
+        assert!(!subdomains(host), "{host}");
     }
 }
 
@@ -127,7 +163,7 @@ fn private_literals_credentials_and_non_http_schemes_are_rejected() {
         "https://[::ffff:127.0.0.1]",
         "https://example.com./",
     ] {
-        assert!(web.fetch(url).is_err(), "{url}");
+        assert!(web.fetch(url, &allowed()).is_err(), "{url}");
     }
     assert!(urls.lock().unwrap().is_empty());
 }
@@ -172,7 +208,7 @@ fn redirects_recheck_policy_before_second_request() {
             ..enabled()
         };
         let (web, urls) = broker(config, vec![response(302, "", "", Some(destination))]);
-        assert!(web.fetch("https://example.com").is_err());
+        assert!(web.fetch("https://example.com", &allowed()).is_err());
         assert_eq!(urls.lock().unwrap().len(), 1);
     }
 }
@@ -186,7 +222,9 @@ fn relative_redirect_returns_final_citation_and_untrusted_text() {
             response(200, "text/html; charset=utf-8", "<h1>Hello</h1>", None),
         ],
     );
-    let result = web.fetch("https://example.com/docs/start").unwrap();
+    let result = web
+        .fetch("https://example.com/docs/start", &allowed())
+        .unwrap();
     assert_eq!(result.citation, "https://example.com/docs/next");
     assert!(result.untrusted_content);
     assert_eq!(result.content, "<h1>Hello</h1>");
@@ -202,7 +240,7 @@ fn excessive_redirects_large_responses_nontext_and_http_errors_fail() {
             .collect(),
     );
     assert!(
-        web.fetch("https://example.com")
+        web.fetch("https://example.com", &allowed())
             .unwrap_err()
             .contains("redirect limit")
     );
@@ -215,19 +253,19 @@ fn excessive_redirects_large_responses_nontext_and_http_errors_fail() {
         vec![response(200, "text/plain", "large", None)],
     );
     assert!(
-        web.fetch("https://example.com")
+        web.fetch("https://example.com", &allowed())
             .unwrap_err()
             .contains("byte limit")
     );
     let (web, _) = broker(enabled(), vec![response(200, "image/png", "png", None)]);
     assert!(
-        web.fetch("https://example.com")
+        web.fetch("https://example.com", &allowed())
             .unwrap_err()
             .contains("content type")
     );
     let (web, _) = broker(enabled(), vec![response(403, "text/plain", "denied", None)]);
     assert!(
-        web.fetch("https://example.com")
+        web.fetch("https://example.com", &allowed())
             .unwrap_err()
             .contains("HTTP 403")
     );
@@ -235,8 +273,9 @@ fn excessive_redirects_large_responses_nontext_and_http_errors_fail() {
 
 #[test]
 fn configured_search_encodes_query_and_returns_filtered_citations() {
-    // No allow list: the endpoint is reached by being configured, and the
-    // hits answer to the deny list and the private-address rule only.
+    // The endpoint is reached by being configured, and the hits answer to
+    // the deny list and the private-address rule only: a hit from a host
+    // nobody allowed is kept, and fetching it asks.
     let config = WebConfig {
         enabled: true,
         search_endpoint: Some("https://search.example.com/search".into()),
@@ -279,7 +318,7 @@ fn config_rejects_misspellings_and_unbounded_values() {
     );
     assert!(
         WebBroker::new(WebConfig {
-            allow_domains: vec!["https://example.com".into()],
+            deny_domains: vec!["https://example.com".into()],
             ..enabled()
         })
         .is_err()
@@ -305,7 +344,7 @@ fn cancellable_fetch_never_dispatches_after_pre_cancel_or_redirect_cancel() {
     let (web, urls) = broker(enabled(), vec![]);
     token.cancel();
     assert!(
-        web.fetch_cancellable("https://example.com", &token)
+        web.fetch_cancellable("https://example.com", &token, allowed())
             .is_err()
     );
     assert!(urls.lock().unwrap().is_empty());
@@ -320,7 +359,7 @@ fn cancellable_fetch_never_dispatches_after_pre_cancel_or_redirect_cancel() {
     )
     .unwrap();
     assert!(
-        web.fetch_cancellable("https://example.com", &token)
+        web.fetch_cancellable("https://example.com", &token, allowed())
             .is_err()
     );
     drop(web); // joins the bounded worker, so a late second request is observable
@@ -361,7 +400,7 @@ fn cancellation_returns_promptly_and_drop_reaps_inflight_worker() {
     )
     .unwrap();
     assert!(
-        web.fetch_cancellable("https://example.com", &token)
+        web.fetch_cancellable("https://example.com", &token, allowed())
             .is_err()
     );
     assert!(

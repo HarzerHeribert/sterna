@@ -8,13 +8,25 @@ network on every platform ([sandbox](sandbox.md)). Code:
 
 ## Configuration
 
-Off until you turn it on, and a fetch reaches only domains you allowed:
+On by default. A fetch reaches the allowed hosts at once and asks before
+any other:
+
+- **The allowed hosts** are one list for commands and the web: the package
+  registries and source hosts of the ecosystems switched on, your own
+  `sandbox.hosts`, and each `--allow-host`
+  ([sandbox](sandbox.md#allowed-hosts)).
+- **Any other host asks**, the way leaving the sandbox does: *Reach a new
+  host*, with *Allow host for this session*, *Always allow host* (saved to
+  the global `sandbox.hosts`), *Allow once* for this page only, or a
+  refusal. At Full access nothing asks. With nobody at the terminal
+  (`sterna -p`, a subagent) the fetch is refused and says so.
+- A redirect to a host that is not allowed is not followed: the refusal
+  names the URL, and fetching it asks.
 
 ```toml
 [web]
-enabled = true
-allow_domains = ["docs.rs", "*.python.org"]   # empty refuses every fetch
-deny_domains = ["private.docs.example.org"]    # deny wins
+enabled = true                                 # the default; false turns both tools off
+deny_domains = ["private.docs.example.org"]    # never reached, whatever is allowed
 search_provider = "searxng"                    # or "brave"
 search_endpoint = "https://search.example.org/search"
 # search_key_var = "BRAVE_API_KEY"             # a variable NAME, for a keyed provider
@@ -27,12 +39,16 @@ timeout_seconds = 20
 - Search needs a provider you configure: a SearXNG-compatible JSON
   endpoint, or Brave with its key. The key is read by name from the
   environment, then from the gateway's credential file — never written in a
-  project file. With no provider, `web.search` is not offered.
+  project file. With no provider, `web.search` refuses and says so.
 - A destination you configured yourself (the search endpoint, a remote MCP
   server) is reached because you configured it; the deny list still wins.
+- An older `web.allow_domains` in your global settings moves into
+  `sandbox.hosts` once, with a notice; a project's is removed, because a
+  project cannot allow hosts.
 
-`web` is declared to the model only when `[web]` is configured, together
-with the domains it may name.
+`web` is declared to the model while it is on. The declaration says how a
+fetch reaches a host, not which hosts: the list grows as you allow them,
+and a list in the prompt would throw its cache away each time.
 
 ## In a cell
 
@@ -49,8 +65,8 @@ instruction.
 
 ## What the broker checks
 
-Every request and every redirect (at most five) against the domain policy;
-the resolved address against private, loopback and link-local ranges, at
-connect time; the content type and size. Ambient HTTP proxies and
+Every request and every redirect (at most five) against the deny list and
+the allowed hosts; the resolved address against private, loopback and
+link-local ranges, at connect time; the content type and size. Ambient HTTP proxies and
 credentials are not used. Cancelling stops waiting and stops further
 redirects; a request already sent may finish within its timeout.

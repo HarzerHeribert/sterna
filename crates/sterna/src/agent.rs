@@ -102,6 +102,10 @@ pub struct AgentOptions {
     /// this copy is what lets the loop stop between turns and *say* that time
     /// ran out rather than reporting a bare cancellation.
     pub deadline: Option<std::time::Duration>,
+    /// The session's allowed hosts, live, so a host the person let through
+    /// reaches the subagent's `web.fetch` too. `None` leaves it none: a
+    /// subagent has nobody to ask, so its fetches reach only allowed hosts.
+    pub hosts: Option<crate::sandbox::proxy::Allowed>,
 }
 
 /// What a running subagent has done so far, for a parent that looks in.
@@ -287,6 +291,9 @@ fn run_subagent(
         Ok(runtime) => runtime,
         Err(error) => return finish(&error, "failed", 0, 0, Vec::new()),
     };
+    if let Some(hosts) = &options.hosts {
+        runtime = runtime.with_hosts(hosts.clone());
+    }
     let mut tokens = 0u64;
     let mut trajectory: Vec<String> = Vec::new();
     let started = std::time::Instant::now();
@@ -870,6 +877,7 @@ mod tests {
             model: "m".into(),
             effort: Effort::default(),
             deadline: None,
+            hosts: None,
         };
         let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(3600);
         assert!(
@@ -900,6 +908,7 @@ mod tests {
             model: "m".into(),
             effort: Effort::default(),
             deadline: Some(std::time::Duration::from_millis(1)),
+            hosts: None,
         };
         let token = CancellationToken::new();
         token.cancel();
@@ -931,6 +940,7 @@ mod tests {
             deadline: Some(std::time::Duration::from_secs(3600)),
             model: "m".to_string(),
             effort: crate::wire::Effort::default(),
+            hosts: None,
         };
         let token = CancellationToken::new();
         token.cancel_for_deadline();

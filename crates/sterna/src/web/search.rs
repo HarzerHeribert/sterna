@@ -2,9 +2,11 @@
 //! the model can read.
 //!
 //! **The invariant: a search answers with bounded excerpts that carry their
-//! source URLs, every hit re-validated against the domain policy, and the
-//! provider's key reaches only the request header** — from the process
-//! environment first and the gateway's credential file second (map 2657),
+//! source URLs, every hit re-validated against the deny list and the
+//! private-address rule (a hit from a host nobody allowed stays, and
+//! fetching it asks), and the provider's key reaches only the request
+//! header** — from the process environment first and the gateway's
+//! credential file second (map 2657),
 //! never `.sterna/config.toml`, argv, the rollout or a refusal. `brave` is the
 //! keyed provider built first (plain HTTPS, one header); `searxng` stays as
 //! the keyless one, a self-hosted endpoint. A provider the configuration

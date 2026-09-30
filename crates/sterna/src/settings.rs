@@ -256,6 +256,9 @@ impl Store {
                 if let Some(now) = registry::moved_key(&retired.key) {
                     return self.move_key(retired, &now);
                 }
+                if retired.key == WEB_HOSTS && retired.scope == Scope::Global {
+                    return self.move_web_hosts(retired);
+                }
                 // A value saved in a setting's old kind is rewritten in
                 // place, in the file it was found in.
                 if let Some(now) = registry::migrated_value(&retired.key, &retired.word) {
@@ -338,6 +341,30 @@ impl Store {
                 )
             })
             .collect()
+    }
+
+    /// Moves a global `web.allow_domains` into `sandbox.hosts`, beside the
+    /// hosts already there, and says so once.
+    fn move_web_hosts(&self, retired: &Retired) -> String {
+        let written = self.read(retired.scope).and_then(|snapshot| {
+            let hosts = |table: &str, key: &str| snapshot.values.get(table)?.get(key).cloned();
+            let mut edits = vec![(WEB_HOSTS.to_string(), None)];
+            if let Some(web) = hosts("web", "allow_domains") {
+                let merged = union_lists(hosts("sandbox", "hosts").as_ref(), &web);
+                edits.push((SANDBOX_HOSTS.to_string(), Some(merged.to_string())));
+            }
+            self.save(retired.scope, &snapshot, &edits)
+        });
+        format!(
+            "`{WEB_HOSTS} = {}` is part of `{SANDBOX_HOSTS}` now: one list of hosts commands and \
+             web.fetch reach without asking{}; /sandbox shows it.",
+            retired.word,
+            if written.is_ok() {
+                ", and your hosts were moved there"
+            } else {
+                ""
+            },
+        )
     }
 
     /// Writes a moved setting's saved value under `now` and takes the old
@@ -1332,8 +1359,14 @@ fn parse_document(path: &Path, text: &str, scope: Scope) -> Result<Parsed, Strin
                 let value = parsed.flat.remove(key);
                 // A moved key's value is read under its new name, unless the
                 // file already says something there.
-                if let (Some(now), Some(value)) = (registry::moved_key(key), value) {
+                if let (Some(now), Some(value)) = (registry::moved_key(key), value.clone()) {
                     parsed.flat.entry(now).or_insert(value);
+                }
+                // A global `web.allow_domains` joins the one host list
+                // (`remove_retired` writes it there); a project's cannot.
+                if let (true, Some(value)) = (scope == Scope::Global && key == WEB_HOSTS, value) {
+                    let merged = union_lists(parsed.flat.get(SANDBOX_HOSTS), &value);
+                    parsed.flat.insert(SANDBOX_HOSTS.to_string(), merged);
                 }
             }
         }
@@ -1459,7 +1492,6 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ),
         ("web.enabled", toml::Value::Boolean(web.enabled)),
         ("web.allow_http", toml::Value::Boolean(web.allow_http)),
-        ("web.allow_domains", toml::Value::Array(Vec::new())),
         ("web.deny_domains", toml::Value::Array(Vec::new())),
         (
             "web.max_response_bytes",
@@ -1481,6 +1513,10 @@ fn defaults() -> Vec<(&'static str, toml::Value)> {
         ),
     ]
 }
+
+/// The retired web allow list, and the one host list it joined.
+const WEB_HOSTS: &str = "web.allow_domains";
+const SANDBOX_HOSTS: &str = "sandbox.hosts";
 
 fn union_lists(existing: Option<&toml::Value>, addition: &toml::Value) -> toml::Value {
     let mut items: Vec<toml::Value> = existing

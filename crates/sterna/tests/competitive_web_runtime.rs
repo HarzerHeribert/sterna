@@ -52,14 +52,16 @@ fn web_is_declared_to_the_parent() {
 }
 
 #[test]
-fn web_configuration_is_explicit_and_rejects_unknown_fields() {
-    let config = sterna::config::SternaConfig::parse(
-        "[web]\nenabled = true\nallow_domains = ['example.com']\n",
-    )
-    .unwrap();
-    assert!(config.web.enabled);
-    assert!(!sterna::config::SternaConfig::default().web.enabled);
+fn web_is_on_by_default_and_the_configuration_rejects_unknown_fields() {
+    assert!(sterna::config::SternaConfig::default().web.enabled);
+    let config = sterna::config::SternaConfig::parse("[web]\nenabled = false\n").unwrap();
+    assert!(!config.web.enabled);
     assert!(sterna::config::SternaConfig::parse("[web]\nallow_everything = true\n").is_err());
+    // The allowed hosts are `sandbox.hosts` now; the settings store moves an
+    // old `allow_domains` there before `[web]` is ever parsed.
+    assert!(
+        sterna::config::SternaConfig::parse("[web]\nallow_domains = ['example.com']\n").is_err()
+    );
 }
 
 struct FixtureTransport;
@@ -88,10 +90,6 @@ fn native_cells_can_search_then_fetch_and_retain_source_provenance() {
     let root = std::env::current_dir().unwrap();
     let broker = sterna::web::WebBroker::with_transport(
         sterna::web::WebConfig {
-            enabled: true,
-            // The fixture's domain, so the fetch after the search is allowed:
-            // this test is about provenance, not the allow list.
-            allow_domains: vec!["example.com".into()],
             search_endpoint: Some("https://example.com/search".into()),
             ..Default::default()
         },
@@ -102,7 +100,13 @@ fn native_cells_can_search_then_fetch_and_retain_source_provenance() {
         &Profile::compile(&root, None),
         &SessionId::new("web-integrated"),
     )
-    .with_web_broker(broker);
+    .with_web_broker(broker)
+    // The fixture's host, so the fetch after the search is allowed: this
+    // test is about provenance, not about asking for a host.
+    .with_hosts(sterna::sandbox::proxy::Allowed::new(
+        &[],
+        &["example.com".to_string()],
+    ));
     let first = runtime.run_cell("const found = web.search('fixture'); const source = web.fetch(found.results[0].url); return source.content + ' ' + source.citation;");
     match first {
         CellOutcome::Returned { value, turn, .. } => {

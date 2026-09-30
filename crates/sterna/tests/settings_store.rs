@@ -1015,14 +1015,14 @@ fn typed_values_are_parsed_without_toml_quoting() {
         toml::Value::Integer(12)
     );
     assert_eq!(
-        registry::validate("web.allow_domains", "example.org, *.example.net").expect("list"),
+        registry::validate("web.deny_domains", "example.org, *.example.net").expect("list"),
         toml::Value::Array(vec![
             toml::Value::String("example.org".into()),
             toml::Value::String("*.example.net".into()),
         ])
     );
     assert_eq!(
-        registry::validate("web.allow_domains", "[\"example.org\"]").expect("array literal"),
+        registry::validate("web.deny_domains", "[\"example.org\"]").expect("array literal"),
         toml::Value::Array(vec![toml::Value::String("example.org".into())])
     );
     // The runtime parser owns the ranges, the model rules and the domains.
@@ -1041,7 +1041,7 @@ fn typed_values_are_parsed_without_toml_quoting() {
     );
     assert!(registry::validate("limits.cells", "1001").is_err());
     assert!(registry::validate("limits.cells", "many").is_err());
-    assert!(registry::validate("web.allow_domains", "not a domain").is_err());
+    assert!(registry::validate("web.deny_domains", "not a domain").is_err());
     assert!(registry::validate("model.parent", "/etc/passwd").is_err());
     assert!(registry::validate("agents.slots.quick.effort", "auto").is_err());
     assert!(registry::validate("ui.theme", "chartreuse").is_err());
@@ -1272,6 +1272,91 @@ fn a_profile_overlay_with_helper_settings_still_loads() {
     // base file's value still stands.
     let base = store.load(None).expect("loads");
     assert!(base.config.decisions.reduce_returns, "{text}");
+}
+
+/// A global `web.allow_domains` joins `sandbox.hosts`, beside the hosts
+/// already there: one list of hosts commands and `web.fetch` reach without
+/// asking. It is read there from the first start, written there once and
+/// said once.
+#[test]
+fn a_global_web_allow_list_joins_the_one_host_list() {
+    let temp = Temp::new("migrate-web-hosts");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Global),
+        "[sandbox]\nhosts = [\"api.example.com\"]\n\n[web]\nallow_domains = [\"docs.rs\", \"*.python.org\"]\n",
+    );
+    let hosts = |loaded: &sterna::settings::Loaded| -> Vec<String> {
+        loaded.values["sandbox"]["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|host| host.as_str().unwrap().to_string())
+            .collect()
+    };
+    let loaded = store
+        .load(None)
+        .expect("a file naming web.allow_domains still loads");
+    assert_eq!(
+        hosts(&loaded),
+        ["api.example.com", "docs.rs", "*.python.org"]
+    );
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.starts_with("`web.allow_domains = ")
+                && notice.contains("is part of `sandbox.hosts` now")
+                && notice.contains("your hosts were moved there")),
+        "{notices:?}"
+    );
+    let text = read(&store.path(Scope::Global));
+    assert!(!text.contains("allow_domains"), "{text}");
+    let after = store.load(None).expect("loads");
+    assert!(after.retired.is_empty(), "said once: {:?}", after.retired);
+    assert_eq!(
+        hosts(&after),
+        ["api.example.com", "docs.rs", "*.python.org"]
+    );
+}
+
+/// A project cannot allow hosts, so its `web.allow_domains` is removed,
+/// never moved, and the notice says how a host is allowed now.
+#[test]
+fn a_project_web_allow_list_is_retired_not_moved() {
+    let temp = Temp::new("migrate-web-hosts-project");
+    let store = temp.store();
+    write(
+        &store.path(Scope::Local),
+        "[web]\nallow_domains = [\"docs.rs\"]\n",
+    );
+    let loaded = store.load(None).expect("loads");
+    let hosts = loaded
+        .values
+        .get("sandbox")
+        .and_then(|sandbox| sandbox.get("hosts"))
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !hosts.contains(&toml::Value::String("docs.rs".into())),
+        "a project widened the allowed hosts: {hosts:?}"
+    );
+    let notices = store.remove_retired(&loaded);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.starts_with("`web.allow_domains = ")
+                && notice.contains("Sterna asks when a fetch needs a new host")),
+        "{notices:?}"
+    );
+    assert!(!read(&store.path(Scope::Local)).contains("allow_domains"));
+    assert!(
+        !std::fs::read_to_string(store.path(Scope::Global))
+            .unwrap_or_default()
+            .contains("docs.rs"),
+        "a project's hosts reached the global settings"
+    );
 }
 
 /// The threshold that checked each cell against the model's to-do list went

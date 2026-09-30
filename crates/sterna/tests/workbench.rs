@@ -3085,13 +3085,13 @@ fn a_setting_named_after_the_command_is_where_settings_opens() {
 #[test]
 fn a_pasted_list_replaces_the_field_one_entry_a_line() {
     let (_t, mut s, mut p) = prefs();
-    p.save("web.allow_domains", Some("old.example".into()), &mut s)
+    p.save("web.deny_domains", Some("old.example".into()), &mut s)
         .unwrap();
     p.category = 3;
     let row = p
         .rows()
         .iter()
-        .position(|spec| spec.key == "web.allow_domains")
+        .position(|spec| spec.key == "web.deny_domains")
         .unwrap();
     let mut u = Workbench::default();
     u.open(Source::Settings(Box::new(p)));
@@ -3101,7 +3101,7 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
     u.top_mut()
         .unwrap()
         .sheet
-        .focus_id("setting:web.allow_domains");
+        .focus_id("setting:web.deny_domains");
     key(&mut u, &mut s, &n, KeyCode::Enter);
     draw(&c, &n, &s, &mut u, 110, 60);
     u.event(
@@ -3117,7 +3117,7 @@ fn a_pasted_list_replaces_the_field_one_entry_a_line() {
         .sheet
         .items
         .iter()
-        .find(|item| item.id == "setting:web.allow_domains")
+        .find(|item| item.id == "setting:web.deny_domains")
         .unwrap()
         .clone();
     let workbench::ItemKind::Field(field) = &item.kind else {
@@ -4838,7 +4838,7 @@ fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
 /// The allowed hosts are one sheet away from the Sandbox sheet: every
 /// ecosystem is a switch, the person's own hosts can be added (a pasted URL
 /// is refused, not half-allowed) and removed, each change is saved to the
-/// global settings, and it reaches the running proxy's list at once.
+/// global settings, and it reaches the session's live list at once.
 #[test]
 fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     use sterna::sandbox::proxy::{Allowed, ECOSYSTEMS};
@@ -4856,7 +4856,10 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     click_item(&mut u, &mut s, &n, "sandbox:hosts");
     let screen = text(&draw(&c, &n, &s, &mut u, 120, 60));
     assert!(screen.contains("ALLOWED HOSTS"), "{screen}");
-    assert!(screen.contains("apply to the next command"), "{screen}");
+    assert!(
+        screen.contains("apply at once, to commands and fetches"),
+        "{screen}"
+    );
     for ecosystem in ECOSYSTEMS {
         assert!(
             screen.contains(ecosystem.label),
@@ -4911,8 +4914,8 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     assert!(saved().contains("hosts = []"), "{}", saved());
 }
 
-/// With no proxy running, the sheet says a change waits for the next
-/// session, and still saves it.
+/// With no live list -- a surface outside a session -- the sheet says a
+/// change waits for the next session, and still saves it.
 #[test]
 fn the_hosts_sheet_says_when_a_change_applies_without_a_proxy() {
     let (_t, mut s, _) = prefs();

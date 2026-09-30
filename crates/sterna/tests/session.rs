@@ -1599,6 +1599,8 @@ fn expected_system_block(root: &std::path::Path) -> String {
     }
     let config = sterna::config::SternaConfig::default();
     let manifest = sterna::session::system_manifest(&profile, &config);
+    // Web is on by default, so the default session declares it.
+    let web = sterna::prompt::declarations::WebReach::from_config(&config.web);
     let agents = sterna::prompt::declarations::AgentRoster {
         posture: sterna::prompt::declarations::AgentsPosture::Off,
         models: Vec::new(),
@@ -1613,7 +1615,7 @@ fn expected_system_block(root: &std::path::Path) -> String {
         ),
         sterna::runtime::bindings::HostGlobals::Every,
         sterna::prompt::Reach {
-            web: None,
+            web: web.as_ref(),
             agents: Some(&agents),
             decisions: false,
         },

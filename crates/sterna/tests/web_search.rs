@@ -78,7 +78,7 @@ fn brave_body(long_description: &str) -> String {
         r#"{{"type":"search","query":{{"original":"rust tools","show_strict_warning":false}},
 "web":{{"type":"search","results":[
 {{"title":"Rust tools","url":"https://example.com/tools","is_source_local":false,"description":"Tooling for Rust.","page_age":"2026-01-01","profile":{{"name":"example"}},"language":"en","family_friendly":true,"type":"search_result","subtype":"generic","meta_url":{{"scheme":"https","netloc":"example.com"}}}},
-{{"title":"Elsewhere","url":"https://other.org/rust","description":"Not an allowed domain."}},
+{{"title":"Elsewhere","url":"https://other.org/rust","description":"A denied domain."}},
 {{"title":"No source","description":"a hit with no url"}},
 {{"title":"Long","url":"https://example.com/long","description":"{long_description}"}}
 ],"family_friendly":true}}}}"#
@@ -87,8 +87,7 @@ fn brave_body(long_description: &str) -> String {
 
 fn brave_config(key_var: &str) -> WebConfig {
     WebConfig {
-        enabled: true,
-        allow_domains: vec!["example.com".into()],
+        deny_domains: vec!["other.org".into()],
         search_provider: Some("brave".into()),
         search_key_var: Some(key_var.into()),
         ..WebConfig::default()
@@ -103,7 +102,7 @@ fn var(label: &str) -> String {
 
 /// **The contract.** The query goes in the URL and the key in the
 /// `X-Subscription-Token` header; the answer names its provider; hits
-/// outside the domain policy and hits with no URL are dropped; a snippet is
+/// on a denied host and hits with no URL are dropped; a snippet is
 /// bounded; the citations are the surviving URLs.
 #[test]
 fn brave_sends_the_key_in_the_header_and_answers_with_sourced_bounded_excerpts() {
@@ -139,7 +138,7 @@ fn brave_sends_the_key_in_the_header_and_answers_with_sourced_bounded_excerpts()
     assert_eq!(
         urls,
         ["https://example.com/tools", "https://example.com/long"],
-        "other.org fails the domain policy and the url-less hit is not a source"
+        "other.org is denied and the url-less hit is not a source"
     );
     assert_eq!(result.citations, urls);
     assert_eq!(result.results[0].snippet, "Tooling for Rust.");
@@ -229,8 +228,7 @@ fn the_key_comes_from_the_environment_first_and_the_credentials_file_second() {
 #[test]
 fn searxng_answers_without_a_key_and_names_its_provider() {
     let config = WebConfig {
-        enabled: true,
-        allow_domains: vec!["example.com".into()],
+        deny_domains: vec!["denied.org".into()],
         search_endpoint: Some("https://search.example.com/search".into()),
         ..WebConfig::default()
     };
@@ -295,13 +293,11 @@ fn an_unaskable_provider_refuses_at_construction_and_none_means_no_search() {
             .contains("variable name")
     );
 
-    let nothing = WebConfig {
-        enabled: true,
-        ..WebConfig::default()
-    };
+    // No provider is no search -- while fetch, on by default, still works.
+    let nothing = WebConfig::default();
     assert_eq!(SearchProvider::from_config(&nothing).unwrap(), None);
-    assert!(!nothing.search_configured() && !nothing.configured());
-    assert_eq!(nothing.posture(), "off");
+    assert!(!nothing.search_configured() && nothing.configured());
+    assert_eq!(nothing.posture(), "web");
 
     let brave_default_var = WebConfig {
         enabled: true,
@@ -318,7 +314,7 @@ fn an_unaskable_provider_refuses_at_construction_and_none_means_no_search() {
     assert_eq!(brave_default_var.posture(), "web");
     assert_eq!(
         brave_default_var.describe(),
-        "fetch refused (no domain allowed) · search via brave"
+        "fetch reaches the allowed hosts and asks for others · search via brave"
     );
 }
 

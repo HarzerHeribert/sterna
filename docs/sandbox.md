@@ -67,7 +67,9 @@ Commands reach the network only through Sterna's proxy
 (`HTTPS_PROXY`/`HTTP_PROXY` point at it), which lets through the allowed
 hosts and refuses the rest. The rule is the host, not the tool: every client
 of a registry works. On by default, one switch per ecosystem
-(`sandbox.ecosystems`), plus your own `sandbox.hosts`; both are global.
+(`sandbox.ecosystems`), plus your own `sandbox.hosts`; both are global. The
+same list is what the model's `web.fetch` reaches without asking
+([web](web.md)).
 
 | Ecosystem | Hosts | Clients, for example |
 |---|---|---|
@@ -85,16 +87,14 @@ of a registry works. On by default, one switch per ecosystem
 The proxy sees the host name, not whether a request downloads or uploads,
 so only registries and source hosts are listed, and your credentials never
 enter the sandbox: without them, publishing or pushing fails. `--allow-host
-HOST` adds a host for one session. The model's own web tool keeps its
-separate `[web]` list ([web](web.md)).
+HOST` adds a host for one session.
 
 **The Allowed hosts sheet** (Sandbox sheet › Allowed hosts) has one switch
 per ecosystem and your own hosts, each removable, with a field to add one
 (`api.example.com`, or `*.example.com` for every name under it; a pasted
 URL is refused, not half-allowed). Every change is saved to the global
-settings at once. When the session runs a proxy it also reaches the proxy's
-live list, so the next command sees it; where no proxy runs, it applies
-from the next session, and the sheet says which.
+settings at once and reaches the session's live list, so the next command
+and the next fetch see it.
 
 ## Leaving the sandbox
 
@@ -116,6 +116,9 @@ the host through rather than the command out:
 | `o` | Allow once, outside the sandbox | outside, this once |
 | `a` | Another way | not |
 | `d` | Deny for this session | not |
+
+A `web.fetch` to a host outside the list asks the same question, with
+*Allow once* fetching that page only.
 
 Without a refused host the question is titled *Leave the sandbox* and has
 the answers of every confirmation below. Each command takes the proxy's

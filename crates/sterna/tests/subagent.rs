@@ -162,6 +162,7 @@ fn subagent_uses_native_cell_handoff_across_turns() {
             deadline: None,
             model: "test-model".into(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(20));
@@ -214,6 +215,7 @@ fn a_returned_value_is_notebook_output_and_the_subagent_works_on() {
             deadline: None,
             model: "test-model".into(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(20));
@@ -284,6 +286,7 @@ fn a_subagent_answers_in_a_later_event_and_never_blocks_the_caller() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let elapsed = started.elapsed();
@@ -345,6 +348,7 @@ fn a_subagent_that_never_answers_stops_at_its_turn_hint_and_keeps_its_work() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(20));
@@ -395,6 +399,7 @@ fn a_subagent_with_no_turn_hint_works_until_it_answers() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(60));
@@ -438,6 +443,7 @@ fn a_configured_deadline_stops_a_subagent_and_keeps_its_work() {
             deadline: Some(Duration::from_millis(400)),
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(30));
@@ -483,6 +489,7 @@ fn a_subagent_that_stopped_early_reports_its_turns_and_trajectory() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let events = wait_for_event(&fixture.session, Duration::from_secs(20));
@@ -527,6 +534,7 @@ fn a_subagent_can_amend_its_parse_failed_cell() {
             deadline: None,
             model: "test-model".into(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
         &sterna::tools::invoke::CancellationToken::new(),
     );
@@ -559,6 +567,7 @@ fn subagent_plain_prose_is_its_result_without_a_marker_round_trip() {
             deadline: None,
             model: "test-model".into(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
         &sterna::tools::invoke::CancellationToken::new(),
     );
@@ -675,6 +684,7 @@ fn a_running_subagents_rollout_is_readable_while_it_works() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let record = sterna::agent::AgentRollout::for_job(&fixture.root, &fixture.session, &handle);
@@ -762,6 +772,7 @@ fn a_person_can_tell_a_running_subagent_something() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     until(Duration::from_secs(20), "the subagent's first turn", || {
@@ -816,6 +827,7 @@ fn a_message_to_a_finished_subagent_is_undelivered_rather_than_an_error() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let _ = wait_for_event(&fixture.session, Duration::from_secs(20));
@@ -861,6 +873,7 @@ fn a_look_names_the_record_and_whether_it_still_listens() {
             deadline: None,
             model: "test-model".to_string(),
             effort: sterna::wire::Effort::default(),
+            hosts: None,
         },
     );
     let running = bg::progress(&fixture.session, &handle).expect("a subagent reports progress");

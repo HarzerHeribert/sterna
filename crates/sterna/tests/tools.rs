@@ -1797,14 +1797,14 @@ fn no_pure_search_tool_can_write_and_no_flag_shaped_argument_becomes_a_flag() {
     );
 }
 
-/// **Map 2658: a network tool exists only when its configuration does.** An
-/// unconfigured session's Runtime block declares no `web` at all — the
-/// model cannot be told about a global it does not hold — and a configured
-/// one names exactly the domains `web.fetch` may reach and whether
-/// `web.search` exists. The same predicate the runtime binds on
+/// **Map 2658: a network tool exists only while it is on.** A session with
+/// web off declares no `web` at all — the model cannot be told about a
+/// global it does not hold — and one with it on says how `web.fetch`
+/// reaches a host (no host list, which would change as hosts are allowed)
+/// and whether `web.search` exists. The same predicate the runtime binds on
 /// (`HostGlobals::installs_with`).
 #[test]
-fn an_unconfigured_session_declares_no_web_global_and_a_configured_one_names_its_reach() {
+fn a_session_with_web_off_declares_no_web_global_and_one_with_it_on_says_how_it_reaches() {
     use sterna::prompt::declarations::WebReach;
     use sterna::prompt::render_runtime_reaching;
     use sterna::runtime::bindings::HostGlobals;
@@ -1813,12 +1813,11 @@ fn an_unconfigured_session_declares_no_web_global_and_a_configured_one_names_its
         render_runtime_reaching(HostGlobals::Every, sterna::prompt::Reach::default());
     assert!(
         !unconfigured.contains("declare const web") && !unconfigured.contains("web.fetch"),
-        "an unconfigured session was told about `web`:\n{unconfigured}"
+        "a session with web off was told about `web`:\n{unconfigured}"
     );
     assert!(unconfigured.contains("declare const bg"), "{unconfigured}");
 
     let reach = WebReach {
-        domains: vec!["docs.rs".into(), "*.rust-lang.org".into()],
         search: false,
         search_provider: None,
         max_response_bytes: 1_048_576,
@@ -1830,7 +1829,9 @@ fn an_unconfigured_session_declares_no_web_global_and_a_configured_one_names_its
     );
     assert!(configured.contains("declare const web: {"), "{configured}");
     assert!(
-        configured.contains("web.fetch reaches: docs.rs, *.rust-lang.org"),
+        configured.contains(
+            "web.fetch: an allowed host answers at once; any other host asks the person first"
+        ),
         "{configured}"
     );
     assert!(

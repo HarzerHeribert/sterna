@@ -52,8 +52,9 @@ It also has what you would expect: a wide OS sandbox (Seatbelt on macOS,
 Landlock and seccomp on Linux, an AppContainer on Windows) with package
 registries reachable through an allowed-hosts proxy, one setting for how
 much runs without asking (Ask, Sandboxed or Full access), `/plan` for a
-read-only planning request, background jobs, web search and fetch when you
-enable them, MCP servers, image input,
+read-only planning request, background jobs, web fetch (asking before a
+host it has not reached before) and web search with a provider you choose,
+MCP servers, image input,
 rollback of the agent's changes, and resume.
 
 ## Install and update

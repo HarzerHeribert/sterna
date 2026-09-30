@@ -327,16 +327,6 @@ fn inert_settings(
                 .into(),
         );
     }
-    if config.web.enabled
-        && !config.web.search_configured()
-        && config.web.allow_domains.is_empty()
-        && chosen("web.enabled")
-    {
-        inert.push(
-            "[web] is enabled but allows no domain and configures no search provider, so both web.fetch and web.search refuse"
-                .into(),
-        );
-    }
     if inert.is_empty() {
         Check {
             name: "settings",

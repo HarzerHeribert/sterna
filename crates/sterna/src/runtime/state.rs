@@ -167,6 +167,10 @@ pub(crate) struct RuntimeState {
     pub(crate) watchdog_fired: RefCell<Option<Arc<AtomicBool>>>,
     pub(crate) mcp: RefCell<crate::tools::mcp::Mcp>,
     pub(crate) web: RefCell<Option<crate::web::WebBroker>>,
+    /// The session's one list of allowed hosts, live: what `web.fetch`
+    /// reaches without asking, and where a host a person allows is added.
+    /// `None` is a runtime nobody gave one, whose every fetch asks.
+    pub(crate) hosts: RefCell<Option<crate::sandbox::proxy::Allowed>>,
     /// The narrowing this runtime's context was built under, kept because
     /// the one global the configuration decides (`web`) is bound after
     /// construction, when the broker arrives — `Runtime::with_web_broker`.
@@ -356,6 +360,7 @@ impl RuntimeState {
             host_clock: Arc::new(crate::approval::WaitClock::default()),
             mcp: RefCell::new(crate::tools::mcp::Mcp::default()),
             web: RefCell::new(None),
+            hosts: RefCell::new(None),
             globals: crate::runtime::bindings::HostGlobals::Every,
             web_bound: std::cell::Cell::new(false),
             decide_bound: std::cell::Cell::new(false),

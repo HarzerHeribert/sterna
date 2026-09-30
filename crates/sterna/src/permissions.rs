@@ -235,11 +235,12 @@ impl Default for LiveLevel {
 /// sandbox; its value is the model's reason, shown to the person.
 pub const OUTSIDE: &str = "outside";
 
-/// The reason a command call gave for running outside the sandbox, or `None`
-/// when it did not ask to.
+/// The reason a command call gave for running outside the sandbox -- or a
+/// fetch for reaching a host outside the allowed list -- or `None` when it
+/// did not ask to.
 #[must_use]
 pub fn outside_reason(tool: &str, arguments: &BTreeMap<String, String>) -> Option<String> {
-    if tool != "bash" {
+    if tool != "bash" && tool != crate::approval::WEB_FETCH {
         return None;
     }
     arguments
@@ -267,7 +268,11 @@ pub fn judge(
         return Verdict::Runs;
     }
     if let Some(reason) = outside_reason(tool, arguments) {
-        return Verdict::Ask(format!("asks to run outside the sandbox: {reason}"));
+        return Verdict::Ask(if tool == "bash" {
+            format!("asks to run outside the sandbox: {reason}")
+        } else {
+            reason
+        });
     }
     match level {
         Level::Sandboxed | Level::Full => Verdict::Runs,

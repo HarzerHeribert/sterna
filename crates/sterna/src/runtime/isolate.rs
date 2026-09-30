@@ -524,7 +524,18 @@ impl Runtime {
     #[must_use]
     pub fn with_approval_gate(self, gate: crate::approval::Gate) -> Self {
         let clock = std::sync::Arc::clone(&self.state.host_clock);
+        if let Some(hosts) = gate.allowed_hosts() {
+            *self.state.hosts.borrow_mut() = Some(hosts);
+        }
         *self.state.approval_gate.borrow_mut() = Some(gate.with_wait_clock(clock));
+        self
+    }
+
+    /// The session's allowed hosts, for a runtime with no gate of its own --
+    /// a subagent -- so a host the person allowed reaches it too.
+    #[must_use]
+    pub fn with_hosts(self, hosts: crate::sandbox::proxy::Allowed) -> Self {
+        *self.state.hosts.borrow_mut() = Some(hosts);
         self
     }
 
@@ -542,11 +553,8 @@ impl Runtime {
         self
     }
 
-    /// The `[helpers]` roster this runtime's cells may call. Not passing it
-    /// leaves helpers off, which is the same answer an unset `[helpers]
-    /// model` gives: a runtime nobody configured spends nothing.
-    #[must_use]
     /// The default model a delegated goal runs on when the cell names none.
+    #[must_use]
     pub fn with_agents(self, agents: crate::config::AgentsConfig) -> Self {
         if let Some(config) = self.state.effective_config.borrow_mut().as_mut() {
             config.agents = agents.clone();

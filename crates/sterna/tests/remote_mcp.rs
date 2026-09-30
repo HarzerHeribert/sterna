@@ -187,7 +187,13 @@ fn finite_sse_notifications_then_response_are_supported() {
 #[test]
 fn disabled_denied_private_and_ungranted_servers_make_no_requests() {
     for (url, config) in [
-        ("https://mcp.example.com", WebConfig::default()),
+        (
+            "https://mcp.example.com",
+            WebConfig {
+                enabled: false,
+                ..WebConfig::default()
+            },
+        ),
         (
             "https://mcp.example.com",
             WebConfig {

@@ -39,7 +39,7 @@ prompt's Runtime block only where the session binds them:
 | `speculate(check, candidates)` | one to four candidate changes tried against one check in one cell; each is written, the check runs, and every file is put back before the next, through the same checked `write` and `bash` calls and approval gate. Nothing stays changed |
 | `batch` | the events that arrived while the model was not looking |
 | `on`, `off` | standing handlers over future batches |
-| `web.fetch`, `web.search` | the host web broker, when `[web]` is configured ([web](web.md)) |
+| `web.fetch`, `web.search` | the host web broker: allowed hosts at once, any other after asking ([web](web.md)) |
 | `mcp.list`, `mcp.call` | the project's MCP servers ([project context](project-context.md#mcp-servers)) |
 | `checks.list`, `checks.run` | the project's declared verification commands |
 | `ask(question, choices)` | put a question to the person (off with nobody at the keyboard) |

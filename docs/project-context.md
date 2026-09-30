@@ -74,7 +74,7 @@ const out = mcp.call(tools[0].name, {query: "…"}); // content stays a handle
   variables are removed; only the server's own `env` entries are passed.
   Protocol 2024-11-05: initialize, paginated `tools/list`, `tools/call`.
 - **Remote** servers use Streamable HTTP (2025-03-26) through the web broker,
-  so `[web]` must be enabled and allow the domain ([web](web.md)). JSON and
+  so `web.enabled` must be on, as it is by default ([web](web.md)). JSON and
   bounded finite SSE responses; no redirects, no automatic replay, no OAuth
   discovery or server-initiated requests.
 - Limits: a 1 MiB configuration, 128 tools per server, 16 discovery pages,

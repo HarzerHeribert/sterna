@@ -319,7 +319,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "sandbox.hosts",
         label: "Allowed hosts",
-        description: "Hosts commands may reach through Sterna's proxy, beside the ecosystems switched on: `api.example.com`, or `*.example.com` for its subdomains. Global only.",
+        description: "Hosts commands (through Sterna's proxy) and web.fetch reach without asking, beside the ecosystems switched on: `api.example.com`, or `*.example.com` for its subdomains. A host you allow when asked is added here. Global only.",
         kind: Kind::List,
         choices: &[],
         basic: false,
@@ -581,17 +581,8 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "web.enabled",
         label: "Web broker",
-        description: "The host-owned web broker. This grants no network access to shells or tools.",
+        description: "web.fetch and web.search, run by Sterna itself. On by default: a fetch reaches the allowed hosts at once and asks before any other. This grants no network access to shells or tools.",
         kind: Kind::Bool,
-        choices: &[],
-        basic: false,
-        restart: true,
-    },
-    SettingSpec {
-        key: "web.allow_domains",
-        label: "Allowed domains",
-        description: "The domains web.fetch may reach; empty refuses every fetch. `*.example.org` matches subdomains only.",
-        kind: Kind::List,
         choices: &[],
         basic: false,
         restart: true,
@@ -599,7 +590,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "web.deny_domains",
         label: "Denied domains",
-        description: "Deny wins over allow. Bare names match exactly.",
+        description: "Hosts web.fetch never reaches, whatever is allowed. Bare names match exactly; `*.example.org` matches subdomains only.",
         kind: Kind::List,
         choices: &[],
         basic: false,
@@ -761,11 +752,17 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
     ("decisions.judge_yes_above", HELPERS_GONE),
     ("decisions.judge_no_below", HELPERS_GONE),
     ("decisions.completion_yes_above", HELPERS_GONE),
+    ("web.allow_domains", HOSTS_ONE_LIST),
     (
         "decisions.drift_no_below",
         "the model's to-do list is gone, and the check of each cell against its current step with it: /plan <task> plans one request",
     ),
 ];
+
+/// Why a project's or a profile's `web.allow_domains` is gone rather than
+/// moved: allowed hosts are one global list, `sandbox.hosts`, which a
+/// project cannot widen. A global one is moved into it instead.
+pub const HOSTS_ONE_LIST: &str = "allowed hosts are one list now, `sandbox.hosts`, which only your global settings can hold: Sterna asks when a fetch needs a new host, and Settings › Sandbox › Allowed hosts keeps one for every project";
 
 /// Where the helpers' jobs went when they were removed. Every `helpers.*`
 /// key but the two [`MOVED_KEYS`] retires with this sentence.

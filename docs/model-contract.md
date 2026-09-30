@@ -203,7 +203,8 @@ After the tools come the **Runtime** block (the host globals a cell holds:
 `decide`, `agent`, `bg`, `batch`, `web`, `mcp`, `checks`,
 `keep`, `free`, `handles`, `yieldNow`, `answer`, `ask`, `on`, `off`,
 `console`), each declared only where this session binds it — `web` only
-when `[web]` is configured, `decide` only when a decision model is — then
+while `web.enabled` is on (the default), `decide` only when a decision
+model is — then
 the familiar-tool types, the session facts, and the project's instructions.
 
 ### Reading and editing source

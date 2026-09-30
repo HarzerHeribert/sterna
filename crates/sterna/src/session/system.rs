@@ -81,11 +81,11 @@ pub(super) fn build_system_prompt(
 pub(super) fn keep_session_system(session: &Session<'_>, transcript: &mut Transcript) {
     let mut fresh = system_prompt_for(session);
     if session.config().web.enabled {
-        fresh.push_str("\nHost web broker: web.fetch is enabled under the configured domain policy. Shell network access is separate. ");
-        fresh.push_str(if session.config().web.search_endpoint.is_some() {
+        fresh.push_str("\nHost web broker: web.fetch reaches the allowed hosts at once and asks the person before any other. Shell network access is separate. ");
+        fresh.push_str(if session.config().web.search_configured() {
             "web.search is configured. Cite the source URLs returned by web tools.\n"
         } else {
-            "web.search has no configured search endpoint and will refuse.\n"
+            "web.search has no search provider and will refuse.\n"
         });
     }
     let current = &transcript.conversation.system;

@@ -3478,6 +3478,7 @@ fn a_subagent_job_carries_its_explicit_model() {
         model: "chosen-model".to_string(),
         effort: sterna::wire::Effort::default(),
         deadline: None,
+        hosts: None,
     };
     assert_eq!(asked.model, "chosen-model");
     assert!(
@@ -3517,13 +3518,13 @@ fn web_broker(config: WebConfig) -> WebBroker {
     .unwrap()
 }
 
-/// **Map 2658 and 2656, through a real isolate.** Before any broker, and with
-/// a broker whose configuration allows nothing, `web` is not a name the cell
-/// holds; once `[web]` allows a domain it is; and a fetch leaves one call
-/// record naming the URL, the status, the size and the type of the answer —
-/// the rollout line the transcript renders.
+/// **Map 2658 and 2656, through a real isolate.** Before any broker, and
+/// with the broker off, `web` is not a name the cell holds; while it is on
+/// it is; a fetch of an allowed host leaves one call record naming the URL,
+/// the status, the size and the type of the answer -- the rollout line the
+/// transcript renders -- and a host nobody can be asked about is refused.
 #[test]
-fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
+fn web_is_bound_while_on_and_a_fetch_is_one_rollout_line() {
     let fixture = Fixture::new("web-bound");
     let session = SessionId::new("web-bound-session");
 
@@ -3531,26 +3532,24 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
     assert_eq!(
         returned_string(&bare.run_cell("return typeof web;")),
         "undefined",
-        "a runtime nobody configured holds a `web`"
+        "a runtime nobody gave a broker holds a `web`"
     );
 
-    let unconfigured = WebConfig {
-        enabled: true,
+    let off = WebConfig {
+        enabled: false,
         ..WebConfig::default()
     };
-    let mut still_bare = runtime(&fixture, &session).with_web_broker(web_broker(unconfigured));
+    let mut still_bare = runtime(&fixture, &session).with_web_broker(web_broker(off));
     assert_eq!(
         returned_string(&still_bare.run_cell("return typeof web;")),
         "undefined",
-        "enabled with nothing allowed is not configured, so `web` must not exist"
+        "the broker off, `web` must not exist"
     );
 
-    let configured = WebConfig {
-        enabled: true,
-        allow_domains: vec!["example.com".into()],
-        ..WebConfig::default()
-    };
-    let mut runtime = runtime(&fixture, &session).with_web_broker(web_broker(configured));
+    let allowed = sterna::sandbox::proxy::Allowed::new(&[], &["example.com".to_string()]);
+    let mut runtime = runtime(&fixture, &session)
+        .with_web_broker(web_broker(WebConfig::default()))
+        .with_hosts(allowed);
     assert_eq!(
         returned_string(&runtime.run_cell("return typeof web;")),
         "object"
@@ -3572,19 +3571,72 @@ fn web_is_bound_only_when_configured_and_a_fetch_is_one_rollout_line() {
     );
     assert!(call.error.is_none(), "{call:?}");
 
-    // A refused fetch is still one line, with the URL and the refusal.
-    let refused = runtime
-        .run_cell("try { web.fetch(\"https://elsewhere.org/\"); } catch (e) { return String(e); }");
+    // A host outside the list, with nobody to ask: refused, and still one
+    // line, with the URL and the refusal.
+    let refused = runtime.run_cell(
+        "try { web.fetch(\"https://elsewhere.org/\"); } catch (e) { return e.name + ': ' + e.message; }",
+    );
+    let said = returned_string(&refused);
+    assert!(
+        said.starts_with("PermissionDenied")
+            && said.contains("elsewhere.org is not an allowed host, and nobody can be asked here"),
+        "{said}"
+    );
     let calls = &refused.turn().record.calls;
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].args["url"], "https://elsewhere.org/");
     assert!(
-        calls[0]
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("denied")),
+        matches!(&calls[0].ended, sterna::runtime::outcome::Ended::Denied { rule } if rule.contains("not an allowed host")),
         "{:?}",
         calls[0]
+    );
+}
+
+/// **A fetch outside the allowed hosts asks the person**, the way a command
+/// asks to leave the sandbox: the question names the host, "for this
+/// session" puts it on the one list the proxy shares so the next fetch there
+/// asks nothing, "once" fetches that page and adds nothing, and a refusal is
+/// a `PermissionDenied`.
+#[test]
+fn a_fetch_to_a_new_host_asks_and_an_allowed_host_joins_the_list() {
+    use sterna::approval::{Decision, Gate, Hosts};
+    use sterna::permissions::{Level, LiveLevel};
+    let fixture = Fixture::new("web-ask");
+    let session = SessionId::new("web-ask-session");
+    let allowed = sterna::sandbox::proxy::Allowed::new(&[], &["example.com".to_string()]);
+    let (gate, requests) = Gate::channel(LiveLevel::new(Level::Sandboxed));
+    let gate = gate.with_hosts(Hosts::new(allowed.clone(), Vec::new));
+    let responder = std::thread::spawn(move || {
+        let asked = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(asked.action().tool(), "web.fetch");
+        assert_eq!(asked.hosts(), ["docs.rs"]);
+        assert!(asked.respond(Decision::AllowHostSession));
+        let refused = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(refused.hosts(), ["other.org"]);
+        assert!(refused.respond(Decision::Deny));
+        let once = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(once.hosts(), ["once.org"]);
+        assert!(once.respond(Decision::AllowOnce));
+        requests
+    });
+    let mut runtime = runtime(&fixture, &session)
+        .with_web_broker(web_broker(WebConfig::default()))
+        .with_approval_gate(gate);
+    let outcome = runtime.run_cell(
+        "const first = web.fetch(\"https://docs.rs/a\");\n\
+         const again = web.fetch(\"https://docs.rs/b\");\n\
+         let refused = '';\n\
+         try { web.fetch(\"https://other.org/\"); } catch (e) { refused = e.name; }\n\
+         const once = web.fetch(\"https://once.org/\");\n\
+         return [first.status, again.status, refused, once.status].join(' ');",
+    );
+    assert_eq!(returned_string(&outcome), "200 200 PermissionDenied 200");
+    assert!(allowed.permits("docs.rs"), "the host joined the list");
+    assert!(!allowed.permits("other.org"));
+    assert!(!allowed.permits("once.org"), "once is not the list");
+    assert!(
+        responder.join().unwrap().try_recv().is_err(),
+        "the second fetch from docs.rs asked again"
     );
 }
 

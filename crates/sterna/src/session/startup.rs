@@ -103,7 +103,7 @@ pub(super) fn approval_gate(
     config: &crate::config::SternaConfig,
     profile: &crate::sandbox::profile::Profile,
     interactive: Option<&ui::LiveUi>,
-    proxy: Option<&std::sync::Arc<crate::sandbox::proxy::Proxy>>,
+    network: &Network,
 ) -> crate::approval::Gate {
     let decisions = config.decisions.clone();
     let gate = match interactive {
@@ -115,18 +115,22 @@ pub(super) fn approval_gate(
     let gate = gate
         .with_decisions(decisions.model, decisions.mode)
         .with_pre_approved(profile.pre_approved().to_vec());
-    // A command refused a host can ask for that host, and the hosts sheet
-    // changes the same live list.
-    let Some(proxy) = proxy else {
-        return gate;
-    };
+    // A command refused a host, or a fetch to one, can ask for that host,
+    // and the hosts sheet changes the same live list. Without a proxy no
+    // command reaches a host, but a fetch still does.
     if let Some(ui) = interactive {
-        ui.share_hosts(proxy.allowed());
+        ui.share_hosts(network.allowed.clone());
     }
-    let refusals = std::sync::Arc::clone(proxy);
-    gate.with_hosts(crate::approval::Hosts::new(proxy.allowed(), move || {
-        refusals.take_refused()
-    }))
+    let refusals = network.proxy.clone();
+    gate.with_hosts(crate::approval::Hosts::new(
+        network.allowed.clone(),
+        move || {
+            refusals
+                .as_ref()
+                .map(|proxy| proxy.take_refused())
+                .unwrap_or_default()
+        },
+    ))
 }
 
 /// Sends confined commands through the proxy, when one runs.
@@ -184,20 +188,26 @@ pub(super) fn sandbox_line(level: &crate::permissions::LiveLevel) -> String {
     format!("sandbox: {} — {}{unattended}", now.name(), now.sentence())
 }
 
-/// The proxy confined commands reach the network through, when this
-/// platform can route them to it: macOS always, Linux where a command can
-/// have its own network namespace ([`crate::sandbox::linux_ns::available`]).
-/// Elsewhere commands have no network at all, and nothing is started.
-///
-/// The allowed hosts are the ecosystems `sandbox.ecosystems` names (all of
-/// them when unset), `sandbox.hosts`, and each `--allow-host`.
-pub(super) fn start_proxy(
-    args: &SessionArgs,
-    values: &toml::Value,
-) -> Option<crate::sandbox::proxy::Proxy> {
-    if !crate::sandbox::proxy::reachable() {
-        return None;
-    }
+/// What a session reaches the network with: its one list of allowed hosts,
+/// and the proxy commands go through, where this platform runs one.
+pub(super) struct Network {
+    pub allowed: crate::sandbox::proxy::Allowed,
+    pub proxy: Option<std::sync::Arc<crate::sandbox::proxy::Proxy>>,
+}
+
+/// The session's [`Network`]: the host list, then the proxy that checks it.
+pub(super) fn network(args: &SessionArgs, values: &toml::Value) -> Network {
+    let allowed = allowed_hosts(args, values);
+    let proxy = start_proxy(&allowed).map(std::sync::Arc::new);
+    Network { allowed, proxy }
+}
+
+/// The session's one list of allowed hosts: the ecosystems
+/// `sandbox.ecosystems` names (all of them when unset), `sandbox.hosts`, and
+/// each `--allow-host`. Commands reach them through the proxy and
+/// `web.fetch` reaches them without asking; a host a person allows is added
+/// here, for both.
+fn allowed_hosts(args: &SessionArgs, values: &toml::Value) -> crate::sandbox::proxy::Allowed {
     let list = |key: &str| -> Option<Vec<String>> {
         crate::settings_session::value(values, key)
             .and_then(toml::Value::as_array)
@@ -222,8 +232,18 @@ pub(super) fn start_proxy(
             session_println!("sandbox: `{host}` is not a host name, so it was not allowed");
         }
     }
-    let allowed = crate::sandbox::proxy::Allowed::new(&ecosystems, &hosts);
-    match crate::sandbox::proxy::Proxy::start(allowed) {
+    crate::sandbox::proxy::Allowed::new(&ecosystems, &hosts)
+}
+
+/// The proxy confined commands reach the network through, when this
+/// platform can route them to it: macOS always, Linux where a command can
+/// have its own network namespace ([`crate::sandbox::linux_ns::available`]).
+/// Elsewhere commands have no network at all, and nothing is started.
+fn start_proxy(allowed: &crate::sandbox::proxy::Allowed) -> Option<crate::sandbox::proxy::Proxy> {
+    if !crate::sandbox::proxy::reachable() {
+        return None;
+    }
+    match crate::sandbox::proxy::Proxy::start(allowed.clone()) {
         Ok(proxy) => Some(proxy),
         Err(error) => {
             session_println!(

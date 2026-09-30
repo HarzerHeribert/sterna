@@ -1,11 +1,12 @@
 //! The allowed hosts: one switch per package ecosystem and the person's own
-//! hosts, which commands reach through Sterna's proxy.
+//! hosts, which commands reach through Sterna's proxy and `web.fetch`
+//! reaches without asking.
 //!
 //! Both lists are global settings (`sandbox.ecosystems`, `sandbox.hosts`),
-//! read when the sheet opens and saved at every change. When the session
-//! runs a proxy, a change reaches its live list too, so the next command
-//! sees it; otherwise it applies from the next session, and the sheet says
-//! which.
+//! read when the sheet opens and saved at every change. A session's live
+//! list takes a change too, so the next command and the next fetch see it;
+//! a surface with no session applies it from the next one, and the sheet
+//! says which.
 use super::Action;
 use super::sheet::{Field, Item, Sheet};
 use crate::sandbox::proxy::{ECOSYSTEMS, valid_host};
@@ -138,7 +139,7 @@ impl HostsSheet {
     /// Saves `key` and says what happened and when it applies.
     fn saved(&self, s: &ScreenState, key: &str, values: &[String], what: String) -> String {
         match super::facts::save_list(s, key, values) {
-            Ok(()) if s.allowed.is_some() => format!("{what}, from the next command on."),
+            Ok(()) if s.allowed.is_some() => format!("{what}, from now on."),
             Ok(()) => format!("{what} from the next session."),
             Err(error) => format!("{what} on this sheet, but it was not saved: {error}"),
         }
@@ -150,7 +151,7 @@ pub(super) fn items(sheet: &mut Sheet, h: &HostsSheet, s: &ScreenState) -> Vec<I
     sheet.title = "Allowed hosts".into();
     sheet.crumbs.clear();
     sheet.status = if s.allowed.is_some() {
-        "Changes apply to the next command."
+        "Changes apply at once, to commands and fetches."
     } else {
         "Changes apply from the next session."
     }

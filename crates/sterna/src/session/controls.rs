@@ -2108,17 +2108,17 @@ pub(super) mod tests {
         let file = root.join(".sterna/config.toml");
         fs::write(&file, "[limits]\ncells=17\n").unwrap();
         with_session(&root, |session| {
-            fs::write(&file, "[limits]\ncells=42\n[web]\nenabled=true\n").unwrap();
+            fs::write(&file, "[limits]\ncells=42\n[web]\nenabled=false\n").unwrap();
             assign_model(session, Tier::Parent, "explicit-parent").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
-            assert!(!session.config().web.enabled);
+            assert!(session.config().web.enabled);
             assert_eq!(
                 session.config().model.parent.as_deref(),
                 Some("explicit-parent")
             );
             subagents::assign(session, "quick explicit-agent low").unwrap();
             assert_eq!(session.config().limits.cells, Some(17));
-            assert!(!session.config().web.enabled);
+            assert!(session.config().web.enabled);
             assert_eq!(
                 session.config().agents.slots["quick"].model,
                 "explicit-agent"

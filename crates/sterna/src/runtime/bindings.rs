@@ -2348,6 +2348,7 @@ fn agent_run_callback(
         model,
         effort,
         deadline: state.agent_deadline(),
+        hosts: state.hosts.borrow().clone(),
     };
     let handle = crate::bg::agent_with_config(
         &state.profile,
@@ -2371,8 +2372,6 @@ fn agent_run_callback(
     let object = agent::agent_object(scope, &handle);
     retval.set(object);
 }
-
-// --- helper.<name> -----------------------------------------------------
 
 /// What a task must have left before a subagent may start. One ordinary
 /// turn's ceiling, which is the smallest amount that could produce an answer
