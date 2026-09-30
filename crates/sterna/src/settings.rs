@@ -1660,7 +1660,7 @@ fn set_in_inline(table: &mut InlineTable, path: &[&str], value: Value) -> Result
 }
 
 /// Removes a key, and any table the removal emptied -- an unset leaves no
-/// `[helpers]` header standing over nothing.
+/// `[web]` header standing over nothing.
 fn remove_in_table(table: &mut Table, path: &[&str]) -> bool {
     let (head, rest) = path.split_first().expect("a change names at least one key");
     let head = *head;

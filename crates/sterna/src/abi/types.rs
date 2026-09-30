@@ -53,7 +53,7 @@ type CheckResult = {name: string; command: string; stdout: string; stderr: strin
 /// The whole conceptual contract, in the words the model needs and no more.
 ///
 /// Everything the model does not need to know to act correctly — lowering,
-/// the intent IR, routing tiers, helper escalation, the artifact store, the
+/// the intent IR, routing tiers, the artifact store, the
 /// ledger — is deliberately absent. Those are Sterna's business, and a model
 /// that reproduced them would be doing Sterna's job with worse information.
 pub const GUIDANCE: &str = "\
@@ -66,8 +66,8 @@ arguments and the same result semantics as their direct forms. Prefer ordinary
 tool calls unless composition gives a concrete advantage, and write the
 smallest cell that expresses the dependency or control flow you need.
 
-Sterna decides execution strategy, output sizing, evidence storage and helper
-escalation. Do not reproduce those mechanisms yourself.
+Sterna decides execution strategy, output sizing and evidence storage. Do not
+reproduce those mechanisms yourself.
 
     const tests = await Bash({ command: \"cargo test\" });
     if (!tests.ok) {
@@ -98,8 +98,8 @@ suite, a build -- need not hold the turn: `const suite = bg.run(\"...\")`
 starts it, you keep reading and editing in this cell and the next, and
 `await suite.result()` collects it where you need it.
 
-Sterna decides execution strategy, output sizing, evidence storage and helper
-escalation. Do not reproduce those mechanisms yourself.
+Sterna decides execution strategy, output sizing and evidence storage. Do not
+reproduce those mechanisms yourself.
 
     const [tests, uses] = await Promise.all([
       Bash({ command: \"cargo test\" }),

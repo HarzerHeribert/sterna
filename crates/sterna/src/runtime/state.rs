@@ -330,7 +330,7 @@ impl RuntimeState {
     ///
     /// **Every host callback that can outlast a keystroke takes one.** The
     /// cell is not computing while a child process builds, an MCP server
-    /// answers or a helper thinks, and the wall-clock limit is there to stop
+    /// answers or a person decides, and the wall-clock limit is there to stop
     /// a cell that computes forever. Without this the limit kills the work
     /// instead: the tool path polls the watchdog's own flag
     /// (`bindings::tool_callback`'s `stopped` closure), so at 30 seconds a

@@ -67,8 +67,8 @@ pub const DEFAULT_HEAP_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_CELL_WALL_CLOCK_LIMIT: Duration = Duration::from_secs(30);
 
 // **It bounds the cell's own computing, not the work it waits for.** Time
-// inside a host callback -- a granted `cargo test`, an MCP server, a helper,
-// a person at a confirmation -- is subtracted (`RuntimeState::away_from_js`),
+// inside a host callback -- a granted `cargo test`, an MCP server, a person
+// at a confirmation -- is subtracted (`RuntimeState::away_from_js`),
 // because a build that takes four minutes is the task rather than a hang, and
 // each of those waits carries its own bound already. Before that separation
 // this limit reaped a running build at thirty seconds and answered the call

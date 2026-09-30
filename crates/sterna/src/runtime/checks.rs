@@ -1,4 +1,4 @@
-//! The named-check host binding. Helpers never receive this effectful global.
+//! The named-check host binding.
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -9,9 +9,6 @@ impl Runtime {
     /// **`decide` is bound here and nowhere else, and only when `[decisions]
     /// model` names a model**: a session that configured none holds no
     /// `decide`, which is the same answer the Runtime block gives the model.
-    /// A helper's narrowing withholds it whatever the configuration says —
-    /// `helpers-and-subagents.md` makes a helper a leaf, and a leaf that could
-    /// buy judgements is a second model loop wearing a helper's name.
     #[must_use]
     pub fn with_decisions(self, decisions: crate::config::DecisionsConfig) -> Self {
         let mut this = self;

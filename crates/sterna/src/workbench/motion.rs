@@ -2,8 +2,8 @@
 //!
 //! **Only what is changing state moves, and each thing moves in one cell or
 //! two.** The dock's mark while a turn runs, the caret on arriving prose,
-//! the scanner in a running cell, the mark of a helper or of work behind
-//! the answer -- and nothing else: no border, rule, chip or header ever
+//! the scanner in a running cell, the mark of a subagent at work -- and
+//! nothing else: no border, rule, chip or header ever
 //! takes a frame. Each function here returns a complete resting glyph when
 //! [`ScreenState::motion_live`] is false, so `off` is a whole drawing, not
 //! a paused one. The parrot's own art is in [`super::plumage`].
@@ -68,9 +68,9 @@ pub(super) fn caret_moving(s: &ScreenState, moving: bool) -> &'static str {
     }
 }
 
-/// The one-cell mark of something small at work: a helper waiting on its
-/// answer, a cell being written, the checker behind the answer. It holds
-/// its still frame unless this row carries the document's one motion.
+/// The one-cell mark of something small at work: a subagent waiting on its
+/// answer, a cell being written. It holds its still frame unless this row
+/// carries the document's one motion.
 pub(super) fn busy_moving(s: &ScreenState, moving: bool) -> &'static str {
     if moving && s.motion_live() {
         ORBIT[frame(s) % ORBIT.len()]

@@ -1,8 +1,8 @@
 //! How much of the workbench moves (`ui.motion`).
 //!
 //! **Motion is a signal, never decoration.** Something moves only where a
-//! state is changing -- arriving prose, a running cell, a helper or a lane
-//! that is working, a result in the moment it lands -- and an idle screen
+//! state is changing -- arriving prose, a running cell, a subagent that is
+//! working, a result in the moment it lands -- and an idle screen
 //! is still but for one slow heartbeat. The loop that owns the clock reads
 //! its periods from here, so the rate a level promises is the rate drawn.
 use std::time::Duration;

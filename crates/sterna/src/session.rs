@@ -735,7 +735,7 @@ impl Session<'_> {
     /// The dialect follows the **active** request model, so a `/model` switch
     /// to another family changes which spellings are shown without changing a
     /// capability, an execution path or a lifetime
-    /// (`tool-abi.md` §5, `helpers-and-subagents.md` §17).
+    /// (`tool-abi.md` §5).
     fn surface(&self) -> wire::Surface {
         wire::Surface::Acting {
             interface: self.interface.get(),

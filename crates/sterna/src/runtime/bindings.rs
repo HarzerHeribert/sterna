@@ -371,7 +371,7 @@ pub(crate) fn install(scope: &mut v8::PinScope, globals: HostGlobals) {
     // wrapper around `read`; the two names reach one callback, so acceptance
     // criterion 20's semantic equivalence is structural. The gate is asked of
     // the **registry** name, so an alias can never carry a capability a
-    // helper's spec withheld.
+    // narrowing withheld.
     for (alias, tool) in crate::abi::dialect::tool_aliases() {
         if !globals.binds_tool(tool) {
             continue;

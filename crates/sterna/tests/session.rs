@@ -177,12 +177,9 @@ fn handle_one_request<F: Fn(&str) -> String>(
     let request: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
     bodies.lock().unwrap().push(body);
 
-    // **Answer in the transport the request asked for.** A narrowed helper
-    // loop — SCOUT, CHECKER — streams, because its ceiling measures silence
-    // rather than duration (`wire::SIDE_ERRAND_SILENCE`). A fixture that
-    // always wrote JSON left such a caller reading a body with no
-    // `message_stop` in it, which is how a resolved Scout went missing from
-    // the notebook here.
+    // **Answer in the transport the request asked for.** A streamed request
+    // read a body with no `message_stop` in it when the fixture always wrote
+    // JSON, and the reply went missing from the notebook.
     let (content_type, reply) = sse::response_for(&request, &reply);
     let response_body = reply.as_bytes();
     let response = format!(

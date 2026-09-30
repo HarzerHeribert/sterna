@@ -3,7 +3,7 @@
 //!
 //! `tool-abi.md` §11 fixes the three classes and §21 fixes their authority
 //! order. The class is decided from mechanical facts about what was observed
-//! — bytes returned against bytes present, a helper having run or not — and
+//! — bytes returned against bytes present, a reducer having run or not — and
 //! never from a description of the result.
 
 use serde::{Deserialize, Serialize};
@@ -21,8 +21,8 @@ pub enum EvidenceClass {
     /// The content is an exact subset of a larger observation whose
     /// remainder stays reachable through a handle or continuation.
     BoundedExact,
-    /// A semantic transformation ran. Any Little Helper output is this,
-    /// whatever its quality.
+    /// A semantic transformation ran. A reducer's view is this, whatever
+    /// its quality.
     Derived,
 }
 
@@ -76,7 +76,7 @@ pub struct Provenance {
     /// Bytes in the complete observation, when mechanically known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_bytes: Option<u64>,
-    /// The reducer or helper that produced a `Derived` view.
+    /// The reducer that produced a `Derived` view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reducer: Option<String>,
 }
@@ -104,7 +104,7 @@ impl Provenance {
         }
     }
 
-    /// A helper or reducer interpretation of the observation in `handle`.
+    /// A reducer's interpretation of the observation in `handle`.
     #[must_use]
     pub fn derived(handle: impl Into<String>, reducer: impl Into<String>) -> Self {
         Self {
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_view_is_derived_and_names_its_reducer() {
+    fn a_reducer_view_is_derived_and_names_its_reducer() {
         let provenance = Provenance::derived("tests_7", "test-log-reducer-v2");
         assert!(provenance.class.is_derived());
         assert_eq!(provenance.reducer.as_deref(), Some("test-log-reducer-v2"));

@@ -42,7 +42,7 @@ struct Tried {
     stderr: String,
 }
 
-/// Binds `speculate` where `globals` installs it -- never for a helper.
+/// Binds `speculate` where `globals` installs it.
 pub(super) fn install(
     scope: &mut v8::PinScope,
     global: v8::Local<v8::Object>,

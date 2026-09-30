@@ -153,11 +153,9 @@ fn items_key(capability: &str) -> &'static str {
 impl Router {
     /// Decides the presentation for one marshalled capability result.
     ///
-    /// Deterministic-first (§8): this function never invokes a helper. It
-    /// returns `Exact` when the whole observation fits and `BoundedExact`
-    /// when it does not, always naming the handle that still holds the
-    /// whole. Escalation to a helper is a separate, explicitly budgeted
-    /// decision made by the caller on top of this.
+    /// Deterministic-first (§8): this function asks no model. It returns
+    /// `Exact` when the whole observation fits and `BoundedExact` when it
+    /// does not, always naming the handle that still holds the whole.
     #[must_use]
     pub fn present(&self, capability: &str, binding: &str, value: &Value) -> Presentation {
         match capability {

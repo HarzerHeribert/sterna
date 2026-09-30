@@ -16,8 +16,8 @@
 //!
 //! **Motion never carries information.** A `tick` of zero -- what
 //! `reduced_motion` passes -- renders every field at full strength, so
-//! `/motion off` loses decoration and nothing else. That is the same rule
-//! `tick_helper_clocks` keeps for a running call's elapsed time.
+//! `/motion off` loses decoration and nothing else. A running call's
+//! elapsed time keeps the same rule.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

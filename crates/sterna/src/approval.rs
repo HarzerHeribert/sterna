@@ -26,7 +26,7 @@ pub const MAX_APPROVAL_WAIT: Duration = Duration::from_secs(10 * 60);
 /// The cell's wall-clock limit exists to stop `while (true) {}`, which
 /// allocates nothing and so is invisible to the heap ceiling. Time spent
 /// inside a host callback -- a person deciding, a `cargo test` the cell was
-/// granted, a helper answering -- is not that, and the runtime subtracts it
+/// granted, an MCP server answering -- is not that, and the runtime subtracts it
 /// (`Watchdog::arm_pausing`). One clock serves every such wait: they differ
 /// in what is being waited for and not in what the cell is doing, which is
 /// nothing.

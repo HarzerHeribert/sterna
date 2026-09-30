@@ -15,12 +15,11 @@ impl Runtime {
 
     /// A host embedding may provide its own broker transport; JavaScript cannot.
     ///
-    /// **`web` is bound here and nowhere else, and only when the configuration
-    /// names a domain or an endpoint** (map 2658, [`crate::web::WebConfig::configured`]):
-    /// a session that configured nothing holds no `web`, which is the same
-    /// answer the Runtime block gives the model
-    /// ([`crate::prompt::render_runtime_reaching`]). A helper's narrowing
-    /// still withholds it whatever the configuration says.
+    /// **`web` is bound here and nowhere else, and only while `web.enabled`
+    /// is on** (map 2658, [`crate::web::WebConfig::configured`]): a session
+    /// that turned it off holds no `web`, which is the same answer the
+    /// Runtime block gives the model
+    /// ([`crate::prompt::render_runtime_reaching`]).
     pub fn with_web_broker(self, broker: crate::web::WebBroker) -> Self {
         let mut this = self;
         let configured = broker.config().configured();

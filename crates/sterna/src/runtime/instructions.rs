@@ -72,7 +72,7 @@ impl InstructionContext {
 
     /// The gate, asked before a cell starts rather than at its first broad
     /// call. Stopping at the call threw away everything the cell had already
-    /// done: a 5-second `helper.find` answered, then `bash` beside it was
+    /// done: a 5-second call answered, then `bash` beside it was
     /// refused and the next cell asked the same question again (session
     /// tm3hb2-1k3n). A cell whose own source calls a tool that reads the whole
     /// index now stops before any of it runs; a path the source computes is

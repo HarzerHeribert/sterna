@@ -1,6 +1,6 @@
 //! The `decide` global: the decision model, asked by the running program.
 //!
-//! **Shaped like `helper`, not like `bash`.** Nothing new runs on the machine,
+//! **A question, not a command.** Nothing new runs on the machine,
 //! so no grant is consulted; the call is one metered request inside the cell
 //! that asked it, so it costs no turn; and it either answers or throws a
 //! catchable `ToolError`, so a failed question can never return something
@@ -123,7 +123,7 @@ fn decide_choice_callback(
     retval.set(object.into());
 }
 
-/// The question, as one bounded line for the lane and the inspector.
+/// The question, as one bounded line for the inspector.
 fn question_summary(instructions: &str) -> String {
     let line = instructions
         .trim()
@@ -138,8 +138,8 @@ fn question_summary(instructions: &str) -> String {
     format!("{kept}…")
 }
 
-/// How much of the question the lane carries. One line of a terminal row,
-/// which is what the helper lane beside it gets.
+/// How much of the question the inspector carries: one line of a terminal
+/// row.
 const QUESTION_SUMMARY_CHARS: usize = 72;
 
 /// The `{name: when it applies}` object as criteria, or `None` when it is not

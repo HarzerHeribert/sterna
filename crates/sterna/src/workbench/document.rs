@@ -1606,9 +1606,9 @@ fn answer_head(literal: &str, room: usize) -> (String, bool) {
 
 /// The runtime's own objects: a call on one of these acts on the world or
 /// on the session, whether or not the program awaits it.
-const ACTING: [&str; 21] = [
+const ACTING: [&str; 20] = [
     "read", "write", "edit", "bash", "fd", "grep", "glob", "fetch", "search", "ssh", "web",
-    "checks", "helper", "agent", "handles", "bg", "decide", "mcp", "print", "ask", "plan",
+    "checks", "agent", "handles", "bg", "decide", "mcp", "print", "ask", "plan",
 ];
 /// Rows a streaming cell shows before the earlier ones fold into a count.
 const STREAM_ROWS: usize = 12;
