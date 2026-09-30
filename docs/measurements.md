@@ -61,6 +61,28 @@ What that says:
 Five tasks from the earlier hand-picked set also ran once in every arm
 outside the sample: Sterna at `medium` resolved 3, the other two arms 2 each.
 
+**Fresh input, re-run on 2026-10-01** (build `5897083d`, the default arm
+again on the same 30 tasks, attempts as before). Sterna had sent more
+uncached input than Codex, and three changes went at it: sessions share four
+prompt-cache keys, so a new session's first request lands where the system
+prompt is cached; an excerpt the conversation already carries line for line
+is a pointer; and a result no longer repeats the cell's description or the
+declared keys of a typed handle.
+
+| against | resolved | fresh input | cost | requests |
+|---|---|---|---|---|
+| the same arm on 2026-09-30 | 25.0 to 24.7 | 0.92× (0.83–1.03) | 0.97× (0.87–1.07) | 1.00× |
+| Codex, 2026-09-30 | 25.0 to 25.0 | 1.19× (1.06–1.32) | 0.97× (0.86–1.07) | 0.79× (0.72–0.87) |
+
+The first request of a session went from wholly uncached (8.2–8.6K fresh
+tokens every time) to a median of 94 % cached, in all 56 sessions. The
+pointers replaced 217 excerpts. The total fell less than that promised,
+because this run's model asked for a tenth more contexts: what a run chooses
+to read moves fresh input by as much as these changes do. What is left of
+the gap is by design -- Sterna shows whole definitions and their
+neighbours, about 1.8 times the source Codex reads, and the neighbours are
+how it found the sibling code path on django 15957.
+
 ## Against the Codex CLI (2026-09-29, superseded by the section above)
 
 Same model (GPT-6 Sol) for both, three attempts per task. Sterna ran with its
