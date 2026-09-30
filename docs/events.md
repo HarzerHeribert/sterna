@@ -49,7 +49,7 @@ runtime waits.
     bg.run(command, {timeout})             → Job, immediately
     bg.watch(command, {every, until, timeout}) → Job, immediately
     bg.cancel(job)                         → idempotent
-    await job.result()                     → {stdout, stderr, exit_code, status}
+    await job.result({wait})               → {stdout, stderr, exit_code, status}
 
 `bg.run` returns before the process has done anything; the model never
 blocks on output and never polls. On exit a `bg.done` event carries a
@@ -67,6 +67,16 @@ and edits. The wait pauses the cell's clock as a foreground command does,
 and an interrupt stops the wait and leaves the job running. A result a
 program waited for is withdrawn from the events not yet delivered, so it
 does not arrive again as a `bg.done`.
+
+**No wait holds a cell longer than its wall clock** (`limits.cell_wall_clock_s`,
+30 s), and nothing is killed when it runs out. A foreground command still
+running then goes on as a background job: the job is bound as `job1`,
+`job2`, … and the call throws, naming it, so the model decides whether to
+wait again (`await job1.result()`), stop it (`bg.cancel(job1)`) or leave it
+to arrive as a `bg.done`. `job.result()` hands back the same way;
+`result({wait: ms})` waits longer, for a build the model knows is slow.
+Before 2026-09-30 a foreground command had no bound at all, and a command
+that never ended held its session until someone pressed Ctrl-C.
 
 A background job runs under the same sandbox grant as a foreground call: a
 command outside the grant throws `PermissionDenied` at the call, before any

@@ -65,7 +65,7 @@ Credentials never belong here — keys go to the gateway (`/key`).
 | `ui.theme` | the palette ([workbench](workbench.md#themes)) |
 | `ui.motion`, `ui.statusline`, `ui.sidebar`, `ui.stream` | how much moves and what the screen carries |
 | `web.enabled`, `web.deny_domains`, `web.search_endpoint`, … | the web broker, on by default ([web](web.md)) |
-| `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits; nothing caps a task's cells unless you set it |
+| `limits.cell_wall_clock_s` (30), `limits.response_bytes` (16 KiB), `limits.cells` (none) | per-cell limits: a command still running at the wall clock goes on as a background job ([events](events.md#background-jobs)); nothing caps a task's cells unless you set it |
 
 `sterna config --help` lists the rest: the decision thresholds, when output
 is shortened (`limits.reduce_above_tokens`, `decisions.reduce_returns`) and

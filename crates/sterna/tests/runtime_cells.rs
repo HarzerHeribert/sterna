@@ -3708,9 +3708,11 @@ fn an_interrupt_stops_waiting_for_a_job_and_leaves_it_running() {
     stopper.join().unwrap();
 }
 
-/// Waiting for a job is not the cell's own computing: a wait longer than the
-/// cell's wall-clock limit ends with the job's result -- here its timeout's
-/// `cancelled` -- not with the cell killed for computing too long.
+/// Waiting for a job is not the cell's own computing: a wait the program
+/// asked to be longer than the cell's wall-clock limit (`{wait}`) ends with
+/// the job's result -- here its timeout's `cancelled` -- not with the cell
+/// killed for computing too long. Without `{wait}` the same wait hands the
+/// turn back at the limit with the job still running.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn waiting_for_a_job_is_not_the_cells_own_computing() {
@@ -3724,8 +3726,15 @@ fn waiting_for_a_job_is_not_the_cells_own_computing() {
         Duration::from_millis(500),
     );
     let outcome = runtime.run_cell(
-        "const job = bg.run(\"while true; do :; done\", {timeout: 1500});\nconst r = await job.result();\nreturn r.status;\n",
+        "const job = bg.run(\"while true; do :; done\", {timeout: 1500});\nconst r = await job.result({wait: 10000});\nreturn r.status;\n",
     );
     assert_eq!(returned_string(&outcome), "cancelled", "{outcome:?}");
+    let handed_back = runtime.run_cell(
+        "const again = bg.run(\"while true; do :; done\", {timeout: 5000});\nreturn (await again.result()).status;\n",
+    );
+    assert!(
+        matches!(&handed_back, CellOutcome::Threw { error, .. } if error.message.contains("still running")),
+        "{handed_back:?}"
+    );
     sterna::bg::shutdown(&session);
 }

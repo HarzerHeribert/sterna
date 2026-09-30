@@ -394,7 +394,7 @@ pub const RUNTIME: &[Binding] = &[
                       watch(command: string, options?: {every?: number; until?: string; timeout?: number}): Job;\n  \
                       cancel(job: Job | string): void;\n\
                       };\n\
-                      type Job = {id: string; source: string; result(): Promise<{stdout: string; stderr: string; exit_code: number | null; status: string}>};\n\
+                      type Job = {id: string; source: string; result(options?: {wait?: number}): Promise<{stdout: string; stderr: string; exit_code: number | null; status: string}>};\n\
                       // Run a command in the background. `bg.run` returns a handle at once and\n\
                       // never blocks. A slow command whose result the next step does not need --\n\
                       // a whole test suite, a build -- starts here, and you keep reading and\n\
@@ -405,7 +405,10 @@ pub const RUNTIME: &[Binding] = &[
                       // one `bg.done` per match until `until` matches or you cancel. Both refuse\n\
                       // a command outside the sandbox grant with PermissionDenied, before any\n\
                       // handle exists. Use background work only when it is separable from the next\n\
-                      // decision, and do not poll or sleep for a job.",
+                      // decision, and do not poll or sleep for a job. A call still running when the\n\
+                      // cell has waited its wall clock goes on as a job bound as `jobN` and throws\n\
+                      // saying so; `result()` hands back the same way, `result({wait: ms})` waits\n\
+                      // longer for a build you know is slow.",
     },
     Binding {
         global: "speculate",

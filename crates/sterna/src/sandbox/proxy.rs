@@ -565,12 +565,33 @@ mod unix_listener {
 
     const SOCKET: &str = "proxy.sock";
 
+    /// The longest socket path every unix Sterna builds for accepts: 104
+    /// bytes on macOS (`sun_path`, its NUL included), 108 on Linux.
+    const SOCKET_PATH_MAX: usize = 103;
+
+    /// Where the socket's directory goes: the temporary directory, unless
+    /// that alone makes the path too long -- a per-task `TMPDIR` can -- and
+    /// then `/tmp`, which is short everywhere. Measured 2026-09-30: under a
+    /// 90-byte `TMPDIR` the bind failed, and with it the whole proxy, so
+    /// every command in the session had no network.
+    pub(super) fn base(temp: PathBuf) -> PathBuf {
+        let longest = temp
+            .join(format!("sterna-px-{}-{}", u32::MAX, u32::MAX))
+            .join(SOCKET);
+        if longest.as_os_str().len() <= SOCKET_PATH_MAX {
+            temp
+        } else {
+            PathBuf::from("/tmp")
+        }
+    }
+
     /// A fresh `0700` directory, so only this user can reach the socket, and
     /// a short name, because a socket path is limited to about 104 bytes.
     pub(super) fn start(shared: &Arc<Shared>) -> io::Result<(PathBuf, JoinHandle<()>)> {
         static SEQ: AtomicU32 = AtomicU32::new(0);
+        let base = base(std::env::temp_dir());
         let dir = loop {
-            let candidate = std::env::temp_dir().join(format!(
+            let candidate = base.join(format!(
                 "sterna-px-{}-{}",
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
@@ -969,6 +990,20 @@ fn splice(client: Client, upstream: TcpStream) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_directory_too_long_for_a_socket_moves_the_socket_to_tmp() {
+        use super::unix_listener::base;
+        use std::path::PathBuf;
+        let short = PathBuf::from("/var/folders/ab/cdefgh/T");
+        assert_eq!(base(short.clone()), short);
+        let long = PathBuf::from(format!(
+            "/private/var/folders/ab/cdefgh/T/swe-bench/{}.tmp",
+            "x".repeat(40)
+        ));
+        assert_eq!(base(long), PathBuf::from("/tmp"));
+    }
+
     use super::*;
     use std::io::{BufRead, BufReader};
 

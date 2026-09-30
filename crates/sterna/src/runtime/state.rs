@@ -162,6 +162,10 @@ pub(crate) struct RuntimeState {
     /// because a `cargo test` is granted to every session while an approval
     /// gate is granted to almost none.
     pub(crate) host_clock: Arc<crate::approval::WaitClock>,
+    /// How long one wait inside a cell holds it -- a command, a job's
+    /// `result()` -- before handing back: the cell's wall clock, the one the
+    /// person set (`limits.cell_wall_clock_s`). The work carries on as a job.
+    pub(crate) patience: std::cell::Cell<std::time::Duration>,
     /// The current watchdog's host-visible flag. V8's termination query may
     /// stay false until a blocked Rust callback returns to an interrupt check.
     pub(crate) watchdog_fired: RefCell<Option<Arc<AtomicBool>>>,
@@ -358,6 +362,7 @@ impl RuntimeState {
             ask_refusal: RefCell::new(Some(crate::ask::NOT_AVAILABLE.to_string())),
             watchdog_fired: RefCell::new(None),
             host_clock: Arc::new(crate::approval::WaitClock::default()),
+            patience: std::cell::Cell::new(std::time::Duration::from_secs(30)),
             mcp: RefCell::new(crate::tools::mcp::Mcp::default()),
             web: RefCell::new(None),
             hosts: RefCell::new(None),

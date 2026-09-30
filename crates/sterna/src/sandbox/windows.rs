@@ -1700,6 +1700,13 @@ mod platform {
         pub stderr: Option<File>,
     }
 
+    // SAFETY: the process and job handles are kernel objects this value owns
+    // alone and closes in `Drop`. A kernel handle is valid on every thread of
+    // the process and nothing here is shared, so moving the value to another
+    // thread -- a foreground command handed over to a job (`bg::adopt`) -- is
+    // sound. It stays `!Sync`.
+    unsafe impl Send for ContainedChild {}
+
     impl ContainedChild {
         pub fn id(&self) -> u32 {
             self.pid

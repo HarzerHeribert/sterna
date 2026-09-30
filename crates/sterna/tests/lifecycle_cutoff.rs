@@ -150,28 +150,24 @@ fn provider(first: String) -> (String, Arc<Mutex<Vec<String>>>) {
     (address, bodies)
 }
 
-/// The wall-clock limit bounds the cell's own computing, so a granted child
-/// that outlives it is waited for rather than reaped.
+/// A granted child that outlives the cell's wall clock is never killed: the
+/// cell hands the turn back with the child going on as a job, and the job's
+/// result carries everything the child did.
 ///
-/// **This expectation genuinely changed on 2026-09-18** (the user: "ein Rust
-/// compile step für glasshouse oder blast radius dauert manchmal mehrere
-/// Minuten"). It read `foreground_deadline_kills_late_write_and_remains_
-/// recoverable` and pinned the opposite: a `sleep 3` under a one-second limit
-/// was killed mid-run and the call answered `cancelled`, because the tool
-/// path polls the watchdog's own flag. A build is the work, not a hang.
-///
-/// What it still pins: the child's output reaches the cell, the write lands
-/// *before* the cell ends rather than after it, and the isolate survives. The
-/// orphaned-child invariant this test used to carry now belongs to
-/// cancellation, where it is pinned by the sibling below -- a person stopping
-/// a task still kills its children.
+/// **This expectation changed twice.** Until 2026-09-18 a `sleep 3` under a
+/// one-second limit was killed mid-run (the user: "ein Rust compile step für
+/// glasshouse oder blast radius dauert manchmal mehrere Minuten"). From then
+/// until 2026-09-30 the cell waited however long the child ran, so a command
+/// that never ended held its session for good: two SWE-bench attempts sat
+/// forty minutes each with no model turn in between. Now the wait is the
+/// cell's wall clock and the work carries on.
 #[test]
-fn a_child_that_outlives_the_compute_limit_is_waited_for_not_reaped() {
+fn a_child_that_outlives_the_cell_limit_goes_on_as_a_job_and_is_never_killed() {
     let command = "echo $$ > started; sleep 3; printf late > marker";
     let f = Fixture::new();
     let mut runtime = Runtime::with_limits(
         &f.profile(),
-        &SessionId::new("deadline"),
+        &SessionId::new("outlives-the-cell"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(1),
     );
@@ -180,33 +176,27 @@ fn a_child_that_outlives_the_compute_limit_is_waited_for_not_reaped() {
         "const r = await bash({{command:{}}}); return r.exit_code;",
         serde_json::to_string(command).unwrap()
     ));
-    assert!(f.root.join("started").exists(), "fixture did not run");
     assert!(
-        matches!(
-            &outcome,
-            CellOutcome::Returned {
-                value: Value::Number(code),
-                ..
-            } if *code == 0.0
-        ),
-        "a three-second build under a one-second compute limit must finish: {outcome:?}"
+        began.elapsed() < Duration::from_secs(3),
+        "the cell held the turn for the whole child: {outcome:?}"
     );
     assert!(
-        began.elapsed() >= Duration::from_secs(3),
-        "the cell did not actually wait for its child"
+        matches!(&outcome, CellOutcome::Threw { error, .. }
+            if error.class == "ToolError" && error.message.contains("background job `job1`")),
+        "the throw must name the job the child went on as: {outcome:?}"
+    );
+    let collected =
+        runtime.run_cell("const r = await job1.result({wait: 20000}); return r.status;");
+    assert!(
+        matches!(&collected, CellOutcome::Returned { value: Value::String(text), .. }
+            if text.head() == "0"),
+        "the job must finish with the child's own exit status: {collected:?}"
     );
     assert!(
         f.root.join("marker").exists(),
         "the child's own write never landed"
     );
-    assert!(!runtime.poisoned(), "waiting poisoned the isolate");
-    assert!(matches!(
-        runtime.run_cell("return 7;"),
-        CellOutcome::Returned {
-            value: Value::Number(7.0),
-            ..
-        }
-    ));
+    assert!(!runtime.poisoned(), "handing over poisoned the isolate");
 }
 
 /// The reason the limit exists: `while (true) {}` allocates nothing, so the
@@ -233,27 +223,47 @@ fn a_loop_that_only_computes_still_dies_at_the_compute_limit() {
     );
 }
 
-/// A child that hangs still ends the cell -- through its own bound, which is
-/// what the cell now relies on instead of its compute clock.
+/// A command that never ends hands the turn back at the cell's wall clock;
+/// waiting for its job hands back the same way, and stopping it ends it.
+///
+/// The test this replaces passed `timeout: 1200` to `bash`, which declares no
+/// such argument, and passed on the refusal because its text said "timeout".
 #[test]
-fn a_child_that_hangs_ends_by_its_own_timeout_and_says_so() {
+fn a_child_that_never_ends_hands_the_turn_back_and_can_be_stopped() {
     let f = Fixture::new();
     let mut runtime = Runtime::with_limits(
         &f.profile(),
-        &SessionId::new("hung-child"),
+        &SessionId::new("never-ends"),
         DEFAULT_HEAP_LIMIT_BYTES,
         Duration::from_secs(1),
     );
     let began = Instant::now();
-    let outcome = runtime.run_cell("return await bash({command:'sleep 30', timeout: 1200});");
+    let outcome = runtime.run_cell("return await bash({command:'sleep 600'});");
     assert!(
-        began.elapsed() < Duration::from_secs(20),
-        "the cell waited past the child's own bound: {outcome:?}"
+        began.elapsed() < Duration::from_secs(10),
+        "a command that never ends held the cell: {outcome:?}"
     );
-    let rendered = format!("{outcome:?}");
     assert!(
-        rendered.contains("1200") || rendered.to_lowercase().contains("timeout"),
-        "the ending must name the bound that ended it: {rendered}"
+        matches!(&outcome, CellOutcome::Threw { error, .. }
+            if error.message.contains("job1") && error.message.contains("bg.cancel(job1)")),
+        "the throw must say how to wait for it and how to stop it: {outcome:?}"
+    );
+    let again = Instant::now();
+    let waited = runtime.run_cell("return await job1.result();");
+    assert!(
+        again.elapsed() < Duration::from_secs(10),
+        "waiting for the job held the cell: {waited:?}"
+    );
+    assert!(
+        matches!(&waited, CellOutcome::Threw { error, .. } if error.message.contains("still running")),
+        "{waited:?}"
+    );
+    let stopped =
+        runtime.run_cell("bg.cancel(job1); return (await job1.result({wait: 10000})).status;");
+    assert!(
+        matches!(&stopped, CellOutcome::Returned { value: Value::String(text), .. }
+            if text.head() == "cancelled"),
+        "{stopped:?}"
     );
 }
 

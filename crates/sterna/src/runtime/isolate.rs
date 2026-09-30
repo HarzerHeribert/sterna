@@ -684,6 +684,7 @@ impl Runtime {
         );
 
         let state = Rc::new(RuntimeState::new(profile, session).with_globals(globals));
+        state.patience.set(wall_clock_limit);
         isolate.set_slot(state.clone());
 
         let context = {

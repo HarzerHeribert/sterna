@@ -91,9 +91,12 @@ fn speculate_callback(
             &token,
             name,
             args,
-            gate.as_ref(),
-            &|| token.is_cancelled(),
-            Some(&state.host_clock),
+            invoke::Watching {
+                gate: gate.as_ref(),
+                stopped: &|| token.is_cancelled(),
+                waiting: Some(&state.host_clock),
+                hand_over: None,
+            },
         )
         .outcome
     };

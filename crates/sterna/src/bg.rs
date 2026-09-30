@@ -284,6 +284,7 @@ pub fn run(
         Work::Command(command.to_string()),
         options.timeout_ms,
         None,
+        None,
     ))
 }
 
@@ -306,12 +307,30 @@ pub fn watch(
         Work::Command(command.to_string()),
         options.timeout_ms,
         Some(options.clone()),
+        None,
     ))
 }
 
-/// Mints the handle, registers the job and starts its thread — the one place
-/// a job comes into existence, so `run` and `watch` cannot drift about what a
-/// job is.
+/// A foreground command its cell stopped waiting for, carried on as a job:
+/// the same board, the same `bg.done`, the same cancel, with the child the
+/// cell's own call already spawned rather than a second one
+/// ([`invoke::HandOver`]). `command` is how the completion line names it.
+pub(crate) fn adopt(
+    profile: &Profile,
+    session: &SessionId,
+    command: &str,
+    running: invoke::Running,
+) -> String {
+    start(
+        profile,
+        session,
+        Work::Command(command.to_string()),
+        None,
+        None,
+        Some(running),
+    )
+}
+
 /// Phase 64's entry: start a subagent and answer with its handle at once.
 ///
 /// It admits no command line, because a subagent runs none of its own — its
@@ -354,15 +373,20 @@ pub fn agent_with_config(
         },
         deadline_ms,
         None,
+        None,
     )
 }
 
+/// Mints the handle, registers the job and starts its thread — the one place
+/// a job comes into existence, so `run`, `watch`, `agent` and `adopt` cannot
+/// drift about what a job is.
 fn start(
     profile: &Profile,
     session: &SessionId,
     work: Work,
     timeout_ms: Option<u64>,
     watching: Option<WatchOptions>,
+    adopted: Option<invoke::Running>,
 ) -> String {
     let token = CancellationToken::new();
     // Only a turn loop has progress to report, an inbox to read or a record
@@ -404,6 +428,7 @@ fn start(
         progress,
         inbox,
         record,
+        adopted,
     };
     let thread = std::thread::spawn(move || job.serve());
 
@@ -508,6 +533,9 @@ struct JobThread {
     progress: Option<crate::agent::ProgressSink>,
     inbox: Option<crate::agent::InboxSink>,
     record: Option<crate::agent::AgentRollout>,
+    /// A child a foreground call spawned and handed over ([`adopt`]): the
+    /// job waits on it instead of starting its command again.
+    adopted: Option<invoke::Running>,
 }
 
 /// How many trajectory entries one note carries before it counts the rest.
@@ -562,10 +590,10 @@ fn note_for(answered: &crate::agent::AgentResult) -> String {
 }
 
 impl JobThread {
-    fn serve(self) {
-        match &self.watching {
+    fn serve(mut self) {
+        match self.watching.clone() {
             None => self.serve_once(),
-            Some(options) => self.serve_watch(options),
+            Some(options) => self.serve_watch(&options),
         }
         with_board(&self.session, |board| {
             if let Some(entry) = board.jobs.get_mut(&self.handle) {
@@ -577,10 +605,15 @@ impl JobThread {
     /// One call through `invoke`, then one `bg.done`. A job completes once,
     /// so the emission is the constant §1's dedup table needs to make that
     /// true.
-    fn serve_once(&self) {
+    fn serve_once(&mut self) {
         match &self.work {
             Work::Command(_) => {
-                let result = self.call();
+                let result = match self.adopted.take() {
+                    Some(running) => running
+                        .finish(&|| self.token.is_cancelled())
+                        .map(job_result),
+                    None => self.call(),
+                };
                 self.emit("exit", result);
             }
             Work::Agent {
@@ -697,13 +730,7 @@ impl JobThread {
             });
         };
         let args = Args::new().with("command", command.clone());
-        invoke::run_cancellable(&context, &self.token, "bash", &args).map(|result| JobResult {
-            stdout: result.stdout,
-            stderr: result.stderr,
-            status: result
-                .exit_code
-                .map_or_else(|| "signal".to_string(), |code| code.to_string()),
-        })
+        invoke::run_cancellable(&context, &self.token, "bash", &args).map(job_result)
     }
 
     /// Records one emission's payload and raises its `bg.done`.
@@ -764,6 +791,18 @@ fn cancelled() -> ToolError {
     }
 }
 
+/// A finished command as a job's emission: its output, and its exit code as
+/// the status (`signal` for a child a signal ended).
+fn job_result(result: invoke::ToolResult) -> JobResult {
+    JobResult {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        status: result
+            .exit_code
+            .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+    }
+}
+
 /// §5's `bg.cancel(handle)`: idempotent, and it stops everything the job
 /// started.
 ///
@@ -814,6 +853,9 @@ pub enum Waited {
     Unknown,
     /// `stop` said to stop waiting; the job runs on.
     Stopped,
+    /// The caller's patience ran out first; the job runs on, and has been
+    /// running this long.
+    StillRunning(Duration),
 }
 
 /// A job's result once it has finished: `job.result()`.
@@ -824,13 +866,24 @@ pub enum Waited {
 /// cell was interrupted), leaving the job running. The `bg.done` the finish
 /// raised is withdrawn while it is still undrained, so a result the program
 /// waited for does not arrive a second time in `batch`.
-pub fn wait(session: &SessionId, handle: &str, stop: impl Fn() -> bool) -> Waited {
+///
+/// **A wait holds a cell no longer than `patience`**, the cell's own wall
+/// clock: a job still running then answers [`Waited::StillRunning`] and the
+/// model decides whether to wait again, for the reason a foreground command
+/// is handed over ([`invoke::HandOver`]).
+pub fn wait(
+    session: &SessionId,
+    handle: &str,
+    stop: impl Fn() -> bool,
+    patience: Option<Duration>,
+) -> Waited {
     let source = format!("bg/{handle}");
+    let until = patience.map(|patience| Instant::now() + patience);
     loop {
         let looked = with_board(session, |board| {
             let job = board.jobs.get(handle)?;
             if !job.finished {
-                return Some(None);
+                return Some(Err(job.started.elapsed()));
             }
             let result = job
                 .last_payload
@@ -838,13 +891,16 @@ pub fn wait(session: &SessionId, handle: &str, stop: impl Fn() -> bool) -> Waite
                 .and_then(|payload| board.payloads.get(payload))
                 .cloned()?;
             board.pending.retain(|event| event.source != source);
-            Some(Some(result))
+            Some(Ok(result))
         });
         match looked {
             None => return Waited::Unknown,
-            Some(Some(result)) => return Waited::Done(result),
-            Some(None) if stop() => return Waited::Stopped,
-            Some(None) => std::thread::sleep(WAIT_SLICE),
+            Some(Ok(result)) => return Waited::Done(result),
+            Some(Err(_)) if stop() => return Waited::Stopped,
+            Some(Err(running)) if until.is_some_and(|until| Instant::now() >= until) => {
+                return Waited::StillRunning(running);
+            }
+            Some(Err(_)) => std::thread::sleep(WAIT_SLICE),
         }
     }
 }
@@ -1132,7 +1188,10 @@ mod tests {
     #[test]
     fn waiting_for_a_handle_no_job_has_is_answered_not_hung() {
         let session = SessionId::new("bg-wait-unknown");
-        assert_eq!(wait(&session, "no-such-job", || false), Waited::Unknown);
+        assert_eq!(
+            wait(&session, "no-such-job", || false, None),
+            Waited::Unknown
+        );
     }
 
     #[test]

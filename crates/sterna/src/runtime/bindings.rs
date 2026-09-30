@@ -15,7 +15,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::bg::{self, RunOptions, WatchOptions};
+use crate::bg;
 use crate::events::batch::Batch;
 use crate::events::{BatchStore, Event, EventId};
 use crate::runtime::cell::{RESERVED_PREFIX, is_host_function};
@@ -428,24 +428,8 @@ pub(crate) fn install(scope: &mut v8::PinScope, globals: HostGlobals) {
     }
     ask::install_ask(scope);
 
-    // `events-contract.md` §5's three background-job entry points, on one
-    // fixed object for the same reason every host function above is fixed: a
-    // program that replaced `bg` would lose the only way it has to stop what
-    // it started, and nothing could put it back.
     speculate::install(scope, global, globals);
-    if globals.installs("bg") {
-        let background = v8::Object::new(scope);
-        if let Some(function) = v8::Function::builder(bg_run_callback).build(scope) {
-            set_fixed_key(scope, background, "run", function.into());
-        }
-        if let Some(function) = v8::Function::builder(bg_watch_callback).build(scope) {
-            set_fixed_key(scope, background, "watch", function.into());
-        }
-        if let Some(function) = v8::Function::builder(bg_cancel_callback).build(scope) {
-            set_fixed_key(scope, background, "cancel", function.into());
-        }
-        set_fixed_key(scope, global, "bg", background.into());
-    }
+    job::install(scope, global, globals);
 
     if globals.installs("checks") {
         crate::runtime::checks::install(scope, global);
@@ -834,20 +818,29 @@ fn tool_callback(
         // the wait itself — not here. A hook (`glasshouse::run`) is also a
         // child of this call and has no bound of its own, so it must stay on
         // the cell's clock; that clock is all that ends a hook that hangs.
+        // The child itself holds the cell for the same wall clock at most,
+        // then goes on as a job the model can wait for or stop.
+        let subject = call_args.get("command").unwrap_or(tool.name());
+        let adopt =
+            |running: invoke::Running| bg::adopt(&state.profile, &state.session, subject, running);
+        let after = state.patience.get();
         invoke::run_traced_pausing(
             &context,
             &token,
             tool.name(),
             &call_args,
-            gate.as_ref(),
-            &|| {
-                token.is_cancelled()
-                    || watchdog
-                        .as_ref()
-                        .is_none_or(|fired| fired.load(std::sync::atomic::Ordering::SeqCst))
-                    || isolate.is_execution_terminating()
+            invoke::Watching {
+                gate: gate.as_ref(),
+                stopped: &|| {
+                    token.is_cancelled()
+                        || watchdog
+                            .as_ref()
+                            .is_none_or(|fired| fired.load(std::sync::atomic::Ordering::SeqCst))
+                        || isolate.is_execution_terminating()
+                },
+                waiting: Some(&state.host_clock),
+                hand_over: Some(&invoke::HandOver { after, to: &adopt }),
             },
-            Some(&state.host_clock),
         )
     };
     let check = call_args.get("command").filter(|line| {
@@ -901,7 +894,7 @@ fn tool_callback(
             },
             Some(cancelled.to_string()),
         ),
-        Err(spawn @ ToolError::Spawn { .. }) => (
+        Err(spawn @ (ToolError::Spawn { .. } | ToolError::StillRunning { .. })) => (
             Ended::Threw {
                 class: "ToolError".to_string(),
             },
@@ -1051,6 +1044,7 @@ fn tool_callback(
         }
         Err(ToolError::Denied(denied)) => throw_denied(scope, &denied),
         Err(ToolError::Cancelled { tool }) => throw_cancelled(scope, &tool),
+        Err(running @ ToolError::StillRunning { .. }) => job::hand_back(scope, &running),
         Err(other) => throw_tool_error(scope, &other.to_string()),
     }
 }
@@ -2377,97 +2371,6 @@ fn agent_run_callback(
 /// turn's ceiling, which is the smallest amount that could produce an answer
 /// rather than a truncation.
 const MINIMUM_AGENT_BUDGET: u64 = crate::wire::MAX_TOKENS as u64;
-
-// --- bg.run, bg.watch, bg.cancel ---------------------------------------
-
-/// §5's `bg.run`. The refusal is `Profile::admits_command`'s own and it
-/// happens inside [`bg::run`] **before** a handle exists, so a program that
-/// catches this exception is holding nothing.
-fn bg_run_callback(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut retval: v8::ReturnValue,
-) {
-    let command = args.get(0).to_rust_string_lossy(scope);
-    let options = RunOptions {
-        cwd: read_option(scope, args.get(1), "cwd"),
-        env: read_option(scope, args.get(1), "env"),
-        timeout_ms: read_millis(scope, args.get(1), "timeout"),
-    };
-    let state = state(scope);
-    let instruction_args = Args::new().with("command", &command);
-    if state.instruction_boundary("bg.run", &instruction_args) {
-        stop_for_instructions(scope, "`bg.run`", "the job did not start");
-        return;
-    }
-    match bg::run(&state.profile, &state.session, &command, &options) {
-        Ok(handle) => {
-            let object = job::job_object(scope, &handle);
-            retval.set(object);
-        }
-        Err(denied) => throw_denied(scope, &denied),
-    }
-}
-
-/// §5's `bg.watch`. `every` defaults to a second, which is the smallest
-/// cadence a shell command can be run at without the polling itself being
-/// the load.
-///
-/// **The default is not the bound.** A program that names its own `every` is
-/// answered by `bg::watch`'s floor, which refuses a cadence under it rather
-/// than clamping silently — the enforcement is there and not here so that no
-/// caller of the module can get under it.
-fn bg_watch_callback(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut retval: v8::ReturnValue,
-) {
-    let command = args.get(0).to_rust_string_lossy(scope);
-    let options = WatchOptions {
-        every_ms: read_millis(scope, args.get(1), "every").unwrap_or(DEFAULT_WATCH_EVERY_MS),
-        until: read_option(scope, args.get(1), "until"),
-        timeout_ms: read_millis(scope, args.get(1), "timeout"),
-    };
-    let state = state(scope);
-    let instruction_args = Args::new().with("command", &command);
-    if state.instruction_boundary("bg.watch", &instruction_args) {
-        stop_for_instructions(scope, "`bg.watch`", "the watcher did not start");
-        return;
-    }
-    match bg::watch(&state.profile, &state.session, &command, &options) {
-        Ok(handle) => {
-            let object = job::job_object(scope, &handle);
-            retval.set(object);
-        }
-        Err(denied) => throw_denied(scope, &denied),
-    }
-}
-
-/// How often `bg.watch` runs its command when the model named no cadence.
-const DEFAULT_WATCH_EVERY_MS: u64 = 1_000;
-
-/// §5's `bg.cancel(handle)`: idempotent, and it takes either the object
-/// `bg.run` answered with or the bare id off it, because a model that kept
-/// only `job.id` should not have to reconstruct the object.
-fn bg_cancel_callback(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let given = args.get(0);
-    let id = match v8::Local::<v8::Object>::try_from(given) {
-        Ok(object) => v8::String::new(scope, "id")
-            .and_then(|key| object.get(scope, key.into()))
-            .map(|value| value.to_rust_string_lossy(scope))
-            .unwrap_or_default(),
-        Err(_) => given.to_rust_string_lossy(scope),
-    };
-    if id.is_empty() {
-        return;
-    }
-    let session = state(scope).session.clone();
-    bg::cancel(&session, &id);
-}
 
 /// One string property of an options object, or `None` when the object, the
 /// property or its value is absent.

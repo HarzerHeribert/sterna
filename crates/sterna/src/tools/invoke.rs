@@ -38,6 +38,8 @@
 /// output filter for the one that cannot be stepped over by name.
 mod broad;
 mod process;
+/// A waited-on child as a value, so a foreground caller can hand it on.
+mod running;
 /// `read` and `grep` performed inside this process. Used where the registry
 /// declares both in-process — Windows — and compiled under `test` on every
 /// host so the ordinary gate asserts the matcher and the walker.
@@ -48,6 +50,7 @@ use broad::{
     contains_component, explicitly_roots_component, filter_grep_artifacts, ignored_directories,
     is_broad_search, is_sterna_artifact, ripgrep_is_installed,
 };
+pub(crate) use running::{HandOver, Running};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
@@ -444,6 +447,13 @@ pub enum ToolError {
     Cancelled {
         tool: String,
     },
+    /// The caller stopped waiting and the child carries on as background
+    /// job `job` ([`HandOver`]); nothing was killed.
+    StillRunning {
+        tool: String,
+        job: String,
+        waited: Duration,
+    },
 }
 
 impl ToolError {
@@ -455,7 +465,9 @@ impl ToolError {
     pub fn denied(&self) -> Option<&PermissionDenied> {
         match self {
             ToolError::Denied(denied) => Some(denied),
-            ToolError::Spawn { .. } | ToolError::Cancelled { .. } => None,
+            ToolError::Spawn { .. }
+            | ToolError::Cancelled { .. }
+            | ToolError::StillRunning { .. } => None,
         }
     }
 }
@@ -482,6 +494,13 @@ impl fmt::Display for ToolError {
             ToolError::Cancelled { tool } => {
                 write!(f, "Cancelled: {tool}() was cancelled before it completed")
             }
+            ToolError::StillRunning { tool, job, waited } => write!(
+                f,
+                "{tool}() was still running after {} s, so it goes on as background job `{job}`: \
+                 `await {job}.result()` waits for it again, `bg.cancel({job})` stops it, and if \
+                 you do neither its result arrives as a `bg.done` event",
+                waited.as_secs()
+            ),
         }
     }
 }
@@ -566,19 +585,22 @@ pub fn run_traced(
 /// The exact-call suspension seam. The gate runs after complete argument
 /// admission and before an effect; returning resumes this stack frame only.
 /// How the caller supervises one tool call: the seam that may ask a person,
-/// the flag that says stop, and the clock that stops while this call's child
-/// runs.
+/// the flag that says stop, the clock that stops while this call's child
+/// runs, and how long it waits on that child.
 ///
-/// One value rather than three parameters because they are one idea — what
+/// One value rather than four parameters because they are one idea — what
 /// the caller does *around* the call, as opposed to what the call is.
 #[derive(Clone, Copy)]
-struct Watching<'a> {
-    gate: Option<&'a crate::approval::Gate>,
-    stopped: &'a dyn Fn() -> bool,
+pub(crate) struct Watching<'a> {
+    pub gate: Option<&'a crate::approval::Gate>,
+    pub stopped: &'a dyn Fn() -> bool,
     /// Stopped while the child runs, never around the whole call: the hooks
     /// this path delivers have no bound of their own and must stay on the
     /// caller's clock.
-    waiting: Option<&'a std::sync::Arc<crate::approval::WaitClock>>,
+    pub waiting: Option<&'a std::sync::Arc<crate::approval::WaitClock>>,
+    /// When to stop waiting on the child and whom to hand it to; `None`
+    /// waits until it ends.
+    pub hand_over: Option<&'a HandOver<'a>>,
 }
 
 pub(crate) fn run_traced_with_gate(
@@ -589,11 +611,17 @@ pub(crate) fn run_traced_with_gate(
     gate: Option<&crate::approval::Gate>,
     stopped: &dyn Fn() -> bool,
 ) -> Traced {
-    run_traced_pausing(ctx, token, name, args, gate, stopped, None)
+    let watching = Watching {
+        gate,
+        stopped,
+        waiting: None,
+        hand_over: None,
+    };
+    run_traced_pausing(ctx, token, name, args, watching)
 }
 
 /// [`run_traced_with_gate`] with the clock a caller wants stopped while this
-/// call's child runs.
+/// call's child runs, and the hand-over that bounds how long it waits.
 ///
 /// **Only the child's own wait is paused, never the whole call.** The hooks
 /// this path delivers (`glasshouse::run`) are children too and have no
@@ -604,9 +632,7 @@ pub(crate) fn run_traced_pausing(
     token: &CancellationToken,
     name: &str,
     args: &Args,
-    gate: Option<&crate::approval::Gate>,
-    stopped: &dyn Fn() -> bool,
-    waiting: Option<&std::sync::Arc<crate::approval::WaitClock>>,
+    watching: Watching<'_>,
 ) -> Traced {
     let mut checked = CheckedArgs::new();
     let Some(tool) = registry::lookup(name) else {
@@ -623,18 +649,7 @@ pub(crate) fn run_traced_pausing(
         };
     };
 
-    let outcome = checked_call(
-        ctx,
-        token,
-        tool,
-        args,
-        &mut checked,
-        Watching {
-            gate,
-            stopped,
-            waiting,
-        },
-    );
+    let outcome = checked_call(ctx, token, tool, args, &mut checked, watching);
     Traced { outcome, checked }
 }
 
@@ -702,6 +717,7 @@ fn checked_call(
         gate,
         stopped,
         waiting,
+        hand_over,
     } = watching;
     let stop = || token.is_cancelled() || stopped();
     if stop() {
@@ -856,9 +872,9 @@ fn checked_call(
             // The one command the person let out, and nothing after it: a
             // copy of the profile without Sterna's own confinement.
             let unconfined = ctx.profile.clone().with_os_sandbox_bypass();
-            spawn_confined(&unconfined, &stop, tool, &argv, waiting)?
+            spawn_confined(&unconfined, &stop, tool, &argv, waiting, hand_over)?
         } else {
-            spawn_confined(ctx.profile, &stop, tool, &argv, waiting)?
+            spawn_confined(ctx.profile, &stop, tool, &argv, waiting, hand_over)?
         }
     };
     if requested == "grep" && broad_search {
@@ -1680,6 +1696,7 @@ fn spawn_confined(
     tool: &Tool,
     argv: &[std::ffi::OsString],
     waiting: Option<&std::sync::Arc<crate::approval::WaitClock>>,
+    hand_over: Option<&HandOver<'_>>,
 ) -> Result<ToolResult, ToolError> {
     let cancelled = || ToolError::Cancelled {
         tool: tool.name().to_string(),
@@ -1823,44 +1840,22 @@ fn spawn_confined(
     // (`RuntimeState::away_from_js`). `stopped()` still answers, so a person
     // stopping the task still kills this child on the next poll.
     let _waiting = waiting.map(|clock| clock.pause());
-
-    let status = loop {
-        if stopped() {
-            kill_and_reap(&mut child);
-            return Err(cancelled());
-        }
-        match process::try_complete(&mut child) {
-            Ok(Some(status)) => break status,
-            Ok(None) => std::thread::sleep(CANCEL_POLL),
-            // The wait itself failing leaves a running child nothing here
-            // can observe again, so it is killed on the way out. Reporting
-            // it as `Spawn` is not new lumping: `output()` raised the same
-            // variant for its own wait and read failures.
-            Err(error) => {
-                kill_and_reap(&mut child);
-                return Err(spawn_failed(error));
-            }
-        }
+    let running = Running::new(child, stdout, stderr, tool.name(), grant, confinement);
+    let Some(hand_over) = hand_over else {
+        return running.finish(stopped);
     };
-
-    // Descendants in the owned group have now been stopped. Keep the final
-    // pipe drain cancellable too; a process that deliberately escaped the
-    // group must not hold this host callback indefinitely through its pipe.
-    while !stdout.is_finished() || !stderr.is_finished() {
-        if stopped() {
-            return Err(cancelled());
+    let until = std::time::Instant::now() + hand_over.after;
+    match running.wait(stopped, Some(until)) {
+        running::Wait::Ended(outcome) => outcome,
+        running::Wait::Running(running) => {
+            let waited = running.elapsed();
+            Err(ToolError::StillRunning {
+                tool: tool.name().to_string(),
+                job: (hand_over.to)(running),
+                waited,
+            })
         }
-        std::thread::sleep(CANCEL_POLL);
     }
-    Ok(ToolResult {
-        modified: None,
-        tool: tool.name().to_string(),
-        stdout: collect(stdout),
-        stderr: collect(stderr),
-        exit_code: status.code(),
-        grant,
-        confinement,
-    })
 }
 
 /// Reads one of the child's pipes to EOF on a thread of its own.

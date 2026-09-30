@@ -491,7 +491,7 @@ static SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "limits.cell_wall_clock_s",
         label: "Cell time limit",
-        description: "Seconds one cell may run.",
+        description: "Seconds one cell may run, and how long it waits on a command before the command goes on as a background job.",
         kind: Kind::Integer,
         choices: &[],
         basic: false,
