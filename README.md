@@ -29,18 +29,19 @@ today it is shown about 210.
 **Beside the turn.** **Subagents** take a whole separable goal and run
 beside the task. Long output is folded by rules before the model reads it —
 passing tests, build chatter and repeated lines go, every failure stays —
-and the whole output is still there. **Jev**, a classifier, answers typed
-questions — is this request read-only, is this a log — in about two seconds,
-and a task that stops producing anything ends on its own.
+and the whole output is still there. **Jev**, a classifier you switch on by
+naming its model, answers typed questions — is this request read-only, is
+this a log — in about two seconds, and a task that stops producing anything
+ends on its own.
 
 **The longest run on the least.** History is append-only except when it is
 compacted, the system prompt stays the same between tasks, and a context
 that stops fitting is compacted while the isolate keeps running, so a result
-from turn three is still addressable afterwards. Against the Codex CLI with
-the same model (GPT-6 Sol, 2026-09-29, three attempts each): on four small tasks both finished 12 of 12, Sterna in
-8 % less time on 31 % fewer tokens; on six hard SWE-bench Verified tasks
-Sterna resolved 7 of 18 to Codex's 9, in 19 % less time at 16 % lower cost
-([measurements](docs/measurements.md)).
+from turn three is still addressable afterwards. Against the Codex CLI on
+the same model (GPT-6 Sol, 2026-09-30), on 30 SWE-bench Verified tasks drawn
+at random, Sterna resolved as many (24.7 of 30 to Codex's 25, averaged over
+attempts) with about a fifth fewer model requests, at the same cost and in
+no less time ([measurements](docs/measurements.md)).
 
 **Your subscription or your key.** Sterna talks to models through the
 **inference gateway**, a separate program it starts beside itself. The

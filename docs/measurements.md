@@ -1,11 +1,67 @@
 # Measurements
 
-What has been measured, when, and on what. Every run below used the
-program under its former name, Pane; the commits named are in this
-repository's history. Tasks are the [ruler](ruler.md)'s. **Read the limits
-at the end before acting on a number.**
+What has been measured, when, and on what. Runs from before the rename used
+the program under its former name, Pane; the commits named are in this
+repository's history. Tasks are the [ruler](ruler.md)'s unless a section
+names SWE-bench. **Read the limits at the end before acting on a number.**
 
-## Against the Codex CLI (2026-09-29)
+## Against the Codex CLI (2026-09-30)
+
+Sterna v0.1.0-pre.24 as released against Codex CLI 0.155.1, both on GPT-6 Sol
+through the ChatGPT subscription. What the run could print was written down
+before it ran.
+
+**Tasks.** The first 30 tasks that grade correctly on macOS from a seeded
+random order (seed 20260930) of the 306 django and sympy tasks in SWE-bench
+Verified: 16 of the first 46 drawn were dropped because the untouched or the
+gold-patched tree did not grade as expected here, before any agent ran. The
+draw is 11 tasks of under 15 minutes, 15 of up to an hour and 4 of up to four
+hours, close to the benchmark's own mix.
+
+**Arms**, run side by side on each task so both meet the same provider:
+Sterna at its default effort (GPT is asked for `low`), Sterna at `medium`,
+and Codex at its default `medium`. One attempt each; the five tasks where the
+arms disagreed got two more attempts in every arm, and a task's result is
+its share of resolved attempts. Every attempt ran fenced from the rest of the
+disk; neither agent searched the web. Ratios are Sterna's total over Codex's
+across the 30 tasks, with a 90 % interval from resampling tasks.
+
+| | Sterna, default (`low`) | Sterna, `medium` | Codex (`medium`) |
+|---|---|---|---|
+| resolved, of 30 | 24.7 | 24.0 | 25.0 |
+| model requests | 0.79× (0.71–0.89) | 0.78× (0.73–0.85) | 15.5 per task |
+| fresh input tokens | 1.29× (1.15–1.43) | 1.45× (1.29–1.62) | |
+| output tokens | 1.02× (0.93–1.13) | 1.31× (1.21–1.40) | |
+| cost | 1.00× (0.90–1.11) | 1.14× (1.04–1.24) | |
+| cost per resolved task | $0.21 | $0.25 | $0.21 |
+| time | 1.23× (0.92–1.67) | 1.48× (1.21–1.88) | |
+
+What that says:
+
+- **The same results.** No difference in what was resolved (exact McNemar
+  p = 1.0 for either Sterna arm against Codex).
+- **About a fifth fewer model requests**, at both efforts: the one clear
+  difference. Codex 0.155.1 writes programs too: its only tool, `exec`, runs a
+  JavaScript program that calls the shell, and it averaged 1.7 calls per
+  program, 30 % of programs with more than one. Sterna's cells averaged 2.2 to
+  2.4 calls, two-thirds with more than one.
+- **Each request carries more**: more new input (mostly whole definitions
+  read with `context`), and at `medium` more output. At the default effort
+  the two even out, and the cost is the same.
+- **Not faster.** At the default effort the time is within noise, and 1.02×
+  with the two attempts described next left out; at `medium` Sterna was
+  slower.
+- **`medium` bought nothing** for Sterna: the same results at 13 % more cost
+  and 20 % more time, so GPT keeps `low` as its default.
+- Two Sterna attempts on sympy 19040 hung on a command that never ended and
+  were stopped at the 40-minute cap: a foreground command had no bound in
+  pre.24, and the cell's clock does not run while it waits. Both count as
+  unresolved above.
+
+Five tasks from the earlier hand-picked set also ran once in every arm
+outside the sample: Sterna at `medium` resolved 3, the other two arms 2 each.
+
+## Against the Codex CLI (2026-09-29, superseded by the section above)
 
 Same model (GPT-6 Sol) for both, three attempts per task. Sterna ran with its
 helper models and Jev off (`[helpers] enabled = false`, `[decisions] mode =
@@ -54,7 +110,7 @@ profile that refuses the home folder, temporary folders and the network
 outside its own tree. Sealed that way it resolved 7 of 18, at 770 s and
 $0.13 (DeepSeek's peak rates) an attempt.
 
-## Against the Codex CLI (2026-09-24, superseded by the section above)
+## Against the Codex CLI (2026-09-24, superseded)
 
 Four tasks, same model (GPT-6 Sol), three attempts each, Sterna at its
 shipped defaults of commit `6fc97dc7`. Time is launch to exit including the
@@ -154,8 +210,12 @@ own source the rest. A helper can save at most the tool-result share.
 
 - **n is small** (3–8 per cell) and the spread is wide: main-model tokens
   on X1 had a standard deviation of about 35 % of the mean across nine
-  runs. A difference under ~40 % at n = 3 is direction, not a result.
-- **One repository, few models.** A weaker model, an unfamiliar repository
+  runs. A difference under ~40 % at n = 3 is direction, not a result. The
+  2026-09-30 run compares arms task by task over 30 tasks instead, and
+  says only what its intervals carry.
+- **Two repositories, one model** in the 2026-09-30 run: django and sympy,
+  the tasks among them that grade on macOS, and GPT-6 Sol.
+- **One repository, few models** in the earlier runs. A weaker model, an unfamiliar repository
   or tasks the model fails can change every row.
 - Attempts that hit a subscription's weekly limit are recorded as errored,
   never as failures.
