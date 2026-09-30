@@ -111,7 +111,11 @@ earlier result already carries is not printed again: it arrives as its
 header (path, symbol, version) and one line naming the cell whose result
 holds it. It still binds an `edit` to that version. A changed file renders
 different bytes and is printed in full, and after a checkpoint replaces the
-conversation every context is printed in full again.
+conversation every context is printed in full again. The same holds for one
+excerpt inside a context that is otherwise new: a definition, file or
+neighbour the conversation already carries line for line -- the same line
+numbers, the same text -- arrives as its header and where it was shown, and
+the rest of the context is printed. Every first delivery is whole.
 
 A file the model has read that changes on disk by anything but its own
 `edit` or `write` -- a formatter it ran, a background job, the person's

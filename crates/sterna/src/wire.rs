@@ -271,9 +271,10 @@ struct RequestBody<'a> {
     /// byte in every ordinary turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
-    /// `{"user_id": <this session's id>}` once [`set_cache_key`] ran: the
-    /// gateway carries it to the Responses API as `prompt_cache_key`, which
-    /// keeps one session's requests on one cache. Absent before that.
+    /// `{"user_id": <the session's cache key>}` once [`set_cache_key`] ran:
+    /// the gateway carries it to the Responses API as `prompt_cache_key`,
+    /// which keeps a session's requests on one cache ([`cache_key_for`]).
+    /// Absent before that.
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Metadata>,
 }
@@ -291,11 +292,32 @@ static CACHE_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// 2026-09-24: 0 of 4 replayed requests hit without it, 3 of 3 with it).
 pub const SESSION_HEADER: &str = "x-claude-code-session-id";
 
-/// Names the process's session as the prompt-cache key every later request
-/// carries, in the body's metadata and in [`SESSION_HEADER`]. The first call
-/// wins; one process is one session.
+/// How many prompt-cache keys Sterna's sessions share between them.
+const CACHE_BUCKETS: u8 = 4;
+
+/// The prompt-cache key a session's requests carry: one of
+/// [`CACHE_BUCKETS`] keys every Sterna session shares, chosen by its id.
+///
+/// **Shared, so a new session starts warm.** The provider routes a request by
+/// the prompt's first tokens and this key, and caches on the machine it lands
+/// on. A key per session sent each new session to a machine that had never
+/// seen Sterna's system prompt: measured 2026-09-30 through the gateway, a new
+/// key found the prompt cached 3 times in 6 and a repeated key 96 % of the
+/// time, and over 30 SWE-bench tasks the uncached first requests were a fifth
+/// of Sterna's fresh input. Several keys rather than one, because a key that
+/// carries more than about fifteen requests a minute spills onto machines
+/// that do not hold the prefix; a session keeps its one key throughout.
+pub fn cache_key_for(session: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let bucket = Sha256::digest(session.as_bytes())[0] % CACHE_BUCKETS;
+    format!("sterna-{bucket}")
+}
+
+/// Sets the prompt-cache key every later request carries, in the body's
+/// metadata and in [`SESSION_HEADER`], from the process's session. The first
+/// call wins; one process is one session.
 pub fn set_cache_key(session: &str) {
-    let _ = CACHE_KEY.set(session.to_string());
+    let _ = CACHE_KEY.set(cache_key_for(session));
 }
 
 /// A main-model request the session chose to summarise
@@ -1865,6 +1887,20 @@ fn read_sse_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sessions share a few cache keys, so a new one lands where Sterna's
+    /// prompt is already cached, and one session always keeps the same key.
+    #[test]
+    fn sessions_share_a_few_cache_keys_and_each_keeps_its_own() {
+        let keys: std::collections::BTreeSet<String> = (0..200)
+            .map(|n| cache_key_for(&format!("session-{n}")))
+            .collect();
+        assert_eq!(
+            keys.into_iter().collect::<Vec<_>>(),
+            ["sterna-0", "sterna-1", "sterna-2", "sterna-3"]
+        );
+        assert_eq!(cache_key_for("tm6xuq-shx"), cache_key_for("tm6xuq-shx"));
+    }
 
     /// Each model starts at the fallback, is raised fourfold to a ceiling
     /// and no further.

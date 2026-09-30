@@ -89,10 +89,20 @@ impl std::error::Error for ContextError {}
 
 impl SourceContext {
     pub fn render(&self) -> String {
+        self.render_with(|_| None)
+    }
+
+    /// The rendering, with every excerpt `shown` places elsewhere -- one the
+    /// conversation already carries line for line -- as its header and
+    /// where it is, never a second copy. `shown` answers "in cell 3's
+    /// result" or `None` for an excerpt to print whole.
+    pub fn render_with(&self, shown: impl Fn(&SourceExcerpt) -> Option<String>) -> String {
         let mut o = format!("{}complete: {}\n", self.header(), self.complete);
-        render_one(&mut o, &self.target);
-        for e in &self.supporting {
-            render_one(&mut o, e)
+        for e in std::iter::once(&self.target).chain(&self.supporting) {
+            match shown(e) {
+                Some(place) => render_pointer(&mut o, e, &place),
+                None => render_one(&mut o, e),
+            }
         }
         for x in &self.omissions {
             o.push_str(&format!("omission: {x}\n"))
@@ -1710,6 +1720,19 @@ fn relative(profile: &Profile, p: &Path) -> String {
         .to_string_lossy()
         .replace('\\', "/")
 }
+/// One excerpt the conversation already carries: the header `render_one`
+/// would write, saying where its lines are.
+fn render_pointer(o: &mut String, e: &SourceExcerpt, place: &str) {
+    o.push_str(&format!(
+        "\n### {:?}: {}:{}-{} [{}] shown {place}, not printed again\n",
+        e.role,
+        e.path,
+        e.range.start,
+        e.range.end,
+        if e.complete { "complete" } else { "excerpt" }
+    ));
+}
+
 fn render_one(o: &mut String, e: &SourceExcerpt) {
     o.push_str(&format!(
         "\n### {:?}: {}:{}-{} [{}]\n",

@@ -357,10 +357,11 @@ fn a_tasks_requests_echo_the_routing_token_its_first_response_gave() {
         vec![None, Some("T1".to_string()), None, Some("T2".to_string())]
     );
     // The proxy keys its upstream prompt cache on this header; every request
-    // names the one session so each lands where its prefix is cached.
+    // of the session names its one shared key, so each lands where its
+    // prefix is cached.
     assert_eq!(
         *sessions.lock().unwrap(),
-        vec![Some("turn-routing".to_string()); 4]
+        vec![Some(sterna::wire::cache_key_for("turn-routing")); 4]
     );
 }
 
@@ -4540,7 +4541,10 @@ fn a_second_task_resends_the_first_as_an_unchanged_prefix() {
         later[..earlier.len()],
         "the first task's messages are not a prefix of the second's"
     );
-    assert_eq!(first["metadata"]["user_id"], "stable-prefix");
+    assert_eq!(
+        first["metadata"]["user_id"],
+        sterna::wire::cache_key_for("stable-prefix")
+    );
     assert_eq!(second["metadata"], first["metadata"]);
 }
 

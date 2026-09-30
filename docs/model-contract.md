@@ -238,13 +238,16 @@ then one entry per live handle in declaration order, in the shape
 [runtime](runtime.md#previews) fixes, or `(none)`. The whole table is capped
 at 2,048 estimated tokens; over it, the oldest entries are left out of the
 rendering (never freed) with one line saying how many and how to list them.
+An object whose type a declaration names (`Code.Context`, a command's
+result) is its header alone: its preview would be the declared keys again.
 A stale handle shows the one word `stale`.
 
 ## 5. The native execution handoff
 
 The action channel is the provider-native `execute_cell` tool. Its input
 schema is `{code: string, description: string}`, both required: the
-description is the one-line account of the cell the person sees above it. Sterna runs only a complete,
+description is the one-line account of the cell the person sees above it; the
+result does not repeat it, because the call carries it. Sterna runs only a complete,
 decoded input and returns a correlated `tool_result` before the model can
 interpret it. Malformed or truncated JSON never runs. Unknown or multiple
 calls are rejected each by name, never dropped silently.
@@ -325,6 +328,16 @@ the tool prefix. Conversation messages are never marked. These are requests
 for caching, not evidence of a hit: `cache_read_input_tokens` and
 `cache_creation_input_tokens` are shown separately from input and output,
 and a missing field stays unknown rather than zero.
+
+Every request of a session carries one prompt-cache key (`metadata.user_id`,
+which the gateway passes on as the Responses API's `prompt_cache_key`), and
+sessions share four of them, chosen by the session id. The provider routes a
+request by its prompt's first tokens and that key, so a shared key sends a
+new session to a machine that already holds Sterna's system prompt: with a
+key per session, measured 2026-09-30, a session's first request found it
+cached about half the time and was a fifth of Sterna's uncached input over 30
+SWE-bench tasks. Four keys rather than one, because a key carrying more than
+about fifteen requests a minute spills onto machines that do not hold it.
 
 *Context* (the latest request's input plus cache reads and writes) and
 *spent* (every token of every request in the task) are two separate

@@ -957,11 +957,12 @@ fn render_result_with_state(result: &CellResult, include_state: bool) -> String 
         "yielded"
     };
     let mut out = format!("[cell {} {verb} in {} ms]", result.cell, result.elapsed_ms);
-    // Before the first section header, so `compact_result` keeps it: what the
+    // The historical form only, before the first section header: what the
     // model said this cell was for outlives the handles and the output it
-    // produced, and a compacted conversation still reads as an account of the
-    // work rather than a list of programs.
-    if let Some(description) = &result.description {
+    // produced there. The live result never repeats it -- the model's own
+    // call carries it just above, and the echo was 1 % of Sterna's fresh
+    // input over 30 SWE-bench tasks (2026-09-30).
+    if !include_state && let Some(description) = &result.description {
         out.push('\n');
         out.push_str(description);
     }

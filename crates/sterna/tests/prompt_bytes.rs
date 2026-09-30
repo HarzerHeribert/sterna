@@ -945,10 +945,11 @@ fn repair_fences_are_data_and_cannot_mix_with_executable_code() {
 }
 
 /// The user, 2026-09-17: *"Stays in context might be beneficial."* The
-/// descriptor is written into the result's head, which is exactly the part
-/// `compact_result` keeps — so after compaction the model still holds a line
-/// of account for every cell it ran, at a few tokens each, where today it
-/// holds a list of programs and nothing about why.
+/// descriptor is in the model's own message -- the line before the fence, or
+/// the call's `description` -- which compaction never edits, so after
+/// compaction the model still holds a line of account for every cell it ran.
+/// The result does not repeat it (2026-09-30: the echo was 1 % of Sterna's
+/// fresh input over 30 SWE-bench tasks).
 #[test]
 fn every_descriptor_survives_compaction_when_the_handles_do_not() {
     let described = |cell: u64, description: &str| {
@@ -978,25 +979,42 @@ fn every_descriptor_survives_compaction_when_the_handles_do_not() {
         system: "sys".to_string(),
         messages: vec![
             Message::text(Role::User, "implement ssh.run"),
-            Message::text(Role::Assistant, "```sterna\nconst a = 1;\n```"),
+            Message::text(
+                Role::Assistant,
+                format!("{first}\n```sterna\nconst a = 1;\n```"),
+            ),
             Message::text(Role::User, described(1, first)),
-            Message::text(Role::Assistant, "```sterna\nconst b = 2;\n```"),
+            Message::text(
+                Role::Assistant,
+                format!("{second}\n```sterna\nconst b = 2;\n```"),
+            ),
             Message::text(Role::User, described(2, second)),
         ],
     };
+    let text = |conversation: &Conversation, index: usize| {
+        conversation.messages[index].content[0].text().to_string()
+    };
+    assert!(
+        !text(&conversation, 2).contains(first),
+        "the result repeated the description its cell already carries: {}",
+        text(&conversation, 2)
+    );
     prompt::compact_conversation(&mut conversation);
 
-    let text = |index: usize| conversation.messages[index].content[0].text().to_string();
     assert!(
-        !text(2).contains("## Handles"),
+        !text(&conversation, 2).contains("## Handles"),
         "the older result kept its table, so nothing was compacted"
     );
     assert!(
-        text(2).contains(first),
-        "the compacted result lost what the cell was for: {}",
-        text(2)
+        text(&conversation, 1).contains(first),
+        "compaction lost what the cell was for: {}",
+        text(&conversation, 1)
     );
-    assert!(text(4).contains(second), "{}", text(4));
+    assert!(
+        text(&conversation, 3).contains(second),
+        "{}",
+        text(&conversation, 3)
+    );
 }
 
 /// A cell whose model said nothing renders exactly as it did before the

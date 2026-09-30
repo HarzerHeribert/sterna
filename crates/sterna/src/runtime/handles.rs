@@ -567,6 +567,19 @@ fn render_entry(entry: &HandleEntry, cap: usize, name_width: usize) -> String {
                 format!("{header}\n{}", lines.join("\n"))
             }
         }
+        // An object of a declared type (`Code.Context`, a command's result)
+        // gets no key list: an object's preview is its keys and their types,
+        // which the declaration already gives. Those lines were 1.2 % of
+        // Sterna's fresh input over 30 SWE-bench tasks (2026-09-30). An
+        // object the program built itself keeps them; nothing else says.
+        Value::Object(_) if entry.meta.type_label.is_some() => {
+            header.push_str(&gap);
+            header.push_str(&format!(
+                "inline cost ~{} tok",
+                preview::thousands(inline_cost as u64)
+            ));
+            header
+        }
         _ => {
             let body = preview::render_preview(&entry.value, cap);
             let preview_tokens = preview::estimate_tokens(&body);
@@ -614,6 +627,38 @@ mod tests {
         assert!(header.contains("inline cost ~10 tok"), "{header}");
         assert!(header.contains("· preview "), "{header}");
         assert!(header.ends_with("tok"), "{header}");
+    }
+
+    /// An object of a declared type is its header alone -- its preview would
+    /// be the declared keys again -- while one the program built keeps them.
+    #[test]
+    fn a_typed_object_is_its_header_and_a_built_one_keeps_its_keys() {
+        let object = || {
+            Value::object(vec![
+                ("complete".into(), Value::Boolean(true)),
+                ("path".into(), Value::Number(1.0)),
+            ])
+        };
+        let mut table = HandleTable::new();
+        table.declare_with(
+            "ctx",
+            object(),
+            1,
+            HandleMeta {
+                type_label: Some("Code.Context".into()),
+                size_estimate: 400,
+                ..HandleMeta::default()
+            },
+        );
+        table.declare("mine", object(), 1);
+        let rendered = render_table(&table, preview::PREVIEW_TOKEN_CAP, preview::TABLE_TOKEN_CAP);
+        let (typed, built) = rendered.split_once("\n\n").unwrap();
+        assert!(
+            typed.starts_with("ctx   Code.Context   inline cost ~100 tok"),
+            "{typed}"
+        );
+        assert!(!typed.contains("\"complete\""), "{typed}");
+        assert!(built.contains("\"complete\": boolean"), "{built}");
     }
 
     #[test]

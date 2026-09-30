@@ -596,6 +596,43 @@ fn a_context_batch_past_the_feedback_budget_narrows_and_the_cell_runs_on() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// An excerpt the conversation already carries line for line is pointed at
+/// even inside a context that is otherwise new -- here the file cell 1 showed
+/// whole, asked for again by one of its symbols, which renders a different
+/// header. Lines that change are printed again.
+#[test]
+fn an_excerpt_already_shown_line_for_line_is_pointed_at_inside_a_new_context() {
+    let root = fixture("excerpt-shown-before");
+    let path = root.join("src/pair.py");
+    let pair = |body: &str| {
+        format!("def first():\n    return 'FIRST-BODY'\n\n\ndef second():\n    return '{body}'\n")
+    };
+    std::fs::write(&path, pair("SECOND-BODY")).unwrap();
+    let profile = Profile::compile(&root, None);
+    let mut runtime = Runtime::new(&profile, &SessionId::new("excerpt-shown-before"));
+
+    let whole = runtime.run_cell("await context({path:'src/pair.py'});");
+    assert!(
+        whole.turn().stdout_tail.contains("SECOND-BODY"),
+        "{whole:?}"
+    );
+    let again = runtime.run_cell("await context({path:'src/pair.py', symbol:'second'});");
+    let again = &again.turn().stdout_tail;
+    assert!(again.contains("symbol: second"), "{again}");
+    assert!(
+        again.contains("shown in cell 1's result, not printed again"),
+        "{again}"
+    );
+    assert!(!again.contains("SECOND-BODY"), "{again}");
+
+    std::fs::write(&path, pair("SECOND-CHANGED")).unwrap();
+    let changed = runtime.run_cell("await context({path:'src/pair.py', symbol:'second'});");
+    let changed = &changed.turn().stdout_tail;
+    assert!(changed.contains("SECOND-CHANGED"), "{changed}");
+    assert!(!changed.contains("not printed again"), "{changed}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// The conversation is append-only, so a context whose exact bytes an earlier
 /// result carries is pointed back to rather than printed again -- and the
 /// pointer still binds an edit, because the model has those bytes. A changed

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::contract::SessionId;
-use crate::project::source_context::SourceContext;
+use crate::project::source_context::{ContextRole, SourceContext, SourceExcerpt};
 use crate::runtime::handles::{HandleMeta, HandleTable, Provenance};
 use crate::runtime::instructions::{InstructionContext, PendingInstructions};
 use crate::runtime::observation::ReductionStats;
@@ -258,6 +258,14 @@ pub(crate) struct RuntimeState {
     /// checkpoint replaces the conversation: the one time earlier results
     /// leave the request.
     shown_contexts: RefCell<HashMap<String, u64>>,
+    /// Every source line a delivered context printed this task, by path,
+    /// line number and a hash of its text, with the cell whose result
+    /// carries it -- so an excerpt the conversation already holds line for
+    /// line, inside a context that is otherwise new, is pointed at rather
+    /// than printed again ([`Self::shown_place`]). Measured 2026-09-30: such
+    /// repeats were 4.6 % of Sterna's fresh input over 30 SWE-bench tasks.
+    /// Forgotten with [`Self::shown_contexts`].
+    shown_lines: RefCell<HashMap<String, ShownLines>>,
     /// The bytes of the latest version of each file the model has a view of
     /// -- from a delivered `context` or its own `edit` or `write` -- so a
     /// change something else makes is shown as its changed lines and the
@@ -316,6 +324,18 @@ impl Repeat {
             None => format!(" (unchanged since cell {})", self.cell),
         }
     }
+}
+
+/// One file's shown lines: (line number, [`line_hash`]) to the first cell
+/// whose result printed it.
+type ShownLines = HashMap<(usize, u64), u64>;
+
+/// A shown line's text, as [`RuntimeState::shown_lines`] keeps it.
+fn line_hash(line: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The key [`RuntimeState::shown_contexts`] is kept under.
@@ -394,6 +414,7 @@ impl RuntimeState {
             pending_lines: RefCell::default(),
             pending_context_output: RefCell::new(Vec::new()),
             shown_contexts: RefCell::new(HashMap::new()),
+            shown_lines: RefCell::new(HashMap::new()),
             known_sources: RefCell::new(HashMap::new()),
             observations: RefCell::new(HashMap::new()),
             bindings: RefCell::new(HashMap::new()),
@@ -659,6 +680,7 @@ impl RuntimeState {
         self.pending_lines.borrow_mut().clear();
         self.pending_context_output.borrow_mut().clear();
         self.shown_contexts.borrow_mut().clear();
+        self.shown_lines.borrow_mut().clear();
         self.known_sources.borrow_mut().clear();
         self.observations.borrow_mut().clear();
         self.bindings.borrow_mut().clear();
@@ -706,7 +728,7 @@ impl RuntimeState {
         let text = match shown {
             Some(cell) if cell == self.cell.get() => packed.render_shown("earlier in this result"),
             Some(cell) => packed.render_shown(&format!("in cell {cell}'s result")),
-            None => full,
+            None => packed.render_with(|excerpt| self.shown_place(excerpt)),
         };
         let mut output = self.pending_context_output.borrow_mut();
         let used: usize = output.iter().map(|s| s.chars().count() + 1).sum();
@@ -728,8 +750,58 @@ impl RuntimeState {
             self.shown_contexts
                 .borrow_mut()
                 .insert(key, self.cell.get());
+            self.note_shown_lines(packed);
         }
         true
+    }
+
+    /// Where the conversation already carries every line of `excerpt`, or
+    /// `None` when any line is new -- or changed, or moved: a line is the
+    /// same only at the same number with the same text.
+    fn shown_place(&self, excerpt: &SourceExcerpt) -> Option<String> {
+        if excerpt.role == ContextRole::Outline || excerpt.text.is_empty() {
+            return None;
+        }
+        let lines = self.shown_lines.borrow();
+        let known = lines.get(&excerpt.path)?;
+        let mut cells = std::collections::BTreeSet::new();
+        for (i, line) in excerpt.text.lines().enumerate() {
+            cells.insert(*known.get(&(excerpt.range.start + i, line_hash(line)))?);
+        }
+        let current = self.cell.get();
+        let here = cells.remove(&current);
+        let earlier: Vec<String> = cells.iter().map(u64::to_string).collect();
+        let earlier = match earlier.as_slice() {
+            [] => None,
+            [one] => Some(format!("in cell {one}'s result")),
+            [rest @ .., last] => Some(format!(
+                "in the results of cells {} and {last}",
+                rest.join(", ")
+            )),
+        };
+        Some(match (earlier, here) {
+            (None, _) => "earlier in this result".to_string(),
+            (Some(earlier), false) => earlier,
+            (Some(earlier), true) => format!("{earlier} and earlier in this one"),
+        })
+    }
+
+    /// Records every line `packed` printed, keeping the first cell a line
+    /// appeared in.
+    fn note_shown_lines(&self, packed: &SourceContext) {
+        let cell = self.cell.get();
+        let mut lines = self.shown_lines.borrow_mut();
+        for excerpt in std::iter::once(&packed.target).chain(&packed.supporting) {
+            if excerpt.role == ContextRole::Outline {
+                continue;
+            }
+            let known = lines.entry(excerpt.path.clone()).or_default();
+            for (i, line) in excerpt.text.lines().enumerate() {
+                known
+                    .entry((excerpt.range.start + i, line_hash(line)))
+                    .or_insert(cell);
+            }
+        }
     }
 
     /// Whether this context's exact rendering already reached the model this
@@ -744,6 +816,7 @@ impl RuntimeState {
     /// carrying them.
     pub(crate) fn forget_shown_contexts(&self) {
         self.shown_contexts.take();
+        self.shown_lines.take();
     }
 
     /// Why an `edit` is not yet bound to a version of its path, in terms the
