@@ -273,6 +273,7 @@ fn a_candidate_of_function_calls_stops_for_tool_use_even_though_gemini_says_stop
             input: 32,
             output: 12,
             cached: Some(8),
+            reasoning: Some(2),
         },
         "the prompt count includes the cached tokens and the output count includes the \
          reasoning ones"
@@ -541,6 +542,7 @@ fn a_stream_becomes_the_canonical_order_one_chunk_at_a_time() {
                     input: 40,
                     output: 12,
                     cached: None,
+                    reasoning: None,
                 },
             },
             StreamEvent::MessageStop,

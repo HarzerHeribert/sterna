@@ -125,7 +125,7 @@ pub(super) const IGNORED_FIELDS: &[&str] = &[
     "service_tier",
     "usage.total_tokens",
     "usage.prompt_tokens_details.audio_tokens",
-    "usage.completion_tokens_details",
+    "usage.completion_tokens_details (all but reasoning_tokens)",
     "choices[].index",
     "choices[].message.annotations",
     "stream_options.include_usage",
@@ -1029,13 +1029,17 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
         None => None,
     };
     usage.ignore("total_tokens");
-    usage.ignore("completion_tokens_details");
+    // Read for the reasoning count; the rest of the object is dropped.
+    let reasoning = usage
+        .take("completion_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens").and_then(Value::as_u64));
     usage.finish()?;
     // `prompt_tokens` includes the cached ones; the form's `input` does not.
     Ok(Usage {
         input: prompt.saturating_sub(cached.unwrap_or(0)),
         output,
         cached,
+        reasoning,
     })
 }
 
@@ -1049,6 +1053,12 @@ fn usage_json(usage: &Usage) -> Value {
         entry.insert(
             "prompt_tokens_details".to_owned(),
             json!({"cached_tokens": cached}),
+        );
+    }
+    if let Some(reasoning) = usage.reasoning {
+        entry.insert(
+            "completion_tokens_details".to_owned(),
+            json!({"reasoning_tokens": reasoning}),
         );
     }
     Value::Object(entry)
@@ -1466,6 +1476,32 @@ impl StreamEncoder for ChunkEncoder {
 }
 
 #[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+
+    /// The provider's reasoning count is read from
+    /// `completion_tokens_details` and written back the same way.
+    #[test]
+    fn a_reasoning_count_is_carried_both_ways() {
+        let mut response = super::super::canonical::tests::tool_call_response();
+        response.usage.reasoning = Some(240);
+        let wire = encode_response(&response);
+        let json: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(
+            json["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            240
+        );
+        assert_eq!(decode_response(&wire).unwrap().usage.reasoning, Some(240));
+        response.usage.reasoning = None;
+        let json: Value = serde_json::from_slice(&encode_response(&response)).unwrap();
+        assert!(
+            json["usage"].get("completion_tokens_details").is_none(),
+            "{json}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1818,7 +1854,8 @@ mod tests {
             Usage {
                 input: 50,
                 output: 9,
-                cached: None
+                cached: None,
+                reasoning: None,
             }
         );
         // The order is Anthropic's: every block stops before the next

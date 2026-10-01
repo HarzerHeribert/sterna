@@ -915,9 +915,15 @@ fn a_claude_code_request_is_translated_to_generate_content_and_the_answer_back_w
     );
     assert_eq!(
         answer["usage"],
-        json!({"input_tokens": 32, "output_tokens": 12, "cache_read_input_tokens": 8}),
+        json!({
+            "input_tokens": 32,
+            "output_tokens": 12,
+            "cache_read_input_tokens": 8,
+            "output_tokens_details": {"thinking_tokens": 2},
+        }),
         "the prompt count includes the cached tokens and Anthropic's input_tokens does not; \
-         the output count includes the reasoning tokens Gemini reports apart"
+         the output count includes the reasoning tokens Gemini reports apart, and those \
+         reach the harness as the subscription broker's thinking_tokens"
     );
     assert!(
         !String::from_utf8_lossy(&response).contains(PLANTED_KEY),
@@ -1111,6 +1117,7 @@ fn a_codex_shaped_request_is_translated_to_generate_content_and_back() {
             "output_tokens": 12,
             "total_tokens": 52,
             "input_tokens_details": {"cached_tokens": 8},
+            "output_tokens_details": {"reasoning_tokens": 2},
         })
     );
     assert!(!String::from_utf8_lossy(&response).contains(PLANTED_KEY));
@@ -1219,6 +1226,7 @@ fn an_opencode_request_is_translated_to_generate_content_and_back() {
             "completion_tokens": 12,
             "total_tokens": 52,
             "prompt_tokens_details": {"cached_tokens": 8},
+            "completion_tokens_details": {"reasoning_tokens": 2},
         })
     );
     assert!(!String::from_utf8_lossy(&response).contains(PLANTED_KEY));

@@ -348,6 +348,7 @@ fn a_response_round_trips_through_the_openai_responses_wire() {
             input: 3,
             output: 2,
             cached: None,
+            reasoning: None,
         },
     };
     let wire = encode_response(&cut_short);
@@ -491,7 +492,8 @@ fn real_provider_events_become_anthropics_event_order_with_ids_preserved() {
         Usage {
             input: 40,
             output: 9,
-            cached: Some(10)
+            cached: Some(10),
+            reasoning: Some(0),
         }
     );
     // The order is Anthropic's: every block stops before the next
@@ -576,4 +578,48 @@ fn a_stream_that_ends_before_response_completed_is_refused_at_finish() {
         data: r#"{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"x"}"#.to_owned(),
     };
     assert_eq!(decoder.feed(&orphan).unwrap_err().field, "delta");
+}
+
+/// The provider's reasoning count is read from `output_tokens_details` and
+/// written back the same way; with none, the object is not written.
+#[test]
+fn a_reasoning_count_is_carried_both_ways() {
+    let mut response = tool_call_response();
+    response.usage.reasoning = Some(240);
+    let wire = encode_response(&response);
+    let json: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(
+        json["usage"]["output_tokens_details"]["reasoning_tokens"],
+        240
+    );
+    assert_eq!(decode_response(&wire).unwrap().usage.reasoning, Some(240));
+    response.usage.reasoning = None;
+    let json: serde_json::Value = serde_json::from_slice(&encode_response(&response)).unwrap();
+    assert!(
+        json["usage"].get("output_tokens_details").is_none(),
+        "{json}"
+    );
+}
+
+/// A streamed answer's reasoning count, stated in its final delta, reaches
+/// the Responses wire's final snapshot.
+#[test]
+fn a_streamed_reasoning_count_reaches_the_final_snapshot() {
+    let mut response = tool_call_response();
+    response.usage.reasoning = Some(240);
+    let mut encoder = EventEncoder::default();
+    let wire: Vec<u8> = response
+        .as_events()
+        .iter()
+        .flat_map(|event| encoder.encode(event))
+        .collect();
+    let text = String::from_utf8_lossy(&wire);
+    let completed = text
+        .split("\n\n")
+        .find(|frame| frame.contains("event: response.completed"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        completed.contains(r#""output_tokens_details":{"reasoning_tokens":240}"#),
+        "{completed}"
+    );
 }

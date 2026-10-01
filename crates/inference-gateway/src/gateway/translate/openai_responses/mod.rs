@@ -176,7 +176,7 @@ pub(super) const IGNORED_FIELDS: &[&str] = &[
     "input_image.detail",
     "usage.total_tokens",
     "usage.input_tokens_details.audio_tokens",
-    "usage.output_tokens_details",
+    "usage.output_tokens_details (all but reasoning_tokens)",
     "response document echo fields (instructions, tools, tool_choice, sampling parameters)",
     "stream event bookkeeping (sequence_number, item_id, output_index, content_index, \
      obfuscation)",
@@ -1273,7 +1273,10 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
         }
         None => None,
     };
-    usage.ignore("output_tokens_details");
+    // Read for the reasoning count; the rest of the object is dropped.
+    let reasoning = usage
+        .take("output_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens").and_then(Value::as_u64));
     usage.ignore("total_tokens");
     usage.finish()?;
     // `input_tokens` includes the cached ones; the form's `input` does not.
@@ -1281,6 +1284,7 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
         input: input_total.saturating_sub(cached.unwrap_or(0)),
         output,
         cached,
+        reasoning,
     })
 }
 
@@ -1295,6 +1299,12 @@ fn usage_json(usage: &Usage) -> Value {
         );
     }
     entry.insert("output_tokens".to_owned(), json!(usage.output));
+    if let Some(reasoning) = usage.reasoning {
+        entry.insert(
+            "output_tokens_details".to_owned(),
+            json!({"reasoning_tokens": reasoning}),
+        );
+    }
     entry.insert("total_tokens".to_owned(), json!(input + usage.output));
     Value::Object(entry)
 }
@@ -2006,6 +2016,7 @@ impl StreamEncoder for EventEncoder {
                     },
                     output: usage.output,
                     cached: usage.cached.or(self.start_usage.cached),
+                    reasoning: usage.reasoning.or(self.start_usage.reasoning),
                 };
                 Vec::new()
             }

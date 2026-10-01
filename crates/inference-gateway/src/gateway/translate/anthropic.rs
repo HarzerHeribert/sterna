@@ -66,6 +66,7 @@ pub(super) const REFUSED_FIELDS: &[(&str, &str)] = &[
 /// harness, and named here so that ignoring them is a recorded decision.
 pub(super) const IGNORED_FIELDS: &[&str] = &[
     "usage.service_tier",
+    "usage.output_tokens_details (all but thinking_tokens)",
     "usage.server_tool_use",
     "usage.cache_creation",
     "container",
@@ -882,6 +883,11 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
     // Tokens written to the cache were still input tokens; the form counts
     // them as such rather than losing them.
     let written = usage.take_u64("cache_creation_input_tokens")?.unwrap_or(0);
+    // The subscription broker's extension: how much of the output was
+    // reasoning. Read for that one count; the rest of the object is dropped.
+    let reasoning = usage
+        .take("output_tokens_details")
+        .and_then(|details| details.get("thinking_tokens").and_then(Value::as_u64));
     usage.ignore("service_tier");
     usage.ignore("server_tool_use");
     usage.ignore("cache_creation");
@@ -890,6 +896,7 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
         input: input + written,
         output,
         cached,
+        reasoning,
     })
 }
 
@@ -899,6 +906,14 @@ fn usage_json(usage: &Usage) -> Value {
     entry.insert("output_tokens".to_owned(), json!(usage.output));
     if let Some(cached) = usage.cached {
         entry.insert("cache_read_input_tokens".to_owned(), json!(cached));
+    }
+    // The same extension the subscription broker writes, so a harness reads
+    // a reasoning count the one way whichever route served it.
+    if let Some(reasoning) = usage.reasoning {
+        entry.insert(
+            "output_tokens_details".to_owned(),
+            json!({"thinking_tokens": reasoning}),
+        );
     }
     Value::Object(entry)
 }
@@ -1606,11 +1621,44 @@ pub(super) mod tests {
                 input: 3,
                 output: 2,
                 cached: None,
+                reasoning: None,
             },
         };
         assert_eq!(
             decode_response(&encode_response(&stopped)).unwrap(),
             stopped
+        );
+    }
+
+    /// A provider's reasoning count reaches the harness as the subscription
+    /// broker writes it, `output_tokens_details.thinking_tokens`, in a whole
+    /// answer and in a stream's final delta; with none, nothing is invented.
+    #[test]
+    fn a_reasoning_count_is_written_as_the_brokers_extension() {
+        let mut response = super::super::canonical::tests::tool_call_response();
+        response.usage.reasoning = Some(240);
+        let wire = encode_response(&response);
+        let json: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(
+            json["usage"]["output_tokens_details"]["thinking_tokens"],
+            240
+        );
+        assert_eq!(decode_response(&wire).unwrap().usage.reasoning, Some(240));
+        let streamed: Vec<u8> = response
+            .as_events()
+            .iter()
+            .flat_map(|event| EventEncoder.encode(event))
+            .collect();
+        assert!(
+            String::from_utf8_lossy(&streamed).contains(r#""thinking_tokens":240"#),
+            "{}",
+            String::from_utf8_lossy(&streamed)
+        );
+        response.usage.reasoning = None;
+        let json: Value = serde_json::from_slice(&encode_response(&response)).unwrap();
+        assert!(
+            json["usage"].get("output_tokens_details").is_none(),
+            "{json}"
         );
     }
 

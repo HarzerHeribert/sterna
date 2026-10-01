@@ -826,8 +826,14 @@ fn a_claude_code_request_is_translated_to_openai_responses_and_back_with_ids_pre
     assert_eq!(content.len(), 3, "two parallel tool calls, both delivered");
     assert_eq!(
         answer["usage"],
-        json!({"input_tokens": 40, "output_tokens": 12, "cache_read_input_tokens": 8}),
-        "input_tokens includes the cached ones on this wire; Anthropic's does not"
+        json!({
+            "input_tokens": 40,
+            "output_tokens": 12,
+            "cache_read_input_tokens": 8,
+            "output_tokens_details": {"thinking_tokens": 0},
+        }),
+        "input_tokens includes the cached ones on this wire; Anthropic's does not; a reported \
+         zero of reasoning stays a reported zero"
     );
     assert!(
         !String::from_utf8_lossy(&response).contains(PLANTED_KEY),

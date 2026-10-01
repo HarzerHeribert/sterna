@@ -394,6 +394,10 @@ pub struct Usage {
     pub input: u64,
     pub output: u64,
     pub cached: Option<u64>,
+    /// Of `output`, what the provider counted as reasoning, when it said.
+    /// A reasoning model's thinking is often sent encrypted or not at all;
+    /// this count is then the one thing a harness can show of it.
+    pub reasoning: Option<u64>,
 }
 
 /// One event of a streamed response, in the one vocabulary both stream
@@ -483,6 +487,7 @@ impl Response {
                 input: self.usage.input,
                 output: 0,
                 cached: self.usage.cached,
+                reasoning: None,
             },
         }];
         for (index, block) in self.blocks.iter().enumerate() {
@@ -640,6 +645,7 @@ pub fn accumulate(events: &[StreamEvent]) -> Result<Response, Unsupported> {
                     },
                     output: final_usage.output,
                     cached: final_usage.cached.or(usage.cached),
+                    reasoning: final_usage.reasoning.or(usage.reasoning),
                 };
             }
             StreamEvent::MessageStop => {}
@@ -779,6 +785,7 @@ pub(super) mod tests {
                 input: 120,
                 output: 33,
                 cached: Some(100),
+                reasoning: None,
             },
         }
     }
@@ -839,7 +846,8 @@ pub(super) mod tests {
                 usage: Usage {
                     input: 120,
                     output: 0,
-                    cached: Some(100)
+                    cached: Some(100),
+                    reasoning: None,
                 },
             })
         );
@@ -878,6 +886,7 @@ pub(super) mod tests {
                     input: 0,
                     output: 7,
                     cached: None,
+                    reasoning: None,
                 },
             },
             StreamEvent::MessageStop,

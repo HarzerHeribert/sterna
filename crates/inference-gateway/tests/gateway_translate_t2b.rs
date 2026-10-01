@@ -801,7 +801,7 @@ fn an_opencode_request_is_translated_to_openai_responses_and_back_with_tool_call
     assert_eq!(answer["choices"][0]["finish_reason"], "tool_calls");
     assert_eq!(
         answer["usage"],
-        json!({"prompt_tokens": 48, "completion_tokens": 12, "total_tokens": 60, "prompt_tokens_details": {"cached_tokens": 8}}),
+        json!({"prompt_tokens": 48, "completion_tokens": 12, "total_tokens": 60, "prompt_tokens_details": {"cached_tokens": 8}, "completion_tokens_details": {"reasoning_tokens": 0}}),
         "prompt_tokens includes the cached ones on this wire; the form's input does not"
     );
     assert!(

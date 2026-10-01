@@ -1083,7 +1083,7 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
     // `output` is what was produced, so they are summed rather than
     // ignored. `cachedContentTokenCount` is a SUBSET of the prompt count,
     // exactly as OpenAI's `cached_tokens` is a subset of `prompt_tokens`.
-    let thoughts = usage.take_u64("thoughtsTokenCount")?.unwrap_or(0);
+    let thoughts = usage.take_u64("thoughtsTokenCount")?;
     let cached = usage.take_u64("cachedContentTokenCount")?;
     for ignored in [
         "totalTokenCount",
@@ -1099,8 +1099,9 @@ fn decode_usage(mut usage: Fields) -> Result<Usage, Unsupported> {
     usage.finish()?;
     Ok(Usage {
         input: prompt.saturating_sub(cached.unwrap_or(0)),
-        output: candidates.saturating_add(thoughts),
+        output: candidates.saturating_add(thoughts.unwrap_or(0)),
         cached,
+        reasoning: thoughts,
     })
 }
 
@@ -1226,6 +1227,7 @@ impl StreamDecoder for ChunkDecoder {
                     input: self.usage.input,
                     output: 0,
                     cached: self.usage.cached,
+                    reasoning: None,
                 },
             });
         }
