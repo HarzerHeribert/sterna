@@ -16,7 +16,6 @@ import { startProvider } from "../dev/provider.mjs";
 
 export const STERNA = process.env.STERNA_E2E_BIN || fileURLToPath(new URL("../../../target/debug/sterna", import.meta.url));
 /** Whether that binary has the host and its setup commands. */
-export const engineReady = () => { try { const bin = fs.readFileSync(STERNA); return bin.includes("sterna host: unknown option") && bin.includes("set_preferences"); } catch { return false; } };
 
 /** A gateway that lists two accounts, keeps a key it is handed on stdin, and runs a sign-in that takes a pasted address. */
 function fakeGateway(dir) {
@@ -81,6 +80,9 @@ export function hostAsk(ready, command) {
 export const test = base.extend({
   level: ["ask", { option: true }],
   world: async ({ level }, use) => {
+    // Every check here runs the real engine: one that is not built fails,
+    // saying so, rather than passing by skipping.
+    if (!fs.existsSync(STERNA)) throw new Error(`the real engine's checks run ${STERNA}: build it (cargo build -p sterna -p inference-gateway) or name another with STERNA_E2E_BIN`);
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sterna-desktop-e2e-")));
     const folder = (name) => {
       const dir = path.join(root, name);
@@ -132,10 +134,6 @@ export const test = base.extend({
     await page.goto(`/?bridge=${encodeURIComponent(world.bridge.url)}`);
     await use(page);
   },
-});
-
-test.beforeEach(() => {
-  test.fixme(!engineReady(), `the real engine's checks need a sterna with \`sterna host\` and its setup commands at ${STERNA}`);
 });
 
 /** Waits until the host's list has a session whose title starts with `title`, and returns it. */

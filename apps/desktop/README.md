@@ -84,8 +84,8 @@ The checks use Chromium from Playwright's own cache. They run the real
 `sterna host` (`STERNA_E2E_BIN`, else `target/debug/sterna`) in a world of
 their own (`e2e/world.mjs`): scratch data and settings folders,
 `dev/provider.mjs` as the model, a fake gateway script that records what it
-is handed, and no credential, the way the engine's own checks do. They are
-marked `fixme` while that binary has no `sterna host`. One spec,
+is handed, and no credential, the way the engine's own checks do. Without
+that binary they fail and say what to build. One spec,
 `e2e/busy.spec.mjs`, uses the mock host: several sessions held at once in
 states the real engine passes through in a moment (a cell being written, a
 cell running). Plan goal 17 (the app installs, runs and updates into a new
