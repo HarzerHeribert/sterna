@@ -768,6 +768,10 @@ fn the_binary_runs_a_turn_and_writes_a_rollout() {
 
     // An ordinary answer ends naturally; it is not sent back for code conversion.
     assert_eq!(bodies.lock().unwrap().len(), 1);
+    // Streamed with no screen to show it: a whole answer through the
+    // subscription broker arrived 0.6 s later than a streamed one.
+    let request: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+    assert_eq!(request["stream"], true, "a headless turn asks for a stream");
 }
 
 #[test]

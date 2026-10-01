@@ -2229,34 +2229,31 @@ fn send_task_turn_once(
     // A reasoning summary only where a person watches the work live, and
     // there only now and then (`wire::SUMMARY_EVERY`).
     session.routing.plan_summary(session.ui.is_some());
-    if let Some(ui) = session.ui {
-        wire::send_turn_streaming_cancellable(
-            conversation.clone(),
-            model.clone(),
-            system::turn_effort(session.effort.get(), &model),
-            surface,
-            Some(session.routing.clone()),
-            &|| session.interrupt.pending.load(Ordering::SeqCst),
-            &mut |delta| match delta {
+    // Streamed whether or not a person watches: through the subscription
+    // broker a whole answer arrived 0.6 s later than a streamed one
+    // (2026-10-01, median of 10 against 10), because the broker streams from
+    // the provider either way and assembles a whole answer afterwards.
+    wire::send_turn_streaming_cancellable(
+        conversation.clone(),
+        model.clone(),
+        system::turn_effort(session.effort.get(), &model),
+        surface,
+        Some(session.routing.clone()),
+        &|| session.interrupt.pending.load(Ordering::SeqCst),
+        &mut |delta| {
+            let Some(ui) = session.ui else {
+                return;
+            };
+            match delta {
                 wire::StreamDelta::Text(text) => ui.append_delta(&text),
                 // Root's UI integration replaces these no-ops with
                 // `tool_delta`; neither fragment belongs in conversation.
                 wire::StreamDelta::ToolInput(fragment) => ui.tool_delta(&fragment),
                 wire::StreamDelta::ToolReady(_) => {}
                 wire::StreamDelta::Reasoning(text) => ui.reasoning_delta(&text),
-            },
-        )
-    } else {
-        wire::send_turn_bounded_routed(
-            conversation,
-            &model,
-            system::turn_effort(session.effort.get(), &model),
-            None,
-            None,
-            surface,
-            Some(&session.routing),
-        )
-    }
+            }
+        },
+    )
 }
 
 /// Splits a slash command's name from whatever follows it -- `/memory a

@@ -19,6 +19,7 @@ names SWE-bench. **Read the limits at the end before acting on a number.**
 | 2026-10-01 | `context` tuned from 951 recorded reads, neighbours ranked | 7 % cheaper, 8 % faster than the build before (pre.26) |
 | 2026-10-01 | pre.26 against Codex 0.159.3, both on GPT-6.1 Sol | the same 25 of 30 fixed; Sterna 1.38× the cost and 1.19× the time |
 | 2026-10-01 | why: Sterna's GPT `low` ran as `medium`; fixed, beside Codex again | with the fix: a fifth fewer requests, the same cost, time within noise |
+| 2026-10-01 | the rest of the gap, in short requests: format, streaming, the cache | format costs nothing; a whole answer costs 0.6 s; the system prompt's start time kept every session's first request out of the cache |
 
 Each row has its section below; the limits at the end apply to all of
 them.
@@ -74,6 +75,35 @@ asked an overloaded provider again (below).
   out. Sterna now asks again after 2, 4, 8, 16 and 32 s and then every
   minute, as long as the turn's own timeout allows; the restarted run had no
   attempt end that way.
+
+## What was left of the gap, in short requests (2026-10-01)
+
+Per-request questions need no task run; these used 52 short requests and
+then ten one-request sessions, all on GPT-6.1 Sol through the gateway.
+
+- **The broker hop** adds about 0.24 s per request: Codex sent through the
+  gateway and broker answered a one-word prompt in 3.23 s against 2.99 s
+  direct (median of 15 each; direct Codex holds a WebSocket, and over plain
+  HTTP direct it took 4.10 s).
+- **Format costs nothing.** Sterna's recorded request, sent whole in
+  Anthropic format and in OpenAI Responses format: 3.68 s and 3.66 s
+  (median of 10 each). Through the broker the Responses format found
+  nothing cached in 20 requests, so speaking it natively would cost more.
+- **A whole answer costs 0.6 s.** The same request streamed took 3.02 s.
+  The broker streams from the provider either way and assembles a whole
+  answer afterwards; Sterna's headless sessions asked for the whole one, its
+  screen already streamed. Every session streams now.
+- **The cache.** Through the broker the system prompt is cached only as a
+  whole, and Sterna's ended with the environment snapshot and its start
+  time: with only that time changed, 0 of 6 requests found anything cached.
+  The snapshot now rides in the task's message. Ten new sessions in a row:
+  the first on each of the four shared keys found nothing, every later one
+  found 7,168 of its 8,030 tokens cached (6 of 6).
+- **The reasoning counter.** The `~N tok` beside the model's reasoning
+  counts only readable reasoning; a GPT model behind the subscription sends
+  its reasoning encrypted, and the readable summary Sterna asks for every
+  30 s is a short heading. The stream itself arrives in pieces as written:
+  a cell came as about 180 of them over 7 s.
 
 ## Against the Codex CLI on GPT-6.1 Sol (2026-10-01)
 

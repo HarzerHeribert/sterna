@@ -1896,6 +1896,20 @@ fn send_turn_streaming_while(
             });
         }
 
+        // A provider may answer a request to stream with the whole answer at
+        // once; it is read as one rather than refused.
+        let whole = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("application/json"));
+        if whole {
+            let text = response
+                .body_mut()
+                .read_to_string()
+                .map_err(|err| WireError::Http(Box::new(err)))?;
+            return parse_response(&text);
+        }
         return read_sse_stream(&mut response, keep_reading, on_delta);
     }
 }
@@ -2164,6 +2178,32 @@ mod tests {
         unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
         assert!(matches!(turn, Err(WireError::Status { status: 500, .. })));
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A provider that answers a request to stream with the whole answer at
+    /// once is read as one, not refused.
+    #[test]
+    fn a_whole_answer_to_a_streamed_request_is_read_as_one() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let message = r#"{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"whole fine"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let whole = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{message}",
+            message.len()
+        );
+        let (url, _) = answering(vec![whole]);
+        // SAFETY: `_guard` serialises every base-url mutation in this module.
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let turn = send_turn_streaming_while(
+            &sample_conversation(),
+            "m",
+            Effort::Auto,
+            Surface::cells(),
+            None,
+            &mut || true,
+            &mut |_| {},
+        );
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        assert!(format!("{:?}", turn.expect("a whole answer is a turn")).contains("whole fine"));
     }
 
     /// A request's own timeout bounds the asking: a wait that would outlast

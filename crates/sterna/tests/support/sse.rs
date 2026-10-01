@@ -61,6 +61,18 @@ pub fn response_for(request: &Value, whole: &str) -> (&'static str, String) {
                     "partial_json": serde_json::to_string(&input).expect("fixture tool input is serialisable"),
                 }}));
             }
+            Some("thinking") => {
+                let field = |name: &str| {
+                    block
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                blocks_sse.push(serde_json::json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking","thinking":""}}));
+                blocks_sse.push(serde_json::json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":field("thinking")}}));
+                blocks_sse.push(serde_json::json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":field("signature")}}));
+            }
             other => panic!("a streamed fixture reply cannot express a {other:?} block"),
         }
         blocks_sse.push(serde_json::json!({"type":"content_block_stop","index":index}));
