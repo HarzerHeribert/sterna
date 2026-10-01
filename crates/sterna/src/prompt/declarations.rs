@@ -57,7 +57,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         name: "read",
         return_type: "{path: string; text: string; lines: string[]; bytes: number; lineCount: number; mtime: string; sha256: string; excerpt(options?: {start?: number; lines?: number}): {text: string; start: number; end: number | null; lineCount: number; next: number | null; truncatedLines: number}}",
-        summary: "Read one documentation, configuration, or modest source file inside the project. If a large source has one uniquely unfinished definition, Sterna promotes the read to its bounded `context`; otherwise use `context` first when you will edit source. Never print a whole `File.text` or broad `File.lines`.",
+        summary: "Read one documentation, configuration, or modest source file inside the project. If a large source has one uniquely unfinished definition, Sterna promotes the read to its bounded `context`; otherwise read source you will edit with `context`, or find the lines with `rg`/`grep` and `around`. Never print a whole `File.text` or broad `File.lines`.",
     },
     Entry {
         name: "glob",
@@ -67,12 +67,12 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         name: "grep",
         return_type: "Grep.Match[]",
-        summary: "Search the project for a regular expression. Ripgrep serves it where ripgrep is installed, so ignored files are skipped; name a directory as `path` to search one anyway.",
+        summary: "Search the project for a regular expression. Ripgrep serves it where ripgrep is installed, so ignored files are skipped; name a directory as `path` to search one anyway. `around: N` (1-20) prints each match with N lines either side, numbered, and you can `edit` those lines in the next cell without a `context`.",
     },
     Entry {
         name: "rg",
         return_type: "Grep.Match[]",
-        summary: "Search the project with ripgrep: the same `{path, line, text}` matches `grep` returns, and an empty array when nothing matched. Faster than `grep` and it skips ignored files.",
+        summary: "Search the project with ripgrep: the same `{path, line, text}` matches `grep` returns, and an empty array when nothing matched. Faster than `grep` and it skips ignored files. `around: N` (1-20) prints each match with N lines either side, numbered, and you can `edit` those lines in the next cell without a `context` -- the cheapest way to read and change a few lines a pattern finds.",
     },
     Entry {
         name: "fd",
@@ -97,14 +97,32 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         name: "context",
         return_type: "{path: string; sha256: string; symbol: string | null; text: string; complete: boolean; ranges: {path: string; start: number; end: number; role: string}[]; omissions: string[]}",
-        summary: "Load the editing surface for one file or symbol. For a large source file, supply the target `symbol`; a member is named `Class.member`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
+        summary: "Load the editing surface for one file or symbol. `mode` chooses how much comes with the target: `precise` is the definition alone with each neighbour as its first line (a file without `symbol` is its outline); `normal`, the default, adds neighbours whole, imports, callers and tests, and gives a file under 16 KB whole; `generous` gives a file under 24 KB whole. Take `precise` when you know which definition you will change. For a large source file, supply the target `symbol`; a member is named `Class.member`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
     },
     Entry {
         name: "edit",
         return_type: "{path: string; before_sha256: string; after_sha256: string; changed_lines: {start: number; before: number; after: number}; hunks: {start: number; before: number; after: number}[]}",
-        summary: "After `const ctx = await context(...)` completed in the prior cell, call `edit({path, old, replacement})`, or use `oldLines` and `replacementLines` for literal blocks. For several hunks in one file pass `olds` and `replacements` (same length); they apply together or not at all, and a later `edit` of the same file binds to the version this one produced. Each array item is one logical line; do not build a multiline template literal. Pass exactly one form for each side. Sterna supplies `expected_sha256` when exactly one complete version is visible; pass `expected_sha256: ctx.sha256` only to disambiguate. Stale, missing, ambiguous, unseen, and no-op edits do not write.",
+        summary: "Once the lines you change were shown to you in a prior cell -- by `context`, or by `rg`/`grep` with `around` -- call `edit({path, old, replacement})`, or use `oldLines` and `replacementLines` for literal blocks. For several hunks in one file pass `olds` and `replacements` (same length); they apply together or not at all, and a later `edit` of the same file binds to the version this one produced. Each array item is one logical line; do not build a multiline template literal. Pass exactly one form for each side. Sterna supplies `expected_sha256` when exactly one complete version is visible; pass `expected_sha256: ctx.sha256` only to disambiguate. Stale, missing, ambiguous, unseen, and no-op edits do not write.",
     },
 ];
+
+/// A parameter's TypeScript type where the registry's own (`string`) says
+/// less than the tool accepts.
+pub fn param_type(tool: &str, arg: &str) -> Option<&'static str> {
+    match (tool, arg) {
+        ("context", "mode") => Some("\"precise\" | \"normal\" | \"generous\""),
+        _ => None,
+    }
+}
+
+/// Options a tool's signature carries that Sterna honours itself and the
+/// tool never receives (`runtime::bindings::around`).
+pub fn runtime_options(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "grep" | "rg" => &["around?: number"],
+        _ => &[],
+    }
+}
 
 /// The entry for `name`, or `None` for a tool this table does not cover.
 pub fn lookup(name: &str) -> Option<&'static Entry> {

@@ -33,6 +33,9 @@ use crate::tools::invoke::{self, Args, ToolContext, ToolError, ToolResult};
 use crate::tools::registry::{self, Tool};
 
 mod agent;
+mod around;
+mod options;
+use options::{read_filter, read_ids, read_millis, read_option};
 mod ask;
 mod console;
 mod decide;
@@ -703,6 +706,10 @@ fn tool_callback(
             call_args = call_args.rename(param.provider, param.canonical);
         }
     }
+    let around = match around::take(requested_tool.name(), &mut call_args) {
+        Ok(around) => around,
+        Err(refusal) => return throw_tool_error(scope, &refusal),
+    };
     let state = state(scope);
 
     // Semantic command lifting (`semantic-command-lifting.md`). A command
@@ -1012,6 +1019,9 @@ fn tool_callback(
 
     match traced.outcome {
         Ok(result) => {
+            if let Some(around) = around {
+                around::deliver(&state, &call_args, &result, around);
+            }
             let (value, call) = typed_result(
                 scope,
                 marshal_as,
@@ -1127,7 +1137,9 @@ fn read_arguments(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Resu
                 lines.push(line.to_rust_string_lossy(scope));
             }
             args = args.with_lines(key, lines);
-        } else if given.is_string() {
+        } else if given.is_string() || (given.is_number() && key == "around") {
+            // `around` is Sterna's own option, a count of lines, never
+            // handed to a tool ([`around::take`]).
             args = args.with(key, given.to_rust_string_lossy(scope));
         } else {
             return Err(argument_refusal(&key, given));
@@ -2371,59 +2383,6 @@ fn agent_run_callback(
 /// turn's ceiling, which is the smallest amount that could produce an answer
 /// rather than a truncation.
 const MINIMUM_AGENT_BUDGET: u64 = crate::wire::MAX_TOKENS as u64;
-
-/// One string property of an options object, or `None` when the object, the
-/// property or its value is absent.
-fn read_option(scope: &mut v8::PinScope, value: v8::Local<v8::Value>, key: &str) -> Option<String> {
-    let object = v8::Local::<v8::Object>::try_from(value).ok()?;
-    let key = v8::String::new(scope, key)?;
-    let given = object.get(scope, key.into())?;
-    if given.is_undefined() || given.is_null() {
-        return None;
-    }
-    Some(given.to_rust_string_lossy(scope))
-}
-
-/// One millisecond count off an options object. A value that is not a finite
-/// non-negative number is `None` rather than zero: a zero deadline would
-/// cancel the job it was meant to bound.
-fn read_millis(scope: &mut v8::PinScope, value: v8::Local<v8::Value>, key: &str) -> Option<u64> {
-    let object = v8::Local::<v8::Object>::try_from(value).ok()?;
-    let key = v8::String::new(scope, key)?;
-    let given = object.get(scope, key.into())?;
-    let number = given.number_value(scope)?;
-    (number.is_finite() && number >= 1.0).then_some(number as u64)
-}
-
-/// `{kind, source}`, both optional.
-fn read_filter(
-    scope: &mut v8::PinScope,
-    value: v8::Local<v8::Value>,
-) -> (Option<String>, Option<String>) {
-    (
-        read_option(scope, value, "kind"),
-        read_option(scope, value, "source"),
-    )
-}
-
-/// An array of event ids. A value that is not a finite id is skipped here
-/// rather than becoming `0`, which is not an id any window ever assigns.
-fn read_ids(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Vec<EventId> {
-    let Ok(array) = v8::Local::<v8::Array>::try_from(value) else {
-        return Vec::new();
-    };
-    let mut ids = Vec::with_capacity(array.length() as usize);
-    for index in 0..array.length() {
-        if let Some(item) = array.get_index(scope, index)
-            && let Some(number) = item.number_value(scope)
-            && number.is_finite()
-            && number >= 1.0
-        {
-            ids.push(number as EventId);
-        }
-    }
-    ids
-}
 
 /// §4's delivery, in the isolate: the `batch` name, and the three methods
 /// §3 gives it.

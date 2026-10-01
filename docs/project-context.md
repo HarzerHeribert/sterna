@@ -96,6 +96,22 @@ ambiguous syntax falls back to a bounded window and names the omission.
 A definition is capped at 24,000 bytes and a result at 18 supporting
 excerpts.
 
+`mode` lets the model choose how much comes with the target. `normal`, the
+default, is everything above. `precise` is the definition alone: each
+neighbour is its first line under its whole range, imports, callers and
+tests are left out with a note saying how to get them, a small file asked
+for by `symbol` is that definition rather than the whole file, and a file
+named without a symbol is its outline. `generous` gives a file whole up to
+24,000 bytes instead of 16,384.
+
+A search reads by condition instead: `rg({pattern, path, around: N})` (and
+`grep`) prints each match with N lines either side, 1 to 20, numbered by
+Sterna, with windows that meet merged into one. Sterna cuts the windows
+from the file itself, so they count as shown and an `edit` of those lines
+binds in the next cell without a `context`; a window the conversation
+already holds is a pointer. A file whose windows do not fit what is left
+of the turn's feedback is left out whole and counted.
+
 `symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
 walked member by member, so a method name two classes share is not
 ambiguous. A nearby definition is the one declared near the target, never

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-use sterna::project::source_context::{ContextRole, pack};
+use sterna::project::source_context::{ContextRole, Mode, pack, pack_with};
 use sterna::sandbox::profile::{Access, Profile};
 
 struct Fixture {
@@ -814,4 +814,88 @@ fn nearby_definitions_are_the_ones_near_the_target_not_the_first_of_their_name()
     let first_class = long_test_class("FirstTests", 20).lines().count();
     assert_eq!(setup.len(), 1, "{:?}", got.supporting);
     assert!(setup[0].range.start > first_class, "{:?}", setup[0].range);
+}
+
+/// `precise` is the definition alone: each neighbour as its first line under
+/// its whole range, no imports, callers or tests, and a note saying how to get
+/// them -- the model's choice when it knows what it will change.
+#[test]
+fn precise_is_the_target_with_neighbours_as_their_first_line() {
+    let f = Fixture::new("precise");
+    let padding = "# padding padding padding padding\n".repeat(600);
+    let source = format!(
+        "import os\n\ndef helper(x):\n    return 'HELPER-BODY'\n\ndef target(value):\n    return helper(value)\n\ndef after():\n    return 'AFTER-BODY'\n{padding}"
+    );
+    let target = f.put("src/mod.py", &source);
+    f.put(
+        "tests/test_mod.py",
+        "def test_target():\n    assert target(1)\n",
+    );
+    let normal = pack_with(&f.profile(), &target, Some("target"), Mode::Normal).unwrap();
+    assert!(
+        normal.render().contains("HELPER-BODY"),
+        "{}",
+        normal.render()
+    );
+
+    let got = pack_with(&f.profile(), &target, Some("target"), Mode::Precise).unwrap();
+    let rendered = got.render();
+    assert!(got.complete, "{rendered}");
+    assert!(
+        got.target.text.contains("return helper(value)"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("def helper(x):"), "{rendered}");
+    assert!(!rendered.contains("HELPER-BODY"), "{rendered}");
+    assert!(!rendered.contains("AFTER-BODY"), "{rendered}");
+    assert!(!rendered.contains("import os"), "{rendered}");
+    assert!(!rendered.contains("test_target"), "{rendered}");
+    assert!(rendered.contains("precise:"), "{rendered}");
+}
+
+/// `precise` never hands over a whole file: a small one asked for by symbol is
+/// that definition, and one named without a symbol is its outline.
+#[test]
+fn precise_never_gives_a_whole_file() {
+    let f = Fixture::new("precise-small");
+    let target = f.put(
+        "src/small.py",
+        "def first():\n    return 'FIRST-BODY'\n\ndef second():\n    return 'SECOND-BODY'\n",
+    );
+    let got = pack_with(&f.profile(), &target, Some("second"), Mode::Precise).unwrap();
+    assert_eq!(got.target.role, ContextRole::TargetDefinition);
+    assert!(got.target.text.contains("SECOND-BODY"));
+    assert!(!got.render().contains("FIRST-BODY"), "{}", got.render());
+    let outline = pack_with(&f.profile(), &target, None, Mode::Precise).unwrap();
+    assert_eq!(outline.target.role, ContextRole::Outline);
+    assert!(
+        !outline.render().contains("SECOND-BODY"),
+        "{}",
+        outline.render()
+    );
+}
+
+/// `generous` gives a file whole up to the definition cap, where `normal`
+/// stops at 16 KB.
+#[test]
+fn generous_gives_a_file_whole_where_normal_does_not() {
+    let f = Fixture::new("generous");
+    let body = "# line of a mid-sized module\n".repeat(700);
+    assert!(body.len() > 16_384 && body.len() < 24_000);
+    let target = f.put("src/mid.py", &body);
+    let generous = pack_with(&f.profile(), &target, None, Mode::Generous).unwrap();
+    assert_eq!(generous.target.role, ContextRole::CompleteFile);
+    assert!(generous.complete);
+    assert_eq!(generous.target.text.lines().count(), 700);
+    let normal = pack_with(&f.profile(), &target, None, Mode::Normal).unwrap();
+    assert!(normal.target.text.lines().count() < 700 || !normal.complete);
+}
+
+#[test]
+fn an_unknown_mode_names_the_three_there_are() {
+    let error = Mode::parse("tiny").unwrap_err().to_string();
+    assert!(
+        error.contains("`precise`, `normal` or `generous`"),
+        "{error}"
+    );
 }

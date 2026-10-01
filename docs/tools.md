@@ -13,8 +13,8 @@ is the attack surface, so it grows deliberately (`tools/registry.rs::ALL`):
 | tool | what it does | pure |
 |---|---|---|
 | `read` | one file inside the project, with `excerpt()` paging | yes |
-| `context` | the editing view of one file or symbol, with its version | yes |
-| `grep`, `rg` | regular-expression search (ripgrep when installed) | yes |
+| `context` | the editing view of one file or symbol, with its version; `mode` `precise`, `normal` or `generous` ([project context](project-context.md#source-context)) | yes |
+| `grep`, `rg` | regular-expression search (ripgrep when installed); `around: N` prints each match with N lines an `edit` can bind to | yes |
 | `glob`, `fd` | paths by pattern or by name | yes |
 | `jq` | one filter over one JSON file | yes |
 | `edit` | exact, versioned replacement of one or several hunks | no |
