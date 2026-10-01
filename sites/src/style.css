@@ -82,6 +82,9 @@ h2{font:600 clamp(48px,6.7vw,104px)/.92 var(--display);letter-spacing:-.02em}
 .features h3{font-size:23px;letter-spacing:-.04em;margin:0 0 16px}
 .features p{font-size:17px;line-height:1.65;color:var(--muted)}
 
+.desktop .install-wide{width:min(1000px,100%);margin-bottom:0}
+.desktop-features{margin-top:64px}
+.desktop-shot{display:block;width:100%;height:auto;margin:0 0 56px;border:1px solid var(--ink)}
 .study-note{margin:-24px 0 0;font-size:16px;line-height:1.65;color:var(--muted)}
 
 .start h2{font-size:clamp(58px,8vw,120px);margin:27px 0 60px}

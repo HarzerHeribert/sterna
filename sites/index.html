@@ -19,6 +19,7 @@
   <nav aria-label="Main navigation">
     <a href="#why">Why Sterna</a>
     <a class="study-link" href="#study">The study</a>
+    <a href="#desktop">Desktop app</a>
     <a href="#start">Get started</a>
     <a class="source-link" href="https://github.com/HarzerHeribert/sterna">Source <span aria-hidden="true">↗</span></a>
   </nav>
@@ -94,6 +95,20 @@
       <article><h3>Keys never reach the model</h3><p>Keys and logins stay in the gateway: never in the conversation, the transcript or a log.</p></article>
       <article><h3>Switch models mid-task</h3><p>Move between ChatGPT, Claude and other providers without starting over.</p></article>
       <article><h3>You decide how often it asks</h3><p>From every call to never, inside the operating system’s own sandbox.</p></article>
+    </div>
+  </section>
+
+  <section id="desktop" class="section desktop">
+    <div class="relationship-copy">
+      <h2>EVERY SESSION.<br><span class="outline">ONE WINDOW.</span></h2>
+      <p>The desktop app shows every session Sterna is running, in every folder. Start one in any folder, follow each step as it runs, and answer what it asks without finding the terminal it is in. A session started in the terminal shows up there too, live.</p>
+    </div>
+    <img class="desktop-shot" src="./desktop-overview.png" width="1480" height="940" loading="lazy" alt="The Sterna desktop app's overview: two sessions at work and one waiting for an answer, its question shown with Allow once, Allow for this session and Deny.">
+    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-desktop" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop" data-windows="$env:STERNA_DESKTOP='1'; irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop</code><button class="copy" type="button" data-copy="cmd-desktop">Copy</button></div>
+    <div class="features desktop-features">
+      <article><h3>The same sessions</h3><p>The app and the terminal show the same session as it runs. Answer a question in either; the other sees the answer.</p></article>
+      <article><h3>Updates with Sterna</h3><p>The line above installs the app with the terminal's sterna, from the same release. When sterna updates, the app does too, into a new folder, so an app that is open keeps running.</p></article>
+      <article><h3>Or download it</h3><p><a class="inline-link" data-asset=".dmg" href="https://github.com/HarzerHeribert/sterna/releases">macOS, Apple silicon</a> · <a class="inline-link" data-asset=".AppImage" href="https://github.com/HarzerHeribert/sterna/releases">Linux AppImage</a> · <a class="inline-link" data-asset=".deb" href="https://github.com/HarzerHeribert/sterna/releases">Debian and Ubuntu</a> · <a class="inline-link" data-asset="-setup.exe" href="https://github.com/HarzerHeribert/sterna/releases">Windows</a>. They are not signed yet, so macOS and Windows ask before they open one the first time. The line above does not need that.</p></article>
     </div>
   </section>
 

@@ -40,6 +40,27 @@ for (const button of document.querySelectorAll('.os')) {
 const platform = navigator.userAgentData?.platform || navigator.platform || '';
 if (/^win/i.test(platform)) showOs('windows');
 
+// A download link goes to the newest release that carries the desktop app.
+// GitHub is asked only when a link is clicked; when it does not answer, the
+// link opens the releases page it already points at.
+const RELEASES = 'https://api.github.com/repos/HarzerHeribert/sterna/releases?per_page=20';
+for (const link of document.querySelectorAll('a[data-asset]')) {
+  link.addEventListener('click', async (event) => {
+    event.preventDefault();
+    let url = link.href;
+    try {
+      const response = await fetch(RELEASES, { headers: { accept: 'application/vnd.github+json' } });
+      const releases = response.ok ? await response.json() : [];
+      const release = releases.find((r) => !r.draft && r.assets.some((a) => a.name.startsWith('sterna-desktop-')));
+      const asset = release?.assets.find((a) => a.name.endsWith(link.dataset.asset));
+      if (asset) url = asset.browser_download_url;
+    } catch {
+      // The releases page.
+    }
+    location.href = url;
+  });
+}
+
 const toggle = document.querySelector('.motion-toggle');
 import('./optics.js')
   .then(({ startOptics }) => startOptics([...document.querySelectorAll('.optics')], toggle))

@@ -24,7 +24,9 @@ npm run preview   # serves dist/
 | `public/specimens.jpg` | the three tern specimens, side by side (see below) |
 | `public/mark.svg` | the favicon |
 | `public/sterna-banner.png` | the social preview image |
-| `public/install.sh` | the installer, served at `/install.sh`; it is part of the release tooling, not of the page |
+| `public/desktop-overview.png` | the desktop app's overview, from `apps/desktop/scripts/shots.mjs` |
+| `public/install.sh` | the installer, served at `/install.sh`; `--desktop` installs the desktop app as well. It is part of the release tooling, not of the page |
+| `public/install.ps1` | the Windows installer, served at `/install.ps1`; `STERNA_DESKTOP=1` installs the desktop app as well |
 
 Vite copies `public/` to the site root, so the installer's URL is
 `https://harzerheribert.github.io/sterna/install.sh`. Links are relative

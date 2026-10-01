@@ -106,6 +106,27 @@ running one; the next start uses it. `sterna update` does it on demand and
 `sterna update --check` only asks. `STERNA_DISABLE_AUTOUPDATE=1` turns the
 check at start off. A build from source never updates itself.
 
+**The desktop app.** One window for every session Sterna is running, in
+every folder: start one in any folder, follow each step as it runs, and
+answer what it asks. A session started in the terminal shows up there too,
+live. Install it with the terminal's `sterna`, from the same release:
+
+```sh
+curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop
+```
+
+```powershell
+$env:STERNA_DESKTOP = '1'; irm https://harzerheribert.github.io/sterna/install.ps1 | iex
+```
+
+On macOS it goes to `~/Applications/Sterna.app`, on Linux into your
+applications menu, and on Windows into the Start menu. From then on it is
+updated with `sterna`, into the new version's folder, so an app that is open
+keeps running. The release also carries a `.dmg`, an `.AppImage`, a `.deb`
+and a Windows setup for downloading by hand. They are not signed yet, so
+macOS and Windows ask before they open one the first time; the install line
+above does not need that.
+
 **Coming from Pane?** Run the installer once: it installs `sterna`, removes
 the old `pane` link, and removes `~/.local/lib/glasshouse` once nothing links
 into it. On its first start Sterna moves your settings and sessions from
