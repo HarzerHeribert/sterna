@@ -18,10 +18,10 @@ Sterna is a public pre-release for macOS, Linux and Windows.
 
 Sterna is one developer's study of agentic coding. I tried to design
 something different: the model writes one program per turn instead of
-calling one tool at a time. So far it seems to be failing. Measured against
-Codex on the same model, the design does not come out ahead, and I am still
-working out why. Every measurement, the good and the bad, is in
-[measurements](docs/measurements.md).
+calling one tool at a time. Measured against Codex on the same model
+(GPT-6.1 Sol, 30 real bug reports), it fixes as many bugs with nearly a
+fifth fewer requests to the model, at the same cost. Every measurement, the
+good and the bad, is in [measurements](docs/measurements.md).
 
 ## What it is
 
