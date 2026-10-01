@@ -324,6 +324,24 @@ fn a_session_reopened_from_the_list_is_the_same_session_with_what_it_did() {
     until_none_runs(&world);
     let reopened = host.ask(json!({"do":"start","root":alpha.to_str().unwrap(),"resume":id}));
     assert_eq!(reopened["id"], started["id"], "{reopened}");
+    // The list says it runs again: what the host heard of its first
+    // process ending is not what it says of the second.
+    let deadline = Instant::now() + engine::PATIENCE;
+    loop {
+        let list = host.ask(json!({"do":"list"}));
+        let entry = list["folders"][0]["sessions"]
+            .as_array()
+            .and_then(|sessions| sessions.iter().find(|s| s["id"] == started["id"]).cloned())
+            .unwrap_or_default();
+        if entry["live"].is_object() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reopened session is listed as running: {list}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
     let state = Conn::session(&reopened, "check").attach();
     assert!(
         state["conversation"]

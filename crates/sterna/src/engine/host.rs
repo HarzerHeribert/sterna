@@ -131,7 +131,21 @@ struct Heard {
     activity: String,
     since: u64,
     usage: wire::Usage,
+    /// What the session used in its processes before this one: a reopened
+    /// session keeps its id, and its usage adds up across them.
+    before: wire::Usage,
     ended: bool,
+}
+
+impl Heard {
+    fn total(&self) -> wire::Usage {
+        wire::Usage {
+            input_tokens: self.before.input_tokens + self.usage.input_tokens,
+            output_tokens: self.before.output_tokens + self.usage.output_tokens,
+            reasoned_tokens: self.before.reasoned_tokens + self.usage.reasoned_tokens,
+            requests: self.before.requests + self.usage.requests,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -140,7 +154,11 @@ struct Hosting {
     /// In the order the host started them: what `usage` adds up.
     order: Vec<String>,
     heard: BTreeMap<String, Heard>,
-    watching: std::collections::BTreeSet<String>,
+    /// The watcher each session's events are taken from, by generation: a
+    /// session reopened under its id is watched afresh, and what the
+    /// watcher of its ended process still reads is not taken.
+    watching: BTreeMap<String, u64>,
+    generation: u64,
     clients: usize,
     last_busy: Option<Instant>,
 }
@@ -170,7 +188,7 @@ fn serve(folder: &Path) -> Result<(), String> {
         "listening": listener.local_addr().map_err(|e| e.to_string())?.to_string(),
         "token": token,
         "pid": std::process::id(),
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
         "protocol": wire::PROTOCOL,
     });
     data::write_private(&folder.join("host.json"), ready.to_string().as_bytes())
@@ -269,8 +287,7 @@ fn client(stream: TcpStream, token: &str, shared: &Shared, gateway: &Gateway, fo
     if !same_token(&hello.token, token) {
         return refuse(&mut writer, "wrong token");
     }
-    let welcome =
-        json!({"welcome": {"protocol": wire::PROTOCOL, "host": env!("CARGO_PKG_VERSION")}});
+    let welcome = json!({"welcome": {"protocol": wire::PROTOCOL, "host": crate::VERSION}});
     if writeln!(writer, "{welcome}").is_err() {
         return;
     }
@@ -456,10 +473,12 @@ fn start(
                 token: token.clone(),
             },
         );
-        hosting.order.push(id.clone());
+        if !hosting.order.contains(&id) {
+            hosting.order.push(id.clone());
+        }
     }
     let task = command["task"].as_str().map(str::to_string);
-    watch_session(shared, &id, &listening, &token, task);
+    watch_session(shared, &id, &listening, &token, task, true);
     Ok(json!({"id": id, "listening": listening, "token": token}))
 }
 
@@ -514,12 +533,40 @@ fn shut_down(shared: &Shared, folder: &Path) -> ! {
 
 /// Listens to one session's port for how it stands, and hands it `task`
 /// once it is listening.
-fn watch_session(shared: &Shared, id: &str, listening: &str, token: &str, task: Option<String>) {
-    if !lock(shared).watching.insert(id.to_string()) {
-        return;
-    }
+/// Watches a session's port for the list and the usage. `fresh` is a
+/// process the host has just started -- new, or a session reopened under
+/// its id -- which is watched even while the watcher of its ended process
+/// has not yet read its end.
+fn watch_session(
+    shared: &Shared,
+    id: &str,
+    listening: &str,
+    token: &str,
+    task: Option<String>,
+    fresh: bool,
+) {
+    let generation = {
+        let mut hosting = lock(shared);
+        if !fresh && hosting.watching.contains_key(id) {
+            return;
+        }
+        hosting.generation += 1;
+        let generation = hosting.generation;
+        hosting.watching.insert(id.to_string(), generation);
+        if fresh {
+            let heard = hosting.heard.entry(id.to_string()).or_default();
+            *heard = Heard {
+                before: heard.total(),
+                ..Heard::default()
+            };
+        }
+        generation
+    };
     let Ok(mut line) = Line::open(listening, token, "host") else {
-        lock(shared).watching.remove(id);
+        let mut hosting = lock(shared);
+        if hosting.watching.get(id) == Some(&generation) {
+            hosting.watching.remove(id);
+        }
         return;
     };
     // Where the session stands, then what changes: the host needs its
@@ -535,6 +582,9 @@ fn watch_session(shared: &Shared, id: &str, listening: &str, token: &str, task: 
     std::thread::spawn(move || {
         while let Some(envelope) = line.next() {
             let mut hosting = lock(&shared);
+            if hosting.watching.get(&id) != Some(&generation) {
+                return;
+            }
             let heard = hosting.heard.entry(id.clone()).or_default();
             match envelope.event {
                 Event::Activity { activity, since } => {
@@ -552,8 +602,10 @@ fn watch_session(shared: &Shared, id: &str, listening: &str, token: &str, task: 
             }
         }
         let mut hosting = lock(&shared);
-        hosting.heard.entry(id.clone()).or_default().ended = true;
-        hosting.watching.remove(&id);
+        if hosting.watching.get(&id) == Some(&generation) {
+            hosting.heard.entry(id.clone()).or_default().ended = true;
+            hosting.watching.remove(&id);
+        }
     });
 }
 
@@ -576,7 +628,7 @@ fn list(shared: &Shared) -> Value {
         .map(|live| (live.id.clone(), live))
         .collect();
     for live in running.values() {
-        watch_session(shared, &live.id, &live.listening, &live.token, None);
+        watch_session(shared, &live.id, &live.listening, &live.token, None, false);
     }
     let hosting = lock(shared);
     let list = super::list::read();
@@ -617,7 +669,7 @@ fn usage(shared: &Shared) -> Value {
         .order
         .iter()
         .map(|id| {
-            let usage = hosting.heard.get(id).map(|h| h.usage).unwrap_or_default();
+            let usage = hosting.heard.get(id).map(Heard::total).unwrap_or_default();
             total.input_tokens += usage.input_tokens;
             total.output_tokens += usage.output_tokens;
             total.reasoned_tokens += usage.reasoned_tokens;
