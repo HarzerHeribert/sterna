@@ -39,21 +39,22 @@ fn watch(world: &World, client: &str) -> Conn {
 #[test]
 #[ignore = "plan goal 2"]
 fn what_a_person_does_in_the_terminal_reaches_a_second_client_through_the_seam() {
+    // The terminal keeps one conversation across its messages, so each reply
+    // is chosen by the newest message that asks for it.
     let provider = Provider::paced(|request| {
-        let task = engine::task_of(request);
-        match (task.as_str(), turn_of(request)) {
-            (t, 0) if t.contains("write the file") => (
+        if engine::replies_since(request, "write the file") == Some(0) {
+            return (
                 Duration::ZERO,
                 engine::cell(
                     "w",
                     r#"write({path: "asked.txt", content: "once"}); return "written";"#,
                 ),
-            ),
-            (t, 0) if t.contains("take your time") => {
-                (Duration::from_secs(4), engine::cell("slow", r#"return 1;"#))
-            }
-            _ => (Duration::ZERO, ending("done")),
+            );
         }
+        if engine::replies_since(request, "take your time") == Some(0) {
+            return (Duration::from_secs(4), engine::cell("slow", r#"return 1;"#));
+        }
+        (Duration::ZERO, ending("done"))
     });
     let world = World::new("terminal-actions", &provider);
     let folder = world.folder("project");
@@ -99,14 +100,26 @@ fn what_a_person_does_in_the_terminal_reaches_a_second_client_through_the_seam()
     let ended = watcher.until(turn_ended);
     assert_eq!(ended.last().unwrap()["activity"], "stopped");
 
+    // The message taken back is in the composer again; sent, it is a turn
+    // of its own.
+    term.send(b"\r");
+    let resent = watcher.until(|event| {
+        event["kind"] == "transcript"
+            && event["conversation"]["messages"]
+                .as_array()
+                .is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|m| m["role"] == "user" && m.to_string().contains("and then this"))
+                })
+    });
+    assert!(!resent.is_empty());
+    watcher.until(turn_ended);
+
     term.say("/effort high");
-    let facts = watcher.until(|event| event["kind"] == "facts");
-    assert_eq!(
-        facts.last().unwrap()["facts"]["effort"],
-        "high",
-        "{}",
-        facts.last().unwrap()
-    );
+    let facts =
+        watcher.until(|event| event["kind"] == "facts" && event["facts"]["effort"] == "high");
+    assert!(!facts.is_empty());
 }
 
 /// The replies for a turn a client watches in full: readable reasoning,
@@ -123,7 +136,7 @@ fn whole_turn() -> Provider {
                     {"type":"thinking","thinking":"Notes first, then the answer.","signature":"sig-1"},
                     {"type":"text","text":"Writing the notes now."},
                     {"type":"tool_use","id":"n","name":"execute_cell","input":{"code":
-                        "write({path: \"notes.txt\", content: \"hello\\n\"}); console.log(\"wrote notes\"); answer(\"The notes are written.\");"}},
+                        "write({path: \"notes.txt\", content: \"hello\\n\"}); console.log([\"wrote\", \"notes\"].join(\" \")); answer(\"The notes are written.\");"}},
                 ],
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             })
@@ -170,6 +183,17 @@ fn the_terminal_and_a_second_client_receive_the_same_live_session() {
         "{:?}",
         engine::kinds(&live)
     );
+    // The reasoning arrives while the turn is still thinking: before the
+    // answer streams or the cell runs.
+    let first_reasoning = live.iter().position(|e| e["kind"] == "reasoning").unwrap();
+    let first_after = live
+        .iter()
+        .position(|e| {
+            e["kind"] == "activity"
+                && matches!(e["activity"].as_str(), Some("streaming" | "executing"))
+        })
+        .expect("the turn streams and runs its cell");
+    assert!(first_reasoning < first_after, "{:?}", engine::kinds(&live));
     assert!(joined("delta").contains("Writing the notes now."));
     assert!(joined("tool_delta").contains("notes.txt"));
     let running = live

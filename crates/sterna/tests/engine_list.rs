@@ -14,7 +14,7 @@ mod engine;
 #[path = "support/terminal.rs"]
 mod terminal;
 
-use engine::{Conn, Host, Provider, World, cell, turn_ended};
+use engine::{Conn, Host, Provider, World, cell, rollout_ids, turn_ended};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::thread;
@@ -42,8 +42,7 @@ fn later() {
 fn same_folder(listed: &Value, folder: &Path) -> bool {
     listed["root"]
         .as_str()
-        .and_then(|root| Path::new(root).canonicalize().ok())
-        .is_some_and(|root| root == folder)
+        .is_some_and(|root| engine::same_path(Path::new(root), folder))
 }
 
 /// The list's entry for `folder`; fails the check with the list when there
@@ -70,26 +69,6 @@ fn ids_of(entry: &Value) -> Vec<String> {
                 .to_string()
         })
         .collect()
-}
-
-/// The sessions a folder's own record holds: the names of the rollout files
-/// under `.sterna/sessions`, leaving out the event logs beside them.
-fn rollout_ids(folder: &Path) -> Vec<String> {
-    // contract: a session's id in the list is its record file's name here,
-    // the id `sterna --sessions` prints and `--resume` takes, whether the
-    // terminal or the host started it.
-    let mut ids: Vec<String> = std::fs::read_dir(folder.join(".sterna").join("sessions"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let id = name.strip_suffix(".jsonl")?;
-            (!id.contains('.')).then(|| id.to_string())
-        })
-        .collect();
-    ids.sort();
-    ids
 }
 
 /// The list with every `live` field emptied: what a restart may change.

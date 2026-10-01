@@ -164,4 +164,24 @@ fn a_rollback_over_another_sessions_change_is_refused_and_names_that_session() {
         "the snapshot reads A's cell: {state}"
     );
     assert_eq!(rolled_back(&state), Vec::<Value>::new(), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(&shared).unwrap(),
+        "written by B",
+        "nothing undid B's change later either"
+    );
+
+    // The refusal is about the change made in between, not about sharing the
+    // folder: B undoing its own change goes ahead, and A's text is back.
+    let mut own = Conn::session(&b, "desktop");
+    own.attach();
+    own.send(json!({"do":"rollback"}));
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while std::fs::read_to_string(&shared).unwrap() != "written by A" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B's own rollback did not put A's text back: {:?}",
+            std::fs::read_to_string(&shared)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }

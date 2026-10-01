@@ -7,8 +7,8 @@
 mod engine;
 
 use engine::{
-    Conn, Host, Provider, World, cell, ending, files_under, task_of, turn_ended, turn_of,
-    with_usage,
+    Conn, Host, Provider, World, cell, ending, files_under, rollout_ids, task_of, turn_ended,
+    turn_of, with_usage,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -144,6 +144,9 @@ fn two_sessions_in_two_folders_run_at_once_without_a_terminal_and_each_writes_on
 
     assert_eq!(files_under(&alpha), ["alpha.txt"]);
     assert_eq!(files_under(&beta), ["beta.txt"]);
+    // Each session's own record is in its own folder, and only there.
+    assert_eq!(rollout_ids(&alpha), [started_alpha["id"].as_str().unwrap()]);
+    assert_eq!(rollout_ids(&beta), [started_beta["id"].as_str().unwrap()]);
     for (root, name) in [(&alpha, "alpha"), (&beta, "beta")] {
         assert_eq!(
             std::fs::read_to_string(root.join(format!("{name}.txt"))).unwrap(),

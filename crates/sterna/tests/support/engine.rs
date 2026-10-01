@@ -33,7 +33,67 @@ pub fn scratch(label: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     // A canonical path: macOS reaches the temp folder through a symlink, and
     // a session names its folder by the path it resolved.
-    dir.canonicalize().unwrap()
+    plain(&dir)
+}
+
+/// `path` resolved, and on Windows without the `\\?\` a resolved drive
+/// path carries, so it is the path a person and a terminal use.
+pub fn plain(path: &Path) -> PathBuf {
+    let resolved = path.canonicalize().unwrap();
+    #[cfg(windows)]
+    {
+        let text = resolved.to_string_lossy().into_owned();
+        if let Some(rest) = text.strip_prefix(r"\\?\")
+            && rest.chars().nth(1) == Some(':')
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    resolved
+}
+
+/// Whether two folders are one, however each is spelled.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The sessions a folder's own record holds: the names of the rollout files
+/// under `.sterna/sessions`, leaving out the event logs beside them.
+pub fn rollout_ids(folder: &Path) -> Vec<String> {
+    // contract: a session's id in the list is its record file's name here,
+    // the id `sterna --sessions` prints and `--resume` takes, whether the
+    // terminal or the host started it.
+    let mut ids: Vec<String> = std::fs::read_dir(folder.join(".sterna").join("sessions"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = name.strip_suffix(".jsonl")?;
+            (!id.contains('.')).then(|| id.to_string())
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// How many replies the model has given since the last user message that
+/// holds `words`; `None` when no user message holds them. What a provider
+/// answers by when a session keeps one conversation across many messages.
+pub fn replies_since(request: &Value, words: &str) -> Option<usize> {
+    let messages = request["messages"].as_array()?;
+    let at = messages
+        .iter()
+        .rposition(|m| m["role"] == "user" && text_of(&m["content"]).contains(words))?;
+    Some(
+        messages[at..]
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .count(),
+    )
 }
 
 /// One request the provider was sent: its path and its body.
@@ -252,7 +312,7 @@ impl World {
             "[model]\nparent = \"fixture-model\"\n",
         )
         .unwrap();
-        root.canonicalize().unwrap()
+        plain(&root)
     }
 
     /// `sterna` with this world's environment: its data folder, its settings
@@ -347,6 +407,10 @@ impl World {
             .into_iter()
             .flatten()
             .flatten()
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.ends_with(".json") && !name.starts_with('.')
+            })
             .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
             .filter_map(|text| serde_json::from_str(&text).ok())
             .collect();
@@ -511,7 +575,10 @@ impl Conn {
         let deadline = Instant::now() + PATIENCE;
         let mut seen = Vec::new();
         while Instant::now() < deadline {
-            let Some(event) = self.recv(deadline.saturating_duration_since(Instant::now())) else {
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1));
+            let Some(event) = self.recv(left) else {
                 break;
             };
             let done = wanted(&event);
