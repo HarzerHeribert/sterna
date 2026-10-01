@@ -19,7 +19,11 @@ pub fn response_for(request: &Value, whole: &str) -> (&'static str, String) {
         return ("application/json", whole.to_string());
     }
 
-    let value: Value = serde_json::from_str(whole).expect("fixture reply is a JSON object");
+    // A reply that is not a JSON object is a test's deliberately broken
+    // answer: it goes out as it is, whatever transport was asked for.
+    let Ok(value) = serde_json::from_str::<Value>(whole) else {
+        return ("application/json", whole.to_string());
+    };
     let blocks = value
         .get("content")
         .and_then(Value::as_array)

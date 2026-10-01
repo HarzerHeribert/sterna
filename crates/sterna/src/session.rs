@@ -1070,11 +1070,12 @@ fn run_task_inner(
         ));
         transcript.provider_start = transcript.conversation.messages.len();
     }
+    // The person's words and images first; the task's context after them.
     let mut user_message = Message::text(Role::User, task);
-    system::carry_task_context(&mut user_message, task_context);
     user_message
         .content
         .extend(session.pending_images.borrow_mut().drain(..));
+    system::carry_task_context(&mut user_message, task_context);
     write_message(session.interrupt, rollout, &user_message)
         .map_err(|e| format!("could not record the user turn: {e}"))?;
     transcript.conversation.messages.push(user_message);
