@@ -82,6 +82,11 @@ h2{font:600 clamp(48px,6.7vw,104px)/.92 var(--display);letter-spacing:-.02em}
 .features h3{font-size:23px;letter-spacing:-.04em;margin:0 0 16px}
 .features p{font-size:17px;line-height:1.65;color:var(--muted)}
 
+.figure{display:block;font:600 clamp(56px,5.6vw,88px)/.9 var(--display);letter-spacing:-.02em;margin-bottom:18px}
+.figure small{font-size:.45em;color:var(--muted)}
+.measured .features{margin-top:40px}
+.measured-note{margin-top:56px;max-width:720px;font-size:16px;line-height:1.65;color:var(--muted)}
+
 .start h2{font-size:clamp(58px,8vw,120px);margin:27px 0 60px}
 .steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:45px}
 .steps article{border-top:1px solid var(--ink);padding-top:22px}
@@ -127,10 +132,10 @@ footer>a:last-child{font:11px var(--mono)}
   .features,.steps{gap:24px}
 }
 @media(max-width:600px){
-  header{margin:0 6%;height:78px}.wordmark{font-size:16px}nav{font-size:11px;gap:14px}.source-link{display:none}
+  header{margin:0 6%;height:78px}.wordmark{font-size:16px}nav{font-size:11px;gap:14px}.source-link,.measured-link{display:none}
   .hero{padding:27px 6% 0;min-height:max(700px,calc(100svh - 78px))}.eyebrow{font-size:10px;letter-spacing:0}
   h1{font-size:17vw;line-height:.9;margin-top:45px;max-width:100%}
-  .hero .optics{width:115%;right:-10%;top:215px;height:380px}
+  .hero .optics{width:115%;right:-10%;top:190px;height:380px}
   .hero-motion-toggle{right:6%;top:58px;font-size:11px;padding:7px}
   .hero-bottom{left:6%;right:6%;bottom:24px;display:block}.hero-bottom p{font-size:16px;max-width:310px}.hero-lede .os-switch{margin-top:14px}.hero-lede .install{font-size:12px}.hero-bottom>.text-link{margin-top:10px;gap:25px}
   .install-wide{font-size:13px;padding:10px 10px 10px 16px;margin-bottom:44px}
@@ -142,6 +147,7 @@ footer>a:last-child{font:11px var(--mono)}
   .feature-list article{padding:24px 0;min-height:0}.feature-list p{font-size:16px}
   .relationship-copy{display:block;margin:38px 0}.relationship-copy h2{font-size:57px}.relationship-copy p{padding:25px 0 0;font-size:16px}
   .features,.steps{grid-template-columns:1fr;gap:35px;margin-top:50px}
+  .figure{font-size:64px}.measured-note{margin-top:40px}
   .start h2{font-size:67px}
   .button{width:100%}
   footer{margin:0 6%;flex-wrap:wrap}.credit{order:3;width:100%;max-width:none;font-size:9px}

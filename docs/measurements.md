@@ -5,6 +5,22 @@ the program under its former name, Pane; the commits named are in this
 repository's history. Tasks are the [ruler](ruler.md)'s unless a section
 names SWE-bench. **Read the limits at the end before acting on a number.**
 
+## Results so far
+
+| date | what changed or was compared | result |
+|---|---|---|
+| 2026-09-23 | Jev and the scout, offline | Jev 88–97 % right in ~300 ms; the scout found files only where their names gave them away |
+| 2026-09-24 | four small tasks against Codex | the same results on 18 % fewer tokens; Codex 1.28× faster |
+| 2026-09-25 | four request-savers, A/B | fewer requests on two of four tasks |
+| 2026-09-29 | against Codex: four small tasks, six hard hand-picked ones | small: equal; hard: 7 of 18 resolved to Codex's 9 |
+| 2026-09-30 | against Codex, 30 random SWE-bench Verified tasks, pre-registered | as many resolved, a fifth fewer requests, the same cost |
+| 2026-10-01 | warm cache for a new session, no repeated text in results | first request from uncached to 94 % cached (pre.25) |
+| 2026-10-01 | the model choosing how much to read (search windows, `context` modes) | it read as much or more; both removed |
+| 2026-10-01 | `context` tuned from 951 recorded reads, neighbours ranked | 7 % cheaper, 8 % faster than the build before (pre.26) |
+
+Each row has its section below; the limits at the end apply to all of
+them.
+
 ## Against the Codex CLI (2026-09-30)
 
 Sterna v0.1.0-pre.24 as released against Codex CLI 0.155.1, both on GPT-6 Sol
@@ -133,7 +149,11 @@ that adds this section).
 | that and ranked neighbours | 24.0 to 25.7 | −3.6 % | 0.93× (0.87–0.99) | 0.92× (0.86–0.99) |
 
 Ranking cut the text inside contexts by a tenth without more requests
-(0.96×). The lost solves are the tasks that vary run to run; on django
+(0.96×). It resolved 24.0 to 25.7, losing three tasks and gaining none
+(McNemar p = 0.25), and the three are tasks that vary run to run: on django
+15957 all nine attempts of the three builds changed both prefetch managers
+and the helper they share, and the failing ones -- every attempt of the
+other new build among them -- ordered the sliced prefetch wrongly. On django
 16100 every attempt of every build saw the whole method the passing fix
 changes, and the failing ones -- including one of each other build --
 copied `changeform_view`'s transaction wrapper onto the whole view instead.

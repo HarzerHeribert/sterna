@@ -22,9 +22,17 @@ embedded in Sterna. `read`, `grep`, `edit`, `bash` and the rest are
 functions inside it, so one turn can read several files, search, edit, run
 the tests and branch on the result. What a tool returns stays in the
 isolate as a named handle; the model sees a bounded preview and works on
-the handle in the next cell. A test on every build greps a generated tree
-of about 275 KB and fails if the model is shown 300 tokens or more of it;
-today it is shown about 210.
+the handle in the next cell, so a search that turns up 275 KB shows the
+model about 210 tokens of it.
+
+**Reads what the work needs.** Ask for a piece of code and the model gets
+it whole, with the places that use it and the code related to it, and not
+the code that only happens to sit nearby. What it shows was tuned on real
+tasks, by what the model went on to use.
+
+**A slow command never holds the session.** A command still running after
+30 seconds carries on in the background; the model waits for it, stops it,
+or works on and hears when it is done. Nothing is killed.
 
 **Beside the turn.** **Subagents** take a whole separable goal and run
 beside the task. Long output is folded by rules before the model reads it —
@@ -34,14 +42,11 @@ naming its model, answers typed questions — is this request read-only, is
 this a log — in about two seconds, and a task that stops producing anything
 ends on its own.
 
-**The longest run on the least.** History is append-only except when it is
-compacted, the system prompt stays the same between tasks, and a context
-that stops fitting is compacted while the isolate keeps running, so a result
-from turn three is still addressable afterwards. Against the Codex CLI on
-the same model (GPT-6 Sol, 2026-09-30), on 30 SWE-bench Verified tasks drawn
-at random, Sterna resolved as many (24.7 of 30 to Codex's 25, averaged over
-attempts) with about a fifth fewer model requests, at the same cost and in
-no less time ([measurements](docs/measurements.md)).
+**The longest run on the least.** Sterna never rewrites what it has
+already sent, so the provider's cache keeps paying off turn after turn.
+When a conversation outgrows the model's window it is compacted, and the
+results of earlier turns stay usable. A new session starts warm: even its
+first request is mostly served from the cache.
 
 **Your subscription or your key.** Sterna talks to models through the
 **inference gateway**, a separate program it starts beside itself. The
@@ -57,6 +62,21 @@ read-only planning request, background jobs, web fetch (asking before a
 host it has not reached before) and web search with a provider you choose,
 MCP servers, image input,
 rollback of the agent's changes, and resume.
+
+## How it compares
+
+Against OpenAI's Codex CLI, both on the same model, on 30 real bug reports
+from open-source projects:
+
+- **It fixes as many bugs.**
+- **It asks the model a fifth less often**, because each step does more.
+- **It costs the same**, about $0.21 per fixed bug.
+
+Since that run, Sterna reads code more selectively: a task costs about 7 %
+less and is done about 8 % sooner.
+
+How this was measured, every result so far and the timeline:
+[measurements](docs/measurements.md).
 
 ## Install and update
 
