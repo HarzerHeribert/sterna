@@ -864,3 +864,38 @@ fn a_file_over_fourteen_kilobytes_is_not_handed_over_whole() {
     let got = pack(&f.profile(), &target, Some("target")).unwrap();
     assert_eq!(got.target.role, ContextRole::TargetDefinition);
 }
+
+/// A neighbour stays whole when it is small, related by name to the target,
+/// or shares many names with it; a large unrelated one is its first line.
+#[test]
+fn neighbours_are_whole_when_related_and_a_first_line_when_not() {
+    let f = Fixture::new("ranked");
+    // Each body over the 600-byte floor, all within the 120 lines `nearby` scans.
+    let unrelated_body = "    alpha_one = 1\n    beta_two = 2\n".repeat(18);
+    let related_body = "    return target(value) + 1\n".repeat(30);
+    let called_body = "    gamma_three = 3\n    delta_four = 4\n".repeat(16);
+    let padding = "# padding padding padding padding\n".repeat(600);
+    let source = format!(
+        "def unrelated(z):\n{unrelated_body}\ndef called(z):\n{called_body}\ndef target(value):\n    return called(value)\n\ndef related(value):\n{related_body}\ndef tiny():\n    return 'TINY'\n{padding}"
+    );
+    let target = f.put("src/mod.py", &source);
+    let got = pack(&f.profile(), &target, Some("target")).unwrap();
+    let neighbour = |name: &str| {
+        got.supporting
+            .iter()
+            .find(|e| {
+                e.role == ContextRole::NearbyDefinition
+                    && e.text.starts_with(&format!("def {name}"))
+            })
+            .unwrap_or_else(|| panic!("no neighbour {name}: {:?}", got.supporting))
+    };
+    assert_eq!(neighbour("unrelated").text, "def unrelated(z):");
+    assert!(
+        neighbour("related")
+            .text
+            .contains("return target(value) + 1")
+    );
+    assert!(neighbour("tiny").text.contains("'TINY'"));
+    // The target names it: whole, as one that names the target is.
+    assert!(neighbour("called").text.contains("gamma_three = 3"));
+}

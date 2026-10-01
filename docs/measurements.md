@@ -114,6 +114,30 @@ mix the change with the day's cache; the result text and the behaviour
 counts are what they show. A comparison runs its control arm side by
 side in the same run, as the 2026-09-30 one did.
 
+**What `context` returns, three builds side by side, 2026-10-01.** The
+parts of a context were first priced offline over 951 contexts in 160
+recorded attempts, each against whether a later cell needed it; nothing was
+worth adding. Then three builds ran on each of the 30 tasks at once (two
+more attempts on the three tasks they disagreed on): the build before
+(`07c953db`), one that turns a returned copy of a printed context into a
+pointer, cuts caller and test windows around a use instead of an import
+and sends files whole only up to 14 KB (`11fe49b6`), and that plus ranked
+neighbours -- a neighbour over ~150 tokens that does not name the target,
+is not named by it and shares fewer than 10 names with it arrives as its
+first line (measured as `15dd8dfb`; it reached `main` as the commit
+that adds this section).
+
+| against the build before | resolved | result text | cost | time |
+|---|---|---|---|---|
+| pointer, use windows, 14 KB | 25.0 to 25.7 | −2.3 % | 0.97× (0.90–1.03) | 0.93× (0.86–1.01) |
+| that and ranked neighbours | 24.0 to 25.7 | −3.6 % | 0.93× (0.87–0.99) | 0.92× (0.86–0.99) |
+
+Ranking cut the text inside contexts by a tenth without more requests
+(0.96×). The lost solves are the tasks that vary run to run; on django
+16100 every attempt of every build saw the whole method the passing fix
+changes, and the failing ones -- including one of each other build --
+copied `changeform_view`'s transaction wrapper onto the whole view instead.
+
 ## Against the Codex CLI (2026-09-29, superseded by the section above)
 
 Same model (GPT-6 Sol) for both, three attempts per task. Sterna ran with its
