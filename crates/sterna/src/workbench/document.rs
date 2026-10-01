@@ -997,50 +997,30 @@ impl Document {
             );
             return;
         }
-        for line in execution.lines() {
-            let line = line
-                .trim_start()
-                .trim_start_matches("├─ ")
-                .trim_start_matches("└─ ")
-                .trim_start_matches("├─")
-                .trim_start_matches("└─")
-                .trim();
-            let (what, status) = match line.find(" · ") {
-                Some(i) => (&line[..i], &line[i + " · ".len()..]),
-                None => (line, ""),
-            };
-            let word = status.split(" · ").next().unwrap_or("");
-            let (mark, tone) = match word {
+        for call in crate::engine::reading::calls(execution) {
+            let (mark, tone) = match call.outcome.as_str() {
                 "returned" => ("✓", Tone::Success),
                 "started" => ("●", Tone::Accent),
                 "failed" => ("✕", Tone::Failure),
                 "denied" => ("⊘", Tone::Warning),
                 _ => ("·", Tone::Muted),
             };
-            let (tool, arg) = match what.split_once(' ') {
-                Some((tool, arg)) => (tool.to_string(), arg.to_string()),
-                None => (what.to_string(), String::new()),
-            };
-            let detail = status
-                .split_once(" · ")
-                .map(|(_, rest)| rest.to_string())
-                .unwrap_or_default();
             // A call still running holds the eye; one that returned is the
             // record, and recedes so the result and the answer lead.
-            let (name, said) = if word == "returned" {
+            let (name, said) = if call.outcome == "returned" {
                 (Tone::Muted, Tone::Muted)
             } else {
                 (Tone::Accent, Tone::Normal)
             };
             let mut left = vec![
                 (format!("  {mark} "), tone),
-                (format!("{tool:<7} "), name),
-                (arg, said),
+                (format!("{:<7} ", call.tool), name),
+                (call.target, said),
             ];
-            if !detail.is_empty() {
-                left.push((format!("  {detail}"), tone));
+            if !call.detail.is_empty() {
+                left.push((format!("  {}", call.detail), tone));
             }
-            let right = vec![(word.to_string(), tone)];
+            let right = vec![(call.outcome, tone)];
             let row = justify(left, right, width);
             self.line(row, None, id);
         }

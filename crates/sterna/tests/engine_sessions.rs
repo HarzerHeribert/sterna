@@ -267,3 +267,72 @@ fn the_hosts_usage_counts_each_sessions_replies_and_totals_their_sum() {
 
     host.shutdown();
 }
+
+/// Waits until no session publishes itself as running any more.
+fn until_none_runs(world: &World) {
+    let deadline = Instant::now() + engine::PATIENCE;
+    while !world.live().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "a stopped session still says it runs: {:?}",
+            world.live()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A session reopened from the list is the same session: while it runs the
+/// host hands back the one already running, and once it has ended it starts
+/// again on its own record, under the same id, with what it did. The record
+/// of a cell says, call by call, what it ran.
+#[test]
+fn a_session_reopened_from_the_list_is_the_same_session_with_what_it_did() {
+    let provider = Provider::start(|request| match folder_of(request) {
+        Some(name) => reply(name, turn_of(request)),
+        None => ending("This request serves no task."),
+    });
+    let world = World::new("reopen", &provider);
+    let alpha = world.folder("alpha");
+    let host = world.host();
+
+    let started = start(&host, &alpha, &task_for("alpha"));
+    let id = started["id"].as_str().unwrap();
+    until_its_turn_ends(&started);
+    let state = Conn::session(&started, "check").attach();
+    let calls = &state["reading"]["cells"][0]["calls"];
+    assert_eq!(
+        (calls[0]["tool"].as_str(), calls[0]["target"].as_str()),
+        (Some("write"), Some("alpha.txt")),
+        "the cell's reading names its call: {}",
+        state["reading"]
+    );
+    assert!(
+        state["facts"]["reasoning"].is_boolean(),
+        "{}",
+        state["facts"]
+    );
+
+    // Still running: the same session, not a second process on its record.
+    let again = host.ask(json!({"do":"start","root":alpha.to_str().unwrap(),"resume":id}));
+    assert_eq!(
+        (&again["id"], &again["listening"], &again["token"]),
+        (&started["id"], &started["listening"], &started["token"])
+    );
+    assert_eq!(world.live().len(), 1, "{:?}", world.live());
+
+    host.ask(json!({"do":"stop","id":id}));
+    until_none_runs(&world);
+    let reopened = host.ask(json!({"do":"start","root":alpha.to_str().unwrap(),"resume":id}));
+    assert_eq!(reopened["id"], started["id"], "{reopened}");
+    let state = Conn::session(&reopened, "check").attach();
+    assert!(
+        state["conversation"]
+            .to_string()
+            .contains(&task_for("alpha")),
+        "the reopened session holds what it was asked: {}",
+        state["conversation"]
+    );
+    assert_eq!(rollout_ids(&alpha), [id], "one record, carried on");
+
+    host.shutdown();
+}

@@ -148,7 +148,10 @@ view: `description`, `changes` (a unified diff), `stdout`, `output`,
 `returned`, `execution`, `error`, `call_count`, `asked`, `rolled_back`. A
 turn's answer joins `conversation` as an assistant message.
 
-`reading` is the words a client shows, decided once:
+`reading` is the words a client shows, decided once (each cell's `calls`
+too: `{"tool","target","outcome","detail"}`, `outcome` one of `returned`,
+`started`, `failed`, `denied`; and `facts.reasoning` says whether a turn's
+request asks the model to reason):
 `{"cells":[{"cell":<n>,"state":"EXECUTED","mark":"✓","tone":"success","line":"✓ executed · 1 file changed","parts":[…],"facts":…}],"answer":{"cell":<n>,"facts":"1 file · +1 −0 · 1 call","mark":"✓","failed":false}}`.
 Cells count from 1; `answer` is the newest answer's, `null` until there is
 one, and `complete.` or `failed.` when its cell changed nothing and made no
@@ -183,7 +186,7 @@ time it changes.
 | command | fields | answers |
 |---|---|---|
 | `list` | | `{"folders":[{"root","last_used","sessions":[{"id","title","last_used","live"}]}]}`, folders and sessions newest first |
-| `start` | `root`, `task` (optional), `model` (optional) | `{"id","listening","token"}` |
+| `start` | `root`; `task`, `model`, `resume` (each optional) | `{"id","listening","token"}`; with `resume`, the session of that id is reopened -- or found, when it already runs |
 | `locate` | `id` | `{"id","listening","token"}` for a running session |
 | `stop` | `id` | ends a running session |
 | `usage` | | `{"sessions":[{"id","input_tokens","output_tokens"}],"total":{"input_tokens","output_tokens"}}` |

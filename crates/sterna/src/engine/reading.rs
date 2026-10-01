@@ -4,7 +4,7 @@
 //! them and decides none of them. Every claim here is observed in the
 //! cell's own view, never inferred from its source.
 
-use super::wire::{AnswerReading, CellReading, Part, Reading};
+use super::wire::{AnswerReading, Call, CellReading, Part, Reading};
 use crate::tui::{CellView, Notebook};
 
 /// Every cell's words, and the newest answer's.
@@ -40,13 +40,14 @@ pub fn cell(ordinal: usize, v: &CellView) -> CellReading {
         ("", "RECORDED", "muted")
     };
     let parts = line(v);
-    let calls = v.execution.as_deref().unwrap_or("");
+    let record = calls_text(v);
     let clean = v.error.is_none()
         && v.execution.is_some()
-        && !calls.contains(" · failed")
-        && !calls.contains(" · denied");
+        && !record.contains(" · failed")
+        && !record.contains(" · denied");
     CellReading {
         clean,
+        calls: calls(record),
         cell: ordinal,
         state: state.into(),
         mark: mark.into(),
@@ -112,6 +113,45 @@ pub fn answer(ordinal: usize, v: &CellView) -> AnswerReading {
     }
 }
 
+fn calls_text(v: &CellView) -> &str {
+    v.execution.as_deref().unwrap_or("")
+}
+
+/// The calls a cell made, read from the runtime's record of them: one line
+/// each, `tool target · outcome · what was said`. "No tool calls" is none.
+#[must_use]
+pub fn calls(execution: &str) -> Vec<Call> {
+    if execution.starts_with("No tool calls") {
+        return Vec::new();
+    }
+    execution
+        .lines()
+        .map(|line| {
+            line.trim_start()
+                .trim_start_matches("├─ ")
+                .trim_start_matches("└─ ")
+                .trim_start_matches("├─")
+                .trim_start_matches("└─")
+                .trim()
+        })
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (what, status) = match line.find(" · ") {
+                Some(i) => (&line[..i], &line[i + " · ".len()..]),
+                None => (line, ""),
+            };
+            let (tool, target) = what.split_once(' ').unwrap_or((what, ""));
+            let (outcome, detail) = status.split_once(" · ").unwrap_or((status, ""));
+            Call {
+                tool: tool.to_string(),
+                target: target.to_string(),
+                outcome: outcome.to_string(),
+                detail: detail.to_string(),
+            }
+        })
+        .collect()
+}
+
 /// How many files a cell's diff names.
 #[must_use]
 pub fn changed_files(v: &CellView) -> usize {
@@ -174,6 +214,23 @@ mod tests {
             ..CellView::default()
         };
         assert_eq!(answer(1, &bare).facts, "complete.");
+    }
+
+    #[test]
+    fn a_cells_calls_read_with_their_outcomes() {
+        let read = calls("├─ write notes.txt · returned\n└─ bash cargo test · failed · exit 101");
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            (
+                read[0].tool.as_str(),
+                read[0].target.as_str(),
+                read[0].outcome.as_str()
+            ),
+            ("write", "notes.txt", "returned")
+        );
+        assert_eq!(read[1].outcome, "failed");
+        assert_eq!(read[1].detail, "exit 101");
+        assert!(calls("No tool calls ran").is_empty());
     }
 
     #[test]

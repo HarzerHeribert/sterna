@@ -303,6 +303,9 @@ pub struct Facts {
     pub network: Option<String>,
     pub subagents: Option<String>,
     pub settings_models: Vec<String>,
+    /// Whether this session's requests ask the model to reason: a row then
+    /// says "reasoning", else "waiting for the model".
+    pub reasoning: bool,
 }
 
 /// Tokens the session's requests used, as the providers counted them.
@@ -401,8 +404,21 @@ pub struct CellReading {
     pub parts: Vec<Part>,
     /// It ran, threw nothing, and no call it made failed or was denied.
     pub clean: bool,
+    /// The calls it made and how each ended, as the runtime recorded them.
+    pub calls: Vec<Call>,
     /// The facts under the answer this cell returned, when it returned one.
     pub facts: Option<AnswerReading>,
+}
+
+/// One call a cell made: the tool, what it acted on, and how it ended --
+/// `returned`, `started`, `failed`, `denied` -- with what was said of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Call {
+    pub tool: String,
+    pub target: String,
+    pub outcome: String,
+    pub detail: String,
 }
 
 /// Words and what they mean, for a client to colour: `success`, `failure`,

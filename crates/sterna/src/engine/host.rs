@@ -381,6 +381,16 @@ fn start(
         return Err(format!("{} is not a folder", root.display()));
     }
     let root = data::plain(&root);
+    // Reopening a session that already runs finds it rather than starting
+    // a second process on its record.
+    let resume = command["resume"].as_str().filter(|id| !id.is_empty());
+    if let Some(id) = resume
+        && let Some(live) = Live::all()
+            .into_iter()
+            .find(|live| live.id == id && live.answers())
+    {
+        return Ok(json!({"id": live.id, "listening": live.listening, "token": live.token}));
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut process = Process::new(exe);
     process
@@ -390,6 +400,9 @@ fn start(
         .arg(&root);
     if let Some(model) = command["model"].as_str() {
         process.arg("--model").arg(model);
+    }
+    if let Some(id) = resume {
+        process.arg("--resume").arg(id);
     }
     gateway.environ(&mut process);
     process

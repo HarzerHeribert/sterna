@@ -439,6 +439,10 @@ impl Engine {
         if let Some(level) = &self.level {
             self.state.facts.level = level.level().name().into();
         }
+        self.state.facts.reasoning = self.state.facts.model.as_deref().is_some_and(|model| {
+            crate::wire::Effort::parse(&self.state.facts.effort)
+                .is_some_and(|effort| effort.sent_for(model) != crate::wire::Effort::Auto)
+        });
         let facts = self.state.facts.clone();
         self.emit(Event::Facts { facts });
     }
