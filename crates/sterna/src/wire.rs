@@ -1082,46 +1082,80 @@ pub fn send_turn_bounded_routed(
         body = with_history_breakpoint(body, model);
     }
 
-    let mut builder = ureq::post(&url).config().http_status_as_error(false);
-    if let Some(timeout) = timeout {
-        builder = builder.timeout_global(Some(timeout));
-    }
-    let mut request = builder
-        .build()
-        .header("content-type", "application/json")
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header(MODEL_HEADER, model);
-    if let Some(key) = CACHE_KEY.get() {
-        request = request.header(SESSION_HEADER, key.as_str());
-    }
-    if let Some((name, value)) = credential_header() {
-        request = request.header(name, value);
-    }
-    if let Some((name, value)) = extra_header {
-        request = request.header(name, value);
-    }
-    if let Some(token) = routing.and_then(TurnRouting::token) {
-        request = request.header(TURN_STATE_HEADER, token);
-    }
+    let began = std::time::Instant::now();
+    let mut retried = 0u32;
+    loop {
+        let mut builder = ureq::post(&url).config().http_status_as_error(false);
+        if let Some(timeout) = timeout {
+            builder = builder.timeout_global(Some(timeout));
+        }
+        let mut request = builder
+            .build()
+            .header("content-type", "application/json")
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header(MODEL_HEADER, model);
+        if let Some(key) = CACHE_KEY.get() {
+            request = request.header(SESSION_HEADER, key.as_str());
+        }
+        if let Some((name, value)) = credential_header() {
+            request = request.header(name, value);
+        }
+        if let Some((name, value)) = extra_header {
+            request = request.header(name, value);
+        }
+        if let Some(token) = routing.and_then(TurnRouting::token) {
+            request = request.header(TURN_STATE_HEADER, token);
+        }
 
-    let mut response = request
-        .send(body.as_slice())
-        .map_err(|err| WireError::Http(Box::new(err)))?;
-    if let Some(routing) = routing {
-        routing.observe(response.headers());
+        let mut response = request
+            .send(body.as_slice())
+            .map_err(|err| WireError::Http(Box::new(err)))?;
+        if let Some(routing) = routing {
+            routing.observe(response.headers());
+        }
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| WireError::Http(Box::new(err)))?;
+        if overloaded(status) {
+            retried += 1;
+            let wait = overload_wait(retried, response.headers());
+            if timeout.is_none_or(|timeout| began.elapsed() + wait < timeout) {
+                std::thread::sleep(wait);
+                continue;
+            }
+        }
+        if !response.status().is_success() {
+            return Err(WireError::Status {
+                status,
+                body_head: body_head(&text),
+            });
+        }
+        return parse_response(&text);
     }
-    let status = response.status().as_u16();
-    let text = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| WireError::Http(Box::new(err)))?;
-    if !response.status().is_success() {
-        return Err(WireError::Status {
-            status,
-            body_head: body_head(&text),
-        });
-    }
-    parse_response(&text)
+}
+
+/// A provider saying it has no room right now. The request is asked again
+/// rather than ending the turn: on 2026-10-01 three in twelve SWE-bench
+/// attempts died on a 502 "servers are currently overloaded" that Codex
+/// waited out. What bounds the asking is what bounds the turn -- its
+/// timeout, a cancellation -- never a count. A plain 500 is not on the list:
+/// it is as likely to be an answer that will not change.
+fn overloaded(status: u16) -> bool {
+    matches!(status, 502 | 503 | 504 | 529)
+}
+
+/// How long to wait before asking an overloaded provider again: its own
+/// `retry-after` seconds when it sent them, otherwise 2, 4, 8, 16 and 32 s
+/// and then a minute each time; never more than five minutes.
+fn overload_wait(retried: u32, headers: &ureq::http::HeaderMap) -> std::time::Duration {
+    let stated = headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let doubled = if retried < 6 { 1u64 << retried } else { 60 };
+    std::time::Duration::from_secs(stated.unwrap_or(doubled).min(300))
 }
 
 /// Shared serialization for task requests.
@@ -1813,43 +1847,57 @@ fn send_turn_streaming_while(
         None => body,
     };
 
-    let mut request = ureq::post(&url)
-        .config()
-        .http_status_as_error(false)
-        .build()
-        .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header(MODEL_HEADER, model);
-    if let Some(key) = CACHE_KEY.get() {
-        request = request.header(SESSION_HEADER, key.as_str());
-    }
-    if let Some((name, value)) = credential_header() {
-        request = request.header(name, value);
-    }
-    if let Some(token) = routing.and_then(TurnRouting::token) {
-        request = request.header(TURN_STATE_HEADER, token);
-    }
+    let mut retried = 0u32;
+    loop {
+        let mut request = ureq::post(&url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header(MODEL_HEADER, model);
+        if let Some(key) = CACHE_KEY.get() {
+            request = request.header(SESSION_HEADER, key.as_str());
+        }
+        if let Some((name, value)) = credential_header() {
+            request = request.header(name, value);
+        }
+        if let Some(token) = routing.and_then(TurnRouting::token) {
+            request = request.header(TURN_STATE_HEADER, token);
+        }
 
-    let mut response = request
-        .send(body.as_slice())
-        .map_err(|err| WireError::Http(Box::new(err)))?;
-    if let Some(routing) = routing {
-        routing.observe(response.headers());
-    }
-    let status = response.status().as_u16();
-    if !response.status().is_success() {
-        let text = response
-            .body_mut()
-            .read_to_string()
+        let mut response = request
+            .send(body.as_slice())
             .map_err(|err| WireError::Http(Box::new(err)))?;
-        return Err(WireError::Status {
-            status,
-            body_head: body_head(&text),
-        });
-    }
+        if let Some(routing) = routing {
+            routing.observe(response.headers());
+        }
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let text = response
+                .body_mut()
+                .read_to_string()
+                .map_err(|err| WireError::Http(Box::new(err)))?;
+            if overloaded(status) {
+                retried += 1;
+                let until = std::time::Instant::now() + overload_wait(retried, response.headers());
+                while std::time::Instant::now() < until {
+                    if !keep_reading() {
+                        return Err(WireError::Stream(CANCELLED_TURN.to_string()));
+                    }
+                    std::thread::sleep(CANCEL_POLL);
+                }
+                continue;
+            }
+            return Err(WireError::Status {
+                status,
+                body_head: body_head(&text),
+            });
+        }
 
-    read_sse_stream(&mut response, keep_reading, on_delta)
+        return read_sse_stream(&mut response, keep_reading, on_delta);
+    }
 }
 
 /// The SSE half of a streamed turn, shared by the task path
@@ -2022,6 +2070,159 @@ mod tests {
             }
         });
         format!("http://{address}")
+    }
+
+    /// A fixture provider answering each connection with the next raw HTTP
+    /// response in `answers`; returns its URL and how many it was asked.
+    fn answering(answers: Vec<String>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(answer.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://{address}"), asked)
+    }
+
+    fn overloaded_answer(status: u16) -> String {
+        let body = r#"{"type":"error","error":{"type":"service_unavailable_error","message":"Our servers are currently overloaded."}}"#;
+        format!(
+            "HTTP/1.1 {status} Overloaded\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// An overloaded provider is asked again until it answers, on the whole
+    /// path and on the streamed one; a plain 500 still ends the turn at once.
+    #[test]
+    fn an_overloaded_provider_is_asked_again_until_it_answers() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let message = r#"{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"fine"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let whole = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{message}",
+            message.len()
+        );
+        let (url, asked) = answering(vec![overloaded_answer(502), overloaded_answer(529), whole]);
+        // SAFETY: `_guard` serialises every base-url mutation in this module.
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let turn = send_turn_bounded(&sample_conversation(), "m", Effort::Auto, None);
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        assert!(format!("{:?}", turn.expect("the third answer is a turn")).contains("fine"));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        let frames: String = text_frames("streamed fine")
+            .into_iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect();
+        let streamed = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{frames}"
+        );
+        let (url, asked) = answering(vec![overloaded_answer(503), streamed]);
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let turn = send_turn_streaming_while(
+            &sample_conversation(),
+            "m",
+            Effort::Auto,
+            Surface::cells(),
+            None,
+            &mut || true,
+            &mut |_| {},
+        );
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        assert!(
+            format!("{:?}", turn.expect("the second answer is a turn")).contains("streamed fine")
+        );
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let plain =
+            "HTTP/1.1 500 Error\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_string();
+        let (url, asked) = answering(vec![plain]);
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let turn = send_turn_bounded(&sample_conversation(), "m", Effort::Auto, None);
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        assert!(matches!(turn, Err(WireError::Status { status: 500, .. })));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A request's own timeout bounds the asking: a wait that would outlast
+    /// it is not taken, and the overload is the answer.
+    #[test]
+    fn an_overload_that_would_outlast_the_timeout_is_the_answer() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let slow = overloaded_answer(503).replace("retry-after: 0", "retry-after: 5");
+        let (url, asked) = answering(vec![slow.clone(), slow]);
+        // SAFETY: `_guard` serialises every base-url mutation in this module.
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let turn = send_turn_bounded(
+            &sample_conversation(),
+            "m",
+            Effort::Auto,
+            Some(std::time::Duration::from_secs(2)),
+        );
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        assert!(matches!(turn, Err(WireError::Status { status: 503, .. })));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A turn given up on while it waits out an overload ends at once.
+    #[test]
+    fn a_turn_cancelled_during_an_overload_wait_ends_at_once() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let slow = overloaded_answer(503).replace("retry-after: 0", "retry-after: 30");
+        let (url, asked) = answering(vec![slow]);
+        // SAFETY: `_guard` serialises every base-url mutation in this module.
+        unsafe { env::set_var("ANTHROPIC_BASE_URL", &url) };
+        let began = std::time::Instant::now();
+        let turn = send_turn_streaming_while(
+            &sample_conversation(),
+            "m",
+            Effort::Auto,
+            Surface::cells(),
+            None,
+            &mut || false,
+            &mut |_| {},
+        );
+        unsafe { env::remove_var("ANTHROPIC_BASE_URL") };
+        let error = turn.expect_err("a cancelled turn has no answer");
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(began.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The wait is the provider's own `retry-after` when stated, otherwise it
+    /// doubles from 2 s and settles at a minute.
+    #[test]
+    fn the_wait_follows_retry_after_and_otherwise_doubles_to_a_minute() {
+        let none = ureq::http::HeaderMap::new();
+        let waits: Vec<u64> = (1..=8).map(|n| overload_wait(n, &none).as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 60, 60, 60]);
+        let mut stated = ureq::http::HeaderMap::new();
+        stated.insert("retry-after", ureq::http::HeaderValue::from_static("7"));
+        assert_eq!(overload_wait(1, &stated).as_secs(), 7);
+        stated.insert("retry-after", ureq::http::HeaderValue::from_static("9000"));
+        assert_eq!(overload_wait(1, &stated).as_secs(), 300);
     }
 
     fn text_frames(text: &str) -> Vec<String> {
