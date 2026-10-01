@@ -18,7 +18,11 @@ use std::{
 /// practice. Raising this to meet the writer closes that, rather than
 /// lowering the writer and taking away something that worked.
 pub const SOURCE_CAP: u64 = 16 * 1024 * 1024;
-const SMALL: usize = 16_384;
+/// The largest file `context` hands over whole. 14 KB (~3.5K tokens):
+/// measured over 951 contexts (2026-10-01), a whole file up to that size was
+/// read outside its target often enough to pay for itself, and one of 3.5-5K
+/// tokens a fifth as often as its size needs.
+const SMALL: usize = 14_336;
 const DEF_CAP: usize = 24_000;
 const RENDER_CAP: usize = 30_000;
 const SUPPORT_CAP: usize = 18;
@@ -1424,6 +1428,25 @@ fn nearby(l: &[&str], p: &str, target: (usize, usize), g: Lang) -> Vec<SourceExc
         })
         .collect()
 }
+/// A line that names a symbol without using it: an import, or a comment.
+/// A reference window is cut around a use. Measured over 951 contexts
+/// (2026-10-01): of the windows cut around an import line none was needed
+/// (0 of 172), and of those around a comment or docstring mention 6 of 205.
+fn mentions_only(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("import ")
+        || (t.starts_with("from ") && t.contains(" import "))
+        || t.starts_with("use ")
+        || t.starts_with("pub use ")
+        || t.starts_with("#include")
+        || t.starts_with('#')
+        || t.starts_with("//")
+        || t.starts_with("/*")
+        || t.starts_with("* ")
+        || t.starts_with("\"\"\"")
+        || t.starts_with("'''")
+}
+
 fn references(profile: &Profile, target: &Path, symbol: &str) -> (Vec<SourceExcerpt>, Vec<String>) {
     let mut stack = vec![(profile.root().to_path_buf(), 0)];
     let (mut files, mut visited, mut refused, mut cutoff) = (vec![], 0, 0, false);
@@ -1471,7 +1494,9 @@ fn references(profile: &Profile, target: &Path, symbol: &str) -> (Vec<SourceExce
         };
         let l: Vec<&str> = t.lines().collect();
         let Some(i) = l.iter().position(|x| {
-            has_ident(x, symbol) && (p != target || !def_line(x, symbol, Lang::of(&p)))
+            has_ident(x, symbol)
+                && !mentions_only(x)
+                && (p != target || !def_line(x, symbol, Lang::of(&p)))
         }) else {
             continue;
         };

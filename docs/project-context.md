@@ -94,7 +94,12 @@ doc comments, decorators and annotations stay with their definition.
 A definition is marked complete only when its boundaries were established;
 ambiguous syntax falls back to a bounded window and names the omission.
 A definition is capped at 24,000 bytes and a result at 18 supporting
-excerpts.
+excerpts. A file up to 14 KB comes whole. A caller or test excerpt is cut
+around a line that uses the name, never around the line that imports it or
+a comment that mentions it. A context is printed into the cell's output by
+itself, so a program that also returns its `text` gets one line naming it
+there instead of a second copy. These limits were set from what 951
+contexts over 30 SWE-bench tasks were later used for (2026-10-01).
 
 `symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
 walked member by member, so a method name two classes share is not

@@ -27,11 +27,77 @@ pub(super) fn show(
     terminal: &Terminal,
     result: &mut CellResult,
 ) -> String {
-    let shaped = shape(session, runtime, task_state, terminal);
+    let terminal = without_printed_contexts(terminal, result.stdout_tail.as_deref());
+    let shaped = shape(session, runtime, task_state, &terminal);
     let text = budget.render_return(&shaped);
     result.budget.feedback = Some(budget.return_usage());
     result.output = Some(text.clone());
     text
+}
+
+/// The terminal with every returned copy of a source context this result
+/// already prints replaced by one line saying where it is.
+///
+/// `context` prints its result into the cell's output by itself, so a
+/// program that also returned `ctx.text` showed the model the same
+/// definitions twice: 1.4–3.3K tokens an attempt over 30 SWE-bench tasks
+/// (2026-10-01), the largest single repeat in what a context costs. A
+/// printed context that shed excerpts to fit the turn is not the same text,
+/// so a return of it stands, and so does any text that is not one context.
+fn without_printed_contexts(terminal: &Terminal, stdout: Option<&str>) -> Terminal {
+    let Some(stdout) = stdout else {
+        return terminal.clone();
+    };
+    match terminal {
+        Terminal::Text(text) => {
+            Terminal::Text(pointer_for(text, stdout).unwrap_or_else(|| text.clone()))
+        }
+        Terminal::Fields(fields) => Terminal::Fields(
+            fields
+                .iter()
+                .map(|field| match &field.body {
+                    FieldBody::Text(text) => match pointer_for(text, stdout) {
+                        Some(pointer) => ReturnedField {
+                            body: FieldBody::Text(pointer),
+                            ..field.clone()
+                        },
+                        None => field.clone(),
+                    },
+                    FieldBody::Lines(_) | FieldBody::Json(_) => field.clone(),
+                })
+                .collect(),
+        ),
+        Terminal::Json { .. } => terminal.clone(),
+    }
+}
+
+/// The line that stands in for `text` when it is one source context whose
+/// header -- path, language, symbol, version -- `stdout` prints whole.
+fn pointer_for(text: &str, stdout: &str) -> Option<String> {
+    const HEAD: &str = "## Source context\n";
+    if !text.starts_with(HEAD) || text.matches(HEAD).count() != 1 {
+        return None;
+    }
+    let header: String = text.split_inclusive('\n').take(5).collect();
+    let field = |name: &str| {
+        header
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let at = stdout.find(&header)?;
+    let printed = &stdout[at + header.len()..];
+    let printed = &printed[..printed.find(HEAD).unwrap_or(printed.len())];
+    if printed.contains("to fit this turn's feedback budget") {
+        return None;
+    }
+    Some(format!(
+        "(the source context for `{}`, symbol {}, version {}: printed in this result's output, not repeated here)",
+        field("path: "),
+        field("symbol: "),
+        field("version: ")
+    ))
 }
 
 /// The confidence at or above which a `log` answer sends the field to the
@@ -134,5 +200,38 @@ fn shape_field(
             whole: field.whole,
         },
         None => field.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pointer_for;
+
+    const CONTEXT: &str = "## Source context\npath: src/a.py\nlanguage: python\nsymbol: f\nversion: 0123456789ab\ncomplete: true\n\n### TargetDefinition: src/a.py:1-2 [complete]\n    1 | def f():\n    2 |     return 1\n";
+
+    /// A returned copy of a context this result prints is one line, and it
+    /// names what it stands for.
+    #[test]
+    fn a_returned_context_the_output_prints_is_a_pointer() {
+        let stdout = format!("before\n{CONTEXT}after\n");
+        let pointer = pointer_for(CONTEXT, &stdout).expect("printed, so pointed at");
+        assert!(
+            pointer.contains("`src/a.py`") && pointer.contains("0123456789ab"),
+            "{pointer}"
+        );
+        assert!(!pointer.contains("return 1"), "{pointer}");
+    }
+
+    /// What the output does not print the same way stands: a context it
+    /// printed short to fit the turn, one it never printed, and plain text.
+    #[test]
+    fn anything_but_a_context_printed_whole_stands() {
+        let shed = CONTEXT.replace(
+            "    2 |     return 1\n",
+            "omission: 1 lower-ranked supporting excerpt(s) omitted to fit this turn's feedback budget\n",
+        );
+        assert_eq!(pointer_for(CONTEXT, &shed), None);
+        assert_eq!(pointer_for(CONTEXT, "nothing printed"), None);
+        assert_eq!(pointer_for("return value", CONTEXT), None);
     }
 }

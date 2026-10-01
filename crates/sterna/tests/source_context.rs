@@ -815,3 +815,52 @@ fn nearby_definitions_are_the_ones_near_the_target_not_the_first_of_their_name()
     assert_eq!(setup.len(), 1, "{:?}", got.supporting);
     assert!(setup[0].range.start > first_class, "{:?}", setup[0].range);
 }
+
+/// A caller window is cut around a use of the name, not around the line that
+/// imports it or a comment that mentions it.
+#[test]
+fn a_caller_window_is_cut_around_the_call_not_the_import() {
+    let f = Fixture::new("caller-use");
+    let padding = "# padding padding padding padding\n".repeat(600);
+    let target = f.put(
+        "src/mod.py",
+        &format!("def target(value):\n    return value\n{padding}"),
+    );
+    let filler = "x = 0\n".repeat(12);
+    f.put(
+        "src/use.py",
+        &format!("from mod import target\n# target is called below\n{filler}result = target(2)\n"),
+    );
+    let got = pack(&f.profile(), &target, Some("target")).unwrap();
+    let caller = got
+        .supporting
+        .iter()
+        .find(|e| e.path == "src/use.py")
+        .expect("the caller is found");
+    assert!(
+        caller.text.contains("result = target(2)"),
+        "{}",
+        caller.text
+    );
+    assert!(
+        !caller.text.contains("from mod import target"),
+        "{}",
+        caller.text
+    );
+}
+
+/// A file over 14 KB is not handed over whole: the target is.
+#[test]
+fn a_file_over_fourteen_kilobytes_is_not_handed_over_whole() {
+    let f = Fixture::new("over-14k");
+    let padding = "# padding padding padding padding\n".repeat(440);
+    let source = format!("def target(value):\n    return value\n{padding}");
+    assert!(
+        source.len() > 14_336 && source.len() < 16_384,
+        "{}",
+        source.len()
+    );
+    let target = f.put("src/mid.py", &source);
+    let got = pack(&f.profile(), &target, Some("target")).unwrap();
+    assert_eq!(got.target.role, ContextRole::TargetDefinition);
+}

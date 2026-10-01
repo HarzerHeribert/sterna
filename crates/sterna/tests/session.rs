@@ -3828,6 +3828,37 @@ fn an_overflow_checkpoints_the_already_projected_request_once() {
     );
 }
 
+/// A program that returns the text of a context its own cell printed shows
+/// the model that definition once: the returned copy is a line naming it.
+#[test]
+fn a_returned_context_the_cell_printed_reaches_the_model_once() {
+    let root = scratch_dir("returned-context-once");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/value.py"), "value = 41\n").unwrap();
+    let rollout = root.join("rollout.jsonl");
+    let turn = std::sync::atomic::AtomicUsize::new(0);
+    let read = "```sterna\nconst c = await context({path:'src/value.py'});\nreturn c.text;\n```";
+    let (base_url, bodies) = start_status_answering_provider(2, move |_body| {
+        match turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => (200, assistant_reply(read)),
+            _ => (200, assistant_reply("```sterna\nanswer('done');\n```")),
+        }
+    });
+    let output = run_session(&root, &rollout, "sess-returned-context", "do it", &base_url);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bodies = bodies.lock().unwrap();
+    assert_eq!(bodies[1].matches("value = 41").count(), 1, "{}", bodies[1]);
+    assert!(
+        bodies[1].contains("not repeated here"),
+        "the returned copy names the context: {}",
+        bodies[1]
+    );
+}
+
 /// An unchanged context is pointed back to only while the earlier result is
 /// in the request. A checkpoint takes it out, so the next context after one
 /// is printed in full rather than pointing at a result the model no longer
