@@ -499,7 +499,7 @@ fn provider() -> (String, mpsc::Receiver<serde_json::Value>) {
                 let events = [
                     serde_json::json!({"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":123}}}),
                     serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":response}}),
-                    serde_json::json!({"type":"message_delta","usage":{"output_tokens":12}}),
+                    serde_json::json!({"type":"message_delta","usage":{"output_tokens":12,"output_tokens_details":{"thinking_tokens":9}}}),
                     serde_json::json!({"type":"message_stop"}),
                 ];
                 let body = events
@@ -887,6 +887,9 @@ fn live_composition_completion_model_selection_busy_input_resize_and_exit() {
     assert_eq!(request["thinking"]["budget_tokens"], 16384);
     assert!(request["max_tokens"].as_u64().unwrap() > 16384);
     app.contains("thinking");
+    // The provider holds its answer back for 700 ms: the row says the model
+    // is reasoning, and for how long, while nothing arrives.
+    app.contains("reasoning ·");
     app.send(b"next draft");
     app.contains("next draft");
     // This turn's own ending, not the first turn's: where the paste branch
@@ -908,6 +911,9 @@ fn live_composition_completion_model_selection_busy_input_resize_and_exit() {
         });
         if width >= 120 {
             app.contains("telemetry");
+            // The provider counted 9 of the answer's tokens as reasoning,
+            // and the task's totals say so.
+            app.contains("reasoned 9 tok");
         }
     }
     app.send(b"\x02");

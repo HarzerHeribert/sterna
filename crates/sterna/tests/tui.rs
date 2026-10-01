@@ -121,6 +121,7 @@ fn the_status_meter_names_the_tasks_spend_and_where_it_was_counted() {
         tokens: Some(TaskTokens {
             used: 173_860,
             counted: Counted::Gateway,
+            reasoned: 0,
         }),
         ..Notebook::default()
     };

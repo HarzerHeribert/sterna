@@ -1234,6 +1234,7 @@ fn run_task_inner(
             .push(assistant_message.clone());
 
         budget.add(&served, turn.usage.as_ref(), estimate);
+        budget.add_reasoning(turn.reasoning_tokens);
 
         // A fresh token for this cell, published to the watcher before the
         // cell can make a call: one Ctrl-C is one cell's cancellation, and

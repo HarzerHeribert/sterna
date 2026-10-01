@@ -640,6 +640,8 @@ fn run(
     let mut last_drawn = Instant::now();
     let mut last_tick = Instant::now();
     let mut clock = Clock::default();
+    // When the request in flight went out: the reasoning row's clock.
+    let mut reasoning_since: Option<Instant> = None;
     // When an idle Ctrl-C armed the quit: a second one within the window
     // ends the session, and the notice that says so goes when it lapses.
     let mut quit_armed: Option<Instant> = None;
@@ -727,6 +729,15 @@ fn run(
                     state.streaming_text = None;
                     state.streaming_tool_input = None;
                     state.streaming_reasoning = None;
+                    // A request goes out with every `Thinking`; anything else
+                    // means none is out.
+                    if activity == Activity::Thinking {
+                        reasoning_since = Some(Instant::now());
+                        state.reasoning_clock = Some(tui::ReasoningClock { ms: 0, done: false });
+                    } else {
+                        reasoning_since = None;
+                        state.reasoning_clock = None;
+                    }
                     if !activity.working() {
                         // The turn may have made or removed files.
                         crate::tui::forget_paths();
@@ -745,6 +756,7 @@ fn run(
                     busy = activity.working();
                 }
                 Update::Delta(text) => {
+                    reasoned(&mut state, reasoning_since);
                     state.pulse.receive(text.len());
                     state
                         .streaming_text
@@ -762,6 +774,7 @@ fn run(
                     busy = true;
                 }
                 Update::ToolDelta(fragment) => {
+                    reasoned(&mut state, reasoning_since);
                     state.pulse.receive(fragment.len());
                     state
                         .streaming_tool_input
@@ -888,6 +901,12 @@ fn run(
             state.advance_landing();
             if let Some(ms) = clock.elapsed_ms() {
                 state.pulse.elapsed_ms = ms;
+            }
+            if let (Some(reasoning), Some(since)) =
+                (state.reasoning_clock.as_mut(), reasoning_since)
+                && !reasoning.done
+            {
+                reasoning.ms = since.elapsed().as_millis() as u64;
             }
             state.completion_tick = state
                 .completion_tick
@@ -1646,6 +1665,17 @@ fn unqueue_notice(state: &mut ScreenState) {
     }
 }
 
+/// The first visible piece of an answer ends its reasoning: the clock stops
+/// at how long that took.
+fn reasoned(state: &mut tui::ScreenState, since: Option<Instant>) {
+    if let (Some(reasoning), Some(since)) = (state.reasoning_clock.as_mut(), since)
+        && !reasoning.done
+    {
+        reasoning.done = true;
+        reasoning.ms = since.elapsed().as_millis() as u64;
+    }
+}
+
 /// A turn's clock: when it started, and how long it has stood still waiting
 /// on the person's answer, which is not time the turn spent working.
 #[derive(Default)]
@@ -1784,6 +1814,26 @@ fn paste_callback_form() -> tui::Form {
 
 #[cfg(test)]
 mod tests {
+    /// The first visible piece of an answer stops the reasoning clock at how
+    /// long the request took to get there, and later pieces leave it alone.
+    #[test]
+    fn the_first_visible_piece_stops_the_reasoning_clock() {
+        let mut state = crate::tui::ScreenState {
+            reasoning_clock: Some(crate::tui::ReasoningClock { ms: 0, done: false }),
+            ..Default::default()
+        };
+        let since = std::time::Instant::now() - std::time::Duration::from_millis(2_000);
+        super::reasoned(&mut state, Some(since));
+        let clock = state.reasoning_clock.unwrap();
+        assert!(clock.done && clock.ms >= 2_000, "{clock:?}");
+        let later = since - std::time::Duration::from_secs(60);
+        super::reasoned(&mut state, Some(later));
+        assert_eq!(
+            state.reasoning_clock.unwrap(),
+            clock,
+            "only the first piece counts"
+        );
+    }
     /// A change that arrives while the session waits is acted on where
     /// the session is, and the wait goes on to what is typed next.
     #[test]

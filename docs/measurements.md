@@ -100,10 +100,12 @@ then ten one-request sessions, all on GPT-6.1 Sol through the gateway.
   the first on each of the four shared keys found nothing, every later one
   found 7,168 of its 8,030 tokens cached (6 of 6).
 - **The reasoning counter.** The `~N tok` beside the model's reasoning
-  counts only readable reasoning; a GPT model behind the subscription sends
+  counted only readable reasoning; a GPT model behind the subscription sends
   its reasoning encrypted, and the readable summary Sterna asks for every
   30 s is a short heading. The stream itself arrives in pieces as written:
-  a cell came as about 180 of them over 7 s.
+  a cell came as about 180 of them over 7 s. The row now runs a clock while
+  the model reasons, and the broker's own count of reasoning tokens
+  (`output_tokens_details.thinking_tokens`) joins the task's totals.
 
 ## Against the Codex CLI on GPT-6.1 Sol (2026-10-01)
 

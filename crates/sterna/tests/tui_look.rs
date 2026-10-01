@@ -416,6 +416,7 @@ fn wide_telemetry_preserves_reported_fields_and_budget_provenance() {
         tokens: Some(sterna::tui::TaskTokens {
             used: 579,
             counted: sterna::tui::Counted::Gateway,
+            reasoned: 0,
         }),
         ..Notebook::default()
     };
@@ -463,6 +464,7 @@ fn telemetry_shows_the_tasks_spend_on_the_rail_and_in_the_instruments() {
         tokens: Some(sterna::tui::TaskTokens {
             used: 201_801,
             counted: Counted::Gateway,
+            reasoned: 0,
         }),
         ..Notebook::default()
     };
@@ -488,6 +490,7 @@ fn statusline_separates_request_context_from_cumulative_spend() {
         tokens: Some(sterna::tui::TaskTokens {
             used: 369_178,
             counted: Counted::Gateway,
+            reasoned: 0,
         }),
         ..Notebook::default()
     };
@@ -555,6 +558,7 @@ fn the_sidebar_can_be_hidden_and_the_preference_survives_resize() {
         tokens: Some(sterna::tui::TaskTokens {
             used: 579,
             counted: sterna::tui::Counted::Gateway,
+            reasoned: 0,
         }),
         ..Notebook::default()
     };
@@ -1778,6 +1782,7 @@ fn the_spend_rail_drops_the_qualifiers_that_fire_every_session() {
     n.tokens = Some(TaskTokens {
         used: 1_100_000,
         counted: Counted::Gateway,
+        reasoned: 0,
     });
     let shown = text(&draw(200, 44, &state(), &conversation(), &n));
     for noise in [
@@ -1808,6 +1813,7 @@ fn an_estimated_total_says_so_on_the_rail() {
     n.tokens = Some(TaskTokens {
         used: 900_000,
         counted: Counted::Estimated,
+        reasoned: 0,
     });
     let shown = text(&draw(200, 44, &state(), &conversation(), &n));
     assert!(

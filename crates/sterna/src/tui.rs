@@ -133,6 +133,9 @@ pub struct ScreenState {
     /// and cleared with the rest of the stream; the conversation keeps the
     /// block itself.
     pub streaming_reasoning: Option<String>,
+    /// How long the model has been reasoning on the request in flight;
+    /// `None` when no request is out.
+    pub reasoning_clock: Option<ReasoningClock>,
     pub animation_frame: usize,
     pub completion_tick: Option<usize>,
     /// Rows back from the transcript's end; zero follows the current turn.
@@ -289,6 +292,17 @@ pub enum Activity {
     Failed,
     /// The turn was stopped before it finished; what ran stands.
     Stopped(Stopper),
+}
+
+/// The reasoning row's clock: milliseconds since the request went out,
+/// frozen (`done`) once the first visible piece of the answer arrives.
+///
+/// A GPT model behind the subscription broker reasons in silence -- its
+/// reasoning arrives encrypted -- so this clock is what shows it working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReasoningClock {
+    pub ms: u64,
+    pub done: bool,
 }
 
 /// Who stopped a turn: the person, with Esc, or an interrupt (Ctrl-C).
@@ -729,6 +743,9 @@ impl Counted {
 pub struct TaskTokens {
     pub used: u64,
     pub counted: Counted,
+    /// Of the output, what the providers reported as reasoning; zero when
+    /// none said.
+    pub reasoned: u64,
 }
 
 /// Occupancy of the most recent (or currently assembling) provider request.

@@ -39,6 +39,12 @@ bottom.
   and then at most every 30 seconds: each one costs the provider about
   1.7 s, and the cell descriptions already say what every turn does. A run
   nobody watches (`--task`, `-p`, `exec`) asks for none.
+- **While the model reasons, a row says so with a clock**: `reasoning ·
+  3.2 s`, then `reasoned for 4.1 s` once the answer begins, with the newest
+  sentence of any readable summary beside it. A GPT model behind the
+  subscription sends its reasoning encrypted, so the time is what shows it
+  working; the providers' own count of reasoning tokens joins the task's
+  totals in the side card (`reasoned 1.2k tok`).
 - **The dock** carries the live status, a notice for a few seconds, an undo
   chip for the last change, the everyday chips, one hint and the context
   reading.

@@ -21,6 +21,8 @@ pub(super) struct TaskSpend {
     pub(super) return_budget: u64,
     /// What the last cell's return took of it, and the fields paged to fit.
     pub(super) last_return: Option<(u64, Vec<String>)>,
+    /// Output tokens the providers reported as reasoning, over the task.
+    pub(super) reasoned: u64,
 }
 
 impl TaskSpend {
@@ -34,7 +36,13 @@ impl TaskSpend {
             reductions_seen: Default::default(),
             return_budget: prompt::RETURN_BUDGET_UNKNOWN,
             last_return: None,
+            reasoned: 0,
         }
+    }
+
+    /// Adds the reasoning tokens a provider reported for one turn.
+    pub(super) fn add_reasoning(&mut self, tokens: Option<u64>) {
+        self.reasoned = self.reasoned.saturating_add(tokens.unwrap_or(0));
     }
 
     /// The turn about to run: its return budget follows the room the meter
@@ -160,6 +168,7 @@ impl TaskSpend {
         Some(TaskTokens {
             used: self.used(),
             counted: self.counted()?,
+            reasoned: self.reasoned,
         })
     }
 

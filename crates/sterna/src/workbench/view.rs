@@ -901,6 +901,15 @@ fn session_card(
         Tone::Normal,
         None,
     ));
+    // The providers' own count of the output spent reasoning -- a GPT model
+    // sends it encrypted, so this is the one figure for it there is.
+    if let Some(t) = n.tokens.as_ref().filter(|t| t.reasoned > 0) {
+        lines.push((
+            format!("reasoned {}", compact(t.reasoned)),
+            Tone::Muted,
+            None,
+        ));
+    }
     // Each count on its own line, and only when there is one: the words
     // say what the marks mean, and the narrow card never cuts them.
     for (count, said) in [(ok, "ran"), (running, "running"), (failed, "failed")] {

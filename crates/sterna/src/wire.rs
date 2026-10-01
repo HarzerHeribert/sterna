@@ -777,6 +777,23 @@ struct UsageRow {
     cache_read_input_tokens: Option<u64>,
     #[serde(default, deserialize_with = "optional_cache_count")]
     cache_creation_input_tokens: Option<u64>,
+    /// The subscription broker's `output_tokens_details.thinking_tokens`:
+    /// how much of the output was reasoning, which a GPT model sends
+    /// encrypted and nobody can read.
+    #[serde(
+        default,
+        rename = "output_tokens_details",
+        deserialize_with = "thinking_tokens"
+    )]
+    reasoning_tokens: Option<u64>,
+}
+
+fn thinking_tokens<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    Ok(Value::deserialize(deserializer)?
+        .get("thinking_tokens")
+        .and_then(Value::as_u64))
 }
 
 // Optional provider extensions must not make an otherwise valid reply fail.
@@ -824,6 +841,9 @@ impl Usage {
 pub struct Turn {
     pub message: Message,
     pub usage: Option<Usage>,
+    /// How many output tokens the model spent reasoning, when the provider
+    /// said; `None` when it did not, never a zero it did not report.
+    pub reasoning_tokens: Option<u64>,
     /// The provider stopped at its output ceiling, and this turn is what
     /// survived it.
     ///
@@ -1212,6 +1232,7 @@ fn parse_response(text: &str) -> Result<Turn, WireError> {
                 historical: None,
             },
             usage: to_usage(parsed.usage),
+            reasoning_tokens: parsed.usage.and_then(|row| row.reasoning_tokens),
             truncated: true,
         });
     }
@@ -1223,6 +1244,7 @@ fn parse_response(text: &str) -> Result<Turn, WireError> {
             historical: None,
         },
         usage: to_usage(parsed.usage),
+        reasoning_tokens: parsed.usage.and_then(|row| row.reasoning_tokens),
         truncated: false,
     })
 }
@@ -1573,6 +1595,7 @@ impl StreamAccumulator {
             output_tokens: None,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            reasoning_tokens: None,
         });
         self.usage = Some(UsageRow {
             input_tokens: row.input_tokens.or(held.input_tokens),
@@ -1581,6 +1604,7 @@ impl StreamAccumulator {
             cache_creation_input_tokens: row
                 .cache_creation_input_tokens
                 .or(held.cache_creation_input_tokens),
+            reasoning_tokens: row.reasoning_tokens.or(held.reasoning_tokens),
         });
     }
 
@@ -1649,6 +1673,7 @@ impl StreamAccumulator {
                     historical: None,
                 },
                 usage: to_usage(self.usage),
+                reasoning_tokens: self.usage.and_then(|row| row.reasoning_tokens),
                 truncated: true,
             });
         }
@@ -1678,6 +1703,7 @@ impl StreamAccumulator {
                 historical: None,
             },
             usage: to_usage(self.usage),
+            reasoning_tokens: self.usage.and_then(|row| row.reasoning_tokens),
             truncated: false,
         })
     }
@@ -2900,6 +2926,42 @@ mod tests {
             stream.event(r#"{"type":"message_stop"}"#).unwrap();
             assert_eq!(stream.finish().unwrap().usage, Some(whole));
         }
+    }
+
+    #[test]
+    fn the_providers_reasoning_count_is_kept_and_none_is_not_invented() {
+        let mut acc = StreamAccumulator::new();
+        for event in [
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":0}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"done"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":300,"output_tokens_details":{"thinking_tokens":240}}}"#,
+            r#"{"type":"message_stop"}"#,
+        ] {
+            acc.event(event).unwrap();
+        }
+        assert_eq!(acc.finish().unwrap().reasoning_tokens, Some(240));
+        let whole = |usage: &str| {
+            parse_response(&format!(
+                r#"{{"id":"m","type":"message","role":"assistant","model":"m","content":[{{"type":"text","text":"x"}}],"stop_reason":"end_turn","usage":{usage}}}"#
+            ))
+            .unwrap()
+            .reasoning_tokens
+        };
+        assert_eq!(
+            whole(
+                r#"{"input_tokens":1,"output_tokens":9,"output_tokens_details":{"thinking_tokens":7}}"#
+            ),
+            Some(7)
+        );
+        assert_eq!(whole(r#"{"input_tokens":1,"output_tokens":9}"#), None);
+        // A malformed figure is unknown, and the rest of the usage stands.
+        let odd = parse_response(
+            r#"{"id":"m","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":9,"output_tokens_details":{"thinking_tokens":"many"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(odd.reasoning_tokens, None);
+        assert_eq!(odd.usage.unwrap().output_tokens, 9);
     }
 
     #[test]

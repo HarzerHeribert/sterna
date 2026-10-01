@@ -14,7 +14,8 @@ use std::{
 use sterna::{
     contract::{Block, Conversation, Message, Role, ServedBy},
     tui::{
-        Activity, CellError, CellView, ModelGroup, Notebook, Panel, ScreenState, Theme, TierModels,
+        Activity, CellError, CellView, ModelGroup, Notebook, Panel, ReasoningClock, ScreenState,
+        Theme, TierModels,
     },
     workbench::{
         self, Action, CellTab, Document, Effect, Navigator, Preferences, Source, Tone, Workbench,
@@ -1885,12 +1886,17 @@ fn arriving_prose_carries_a_rail_and_a_moving_caret() {
     assert_eq!(a, text(&draw(&c, &n, &s, &mut u, 100, 40)));
 }
 
-/// Reasoning while it arrives is one muted line: how much has come and its
-/// newest sentence, the rest of it never printed.
+/// Reasoning while it arrives is one line: how long the model has been at it
+/// and the newest readable sentence, the rest of it never printed -- and no
+/// count of readable text posing as the size of the reasoning.
 #[test]
-fn arriving_reasoning_shows_its_size_and_newest_sentence_on_one_line() {
+fn arriving_reasoning_shows_its_clock_and_newest_sentence_on_one_line() {
     let (c, n, mut s) = fixture();
     s.activity = Activity::Thinking;
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 3_200,
+        done: false,
+    });
     s.streaming_reasoning = Some(format!(
         "**Checking the guard**\n\n{}. Then the mode proposal is wrong.",
         "The four tests call propose ".repeat(20)
@@ -1902,10 +1908,106 @@ fn arriving_reasoning_shows_its_size_and_newest_sentence_on_one_line() {
         .find(|l| l.contains("reasoning ·"))
         .unwrap_or_else(|| panic!("{screen}"))
         .to_string();
-    assert!(line.contains("~1") && line.contains("tok ·"), "{line}");
+    assert!(line.contains("reasoning · 3.2 s ·"), "{line}");
+    assert!(!line.contains("tok"), "{line}");
     assert!(line.contains("Then the mode proposal is wrong"), "{line}");
     assert!(!screen.contains("Checking the guard"), "{screen}");
     assert_eq!(screen.matches("The four tests call").count(), 0, "{screen}");
+}
+
+/// A model that reasons in silence -- a GPT model behind the subscription
+/// broker sends its reasoning encrypted -- still shows that it is working:
+/// the row runs a clock, then says how long it took once the answer began,
+/// and there is no row when no request is out.
+#[test]
+fn a_silent_model_shows_how_long_it_has_been_reasoning() {
+    let (c, n, mut s) = fixture();
+    s.activity = Activity::Thinking;
+    let mut u = Workbench::default();
+    let row = |s: &ScreenState, u: &mut Workbench| {
+        text(&draw(&c, &n, s, u, 100, 40))
+            .lines()
+            .find(|l| l.contains("reason"))
+            .map(str::to_string)
+    };
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 14_400,
+        done: false,
+    });
+    let running = row(&s, &mut u).expect("a running clock has a row");
+    assert!(running.contains("reasoning · 14 s"), "{running}");
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 4_100,
+        done: true,
+    });
+    let done = row(&s, &mut u).expect("a stopped clock has a row");
+    assert!(done.contains("reasoned for 4.1 s"), "{done}");
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 75_000,
+        done: false,
+    });
+    let long = row(&s, &mut u).expect("a long clock has a row");
+    assert!(long.contains("reasoning · 1 min 15 s"), "{long}");
+    s.reasoning_clock = None;
+    assert_eq!(row(&s, &mut u), None, "no request out, no row");
+}
+
+/// While the clock runs the reasoning row carries the document's one moving
+/// mark; once the answer has begun it holds still.
+#[test]
+fn the_reasoning_row_moves_while_its_clock_runs() {
+    let (c, n, mut s) = fixture();
+    s.activity = Activity::Thinking;
+    let mut u = Workbench::default();
+    let rows = |s: &mut ScreenState, u: &mut Workbench| {
+        (0..12)
+            .map(|frame| {
+                s.animation_frame = frame;
+                text(&draw(&c, &n, s, u, 100, 40))
+                    .lines()
+                    .find(|l| l.contains("reason"))
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 2_000,
+        done: false,
+    });
+    assert!(rows(&mut s, &mut u) > 1, "a running clock's mark moves");
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 2_000,
+        done: true,
+    });
+    assert_eq!(
+        rows(&mut s, &mut u),
+        1,
+        "a stopped clock's mark holds still"
+    );
+}
+
+/// The task's reasoning, as the providers counted it, joins its totals.
+#[test]
+fn the_tasks_reasoned_tokens_join_its_totals() {
+    let (c, mut n, s) = fixture();
+    n.tokens = Some(sterna::tui::TaskTokens {
+        used: 45_200,
+        counted: sterna::tui::Counted::Gateway,
+        reasoned: 1_240,
+    });
+    let mut u = Workbench::default();
+    let screen = text(&draw(&c, &n, &s, &mut u, 160, 40));
+    assert!(screen.contains("45.2k tok"), "{screen}");
+    assert!(screen.contains("reasoned 1.2k tok"), "{screen}");
+    n.tokens = Some(sterna::tui::TaskTokens {
+        used: 45_200,
+        counted: sterna::tui::Counted::Gateway,
+        reasoned: 0,
+    });
+    let screen = text(&draw(&c, &n, &s, &mut u, 160, 40));
+    assert!(!screen.contains("reasoned"), "{screen}");
 }
 
 /// A running cell under the instrument: a label and a scanner in place of

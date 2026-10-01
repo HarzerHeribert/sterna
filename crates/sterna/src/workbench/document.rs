@@ -302,7 +302,7 @@ impl Document {
             Mover::Prose
         } else if s.streaming_tool_input.is_some() {
             Mover::Cell
-        } else if s.streaming_reasoning.is_some() {
+        } else if s.streaming_reasoning.is_some() || s.reasoning_clock.is_some_and(|c| !c.done) {
             Mover::Reasoning
         } else if s.activity == crate::tui::Activity::Executing {
             Mover::Running
@@ -595,9 +595,13 @@ impl Document {
             d.blank(id);
         }
         d.notes(s, ui, &mut note, usize::MAX, room);
-        if let Some(reasoning) = &s.streaming_reasoning {
+        if s.streaming_reasoning.is_some() || s.reasoning_clock.is_some() {
             d.turn_sterna(usize::MAX - 4);
-            d.reasoning(reasoning, s, room);
+            d.reasoning(
+                s.streaming_reasoning.as_deref().unwrap_or_default(),
+                s,
+                room,
+            );
         }
         if let Some(fragment) = &s.streaming_tool_input {
             d.turn_sterna(usize::MAX - 3);
@@ -612,16 +616,22 @@ impl Document {
         }
         d
     }
-    /// The model's reasoning while it arrives, on one muted line: roughly
-    /// how much has come (a summary behind the subscription broker, so the
-    /// count is of what is readable, hence `~`) and the newest sentence of it.
+    /// The model's reasoning on the request in flight, on one line: how long
+    /// it has been reasoning -- or how long it reasoned, once the answer
+    /// began -- and the newest sentence of whatever of it is readable.
+    ///
+    /// **A clock, not a count.** Behind the subscription broker a GPT model's
+    /// reasoning arrives encrypted; the only readable part is a short summary
+    /// now and then, so a count of it said "~20 tok" while the model reasoned
+    /// through thousands. The time is what is true while it works; the
+    /// provider's own count joins the task's totals when the answer is in.
     /// The mark in front is the moving cell.
     fn reasoning(&mut self, text: &str, s: &ScreenState, width: usize) {
-        let tokens = text.chars().count().div_ceil(4);
-        let count = if tokens >= 1000 {
-            format!("~{:.1}k tok", tokens as f64 / 1000.0)
-        } else {
-            format!("~{tokens} tok")
+        let mark = self.caret(s, Mover::Reasoning);
+        let head = match s.reasoning_clock {
+            Some(clock) if clock.done => format!("{mark} reasoned for {}", seconds(clock.ms)),
+            Some(clock) => format!("{mark} reasoning · {}", seconds(clock.ms)),
+            None => format!("{mark} reasoning"),
         };
         let latest = text
             .trim_end()
@@ -630,7 +640,11 @@ impl Document {
             .find(|part| !part.is_empty())
             .unwrap_or("")
             .replace("**", "");
-        let head = format!("{} reasoning · {count} · ", self.caret(s, Mover::Reasoning));
+        let head = if latest.is_empty() {
+            head
+        } else {
+            format!("{head} · ")
+        };
         let room = width.saturating_sub(head.chars().count() + 1);
         let latest: String = if latest.chars().count() > room {
             latest
@@ -1856,6 +1870,18 @@ pub(super) fn justify(
     out.extend(right);
     out
 }
+/// A reasoning clock's reading: tenths of a second under ten seconds, whole
+/// seconds under a minute, then minutes and seconds.
+fn seconds(ms: u64) -> String {
+    if ms < 10_000 {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    } else if ms < 60_000 {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{} min {:02} s", ms / 60_000, ms / 1000 % 60)
+    }
+}
+
 pub(super) fn clock(ms: u64) -> String {
     let seconds = ms / 1000;
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
