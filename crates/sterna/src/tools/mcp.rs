@@ -115,7 +115,7 @@ impl Mcp {
                 } else {
                     "2024-11-05"
                 };
-                let initialized = client.rpc("initialize", json!({"protocolVersion":protocol, "capabilities":{}, "clientInfo":{"name":"sterna", "version":env!("CARGO_PKG_VERSION")}}), token)?;
+                let initialized = client.rpc("initialize", json!({"protocolVersion":protocol, "capabilities":{}, "clientInfo":{"name":"sterna", "version":crate::VERSION}}), token)?;
                 if initialized.get("protocolVersion").and_then(Value::as_str) != Some(protocol)
                     || !initialized
                         .get("capabilities")

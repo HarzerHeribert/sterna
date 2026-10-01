@@ -151,7 +151,7 @@ fn explicit_session_version_and_ruler_dispatch_remain_available() {
     assert!(version.status.success());
     assert_eq!(
         String::from_utf8_lossy(&version.stdout),
-        format!("sterna {}\n", env!("CARGO_PKG_VERSION"))
+        format!("sterna {}\n", sterna::VERSION)
     );
 
     let ruler = sterna().arg("ruler").output().unwrap();

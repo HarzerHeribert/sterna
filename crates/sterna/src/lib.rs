@@ -3,6 +3,14 @@
 //! never a compile-time dependency, and builds and tests independently of the
 //! rest of the workspace.
 
+/// The version this build says it is: the release's own, which the release
+/// workflow sets as `STERNA_RELEASE` when it builds a tag, or else the
+/// crate's. The desktop app compares it to choose the newer of two engines.
+pub const VERSION: &str = match option_env!("STERNA_RELEASE") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod abi;
 pub mod agent;
 pub mod approval;

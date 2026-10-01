@@ -217,7 +217,7 @@ pub fn doctor(args: &[String]) -> i32 {
     checks.push(sandbox_check(full_access));
     let report = Report {
         schema_version: 1,
-        version: env!("CARGO_PKG_VERSION"),
+        version: sterna::VERSION,
         platform: std::env::consts::OS,
         root,
         ok: !checks.iter().any(|check| check.status == "error"),
