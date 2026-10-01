@@ -5,7 +5,7 @@
 # Sterna
 
 **STERNA Trades Endless Round-trips for Nested Actions.**
-*one program per turn · the longest run on the least*
+*one program per turn · a study in agentic coding*
 
 Sterna is a coding agent for your terminal. You give it a task in a project;
 it works the task in turns, the way Claude Code or Codex does. It is named
@@ -13,6 +13,15 @@ for *Sterna paradisaea*, the Arctic tern, which makes the longest migration
 of any animal.
 
 Sterna is a public pre-release for macOS, Linux and Windows.
+
+## A study
+
+Sterna is one developer's study of agentic coding. I tried to design
+something different: the model writes one program per turn instead of
+calling one tool at a time. So far it seems to be failing. Measured against
+Codex on the same model, the design does not come out ahead, and I am still
+working out why. Every measurement, the good and the bad, is in
+[measurements](docs/measurements.md).
 
 ## What it is
 
@@ -42,11 +51,9 @@ naming its model, answers typed questions — is this request read-only, is
 this a log — in about two seconds, and a task that stops producing anything
 ends on its own.
 
-**The longest run on the least.** Sterna never rewrites what it has
-already sent, so the provider's cache keeps paying off turn after turn.
-When a conversation outgrows the model's window it is compacted, and the
-results of earlier turns stay usable. A new session starts warm: even its
-first request is mostly served from the cache.
+**Long sessions.** Sterna never rewrites what it has already sent. When a
+conversation outgrows the model's window it is compacted, and the results
+of earlier turns stay usable.
 
 **Your subscription or your key.** Sterna talks to models through the
 **inference gateway**, a separate program it starts beside itself. The
@@ -62,21 +69,6 @@ read-only planning request, background jobs, web fetch (asking before a
 host it has not reached before) and web search with a provider you choose,
 MCP servers, image input,
 rollback of the agent's changes, and resume.
-
-## How it compares
-
-Against OpenAI's Codex CLI, both on the same model, on 30 real bug reports
-from open-source projects:
-
-- **It fixes as many bugs.**
-- **It asks the model a fifth less often**, because each step does more.
-- **It costs the same**, about $0.21 per fixed bug.
-
-Since that run, Sterna reads code more selectively: a task costs about 7 %
-less and is done about 8 % sooner.
-
-How this was measured, every result so far and the timeline:
-[measurements](docs/measurements.md).
 
 ## Install and update
 

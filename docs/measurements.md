@@ -17,11 +17,42 @@ names SWE-bench. **Read the limits at the end before acting on a number.**
 | 2026-10-01 | warm cache for a new session, no repeated text in results | first request from uncached to 94 % cached (pre.25) |
 | 2026-10-01 | the model choosing how much to read (search windows, `context` modes) | it read as much or more; both removed |
 | 2026-10-01 | `context` tuned from 951 recorded reads, neighbours ranked | 7 % cheaper, 8 % faster than the build before (pre.26) |
+| 2026-10-01 | pre.26 against Codex 0.159.3, both on GPT-6.1 Sol | the same 25 of 30 fixed; Sterna 1.38× the cost and 1.19× the time |
 
 Each row has its section below; the limits at the end apply to all of
 them.
 
-## Against the Codex CLI (2026-09-30)
+## Against the Codex CLI on GPT-6.1 Sol (2026-10-01)
+
+Sterna v0.1.0-pre.26 as released against Codex CLI 0.159.3, the newest
+release, both on GPT-6.1 Sol through the ChatGPT subscription and both at
+their shipped default effort, which for this model is `low` on each side.
+The same 30 tasks as the section below, side by side, outcomes written down
+before the run (`runs/2026-10-01-sol61-prereg.md`). The arms agreed on every
+task, so there was no second wave. Cost is at GPT-6.1 Sol's API prices ($2
+fresh input, $0.10 cached input, $10 output per million tokens).
+
+| | Sterna pre.26 | Codex 0.159.3 | Sterna ÷ Codex |
+|---|---|---|---|
+| fixed, of 30 | 25 | 25 | the same 25 tasks |
+| model requests per task | 7.9 | 8.5 | 0.92× (0.76–1.07) |
+| fresh input per task | 32.8K | 19.3K | 1.70× (1.53–1.90) |
+| cached input per task | 106K | 148K | 0.72× (0.56–0.88) |
+| output per task | 1.9K | 1.6K | 1.20× (1.10–1.31) |
+| cost per fixed bug | $0.11 | $0.08 | cost 1.38× (1.23–1.51) |
+| time per task | 101 s | 85 s | 1.19× (1.01–1.36) |
+
+- **The request advantage is gone.** Codex asked GPT-6 Sol at `medium` 15.5
+  times a task; it asks GPT-6.1 Sol at `low` 8.5 times, as often as Sterna.
+- **Sterna pays for input the cache should have served.** Of the last 200
+  Sterna requests in the gateway's ledger, 40 had nothing cached and carried
+  52 % of its fresh input: every session's first request (8.3K tokens, which
+  GPT-6 Sol served 94 % from cache) and about 15 requests inside sessions.
+  Codex had no wholly uncached request in 264.
+- **Slower**, by an interval that just clears 1.0; why is not yet known.
+- One Codex attempt (django 15380) was run again because the grader failed
+  on the first one; nothing else was re-run.
+
 
 Sterna v0.1.0-pre.24 as released against Codex CLI 0.155.1, both on GPT-6 Sol
 through the ChatGPT subscription. What the run could print was written down

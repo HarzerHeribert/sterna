@@ -67,6 +67,6 @@ photographs, all CC BY-SA 4.0, credited in the footer:
 
 The sky is separated by its blue (for the flock, by its brightness around
 each bird), the bird's shade becomes ink density, and the bill and feet are
-picked out by their red. The copy is plain: what Sterna does, what the
-comparison with Codex means for someone using it (the method and every
-number stay in `docs/measurements.md`, one link away), and how to start.
+picked out by their red. The copy is plain: what Sterna is (one developer's
+study), how its design works, where the study stands (every number stays in
+`docs/measurements.md`, one link away), and how to start.
