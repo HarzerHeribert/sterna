@@ -1,0 +1,399 @@
+name: Desktop
+
+# Builds the Sterna desktop app (apps/desktop: a Tauri v2 window around the
+# engine) on macOS, Linux and Windows, and uploads what a release carries of
+# it as workflow artifacts. It publishes nothing itself: release.yml calls it
+# with the release's tag and publishes the artifacts with the terminal's.
+#
+# Each cell builds the engine (`sterna`, `inference-gateway`) from this
+# commit, copies it beside the app as Tauri sidecars
+# (apps/desktop/scripts/sidecars.sh), builds the web UI and bundles:
+#   macOS   sterna-desktop-<version>-<target>.tar.gz (Sterna.app) and .dmg
+#   Linux   sterna-desktop-<version>-<target>.tar.gz (Sterna.AppImage and
+#           its icon), the bare .AppImage and .deb
+#   Windows sterna-desktop-<version>-<target>.zip (desktop/ with Sterna.exe
+#           and its sidecars, portable), the .msi and the NSIS setup .exe
+# each with a .sha256 line for the release's SHA256SUMS. The archives are
+# what install.sh --desktop, install.ps1 and `sterna update` place; the
+# installers (all named Sterna_<version>_...) are for a person who downloads
+# one by hand. An .msi takes only numbers for a version, so a pre-release
+# such as 0.1.0-pre.30 is given 0.1.0.30 inside the installer; its file name
+# keeps the release's version.
+#
+# On Linux the cell also runs the app crate's clippy and tests and the UI's
+# unit and end-to-end (Playwright) checks.
+#
+# Signing is optional and off until the secrets exist; every signing step is
+# skipped when its secret is absent and the build is then unsigned:
+#   APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+#   APPLE_SIGNING_IDENTITY        sign the macOS app and its sidecars;
+#   APPLE_ID, APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID
+#                                 notarize it as well;
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#                                 the updater key, for when update artifacts
+#                                 are turned on;
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+#                                 a placeholder: Windows signing is not wired.
+#
+# The in-app updater stays OFF until `plugins.updater.pubkey` in
+# apps/desktop/src-tauri/tauri.conf.json holds a public key (and
+# `bundle.createUpdaterArtifacts` is turned on to produce signed update
+# files). With the key empty the app does not even register the updater
+# plugin, so no update can be fetched or offered.
+#
+# Each secret is given only to the step that needs it, never to the job's
+# environment; the job carries only HAVE_* flags saying whether each one is
+# set. So `npm ci`, the engine's build and the tests never see a secret --
+# but third-party code inside a step that is given one does: `tauri build`
+# (and the `npm run build` it runs) sees the signing secrets.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/desktop.yml"
+  # release.yml builds the app for a release by calling this workflow; the
+  # tag sets the app's version.
+  # `version` names the app's version directly (0.1.0-pre.30); `tag` is the
+  # release tag (v0.1.0-pre.30), which is also checked out. Either may be
+  # given; with neither the version tauri.conf.json names stands.
+  workflow_call:
+    inputs:
+      tag:
+        description: "The release tag to build the app for; empty keeps the version tauri.conf.json names"
+        type: string
+        required: false
+        default: ""
+      version:
+        description: "The version to build the app as (e.g. 0.1.0-pre.30); empty takes it from the tag"
+        type: string
+        required: false
+        default: ""
+  # A trial build at a release's version, before its tag exists.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to build the app as (e.g. 0.1.0-pre.30); empty keeps tauri.conf.json's"
+        type: string
+        required: false
+        default: ""
+
+# Called from release.yml, `github.workflow` is the caller's name: the group
+# names this workflow and the tag itself, so a release's build neither waits
+# on its caller's group nor cancels (or is cancelled by) a push build of main.
+concurrency:
+  group: desktop-${{ github.ref }}-${{ inputs.version || inputs.tag || 'push' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    env:
+      HAVE_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAVE_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # WebKitGTK 4.1 and friends for the window; libdbus for the engine's
+      # Secret Service backend (the same need release.yml has).
+      - name: Linux build-host packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libdbus-1-dev pkg-config libssl-dev build-essential file \
+            libxdo-dev
+
+      # The compiler is declared once, in Cargo.toml -- the same read
+      # release.yml and ci-extended.yml use.
+      - name: Resolve the declared toolchain
+        id: tc
+        shell: bash
+        run: |
+          v="$(grep -m1 '^toolchain' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, pinned 2026-09-06
+        with:
+          toolchain: ${{ steps.tc.outputs.version }}
+
+      # Both workspaces: the engine's (repository root) and the app's own.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+
+      # The runner's own triple is the target: the sidecar names and the
+      # artifact name must agree, so a runner image that changed
+      # architecture fails here rather than shipping a mislabelled bundle.
+      - name: Check the host triple
+        shell: bash
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          echo "host: $host"
+          test "$host" = "${{ matrix.target }}"
+
+      # A release's version is the app's, so the app says which release it
+      # came with; otherwise tauri.conf.json's own stands. `tauri build` is
+      # given it with --config; nothing in the checkout is rewritten. `msi` is
+      # the numbers-only form an .msi needs: X.Y.Z, or X.Y.Z.N for X.Y.Z-pre.N.
+      - name: Resolve the app's version
+        id: version
+        shell: bash
+        env:
+          WANTED: ${{ inputs.version || inputs.tag }}
+        run: |
+          set -euo pipefail
+          v="${WANTED#v}"
+          if [ -z "$v" ]; then
+            v="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' apps/desktop/src-tauri/tauri.conf.json)"
+          fi
+          test -n "$v"
+          core="${v%%[-+]*}"
+          msi="$core"
+          case "$v" in
+            *-*)
+              last="${v##*[.-]}"
+              case "$last" in
+                "" | *[!0-9]*) ;;
+                *) [ "$last" -le 65535 ] && msi="$core.$last" ;;
+              esac
+              ;;
+          esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "msi=$msi" >> "$GITHUB_OUTPUT"
+          echo "app version $v (msi $msi)"
+
+      # The engine says the app's version, so the app can tell it from an
+      # older or newer install of the terminal's.
+      - name: Build the engine
+        env:
+          STERNA_RELEASE: ${{ steps.version.outputs.version }}
+        run: cargo build --release --locked -p sterna -p inference-gateway
+
+      - name: Copy the engine beside the app (sidecars)
+        shell: bash
+        run: bash apps/desktop/scripts/sidecars.sh --profile release
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install the UI's packages
+        working-directory: apps/desktop
+        run: npm ci
+
+      # The checks run once, on Linux: none of them depends on the OS.
+      - name: App crate checks (clippy, tests)
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: UI unit tests
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        run: npm run test:unit
+
+      # The real-engine checks run the engine this cell just built.
+      - name: UI end-to-end tests
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        env:
+          STERNA_E2E_BIN: ${{ github.workspace }}/target/release/sterna
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
+      # Imports the Developer ID certificate into a throwaway keychain that
+      # lives only as long as this runner. The certificate itself is NOT
+      # passed on to `tauri build`: given APPLE_CERTIFICATE, Tauri would
+      # import it a second time, and an identity found in two keychains is
+      # ambiguous to codesign.
+      - name: macOS signing setup (skipped without APPLE_CERTIFICATE)
+        if: runner.os == 'macOS' && env.HAVE_APPLE_CERTIFICATE == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/sterna-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          certificate="$RUNNER_TEMP/sterna-signing.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          # Ours first, then whatever the runner already searched.
+          existing="$(security list-keychains -d user | sed 's/^[[:space:]]*"\(.*\)"$/\1/')"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$keychain" $existing
+          rm -f "$certificate"
+          security find-identity -v -p codesigning "$keychain"
+
+      # A placeholder so a Windows certificate can be added without
+      # reshaping the workflow. None is planned: the Microsoft Store signs
+      # MSIX packages for free. Wiring it would mean importing the .pfx here
+      # and setting bundle.windows.certificateThumbprint for `tauri build`.
+      - name: Windows signing setup (placeholder, skipped without WINDOWS_CERTIFICATE)
+        if: runner.os == 'Windows' && env.HAVE_WINDOWS_CERTIFICATE == 'true'
+        shell: bash
+        run: echo "WINDOWS_CERTIFICATE is set, but Windows signing is not wired up; this build stays unsigned."
+
+      # `tauri build` runs `npm run build` (the UI, into apps/desktop/dist)
+      # first. It signs and notarizes on macOS when the APPLE_* variables are
+      # present, and signs update files only when TAURI_SIGNING_PRIVATE_KEY
+      # is; an empty secret is unset rather than passed on as an empty value.
+      # `-- --locked` reaches cargo: the app builds from its committed lock.
+      # APPIMAGE_EXTRACT_AND_RUN lets the AppImage tools run without FUSE;
+      # it means nothing on the other two systems.
+      - name: Build the app
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          MSI_VERSION: ${{ steps.version.outputs.msi }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" != "macOS" ] || [ "$HAVE_APPLE_CERTIFICATE" != "true" ] \
+            || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            unset APPLE_SIGNING_IDENTITY
+          fi
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] || [ -z "$APPLE_ID" ] \
+            || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+          signing=off notarizing=off
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then signing=on; fi
+          if [ -n "${APPLE_ID:-}" ]; then notarizing=on; fi
+          echo "macOS signing: $signing, notarization: $notarizing"
+          # Without an identity the app is signed ad hoc ("-"), so the
+          # bundle is sealed whole: an unsealed one, opened from a download,
+          # is called damaged rather than unverified.
+          if [ "$RUNNER_OS" = "macOS" ] && [ "$signing" = off ]; then
+            export APPLE_SIGNING_IDENTITY=-
+          fi
+          config="{\"version\":\"$APP_VERSION\"}"
+          case "$RUNNER_OS" in
+            macOS) bundles=app,dmg ;;
+            Linux) bundles=appimage,deb ;;
+            *)
+              bundles=msi,nsis
+              config="{\"version\":\"$APP_VERSION\",\"bundle\":{\"windows\":{\"wix\":{\"version\":\"$MSI_VERSION\"}}}}"
+              ;;
+          esac
+          npx tauri build --bundles "$bundles" --config "$config" -- --locked
+
+      # What a release carries, in out/: archives that keep file modes,
+      # links and the bundle's signature (upload-artifact alone drops modes),
+      # the installers, and a .sha256 line (`<sum>  <file>`) for each. Every
+      # installer must already be named Sterna_<version>_..., as Tauri names
+      # them; one that is not stops the build rather than ship misnamed.
+      - name: Package for a release
+        shell: bash
+        env:
+          v: ${{ steps.version.outputs.version }}
+          t: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bundle="apps/desktop/src-tauri/target/release/bundle"
+          out="$GITHUB_WORKSPACE/out"
+          stage="$RUNNER_TEMP/desktop-stage"
+          mkdir -p "$out" "$stage"
+          case "$RUNNER_OS" in
+            macOS)
+              codesign --verify --deep --strict "$bundle/macos/Sterna.app"
+              tar czf "$out/sterna-desktop-$v-$t.tar.gz" -C "$bundle/macos" Sterna.app
+              cp "$bundle"/dmg/*.dmg "$out/"
+              ;;
+            Linux)
+              cp "$bundle"/appimage/*.AppImage "$stage/Sterna.AppImage"
+              chmod 755 "$stage/Sterna.AppImage"
+              # 256 x 256: the @2x icon.
+              cp apps/desktop/src-tauri/icons/128x128@2x.png "$stage/sterna.png"
+              tar czf "$out/sterna-desktop-$v-$t.tar.gz" -C "$stage" Sterna.AppImage sterna.png
+              cp "$bundle"/appimage/*.AppImage "$bundle"/deb/*.deb "$out/"
+              ;;
+            Windows)
+              # Portable: the app and its sidecars, triple suffix off, the
+              # names the app looks for beside itself.
+              # The folder install.ps1 and `sterna update` place as
+              # versions/<tag>/desktop.
+              mkdir -p "$stage/desktop"
+              cp apps/desktop/src-tauri/target/release/Sterna.exe "$stage/desktop/"
+              cp "apps/desktop/src-tauri/binaries/sterna-desktop-engine-$t.exe" "$stage/desktop/sterna-desktop-engine.exe"
+              cp "apps/desktop/src-tauri/binaries/sterna-desktop-gateway-$t.exe" "$stage/desktop/sterna-desktop-gateway.exe"
+              (cd "$stage" && 7z a -tzip "$out/sterna-desktop-$v-$t.zip" desktop >/dev/null)
+              cp "$bundle"/msi/*.msi "$bundle"/nsis/*-setup.exe "$out/"
+              ;;
+          esac
+          cd "$out"
+          for file in *; do
+            case "$file" in
+              sterna-desktop-"$v"-"$t".*) ;;
+              Sterna_"$v"_*) ;;
+              *) echo "unexpected name: $file (installers are named Sterna_${v}_...)" >&2; exit 1 ;;
+            esac
+          done
+          for file in *; do
+            sum="$( (sha256sum "$file" 2>/dev/null || shasum -a 256 "$file") | cut -d' ' -f1)"
+            printf '%s  %s\n' "$sum" "$file" > "$file.sha256"
+          done
+          ls -l
+
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sterna-desktop-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error

@@ -85,7 +85,7 @@ def test_publish_needs_build():
             needs = [needs]
         assert "build" in needs
     else:
-        assert re.search(r"publish:\s*\n(?:.*\n)*?\s*needs:\s*build", _text())
+        assert re.search(r"publish:\s*\n(?:.*\n)*?\s*needs:\s*\[?\s*build", _text())
 
 
 def test_release_step_gated_on_tag_ref_and_dry_run_false():
@@ -121,6 +121,9 @@ def test_every_uses_pinned_to_full_sha():
         if not m:
             continue
         ref = m.group(1)
+        if ref.startswith("./"):
+            # A workflow in this repository runs at the same commit.
+            continue
         if "@" not in ref:
             offenders.append(stripped)
             continue
@@ -128,6 +131,36 @@ def test_every_uses_pinned_to_full_sha():
         if not SHA_RE.match(sha):
             offenders.append(stripped)
     assert offenders == [], "not pinned to a 40-hex sha:\n" + "\n".join(offenders)
+
+
+def test_desktop_app_is_built_and_published_with_the_release():
+    """The release calls desktop.yml for its own tag and publishes what it
+    uploads: the archives install.sh --desktop, install.ps1 and `sterna
+    update` place, and the installers."""
+    text = _text()
+    assert "uses: ./.github/workflows/desktop.yml" in text
+    doc = _load()
+    if doc is not None:
+        desktop = doc["jobs"]["desktop"]
+        assert "tag" in desktop["with"], desktop
+        assert "secrets" not in desktop, "the release passes no secrets to the app's build"
+        needs = doc["jobs"]["publish"]["needs"]
+        assert "desktop" in (needs if isinstance(needs, list) else [needs]), needs
+    for pattern in ("dist/*.dmg", "dist/*.AppImage", "dist/*.deb", "dist/*.msi", "dist/*-setup.exe"):
+        assert pattern in text, f"the release does not publish {pattern}"
+    called = (REPO / ".github" / "workflows" / "desktop.yml").read_text()
+    assert "workflow_call:" in called
+    assert "sterna-desktop-$v-$t.tar.gz" in called and "sterna-desktop-$v-$t.zip" in called
+
+
+def test_a_release_build_says_its_version():
+    """`sterna --version` and the host report STERNA_RELEASE when it is set
+    at build time: the release builds with it, so an engine says which
+    release it is."""
+    text = _text()
+    assert re.search(r"STERNA_RELEASE:\s*\$\{\{\s*steps\.version\.outputs\.version\s*\}\}", text)
+    called = (REPO / ".github" / "workflows" / "desktop.yml").read_text()
+    assert "STERNA_RELEASE: ${{ steps.version.outputs.version }}" in called
 
 
 def test_only_github_token_permissions_no_other_secrets():

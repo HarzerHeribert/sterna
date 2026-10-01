@@ -1,0 +1,35 @@
+{
+  "name": "sterna-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Sterna desktop app: a client of the Sterna engine.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5199 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5199 --strictPort",
+    "bridge": "node dev/bridge.mjs",
+    "bridge:mock": "node dev/bridge.mjs --mock",
+    "sidecars": "bash scripts/sidecars.sh",
+    "icons": "node scripts/icon.mjs && tauri icon src-tauri/icons/source.png",
+    "tauri": "tauri",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test \"ui/test/*.test.mjs\"",
+    "test:e2e": "playwright test",
+    "shots": "node scripts/shots.mjs"
+  },
+  "dependencies": {
+    "@fontsource/barlow-condensed": "^5.2.8",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@tauri-apps/api": "^2.12.1",
+    "@tauri-apps/plugin-dialog": "^2.8.1",
+    "@tauri-apps/plugin-notification": "^2.5.1",
+    "@tauri-apps/plugin-updater": "^2.13.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@tauri-apps/cli": "^2.12.1",
+    "vite": "8.2.2",
+    "ws": "^8.22.0"
+  }
+}

@@ -111,7 +111,11 @@ jobs:
           test -n "$v"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # STERNA_RELEASE is the version `sterna --version` and the host report,
+      # so an engine says which release it is.
       - name: Build
+        env:
+          STERNA_RELEASE: ${{ steps.version.outputs.version }}
         run: cargo build --release --locked --target ${{ matrix.target }} -p sterna -p inference-gateway
 
       # Proves the binary that will ship actually runs before it is packaged:
@@ -179,9 +183,20 @@ jobs:
             sterna-*.zip.sha256
           if-no-files-found: error
 
+  # The desktop app for the same tag, built by desktop.yml and published
+  # with the terminal's archives. No secrets are passed on: the app is
+  # unsigned until signing is set up for releases.
+  desktop:
+    name: desktop
+    uses: ./.github/workflows/desktop.yml
+    with:
+      tag: ${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}
+    permissions:
+      contents: read
+
   publish:
     name: Publish release
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -211,4 +226,9 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.msi
+            dist/*-setup.exe
             dist/SHA256SUMS

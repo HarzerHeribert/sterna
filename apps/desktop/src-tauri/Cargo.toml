@@ -1,0 +1,42 @@
+[package]
+name = "sterna-desktop"
+description = "The Sterna desktop app: a window around the Sterna engine."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license-file = "../../../LICENSE"
+publish = false
+repository = "https://github.com/HarzerHeribert/sterna"
+
+# Its own workspace, on purpose. The repository root is a workspace of the
+# engine crates; this crate builds with the Tauri toolchain (`npx tauri ...`
+# from apps/desktop), has its own lock file and its own target directory
+# (apps/desktop/src-tauri/target), and must never split or slow the engine's
+# build cache. The empty table stops cargo looking further up for a root.
+[workspace]
+
+[lib]
+name = "sterna_desktop_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sterna-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+# The plugin crates track the JS packages in apps/desktop/package.json on the
+# same major.minor: the Tauri CLI refuses to build when they differ.
+[dependencies]
+tauri = { version = "2.12.1", features = [] }
+tauri-plugin-dialog = "2.8.1"
+tauri-plugin-notification = "2.5.1"
+tauri-plugin-opener = "2.7.0"
+tauri-plugin-updater = "2.13.1"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sterna</title>
+</head>
+<body class="light">
+<div class="window" id="win">
+  <aside class="sidebar" id="sidebar" aria-label="Every folder and session"></aside>
+  <div class="content">
+    <header class="toolbar" id="toolbar" data-tauri-drag-region></header>
+    <div class="body">
+      <section class="centre">
+        <div class="scroll" id="scroll"><div class="column" id="convo"><div id="record"></div><div id="live"></div></div></div>
+        <button class="latest" id="latest" data-act="latest" hidden>Latest</button>
+        <div class="ovtoast" id="ovtoast"></div>
+        <div class="dock" id="dock"><div class="column" style="position:relative">
+          <div id="toast"></div>
+          <div class="statusline" id="status"></div>
+          <div id="queue"></div>
+          <div class="composer">
+            <textarea id="draft" rows="1" aria-label="Message" placeholder="Describe the next step — a message, or / for commands"></textarea>
+            <div class="cbar" id="cbar"></div>
+          </div>
+        </div></div>
+      </section>
+      <aside class="inspector" id="inspector" aria-label="This session"></aside>
+    </div>
+  </div>
+  <div id="overlay"></div>
+  <div id="splash"></div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

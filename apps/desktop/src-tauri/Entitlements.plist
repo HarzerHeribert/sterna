@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Used only when the app is signed (the APPLE_* secrets in
+  .github/workflows/desktop.yml). A signed build runs under the hardened
+  runtime, and the bundler signs the sidecars with these entitlements too.
+  The engine (sterna-desktop-engine) embeds V8, whose JIT needs executable
+  memory. Measured on arm64 macOS 26.5, 2026-10-02, with an ad-hoc
+  hardened-runtime copy of the engine: with no entitlements every session
+  dies setting up V8 (SIGTRAP, FatalProcessOutOfMemory in Heap::SetUp); with
+  allow-jit alone a session ran a whole turn, both cells executing.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+</dict>
+</plist>

@@ -21,6 +21,7 @@ Start with [architecture](architecture.md): two programs, one page.
 - [decisions](decisions.md) — Jev, the classifier
 - [project context](project-context.md) — instructions, MCP servers, source context
 - [engine](engine.md) — the seam every client speaks: the terminal, the desktop app, the host
+- [desktop app](../apps/desktop/README.md) — the window around the engine: building it, its dev mock, how a release ships it
 - [observing](observing.md) — the live event stream
 - [gateway](gateway.md) — the inference gateway
 
