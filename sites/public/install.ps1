@@ -18,7 +18,7 @@
 #      `inference-gateway subscriptions adopt-binary`;
 #   6. with $env:STERNA_DESKTOP set, the desktop app from the same release,
 #      verified the same way, into ...\versions\<tag>\desktop, and a Start
-#      menu shortcut to ...\sterna\current\desktop\sterna-desktop.exe.
+#      menu shortcut to ...\sterna\current\desktop\Sterna.exe.
 #      Sterna's own updates keep it in step from then on.
 # It installs no harness and touches no credential. It runs in Windows
 # PowerShell 5.1 as well as PowerShell 7.
@@ -198,16 +198,16 @@ try {
         $appWant = Get-ListedSum (Join-Path $Tmp 'SHA256SUMS') $appArchive
         if (-not $appWant) { Fail "$Tag carries no desktop app for $Target; sterna itself is installed" }
         $appDir = Join-Path $Dest 'desktop'
-        if (-not (Test-Path -LiteralPath (Join-Path $appDir 'sterna-desktop.exe'))) {
+        if (-not (Test-Path -LiteralPath (Join-Path $appDir 'Sterna.exe'))) {
             Fetch "$Base/$appArchive" (Join-Path $Tmp $appArchive)
             if ((Sha256Of (Join-Path $Tmp $appArchive)) -ne $appWant) { Fail "$appArchive does not match its SHA-256; refusing it" }
             $appStage = Join-Path $Tmp 'desktop-stage'
             Expand-Archive -LiteralPath (Join-Path $Tmp $appArchive) -DestinationPath $appStage -Force
-            if (-not (Test-Path -LiteralPath (Join-Path $appStage 'desktop\sterna-desktop.exe'))) { Fail "$appArchive carried no sterna-desktop.exe" }
+            if (-not (Test-Path -LiteralPath (Join-Path $appStage 'desktop\Sterna.exe'))) { Fail "$appArchive carried no Sterna.exe" }
             Move-Item -LiteralPath (Join-Path $appStage 'desktop') -Destination $appDir
         }
         Set-Content -LiteralPath (Join-Path $Root 'desktop') -Value '' -NoNewline
-        $app = Join-Path $Root 'current\desktop\sterna-desktop.exe'
+        $app = Join-Path $Root 'current\desktop\Sterna.exe'
         if ($OnWindows) {
             $menu = Get-Setting 'STERNA_START_MENU' ([Environment]::GetFolderPath('Programs'))
             $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $menu 'Sterna.lnk'))

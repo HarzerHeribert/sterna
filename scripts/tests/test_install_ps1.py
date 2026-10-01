@@ -81,9 +81,9 @@ def publish(site: Path, tag: str, tamper: bool = False) -> None:
         z.writestr(f"{folder}/cliproxyapi.toml", pin)
     desktop = downloads / f"sterna-desktop-{version}-{TARGET}.zip"
     with zipfile.ZipFile(desktop, "w") as z:
-        z.writestr("desktop/sterna-desktop.exe", f"desktop {tag}")
-        z.writestr("desktop/sterna.exe", f"sterna {tag}")
-        z.writestr("desktop/inference-gateway.exe", "gateway")
+        z.writestr("desktop/Sterna.exe", f"desktop {tag}")
+        z.writestr("desktop/sterna-desktop-engine.exe", f"sterna {tag}")
+        z.writestr("desktop/sterna-desktop-gateway.exe", "gateway")
     digest = sha256(archive)
     if tamper:
         digest = "0" * 64
@@ -179,7 +179,7 @@ def main() -> int:
         # Asked for, the desktop app goes beside the version it ships with.
         third = run(pwsh, base, home, log, desktop=True)
         check(third.returncode == 0, "the desktop install failed", third)
-        app = dest / "desktop" / "sterna-desktop.exe"
+        app = dest / "desktop" / "Sterna.exe"
         check(app.is_file() and app.read_text() == "desktop v0.1.0-pre.10", "the app was not unpacked", third)
         check((home / "desktop").is_file(), "the install root was not marked for the app", third)
         check("Desktop app" in third.stdout, "the run does not say where the app is", third)

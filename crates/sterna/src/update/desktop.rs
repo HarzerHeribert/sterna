@@ -44,7 +44,7 @@ fn install_from(exe: &Path, image: Option<&Path>, root: Option<&Path>) -> Option
             tag: version.file_name()?.to_str()?.to_string(),
         });
     }
-    // <bundle>/Contents/MacOS/sterna
+    // <bundle>/Contents/MacOS/sterna-desktop-engine
     let macos = exe.parent()?;
     if macos.file_name()? != "MacOS" {
         return None;
@@ -235,7 +235,7 @@ mod tests {
         fs::create_dir_all(&version).unwrap();
         std::os::unix::fs::symlink(&version, root.join("current")).unwrap();
         let bundle = base.join("Applications/Sterna.app");
-        let exe = bundle.join("Contents/MacOS/sterna");
+        let exe = bundle.join("Contents/MacOS/sterna-desktop-engine");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, "").unwrap();
         let found = |root: &Path| install_from(&exe, None, Some(root));
@@ -255,7 +255,7 @@ mod tests {
         // A Linux image is placed in its version directory.
         let image = version.join("Sterna.AppImage");
         fs::write(&image, "").unwrap();
-        let mounted = Path::new("/tmp/.mount_Sterna/usr/bin/sterna");
+        let mounted = Path::new("/tmp/.mount_Sterna/usr/bin/sterna-desktop-engine");
         let install = install_from(mounted, Some(&image), None).unwrap();
         assert_eq!(
             (install.root.as_path(), install.tag.as_str()),

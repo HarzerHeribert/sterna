@@ -94,7 +94,7 @@ fn serve(dir: PathBuf) -> String {
 /// opens, and the file whose output says which version it is.
 fn app_entries() -> (&'static [&'static str], &'static str) {
     if cfg!(target_os = "macos") {
-        (&["Sterna.app"], "Sterna.app/Contents/MacOS/sterna-desktop")
+        (&["Sterna.app"], "Sterna.app/Contents/MacOS/Sterna")
     } else {
         (&["Sterna.AppImage", "sterna.png"], "Sterna.AppImage")
     }
@@ -191,7 +191,7 @@ fn the_desktop_app_installs_runs_and_updates_into_a_new_version_beside_the_old()
 
     // The app is where the person opens it, and runs.
     let opened = if cfg!(target_os = "macos") {
-        apps.join("Sterna.app/Contents/MacOS/sterna-desktop")
+        apps.join("Sterna.app/Contents/MacOS/Sterna")
     } else {
         root.join("current/Sterna.AppImage")
     };

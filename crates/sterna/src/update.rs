@@ -625,7 +625,10 @@ mod tests {
         .unwrap();
         assert!(!dev.is_release());
         // Windows keeps the desktop app with its own copy of the engine.
-        let app = Install::from_exe(Path::new("/r/versions/v0.2.0/desktop/sterna.exe")).unwrap();
+        let app = Install::from_exe(Path::new(
+            "/r/versions/v0.2.0/desktop/sterna-desktop-engine.exe",
+        ))
+        .unwrap();
         assert_eq!(
             (app.root, app.tag.as_str()),
             (PathBuf::from("/r"), "v0.2.0")
