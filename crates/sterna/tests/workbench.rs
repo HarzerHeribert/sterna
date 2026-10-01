@@ -2233,7 +2233,7 @@ fn the_theme_sheet_previews_the_chosen_bird() {
         "Sun Conure",
         "Sulphur-crested Cockatoo",
         "Anodorhynchus hyacinthinus",
-        "cracks the hard ones",
+        "the largest flying parrot",
     ] {
         assert!(screen.contains(shown), "{shown} is missing:\n{screen}");
     }
