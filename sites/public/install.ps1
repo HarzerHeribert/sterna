@@ -2,6 +2,7 @@
 #
 #   irm https://harzerheribert.github.io/sterna/install.ps1 | iex
 #   $env:STERNA_VERSION = 'v0.1.0-pre.18'; irm ... | iex    # a specific release
+#   $env:STERNA_DESKTOP = '1'; irm ... | iex                # the desktop app too
 #
 # The Windows twin of install.sh, and nothing more:
 #   1. picks the release (the newest, pre-releases included, or
@@ -14,7 +15,11 @@
 #      rights, no system PATH);
 #   5. downloads the CLIProxyAPI build the release pins (cliproxyapi.toml),
 #      refuses it unless its SHA-256 matches the pin, and hands it to
-#      `inference-gateway subscriptions adopt-binary`.
+#      `inference-gateway subscriptions adopt-binary`;
+#   6. with $env:STERNA_DESKTOP set, the desktop app from the same release,
+#      verified the same way, into ...\versions\<tag>\desktop, and a Start
+#      menu shortcut to ...\sterna\current\desktop\sterna-desktop.exe.
+#      Sterna's own updates keep it in step from then on.
 # It installs no harness and touches no credential. It runs in Windows
 # PowerShell 5.1 as well as PowerShell 7.
 
@@ -44,6 +49,7 @@ $DefaultRoot = ''
 if ($env:LOCALAPPDATA) { $DefaultRoot = Join-Path $env:LOCALAPPDATA 'Programs\sterna' }
 $Root = Get-Setting 'STERNA_HOME' $DefaultRoot
 $PathScope = Get-Setting 'STERNA_PATH_SCOPE' 'User'
+$Desktop = Get-Setting 'STERNA_DESKTOP' ''
 
 function Say([string]$Text) { Write-Host $Text }
 function Fail([string]$Text) { throw "install.ps1: $Text" }
@@ -54,6 +60,17 @@ function Fetch([string]$Url, [string]$Dest) {
 
 function Sha256Of([string]$Path) {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+# The SHA-256 the release's SHA256SUMS lists for $Name, or '' when it lists
+# none.
+function Get-ListedSum([string]$Sums, [string]$Name) {
+    $listed = ''
+    foreach ($line in Get-Content -LiteralPath $Sums) {
+        $fields = $line -split '\s+', 2
+        if ($fields.Count -eq 2 -and $fields[1].TrimStart('*') -eq $Name) { $listed = $fields[0].ToLowerInvariant() }
+    }
+    return $listed
 }
 
 # `current` points at the version in use. A junction needs no administrator
@@ -119,11 +136,7 @@ try {
     Say "Installing $Tag for $Target"
     Fetch "$Base/$Archive" (Join-Path $Tmp $Archive)
     Fetch "$Base/SHA256SUMS" (Join-Path $Tmp 'SHA256SUMS')
-    $want = ''
-    foreach ($line in Get-Content -LiteralPath (Join-Path $Tmp 'SHA256SUMS')) {
-        $fields = $line -split '\s+', 2
-        if ($fields.Count -eq 2 -and $fields[1].TrimStart('*') -eq $Archive) { $want = $fields[0].ToLowerInvariant() }
-    }
+    $want = Get-ListedSum (Join-Path $Tmp 'SHA256SUMS') $Archive
     if (-not $want) { Fail "$Archive is not listed in the release's SHA256SUMS" }
     if ((Sha256Of (Join-Path $Tmp $Archive)) -ne $want) { Fail "$Archive does not match its SHA-256; refusing it" }
 
@@ -176,6 +189,35 @@ try {
             if ($LASTEXITCODE -ne 0) { Fail "inference-gateway refused to adopt CLIProxyAPI $brokerVersion" }
             Set-Content -LiteralPath $stamp -Value $brokerVersion -NoNewline
             Say "Subscription broker: CLIProxyAPI $brokerVersion"
+        }
+    }
+
+    # The desktop app, from the same release.
+    if ($Desktop) {
+        $appArchive = "sterna-desktop-$Version-$Target.zip"
+        $appWant = Get-ListedSum (Join-Path $Tmp 'SHA256SUMS') $appArchive
+        if (-not $appWant) { Fail "$Tag carries no desktop app for $Target; sterna itself is installed" }
+        $appDir = Join-Path $Dest 'desktop'
+        if (-not (Test-Path -LiteralPath (Join-Path $appDir 'sterna-desktop.exe'))) {
+            Fetch "$Base/$appArchive" (Join-Path $Tmp $appArchive)
+            if ((Sha256Of (Join-Path $Tmp $appArchive)) -ne $appWant) { Fail "$appArchive does not match its SHA-256; refusing it" }
+            $appStage = Join-Path $Tmp 'desktop-stage'
+            Expand-Archive -LiteralPath (Join-Path $Tmp $appArchive) -DestinationPath $appStage -Force
+            if (-not (Test-Path -LiteralPath (Join-Path $appStage 'desktop\sterna-desktop.exe'))) { Fail "$appArchive carried no sterna-desktop.exe" }
+            Move-Item -LiteralPath (Join-Path $appStage 'desktop') -Destination $appDir
+        }
+        Set-Content -LiteralPath (Join-Path $Root 'desktop') -Value '' -NoNewline
+        $app = Join-Path $Root 'current\desktop\sterna-desktop.exe'
+        if ($OnWindows) {
+            $menu = Get-Setting 'STERNA_START_MENU' ([Environment]::GetFolderPath('Programs'))
+            $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $menu 'Sterna.lnk'))
+            $shortcut.TargetPath = $app
+            $shortcut.WorkingDirectory = Join-Path $Root 'current\desktop'
+            $shortcut.Description = 'Watch and answer your coding sessions'
+            $shortcut.Save()
+            Say "Desktop app: Sterna in your Start menu ($app)"
+        } else {
+            Say "Desktop app: $app"
         }
     }
 

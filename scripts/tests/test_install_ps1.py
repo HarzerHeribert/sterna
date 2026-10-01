@@ -7,7 +7,9 @@ would be: the newest release is chosen by version and not by the list's
 order, the zip is verified against ``SHA256SUMS`` and unpacked into a fresh
 ``versions/<tag>``, ``current`` points at it, the pinned broker is adopted
 through the new gateway, and a second run reinstalls nothing. A release whose
-zip does not match its sum installs nothing at all.
+zip does not match its sum installs nothing at all. With ``STERNA_DESKTOP``
+the desktop app's zip is verified and unpacked beside the binaries, and the
+install root is marked so the updater keeps it in step.
 
 The fake ``inference-gateway.exe`` is a shell script, so the adoption half
 runs only where a script can be executed by path (not on Windows); the rest
@@ -77,14 +79,27 @@ def publish(site: Path, tag: str, tamper: bool = False) -> None:
         info.external_attr = 0o755 << 16
         z.writestr(info, gateway)
         z.writestr(f"{folder}/cliproxyapi.toml", pin)
+    desktop = downloads / f"sterna-desktop-{version}-{TARGET}.zip"
+    with zipfile.ZipFile(desktop, "w") as z:
+        z.writestr("desktop/sterna-desktop.exe", f"desktop {tag}")
+        z.writestr("desktop/sterna.exe", f"sterna {tag}")
+        z.writestr("desktop/inference-gateway.exe", "gateway")
     digest = sha256(archive)
     if tamper:
         digest = "0" * 64
-    (downloads / "SHA256SUMS").write_text(f"{digest}  {folder}.zip\n")
+    (downloads / "SHA256SUMS").write_text(
+        f"{digest}  {folder}.zip\n{sha256(desktop)}  {desktop.name}\n"
+    )
 
 
-def run(pwsh: str, base: str, home: Path, log: Path) -> subprocess.CompletedProcess:
+def run(
+    pwsh: str, base: str, home: Path, log: Path, desktop: bool = False
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
+    env.pop("STERNA_DESKTOP", None)
+    if desktop:
+        env["STERNA_DESKTOP"] = "1"
+        env["STERNA_START_MENU"] = str(home.parent / "menu")
     env.update(
         STERNA_RELEASES_API=f"{base}/releases.json",
         STERNA_RELEASE_DOWNLOADS=f"{base}/download",
@@ -159,6 +174,15 @@ def main() -> int:
         check("already installed" in second.stdout, "the second run reinstalled", second)
         if os.name != "nt":
             check(len(log.read_text().splitlines()) == 1, "the broker was adopted twice", second)
+        check(not (home / "desktop").exists(), "the app was marked without being asked for", second)
+
+        # Asked for, the desktop app goes beside the version it ships with.
+        third = run(pwsh, base, home, log, desktop=True)
+        check(third.returncode == 0, "the desktop install failed", third)
+        app = dest / "desktop" / "sterna-desktop.exe"
+        check(app.is_file() and app.read_text() == "desktop v0.1.0-pre.10", "the app was not unpacked", third)
+        check((home / "desktop").is_file(), "the install root was not marked for the app", third)
+        check("Desktop app" in third.stdout, "the run does not say where the app is", third)
 
         # A zip that does not match its sum installs nothing.
         bad_site = scratch / "bad"

@@ -12,6 +12,8 @@
 //! release tag (a developer's `v0.1.0-pre.1-1316-gf96f87f0`), is left alone
 //! -- `sterna update` says why rather than guess what it is newer than.
 
+pub mod desktop;
+
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -54,17 +56,20 @@ impl Install {
     #[must_use]
     pub fn of_running() -> Option<Self> {
         let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-        Self::from_exe(&exe)
+        Self::from_exe(&exe).or_else(|| desktop::install_of(&exe))
     }
 
-    /// `<root>/versions/<tag>/bin/<sterna>` read backwards; `None` for any
-    /// other shape.
+    /// `<root>/versions/<tag>/bin/<sterna>` read backwards -- or `desktop/`
+    /// for `bin/`, where Windows keeps the desktop app with its own copy of
+    /// the engine; `None` for any other shape.
     #[must_use]
     pub fn from_exe(exe: &Path) -> Option<Self> {
         let bin = exe.parent()?;
         let version = bin.parent()?;
         let versions = version.parent()?;
-        if bin.file_name()? != "bin" || versions.file_name()? != "versions" {
+        if !matches!(bin.file_name()?.to_str()?, "bin" | "desktop")
+            || versions.file_name()? != "versions"
+        {
             return None;
         }
         Some(Self {
@@ -140,6 +145,12 @@ pub struct Source {
     pub releases_api: String,
     pub downloads: String,
     pub broker_downloads: Option<String>,
+    /// Where the desktop app is opened from on macOS; `~/Applications`
+    /// unless named.
+    pub applications: Option<PathBuf>,
+    /// Where a Linux menu looks for the app's entry; the data home's
+    /// `applications` unless named.
+    pub launchers: Option<PathBuf>,
 }
 
 impl Source {
@@ -153,6 +164,8 @@ impl Source {
             downloads: var("STERNA_UPDATE_DOWNLOADS")
                 .unwrap_or_else(|| format!("https://github.com/{REPOSITORY}/releases/download")),
             broker_downloads: var("STERNA_UPDATE_BROKER_DOWNLOADS"),
+            applications: var("STERNA_APPLICATIONS").map(PathBuf::from),
+            launchers: var("XDG_DATA_HOME").map(|data| PathBuf::from(data).join("applications")),
         }
     }
 }
@@ -232,6 +245,9 @@ pub fn install_release(
         placed?;
     }
     adopt_broker(root, &dest, target, source)?;
+    if desktop::wanted(root) {
+        desktop::install(root, &dest, tag, target, source)?;
+    }
     repoint(root, &dest)?;
     Ok(dest)
 }
@@ -608,5 +624,15 @@ mod tests {
         ))
         .unwrap();
         assert!(!dev.is_release());
+        // Windows keeps the desktop app with its own copy of the engine.
+        let app = Install::from_exe(Path::new("/r/versions/v0.2.0/desktop/sterna.exe")).unwrap();
+        assert_eq!(
+            (app.root, app.tag.as_str()),
+            (PathBuf::from("/r"), "v0.2.0")
+        );
+        assert_eq!(
+            Install::from_exe(Path::new("/r/versions/v0.2.0/lib/sterna")),
+            None
+        );
     }
 }

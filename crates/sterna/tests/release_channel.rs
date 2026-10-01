@@ -146,6 +146,8 @@ fn a_release_is_verified_installed_beside_the_running_one_and_its_broker_adopted
         releases_api: format!("{base}/api"),
         downloads: format!("{base}/dl"),
         broker_downloads: Some(format!("{base}/broker")),
+        applications: None,
+        launchers: None,
     };
 
     publish(&site, "v0.1.0-pre.9", target, &adopt_log, false);
@@ -191,6 +193,8 @@ fn the_newest_release_is_chosen_by_version_not_by_the_lists_order() {
         releases_api: format!("{base}/api"),
         downloads: format!("{base}/dl"),
         broker_downloads: None,
+        applications: None,
+        launchers: None,
     };
     assert_eq!(update::latest_tag(&source).unwrap(), "v0.1.0-pre.10");
 }

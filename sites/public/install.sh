@@ -3,6 +3,8 @@
 #
 #   curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh
 #   STERNA_VERSION=v0.1.0-pre.2 sh install.sh             # a specific release
+#   curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop
+#                                                          # the desktop app too
 #
 # What it does, in order, and nothing else:
 #   1. picks the release (the newest, pre-releases included, or
@@ -15,7 +17,13 @@
 #      Pane's old `pane` link and ~/.local/lib/glasshouse install;
 #   5. downloads the CLIProxyAPI build the release pins (cliproxyapi.toml),
 #      refuses it unless its SHA-256 matches the pin, and hands it to
-#      `inference-gateway subscriptions adopt-binary`.
+#      `inference-gateway subscriptions adopt-binary`;
+#   6. with --desktop (or STERNA_DESKTOP=1), the desktop app from the same
+#      release, verified the same way: into the version directory beside
+#      the binaries, then to ~/Applications on macOS (put in place by
+#      renames, never over a copy that may be running) or as a menu entry
+#      on Linux that opens ~/.local/lib/sterna/current/Sterna.AppImage.
+#      Sterna's own updates keep it in step from then on.
 # It installs no harness, touches no credential and edits no shell profile.
 set -eu
 
@@ -26,9 +34,15 @@ DOWNLOADS="${STERNA_RELEASE_DOWNLOADS:-https://github.com/$REPO/releases/downloa
 BROKER_DOWNLOADS="${STERNA_BROKER_DOWNLOADS:-}"
 ROOT="${STERNA_HOME:-$HOME/.local/lib/sterna}"
 BIN_DIR="${STERNA_BIN_DIR:-$HOME/.local/bin}"
+DESKTOP="${STERNA_DESKTOP:-}"
 for arg in "$@"; do
-  echo "install.sh: unknown option $arg" >&2
-  exit 2
+  case "$arg" in
+    --desktop) DESKTOP=1 ;;
+    *)
+      echo "install.sh: unknown option $arg" >&2
+      exit 2
+      ;;
+  esac
 done
 
 say() { printf '%s\n' "$*"; }
@@ -149,6 +163,56 @@ if [ -f "$PIN" ]; then
     printf '%s' "$BROKER_VERSION" > "$ROOT/broker-version"
     say "Subscription broker: CLIProxyAPI $BROKER_VERSION"
   fi
+fi
+
+# The desktop app, from the same release.
+if [ -n "$DESKTOP" ]; then
+  case "$TARGET" in
+    aarch64-apple-darwin) APP_ENTRIES="Sterna.app" ;;
+    x86_64-unknown-linux-gnu) APP_ENTRIES="Sterna.AppImage sterna.png" ;;
+    *) die "the desktop app is built for macOS on Apple silicon and Linux on x86_64; sterna itself is installed" ;;
+  esac
+  APP_ARCHIVE="sterna-desktop-$VERSION-$TARGET.tar.gz"
+  APP_WANT="$(grep " $APP_ARCHIVE\$" "$TMP/SHA256SUMS" | cut -d' ' -f1)"
+  [ -n "$APP_WANT" ] || die "$TAG carries no desktop app for $TARGET; sterna itself is installed"
+  APP_FIRST="${APP_ENTRIES%% *}"
+  if [ ! -e "$DEST/$APP_FIRST" ]; then
+    fetch "$BASE/$APP_ARCHIVE" "$TMP/$APP_ARCHIVE"
+    [ "$(sha256_of "$TMP/$APP_ARCHIVE")" = "$APP_WANT" ] || die "$APP_ARCHIVE does not match its SHA-256; refusing it"
+    mkdir -p "$TMP/desktop"
+    tar xzf "$TMP/$APP_ARCHIVE" -C "$TMP/desktop"
+    for entry in $APP_ENTRIES; do
+      [ -e "$TMP/desktop/$entry" ] || die "$APP_ARCHIVE carried no $entry"
+      mv "$TMP/desktop/$entry" "$DEST/$entry"
+    done
+  fi
+  : > "$ROOT/desktop"
+  case "$TARGET" in
+    *-apple-darwin)
+      APPS="${STERNA_APPLICATIONS:-$HOME/Applications}"
+      mkdir -p "$APPS"
+      rm -rf "$APPS/.Sterna.app.$$" "$APPS/.Sterna.app.old.$$"
+      cp -R "$DEST/Sterna.app" "$APPS/.Sterna.app.$$"
+      if [ -e "$APPS/Sterna.app" ]; then mv "$APPS/Sterna.app" "$APPS/.Sterna.app.old.$$"; fi
+      mv "$APPS/.Sterna.app.$$" "$APPS/Sterna.app"
+      rm -rf "$APPS/.Sterna.app.old.$$"
+      # The marker names the copy, so the app's own sessions find this
+      # install and keep the app up to date.
+      printf '%s\n' "$APPS/Sterna.app" > "$ROOT/desktop"
+      say "Desktop app: $APPS/Sterna.app"
+      ;;
+    *)
+      chmod 755 "$DEST/Sterna.AppImage"
+      LAUNCHERS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+      mkdir -p "$LAUNCHERS"
+      printf '%s\n' "[Desktop Entry]" "Type=Application" "Name=Sterna" \
+        "Comment=Watch and answer your coding sessions" \
+        "Exec=$ROOT/current/Sterna.AppImage %U" "Icon=$ROOT/current/sterna.png" \
+        "Categories=Development;" "Terminal=false" > "$LAUNCHERS/.sterna.desktop.$$"
+      mv "$LAUNCHERS/.sterna.desktop.$$" "$LAUNCHERS/sterna.desktop"
+      say "Desktop app: Sterna in your applications menu ($ROOT/current/Sterna.AppImage)"
+      ;;
+  esac
 fi
 
 say "Installed $TAG. Sterna updates itself from here on; run \`sterna\` to start, \`sterna doctor\` to check."
