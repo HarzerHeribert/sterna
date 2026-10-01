@@ -596,58 +596,6 @@ fn a_context_batch_past_the_feedback_budget_narrows_and_the_cell_runs_on() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// `around` prints each match with the lines either side, numbered and
-/// merged where windows meet, and an `edit` of those lines binds in the next
-/// cell with no `context` -- reading by a condition instead of by definition.
-#[test]
-fn a_search_with_around_prints_numbered_windows_an_edit_binds_to() {
-    let root = fixture("around");
-    let mut lines: Vec<String> = (1..=60).map(|n| format!("value_{n} = {n}")).collect();
-    lines[19] = "needle_a = 'A'".into();
-    lines[22] = "needle_b = 'B'".into();
-    lines[49] = "needle_c = 'C'".into();
-    std::fs::write(root.join("src/many.py"), lines.join("\n") + "\n").unwrap();
-    let profile = Profile::compile(&root, None);
-    let mut runtime = Runtime::new(&profile, &SessionId::new("around"));
-
-    // `grep`, not `rg`: it runs on every host -- ripgrep where installed,
-    // the system grep or Sterna's own search where not -- so `around` is
-    // checked on every CI cell rather than skipped where ripgrep is absent.
-    let found = runtime.run_cell("await grep({pattern: 'needle_', path: 'src', around: 2});");
-    let printed = &found.turn().stdout_tail;
-    // `src/many.py`, or `src\\many.py` on Windows.
-    assert!(
-        printed.contains("## Around the matches in src") && printed.contains("many.py\n"),
-        "{printed}"
-    );
-    assert!(printed.contains("   18 | value_18 = 18"), "{printed}");
-    assert!(printed.contains("   25 | value_25 = 25"), "{printed}");
-    assert!(printed.contains("   52 | value_52 = 52"), "{printed}");
-    assert!(!printed.contains("value_30 = 30"), "{printed}");
-    assert_eq!(
-        printed.matches("  …").count(),
-        1,
-        "two windows merged into one: {printed}"
-    );
-
-    let edited = runtime.run_cell(
-        "return (await edit({path: 'src/many.py', old: \"needle_b = 'B'\\n\", replacement: \"needle_b = 'BEE'\\n\"})).path;",
-    );
-    assert!(
-        matches!(&edited, CellOutcome::Returned { .. }),
-        "an edit of lines `around` showed must bind: {edited:?}"
-    );
-    let text = std::fs::read_to_string(root.join("src/many.py")).unwrap();
-    assert!(text.contains("needle_b = 'BEE'"), "{text}");
-
-    let refused = runtime.run_cell("await grep({pattern: 'needle_', path: 'src', around: 0});");
-    assert!(
-        matches!(&refused, CellOutcome::Threw { error, .. } if error.message.contains("`around` takes a whole number")),
-        "{refused:?}"
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
 /// An excerpt the conversation already carries line for line is pointed at
 /// even inside a context that is otherwise new -- here the file cell 1 showed
 /// whole, asked for again by one of its symbols, which renders a different

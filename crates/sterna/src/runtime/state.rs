@@ -792,80 +792,6 @@ impl RuntimeState {
         })
     }
 
-    /// Delivers the lines around each of `matches` in `path` (as the project
-    /// knows it) -- `around` either side, overlapping windows merged -- with
-    /// this cell's feedback, numbered and recorded as shown, so an `edit` of
-    /// them binds in the next cell without a `context`. A window the
-    /// conversation already carries line for line is one line saying where.
-    /// Answers whether the file's windows fit what is left of the budget; a
-    /// file that does not is left out whole, never cut short.
-    pub(crate) fn note_around(&self, shown_path: &str, matches: &[usize], around: usize) -> bool {
-        let path = self.absolute_source_path(Path::new(shown_path));
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return true;
-        };
-        let lines: Vec<&str> = text.lines().collect();
-        let mut wanted = matches.to_vec();
-        wanted.sort_unstable();
-        wanted.dedup();
-        let mut windows: Vec<(usize, usize)> = Vec::new();
-        for line in wanted
-            .into_iter()
-            .filter(|&line| line >= 1 && line <= lines.len())
-        {
-            let (first, last) = (
-                line.saturating_sub(around).max(1),
-                (line + around).min(lines.len()),
-            );
-            match windows.last_mut() {
-                Some(window) if first <= window.1 + 1 => window.1 = window.1.max(last),
-                _ => windows.push((first, last)),
-            }
-        }
-        if windows.is_empty() {
-            return true;
-        }
-        let mut rendered = format!("## Around the matches in {shown_path}\n");
-        for (index, &(first, last)) in windows.iter().enumerate() {
-            if index > 0 {
-                rendered.push_str("  …\n");
-            }
-            let window = &lines[first - 1..last];
-            match self.shown_lines_place(shown_path, first, window) {
-                Some(place) => rendered.push_str(&format!(
-                    "  lines {first}-{last} shown {place}, not printed again\n"
-                )),
-                None => {
-                    for (offset, line) in window.iter().enumerate() {
-                        rendered.push_str(&format!("{:>5} | {line}\n", first + offset));
-                    }
-                }
-            }
-        }
-        if rendered.chars().count() + 1 > self.remaining_context_budget() {
-            return false;
-        }
-        self.pending_context_output.borrow_mut().push(rendered);
-        let cell = self.cell.get();
-        let mut pending = self.pending_lines.borrow_mut();
-        let mut shown = self.shown_lines.borrow_mut();
-        let known = shown.entry(shown_path.to_string()).or_default();
-        for (first, last) in windows {
-            for (number, line) in (first..=last).zip(&lines[first - 1..last]) {
-                pending.push((path.clone(), number, (*line).to_string()));
-                known.entry((number, line_hash(line))).or_insert(cell);
-            }
-        }
-        true
-    }
-
-    /// Says how many files' matches [`Self::note_around`] had no room for.
-    pub(crate) fn note_around_left(&self, files: usize) {
-        self.pending_context_output.borrow_mut().push(format!(
-            "## Around the matches\n{files} more file(s) with matches were not printed: this turn's feedback is full; search a narrower path or pattern next cell\n"
-        ));
-    }
-
     /// Records every line `packed` printed, keeping the first cell a line
     /// appeared in.
     fn note_shown_lines(&self, packed: &SourceContext) {
@@ -938,7 +864,7 @@ impl RuntimeState {
             );
         }
         format!(
-            "`edit` did not run: nothing has shown you `{named}`'s current bytes; call `context` with the target symbol, or `rg` with `around` for the lines, read its result, and edit in the next cell"
+            "`edit` did not run: nothing has shown you `{named}`'s current bytes; call `context` with the target symbol, read its result, and edit in the next cell"
         )
     }
 

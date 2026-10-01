@@ -75,13 +75,29 @@ declared keys of a typed handle.
 | Codex, 2026-09-30 | 25.0 to 25.0 | 1.19× (1.06–1.32) | 0.97× (0.86–1.07) | 0.79× (0.72–0.87) |
 
 The first request of a session went from wholly uncached (8.2–8.6K fresh
-tokens every time) to a median of 94 % cached, in all 56 sessions. The
+tokens every time) to a median of 94 % cached, in all 42 first requests the
+gateway's ledger recorded during the run. The
 pointers replaced 217 excerpts. The total fell less than that promised,
 because this run's model asked for a tenth more contexts: what a run chooses
 to read moves fresh input by as much as these changes do. What is left of
 the gap is by design -- Sterna shows whole definitions and their
 neighbours, about 1.8 times the source Codex reads, and the neighbours are
 how it found the sibling code path on django 15957.
+
+**Reading by condition, 2026-10-01** (build `a703587a`, the same 30 tasks
+and attempts). The model was given two ways to read less: a search option
+that printed each match with N lines either side, numbered so an `edit`
+could bind to them, and `context` modes (`precise`: the definition alone,
+neighbours as their first line; `generous`: a file whole up to 24 KB). It
+took both -- the window option on 234 of 267 searches, `precise` on 226 of
+318 contexts -- and `context`'s share of result text fell from 69 % to 56 %.
+Against the previous build it resolved 24.0 to 25.0, with 1.15× the fresh
+input (1.04–1.27), 1.08× the requests and 1.10× the cost (1.01–1.21); the
+gateway's ledger, counted over the run's own window, agrees (1.11×). The
+windows served as a preview: half were followed within two cells by a
+`context` of the same file, so they added to the read instead of replacing
+it. The window option was removed; the modes were kept for a run of their
+own.
 
 ## Against the Codex CLI (2026-09-29, superseded by the section above)
 

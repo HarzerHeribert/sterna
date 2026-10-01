@@ -33,7 +33,6 @@ use crate::tools::invoke::{self, Args, ToolContext, ToolError, ToolResult};
 use crate::tools::registry::{self, Tool};
 
 mod agent;
-mod around;
 mod options;
 use options::{read_filter, read_ids, read_millis, read_option};
 mod ask;
@@ -706,10 +705,6 @@ fn tool_callback(
             call_args = call_args.rename(param.provider, param.canonical);
         }
     }
-    let around = match around::take(requested_tool.name(), &mut call_args) {
-        Ok(around) => around,
-        Err(refusal) => return throw_tool_error(scope, &refusal),
-    };
     let state = state(scope);
 
     // Semantic command lifting (`semantic-command-lifting.md`). A command
@@ -1019,9 +1014,6 @@ fn tool_callback(
 
     match traced.outcome {
         Ok(result) => {
-            if let Some(around) = around {
-                around::deliver(&state, &call_args, &result, around);
-            }
             let (value, call) = typed_result(
                 scope,
                 marshal_as,
@@ -1137,9 +1129,7 @@ fn read_arguments(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Resu
                 lines.push(line.to_rust_string_lossy(scope));
             }
             args = args.with_lines(key, lines);
-        } else if given.is_string() || (given.is_number() && key == "around") {
-            // `around` is Sterna's own option, a count of lines, never
-            // handed to a tool ([`around::take`]).
+        } else if given.is_string() {
             args = args.with(key, given.to_rust_string_lossy(scope));
         } else {
             return Err(argument_refusal(&key, given));

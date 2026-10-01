@@ -104,14 +104,6 @@ for by `symbol` is that definition rather than the whole file, and a file
 named without a symbol is its outline. `generous` gives a file whole up to
 24,000 bytes instead of 16,384.
 
-A search reads by condition instead: `rg({pattern, path, around: N})` (and
-`grep`) prints each match with N lines either side, 1 to 20, numbered by
-Sterna, with windows that meet merged into one. Sterna cuts the windows
-from the file itself, so they count as shown and an `edit` of those lines
-binds in the next cell without a `context`; a window the conversation
-already holds is a pointer. A file whose windows do not fit what is left
-of the turn's feedback is left out whole and counted.
-
 `symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
 walked member by member, so a method name two classes share is not
 ambiguous. A nearby definition is the one declared near the target, never

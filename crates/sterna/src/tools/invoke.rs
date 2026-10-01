@@ -188,15 +188,6 @@ impl Args {
         self
     }
 
-    /// Removes a string argument and answers it: an option the runtime
-    /// honours itself and the tool never sees (`grep`'s `around`).
-    pub fn take(&mut self, name: &str) -> Option<String> {
-        match self.0.remove(name)? {
-            Argument::Text(value) => Some(value),
-            Argument::Lines(lines) => Some(lines.join("\n")),
-        }
-    }
-
     pub fn get(&self, name: &str) -> Option<&str> {
         match self.0.get(name) {
             Some(Argument::Text(value)) => Some(value),

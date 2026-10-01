@@ -807,7 +807,7 @@ fn render_params(tool: &str, args: &[Arg]) -> String {
     if args.is_empty() {
         return "{}".to_string();
     }
-    let mut fields: Vec<String> = args
+    let fields: Vec<String> = args
         .iter()
         .map(|arg| {
             let optional_mark = if arg.is_required() { "" } else { "?" };
@@ -820,11 +820,6 @@ fn render_params(tool: &str, args: &[Arg]) -> String {
             format!("{}{optional_mark}: {value_type}", arg.name())
         })
         .collect();
-    fields.extend(
-        declarations::runtime_options(tool)
-            .iter()
-            .map(|field| field.to_string()),
-    );
     format!("{{{}}}", fields.join("; "))
 }
 
