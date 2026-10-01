@@ -243,7 +243,7 @@ pub fn remember(published: &BTreeMap<String, MeasuredFacts>) {
 /// not have -- and being wrong about that is worse than admitting the figure
 /// came from a table (`archive/glasshouse:docs/product/design-decisions.md`, *A context window
 /// is a property of the route, not of the model*).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WindowSource {
     /// The person said so on the command line. Trusted: they know what their
     /// route does, and they may be behind a proxy that narrows it.

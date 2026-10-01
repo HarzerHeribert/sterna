@@ -109,4 +109,10 @@ pub struct SessionArgs {
     /// Grant an additional existing directory for this session only.
     #[arg(long = "add-dir", value_name = "PATH")]
     pub additional_dirs: Vec<PathBuf>,
+
+    /// Run with no terminal, for clients that reach the session on its port
+    /// (`docs/engine.md`): one ready line on stdout says where, and the
+    /// session ends when stdin closes. What `sterna host` starts.
+    #[arg(long, conflicts_with_all = ["task", "sessions"])]
+    pub serve: bool,
 }

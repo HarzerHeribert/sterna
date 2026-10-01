@@ -156,7 +156,6 @@ impl Drop for EndLive<'_> {
 /// session under it by the id its record file carries. The terminal has
 /// quit, so the session is not running.
 #[test]
-#[ignore = "plan goal 5"]
 fn a_session_run_in_the_terminal_is_in_the_hosts_list_after_the_terminal_quits() {
     let provider = answering();
     let world = World::new("list-terminal", &provider);
@@ -205,7 +204,6 @@ fn a_session_run_in_the_terminal_is_in_the_hosts_list_after_the_terminal_quits()
 /// the folders' names sort the other way, and so does the order each was
 /// first used in, so neither can stand in for when each was last used.
 #[test]
-#[ignore = "plan goal 5"]
 fn the_list_is_the_same_after_the_host_restarts_with_folders_and_sessions_newest_first() {
     let provider = answering();
     let world = World::new("list-restart", &provider);
@@ -247,7 +245,6 @@ fn the_list_is_the_same_after_the_host_restarts_with_folders_and_sessions_newest
 /// `/resume` and `--resume` offer from -- still shows only the folder it
 /// runs in: folder A's session and not folder B's, and the reverse in B.
 #[test]
-#[ignore = "plan goal 5"]
 fn the_terminals_listing_keeps_to_its_own_folder_while_the_list_holds_both() {
     let provider = answering();
     let world = World::new("list-folders", &provider);

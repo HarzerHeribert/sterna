@@ -1,7 +1,7 @@
 //! Human-invoked session inspection and configuration. No model dispatch.
 use super::*;
 use crate::config::AgentsMode;
-pub(super) mod sign_in;
+pub(crate) mod sign_in;
 mod subagents;
 #[cfg(test)]
 use crate::config::SternaConfig;
@@ -565,13 +565,13 @@ fn warning_panel(subscription: &Subscription, warning: &str) -> Panel {
 /// at a time. The gateway declares the endpoint and files the key; nothing
 /// here writes a configuration file or asks the person to.
 fn custom_endpoint(session: &Session<'_>) {
-    use crate::tui::form::{Field, Form, Kind, base_url, key_shape};
+    use crate::tui::form::{Check, Field, Form, Kind};
     const SPEAKS: [&str; 2] = ["OpenAI-compatible", "Anthropic Messages"];
     let mut form = Form::new(
         "Sign in › Your own endpoint",
         "Any OpenAI- or Anthropic-compatible URL: a local model, a company proxy, a new provider. Tab moves between the three.",
         vec![
-            Field::new("Base URL", Kind::Text, "for example https://api.example.com/v1").checked(base_url),
+            Field::new("Base URL", Kind::Text, "for example https://api.example.com/v1").checked(Check::BaseUrl),
             Field::new(
                 "It speaks",
                 Kind::Choice(SPEAKS.iter().map(|word| word.to_string()).collect()),
@@ -579,7 +579,7 @@ fn custom_endpoint(session: &Session<'_>) {
             ),
             Field::new("API key", Kind::Secret, "paste it here, or leave it empty for a local model")
                 .optional()
-                .checked(key_shape),
+                .checked(Check::KeyShape),
         ],
     )
     .submit("connect");
@@ -665,7 +665,7 @@ const KEY_WARNINGS: &[(&str, &str)] = &[(
 
 /// The form that takes one provider's API key.
 fn key_form(provider: &str) -> crate::tui::Form {
-    use crate::tui::form::{Field, Form, Kind, key_shape};
+    use crate::tui::form::{Check, Field, Form, Kind};
     let form = Form::new(
         format!("Sign in › API key · {provider}"),
         format!(
@@ -677,7 +677,7 @@ fn key_form(provider: &str) -> crate::tui::Form {
                 Kind::Secret,
                 "paste here: Cmd+V or Ctrl+Shift+V · Ctrl-R shows it while you type",
             )
-            .checked(key_shape),
+            .checked(Check::KeyShape),
         ],
     );
     match KEY_WARNINGS.iter().find(|(name, _)| *name == provider) {
@@ -1316,10 +1316,15 @@ fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::N
             session.rollback_pending.set(None);
             session_println!("Rollback cancelled; no files were changed.");
         }
-        Some("confirm") => {
-            if let Err(message) =
-                rollback_confirmation(session.ui.is_some(), session.rollback_pending.get(), count)
-            {
+        // A client's own `rollback` asks for no preview: it was asked for on
+        // purpose, from a surface that says what it does.
+        Some(word @ ("confirm" | "now")) => {
+            let previewed = if word == "now" {
+                Some(count)
+            } else {
+                session.rollback_pending.get()
+            };
+            if let Err(message) = rollback_confirmation(session.ui.is_some(), previewed, count) {
                 session_println!("{message}");
                 return;
             }
@@ -1342,12 +1347,37 @@ fn rollback(session: &Session<'_>, argument: Option<&str>, notebook: &mut tui::N
                 }
                 Err(error) => {
                     session.rollback_pending.set(None);
-                    session_println!("Rollback refused: {error}");
+                    match changed_by_another(session) {
+                        Some(said) => session_println!("Rollback refused: {said}"),
+                        None => session_println!("Rollback refused: {error}"),
+                    }
                 }
             }
         }
         Some(_) => session_println!("Use /rollback, /rollback confirm, or /rollback cancel"),
     }
+}
+
+/// The newest cell's file another session in this folder changed since, said
+/// with whose change it was.
+fn changed_by_another(session: &Session<'_>) -> Option<String> {
+    let rollbacks = session.rollbacks.borrow();
+    let checkpoint = rollbacks.last()?;
+    let root = session.profile.root();
+    checkpoint
+        .before
+        .changed_paths(&checkpoint.after)
+        .into_iter()
+        .find_map(|(path, _)| {
+            let (by, at) = crate::changes::ledger::last_change(root, &path)?;
+            (by != session.id.as_str() && at > checkpoint.at).then(|| {
+                format!(
+                    "{} was changed by session {by} after cell {:03}; nothing was changed",
+                    path.to_string_lossy().replace('\\', "/"),
+                    checkpoint.cell
+                )
+            })
+        })
 }
 
 fn rollback_confirmation(
@@ -1845,6 +1875,7 @@ pub(super) mod tests {
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
             settings_global: Some(root.join("user-settings")),
+            folder: None,
         };
         permissions(&session, Some("allow Read(**)")).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
@@ -1933,6 +1964,7 @@ pub(super) mod tests {
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
             settings_global: Some(root.join("user-settings")),
+            folder: None,
         };
         body(&session);
     }

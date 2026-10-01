@@ -15,7 +15,7 @@ pub enum StatusLine {
     Compact,
     Hidden,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Panel {
     pub title: String,
     pub rows: Vec<PanelRow>,
@@ -34,7 +34,7 @@ pub struct Panel {
 }
 
 /// Every model a model panel can offer, grouped by the account serving it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Catalogue {
     pub groups: Vec<ModelGroup>,
     /// Normalised model name to its published intelligence index. Empty
@@ -47,7 +47,7 @@ pub struct Catalogue {
 /// A session is three models, not one. Without this the panel could only
 /// ever set the parent, and the other two tiers existed solely in a file
 /// most people never open — so most people never met them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Assignment {
     /// The tier Enter assigns to. Tab moves it.
     pub active: Tier,
@@ -55,7 +55,7 @@ pub struct Assignment {
 }
 
 /// What each tier runs on right now.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TierModels {
     pub parent: String,
     /// `None` when a delegated goal inherits the parent's model.
@@ -72,7 +72,7 @@ impl TierModels {
         }
     }
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelGroup {
     pub provider: String,
     pub account: String,
@@ -90,7 +90,7 @@ pub struct ModelGroup {
     /// The plan and the last usage reading, for a subscription's row.
     pub note: Option<String>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PanelRow {
     /// Keeps focus on this row when the panel is rebuilt with other text
     /// (a counter that moved). `None` uses the text.

@@ -4,7 +4,7 @@
 use crate::contract::ServedBy;
 use crate::wire::Usage;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestMeasurement {
     pub cell: usize,
     pub model: String,

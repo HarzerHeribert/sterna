@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// A species a theme can be.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Bird {
     Amazon,
     SunConure,

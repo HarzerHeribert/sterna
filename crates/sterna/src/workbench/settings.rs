@@ -427,7 +427,7 @@ pub fn restore(
     if names.contains(&"sandbox.level")
         && let Some(level) = crate::permissions::Level::parse(&now("sandbox.level"))
     {
-        s.level.set(level);
+        s.set_level(level);
     }
     Ok(names
         .iter()

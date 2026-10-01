@@ -66,6 +66,7 @@ const EXCLUDED: &[&str] = &[
 ];
 
 mod git;
+pub mod ledger;
 
 /// What one path was, at the moment a snapshot was taken.
 ///

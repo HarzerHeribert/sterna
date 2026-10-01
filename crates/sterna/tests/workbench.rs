@@ -2305,12 +2305,12 @@ fn every_theme_name_starts_in_one_column_and_the_mark_is_drawn_once() {
 /// the sheet says where the paste goes and what the key looks like.
 #[test]
 fn a_key_form_shows_bullets_where_the_paste_went_and_never_the_key() {
-    use sterna::tui::form::{Field, Form, Kind, key_shape};
+    use sterna::tui::form::{Check, Field, Form, Kind};
     const KEY: &str = "sk-ant-api03-secret-value"; // glasshouse:not-a-secret
     let mut form = Form::new(
         "Sign in › API key · anthropic",
         "Paste your anthropic key below.",
-        vec![Field::new("API key", Kind::Secret, "paste here").checked(key_shape)],
+        vec![Field::new("API key", Kind::Secret, "paste here").checked(Check::KeyShape)],
     );
     form.push(KEY);
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -4977,14 +4977,25 @@ fn the_rollback_preview_holds_back_a_key_typed_as_it_appears() {
 /// The allowed hosts are one sheet away from the Sandbox sheet: every
 /// ecosystem is a switch, the person's own hosts can be added (a pasted URL
 /// is refused, not half-allowed) and removed, each change is saved to the
-/// global settings, and it reaches the session's live list at once.
+/// global settings, and it is sent to the session at once.
 #[test]
 fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
+    use sterna::engine::wire::Command;
     use sterna::sandbox::proxy::{Allowed, ECOSYSTEMS};
     let (t, mut s, _) = prefs();
     let (c, n, _) = fixture();
-    let allowed = Allowed::defaults();
-    s.allowed = Some(allowed.clone());
+    let (link, sent) = sterna::engine::client::recording();
+    s.allowed = Some(sterna::engine::client::Hosts::new(
+        Allowed::defaults().hosts(),
+        link,
+    ));
+    fn asked(host: &str, allow: bool) -> impl Fn(&[Command]) -> bool + '_ {
+        move |commands: &[Command]| {
+            commands.iter().any(|command| {
+                matches!(command, Command::Host { host: h, allow: a } if h == host && *a == allow)
+            })
+        }
+    }
     let global = sterna::settings::Store::with_global(&t.0, Some(t.0.join("user")))
         .unwrap()
         .path(sterna::settings::Scope::Global);
@@ -5008,13 +5019,19 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     }
 
     click_item(&mut u, &mut s, &n, "eco:rust");
-    assert!(!allowed.permits("crates.io"), "switched off, still reached");
-    assert!(allowed.permits("registry.npmjs.org"));
+    let commands = sent.commands();
+    assert!(asked("crates.io", false)(&commands), "{commands:?}");
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::Host { host, .. } if host.contains("npmjs"))),
+        "{commands:?}"
+    );
     assert!(saved().contains("ecosystems = ["), "{}", saved());
     assert!(!saved().contains("\"rust\""), "{}", saved());
     draw(&c, &n, &s, &mut u, 120, 60);
     click_item(&mut u, &mut s, &n, "eco:rust");
-    assert!(allowed.permits("crates.io"));
+    assert!(asked("crates.io", true)(&sent.commands()));
     assert!(saved().contains("\"rust\""), "{}", saved());
 
     let type_host = |u: &mut Workbench, s: &mut ScreenState, host: &str| {
@@ -5034,7 +5051,7 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     assert!(!saved().contains("api.example.com"), "{}", saved());
     ctrl(&mut u, &mut s, &n, 'u');
     type_host(&mut u, &mut s, "api.example.com");
-    assert!(allowed.permits("api.example.com"));
+    assert!(asked("api.example.com", true)(&sent.commands()));
     assert!(
         saved().contains("hosts = [\"api.example.com\"]"),
         "{}",
@@ -5049,7 +5066,7 @@ fn the_hosts_sheet_switches_ecosystems_and_adds_and_removes_hosts() {
     );
 
     click_item(&mut u, &mut s, &n, "host:api.example.com");
-    assert!(!allowed.permits("api.example.com"));
+    assert!(asked("api.example.com", false)(&sent.commands()));
     assert!(saved().contains("hosts = []"), "{}", saved());
 }
 

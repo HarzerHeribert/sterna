@@ -13,7 +13,8 @@ use std::path::PathBuf;
 /// protocol carries the system prompt beside the message list rather than
 /// inside it, and a `Role::System` here would invite a message that cannot
 /// be serialised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     User,
     Assistant,
@@ -30,7 +31,8 @@ impl Role {
 
 /// One ordered provider content block. Native cell calls and their results
 /// remain structured so correlation survives replay and gateway translation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Block {
     Text(String),
     Image {
@@ -79,7 +81,7 @@ impl Block {
 }
 
 /// One message in the conversation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<Block>,
@@ -171,7 +173,7 @@ impl Message {
 
 /// A task's whole conversation: the system prompt the project's documents
 /// produced, and the messages so far.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Conversation {
     pub system: String,
     pub messages: Vec<Message>,
@@ -234,7 +236,7 @@ pub struct ProjectConfig {
 /// **Every field is optional and absent is not zero**, the same rule the
 /// ruler's `Tokens` keeps: these come from Glasshouse's routing ledger after
 /// the fact, and a request nobody metered must never render as a free one.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServedBy {
     pub provider: Option<String>,
     pub model: Option<String>,

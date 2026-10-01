@@ -1373,6 +1373,13 @@ fn never_rules(root: &Path, home: Option<&Path>) -> Vec<NeverRule> {
             "the inference gateway's state directory, which holds its database and subscription sign-ins, is never grantable by any pattern (docs/sandbox.md, never grantable 2)".to_string(),
         );
     }
+    for state in engine_state_dirs(home) {
+        push(
+            state,
+            false,
+            "Sterna's own data folder, which holds the token that opens every running session, is never grantable by any pattern (docs/sandbox.md, never grantable 2)".to_string(),
+        );
+    }
     for path in system_credential_paths() {
         push(path, true, keyring.to_string());
     }
@@ -1472,6 +1479,45 @@ fn gateway_state_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     {
         dirs.push(PathBuf::from(value));
     }
+    dirs
+}
+
+/// Every shape Sterna's own data folder takes (`engine::data::folder`), on
+/// every platform: the host's address and token, and each running session's,
+/// live there, so a confined tool that read one could drive any session.
+fn engine_state_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = crate::engine::data::folder().into_iter().collect();
+    let named = |key: &str| {
+        std::env::var_os(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    if let Some(data) = named("XDG_DATA_HOME") {
+        dirs.push(data.join("sterna"));
+    }
+    if let Some(config) = named("XDG_CONFIG_HOME") {
+        dirs.push(config.join("sterna").join("data"));
+    }
+    if let Some(local) = named("LOCALAPPDATA") {
+        dirs.push(local.join("sterna").join("data"));
+    }
+    if let Some(home) = home {
+        dirs.push(home.join(".local").join("share").join("sterna"));
+        dirs.push(home.join(".config").join("sterna").join("data"));
+        dirs.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("sterna"),
+        );
+        dirs.push(
+            home.join("AppData")
+                .join("Local")
+                .join("sterna")
+                .join("data"),
+        );
+    }
+    dirs.sort();
+    dirs.dedup();
     dirs
 }
 

@@ -34,6 +34,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
 directories.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 ureq = { workspace = true }
 
 # The embedded JavaScript engine, pinned exactly. `v8` (rusty_v8) rather than

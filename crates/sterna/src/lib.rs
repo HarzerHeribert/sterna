@@ -14,6 +14,7 @@ pub mod completion;
 pub mod config;
 pub mod contract;
 pub mod decide;
+pub mod engine;
 pub mod events;
 pub mod gateway;
 pub mod images;

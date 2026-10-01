@@ -7,7 +7,7 @@ pub(crate) fn rgb(value: u32) -> Color {
     Color::Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Theme {
     #[default]
     Neon,

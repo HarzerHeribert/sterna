@@ -37,7 +37,6 @@ fn watch(world: &World, client: &str) -> Conn {
 /// client watching the same session sees each one happen, and an answer the
 /// terminal gave is settled by the terminal.
 #[test]
-#[ignore = "plan goal 2"]
 fn what_a_person_does_in_the_terminal_reaches_a_second_client_through_the_seam() {
     // The terminal keeps one conversation across its messages, so each reply
     // is chosen by the newest message that asks for it.
@@ -153,7 +152,6 @@ fn whole_turn() -> Provider {
 /// that attaches afterwards from the first event receives exactly the lines
 /// a client watching live received.
 #[test]
-#[ignore = "plan goal 3"]
 fn the_terminal_and_a_second_client_receive_the_same_live_session() {
     let provider = whole_turn();
     let world = World::new("terminal-live", &provider);
@@ -220,8 +218,10 @@ fn the_terminal_and_a_second_client_receive_the_same_live_session() {
     );
     assert_eq!(live.last().unwrap()["activity"], "complete");
 
-    // The terminal shows what the client received.
+    // The terminal shows what the client received: the prose, and the
+    // cell's output on the card's Full output tab, where a person opens it.
     term.contains("Writing the notes now.");
+    term.click_on("Full output");
     term.contains("wrote notes");
 
     // A client that comes later, from the first event, receives the same lines.
@@ -243,7 +243,6 @@ fn the_terminal_and_a_second_client_receive_the_same_live_session() {
 /// under it and the facts under the answer arrive as words, the terminal
 /// draws exactly those words, and a client attaching later is given the same.
 #[test]
-#[ignore = "plan goal 4"]
 fn a_cells_state_its_line_and_the_answers_facts_read_the_same_in_every_client() {
     let provider = whole_turn();
     let world = World::new("terminal-reading", &provider);

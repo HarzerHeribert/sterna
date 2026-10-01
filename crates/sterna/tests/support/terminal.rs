@@ -131,6 +131,34 @@ impl Terminal {
         });
     }
 
+    /// A left click on the first place the screen shows `text`, the way a
+    /// mouse sends it: a press and a release there.
+    pub fn click_on(&mut self, text: &str) {
+        self.contains(text);
+        // Where it stands once the screen has stopped moving: a turn that
+        // just ended still scrolls its answer into view.
+        let mut screen = self.contents();
+        loop {
+            self.settle(300);
+            let now = self.contents();
+            if now == screen {
+                break;
+            }
+            screen = now;
+        }
+        let (row, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(text))
+            .expect("the text is on screen");
+        let before = &line[..line.find(text).unwrap()];
+        let column = before.chars().count() + text.chars().count() / 2 + 1;
+        let row = row + 1;
+        self.send(format!("\x1b[<0;{column};{row}M").as_bytes());
+        std::thread::sleep(Duration::from_millis(30));
+        self.send(format!("\x1b[<0;{column};{row}m").as_bytes());
+    }
+
     /// The first frame is up.
     pub fn ready(&mut self) {
         self.contains("STERNA");

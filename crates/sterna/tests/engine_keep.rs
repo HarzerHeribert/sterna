@@ -156,7 +156,6 @@ impl Drop for EndLive<'_> {
 /// folder's `host.json`, finds the session in the list still running, and
 /// attaching shows the whole record: every cell and the answer.
 #[test]
-#[ignore = "plan goal 8"]
 fn a_session_kept_when_its_client_quits_mid_task_runs_on_and_is_found_again_whole() {
     let provider = scripted("kept");
     let world = World::new("keep", &provider);
@@ -238,7 +237,6 @@ fn a_session_kept_when_its_client_quits_mid_task_runs_on_and_is_found_again_whol
 /// the model. What it did stays on disk: its record file holds the task and
 /// the first cell's result, and the folder's own listing still offers it.
 #[test]
-#[ignore = "plan goal 8"]
 fn a_session_not_kept_when_its_client_quits_ends_and_its_record_stays_on_disk() {
     let provider = scripted("dropped");
     let world = World::new("drop", &provider);

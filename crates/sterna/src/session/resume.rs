@@ -193,7 +193,7 @@ static NEXT: Mutex<Option<String>> = Mutex::new(None);
 
 /// The resume sheet chose another session: this one ends, and that one
 /// starts in the same terminal.
-pub(super) fn switch_to(id: String) {
+pub(crate) fn switch_to(id: String) {
     *super::lock(&NEXT) = Some(id);
 }
 

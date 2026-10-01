@@ -8,6 +8,7 @@
 //! [`Row::text`], which stays the words alone.
 use super::{Action, CellTab, Workbench, voice};
 use crate::contract::{Block, Conversation, Message, Role};
+use crate::engine::wire::CellReading;
 use crate::prompt::{Extracted, extract_program};
 use crate::tui::{Activity, CellView, Notebook, ScreenState};
 
@@ -394,9 +395,10 @@ impl Document {
                 || (cell >= n.cells.len() && !ui.collapsed.contains(&cell) && !answer_only)
                 || v.is_some_and(|v| v.error.is_some());
             let failed = v.is_some_and(|v| v.error.is_some());
-            let state = if failed {
-                vec![("✕ FAILED".to_string(), Tone::Failure)]
-            } else if running && s.activity == Activity::AwaitingYou {
+            // A finished card reads as the session decided; only a cell still
+            // running is drawn from the live activity.
+            let read = v.map(|v| reading_of(s, cell, v));
+            let state = if running && s.activity == Activity::AwaitingYou {
                 // The turn waits on the person, and its clock stands still.
                 vec![
                     ("◆ WAITING FOR YOU".to_string(), Tone::Warning),
@@ -407,13 +409,21 @@ impl Document {
                     ("● RUNNING".to_string(), Tone::Accent),
                     (format!(" {}", clock(s.pulse.elapsed_ms)), Tone::Muted),
                 ]
-            } else if v.is_some_and(|v| v.rolled_back) {
-                vec![("↶ ROLLED BACK".to_string(), Tone::Warning)]
-            } else if v.is_some_and(|v| v.execution.is_some()) {
-                let landing = cell == n.cells.len() && super::motion::settling(s);
+            } else if let Some(read) = &read {
+                let landing =
+                    read.tone == "success" && cell == n.cells.len() && super::motion::settling(s);
+                let word = if read.mark.is_empty() {
+                    read.state.clone()
+                } else {
+                    format!("{} {}", read.mark, read.state)
+                };
                 vec![(
-                    "✓ EXECUTED".to_string(),
-                    if landing { Tone::Accent } else { Tone::Success },
+                    word,
+                    if landing {
+                        Tone::Accent
+                    } else {
+                        tone_of(&read.tone)
+                    },
                 )]
             } else {
                 vec![("RECORDED".to_string(), Tone::Muted)]
@@ -576,7 +586,8 @@ impl Document {
                 // ended; a running cell has not changed anything it can
                 // report yet.
                 d.kinded(
-                    v.filter(|_| !running)
+                    read.as_ref()
+                        .filter(|_| !running)
                         .map(Self::summary)
                         .unwrap_or_default(),
                     None,
@@ -758,33 +769,21 @@ impl Document {
         if let Some(rest) = lines.next().filter(|r| !r.trim().is_empty()) {
             self.prose(rest, Tone::Normal, width, id, 4);
         }
-        let files = changed_files(v);
-        let (added, removed) = v.changes.as_deref().map_or((0, 0), count_changes);
-        let mut facts = Vec::new();
-        if files > 0 {
-            facts.push(format!(
-                "{files} {} · +{added} −{removed}",
-                if files == 1 { "file" } else { "files" }
-            ));
-        }
-        if let Some(calls) = v.call_count.filter(|c| *c > 0) {
-            facts.push(format!(
-                "{calls} {}",
-                if calls == 1 { "call" } else { "calls" }
-            ));
-        }
-        let (mark, tone) = if v.error.is_some() {
-            ("✕", Tone::Failure)
+        // The facts are the session's own reading of this cell.
+        let files = crate::engine::reading::changed_files(v);
+        let read = reading_of(s, cell, v)
+            .facts
+            .unwrap_or_else(|| crate::engine::reading::answer(cell, v));
+        let tone = if read.failed {
+            Tone::Failure
         } else {
-            ("✓", Tone::Success)
-        };
-        let facts = if facts.is_empty() {
-            voice::done_line(v.error.is_some()).to_lowercase()
-        } else {
-            facts.join(" · ")
+            Tone::Success
         };
         self.line(
-            vec![(format!("  {mark} "), tone), (facts, Tone::Muted)],
+            vec![
+                (format!("  {} ", read.mark), tone),
+                (read.facts, Tone::Muted),
+            ],
             None,
             id,
         );
@@ -1448,7 +1447,7 @@ impl Document {
     fn tabstrip(&mut self, cell: usize, current: CellTab, changes: Option<&str>, id: usize) {
         // A tab is offered only when it has something behind it: a cell
         // that changed nothing has no Changes tab and no diff to open.
-        let (added, removed) = changes.map_or((0, 0), count_changes);
+        let (added, removed) = changes.map_or((0, 0), crate::engine::reading::count_changes);
         let changed = added + removed > 0;
         let mut tabs = Vec::new();
         if changed {
@@ -1571,26 +1570,13 @@ impl Document {
             );
         }
     }
-    /// The words in a card's bottom edge: how it ended, and how many files
-    /// it touched. Every claim here is observed.
-    fn summary(v: &CellView) -> Vec<(String, Tone)> {
-        let mut out = Vec::new();
-        if let Some(e) = &v.error {
-            out.push((format!("✕ {}", e.class), Tone::Failure));
-        } else if v.execution.is_some() {
-            out.push(("✓ executed".to_string(), Tone::Success));
-        }
-        let files = match changed_files(v) {
-            _ if v.rolled_back => "its changes were rolled back".to_string(),
-            0 => "no files changed".to_string(),
-            1 => "1 file changed".to_string(),
-            n => format!("{n} files changed"),
-        };
-        if !out.is_empty() {
-            out.push((" · ".to_string(), Tone::Line));
-        }
-        out.push((files, Tone::Muted));
-        out
+    /// The words in a card's bottom edge, as the session read them: how it
+    /// ended, and how many files it touched.
+    fn summary(read: &CellReading) -> Vec<(String, Tone)> {
+        read.parts
+            .iter()
+            .map(|part| (part.text.clone(), tone_of(&part.tone)))
+            .collect()
     }
 }
 
@@ -1826,10 +1812,26 @@ pub(crate) fn partial_code(fragment: &str) -> Option<String> {
     Some(out)
 }
 
-fn changed_files(v: &CellView) -> usize {
-    v.changes
-        .as_deref()
-        .map_or(0, |d| d.lines().filter(|l| l.starts_with("+++ ")).count())
+/// A cell's words as the session read them; a screen given no reading (a
+/// test's) reads the view with the same rules.
+fn reading_of(s: &ScreenState, cell: usize, v: &CellView) -> CellReading {
+    s.reading
+        .cells
+        .iter()
+        .find(|read| read.cell == cell)
+        .cloned()
+        .unwrap_or_else(|| crate::engine::reading::cell(cell, v))
+}
+
+/// The colour a reading's tone word asks for.
+fn tone_of(word: &str) -> Tone {
+    match word {
+        "success" => Tone::Success,
+        "failure" => Tone::Failure,
+        "warning" => Tone::Warning,
+        "line" => Tone::Line,
+        _ => Tone::Muted,
+    }
 }
 fn span_width(text: &str) -> usize {
     ratatui::text::Span::raw(text).width()
@@ -1912,19 +1914,6 @@ fn hunk(header: &str) -> (usize, usize) {
     let old = sides.next().unwrap_or(1);
     let new = sides.next().unwrap_or(old);
     (old.saturating_sub(1), new.saturating_sub(1))
-}
-pub(super) fn count_changes(diff: &str) -> (usize, usize) {
-    diff.lines().fold((0, 0), |(a, r), line| {
-        if line.starts_with("+++") || line.starts_with("---") {
-            (a, r)
-        } else if line.starts_with('+') {
-            (a + 1, r)
-        } else if line.starts_with('-') {
-            (a, r + 1)
-        } else {
-            (a, r)
-        }
-    })
 }
 /// How one message reads in the transcript, decided for every message
 /// before any is drawn, so the newest answer is known while it is drawn.

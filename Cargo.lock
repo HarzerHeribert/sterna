@@ -2732,6 +2732,8 @@ dependencies = [
  "clap",
  "crossterm",
  "directories",
+ "getrandom 0.4.3",
+ "hex",
  "libc",
  "oxc",
  "portable-pty",

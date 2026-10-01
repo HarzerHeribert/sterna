@@ -38,14 +38,14 @@ pub(super) enum Done {
 
 /// The words behind "another way": the call they refuse, and the field.
 struct Redirect {
-    request: crate::approval::Request,
+    request: crate::engine::client::Approval,
     field: sheet::Field,
 }
 
 #[derive(Default)]
 pub(super) struct Prompts {
-    approvals: VecDeque<(u64, crate::approval::Request)>,
-    asking: Option<(u64, crate::ask::Request)>,
+    approvals: VecDeque<(u64, crate::engine::client::Approval)>,
+    asking: Option<(u64, crate::engine::client::Question)>,
     redirect: Option<Redirect>,
     /// Words typed for "another way" and put back with Esc, by the call they
     /// were for, so a second `a` finds them again.
@@ -68,21 +68,39 @@ impl Prompts {
         self.redirect.is_some() || !self.approvals.is_empty() || self.asking.is_some()
     }
 
-    pub(super) fn push_approval(&mut self, request: crate::approval::Request) {
+    pub(super) fn push_approval(&mut self, request: crate::engine::client::Approval) {
         self.next += 1;
         self.approvals.push_back((self.next, request));
     }
 
-    pub(super) fn ask(&mut self, request: crate::ask::Request) {
+    pub(super) fn ask(&mut self, request: crate::engine::client::Question) {
         self.next += 1;
         self.asking = Some((self.next, request));
     }
 
-    /// Drops approvals whose call has stopped waiting; `true` when any went.
-    pub(super) fn retain_pending(&mut self) -> bool {
-        let before = self.approvals.len();
-        self.approvals.retain(|(_, request)| request.is_pending());
-        before != self.approvals.len()
+    /// A prompt was answered -- here, by another client, or by the session
+    /// itself -- and is no longer one to answer.
+    pub(super) fn settle(&mut self, id: u64) {
+        self.approvals.retain(|(_, request)| request.id != id);
+        if self
+            .asking
+            .as_ref()
+            .is_some_and(|(_, request)| request.id == id)
+        {
+            self.asking = None;
+        }
+        if self.redirect.as_ref().is_some_and(|r| r.request.id == id) {
+            self.redirect = None;
+        }
+    }
+
+    /// The decision model's reading of an approval arrived.
+    pub(super) fn hint(&mut self, id: u64, fits: f64) {
+        for (_, request) in &mut self.approvals {
+            if request.id == id {
+                request.hint(fits);
+            }
+        }
     }
 
     /// A turn that ended takes its unanswered approvals with it.
@@ -379,7 +397,7 @@ impl Prompts {
 /// one switch away.
 fn approval_items(
     sheet: &mut Sheet,
-    request: &crate::approval::Request,
+    request: &crate::engine::client::Approval,
     queued: usize,
     raw: bool,
 ) -> Vec<Item> {
@@ -569,7 +587,7 @@ fn body(action: &crate::approval::Action) -> Vec<Item> {
 
 /// A question a cell asked: the question, each choice with its digit and
 /// the decision model's share of it, and Esc to let Sterna decide.
-fn ask_items(sheet: &mut Sheet, request: &crate::ask::Request) -> Vec<Item> {
+fn ask_items(sheet: &mut Sheet, request: &crate::engine::client::Question) -> Vec<Item> {
     let question = request.question();
     sheet.title = "Sterna asks".into();
     sheet.crumbs.clear();
@@ -664,8 +682,9 @@ mod tests {
         let request = requests
             .recv_timeout(Duration::from_secs(5))
             .expect("the person is asked");
+        let seam = Seam::new();
         let mut prompts = Prompts::default();
-        prompts.push_approval(request);
+        prompts.push_approval(seam.raise(request));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 40)).unwrap();
         terminal
@@ -708,13 +727,73 @@ mod tests {
             "{joined}"
         );
         prompts.clear_approvals();
+        drop(seam);
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
     }
 
+    /// A hub between a gate and the prompts, as a session runs one: what a
+    /// test answers on the prompt reaches the gate only through the seam.
+    struct Seam {
+        hub: crate::engine::hub::Hub,
+        thread: Option<std::thread::JoinHandle<()>>,
+        joined: crate::engine::client::Joined,
+        _inputs: std::sync::mpsc::Receiver<super::super::Input>,
+    }
+
+    impl Seam {
+        fn new() -> Self {
+            let (inputs, received) = std::sync::mpsc::channel();
+            let (hub, thread) = crate::engine::hub::start(
+                crate::engine::wire::State::default(),
+                std::sync::Arc::new(super::super::Steer::default()),
+                inputs,
+                crate::engine::hub::Saves::default(),
+            );
+            let joined = crate::engine::client::join(&hub, crate::engine::wire::TERMINAL);
+            joined
+                .link
+                .send(crate::engine::wire::Command::Attach { from: None });
+            Self {
+                hub,
+                thread: Some(thread),
+                joined,
+                _inputs: received,
+            }
+        }
+
+        /// The request as the terminal is handed it.
+        fn raise(&self, request: crate::approval::Request) -> crate::engine::client::Approval {
+            let _ = self.hub.send(super::super::Update::Approval(request));
+            loop {
+                let out = self
+                    .joined
+                    .events
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the hub raises the prompt");
+                if let crate::engine::hub::Out::Event(envelope) = out
+                    && let crate::engine::wire::Event::Prompt { prompt } = &envelope.event
+                    && let crate::engine::client::Raised::Approval(approval) =
+                        crate::engine::client::raised(prompt.clone(), &self.joined.link)
+                {
+                    return approval;
+                }
+            }
+        }
+    }
+
+    impl Drop for Seam {
+        fn drop(&mut self) {
+            let _ = self.hub.send(super::super::Update::Stop);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
     /// A prompt that has been on screen, quietly, long enough to take a key.
-    fn armed_with(request: crate::approval::Request) -> Prompts {
+    fn armed_with(seam: &Seam, request: crate::approval::Request) -> Prompts {
         let mut prompts = Prompts::default();
-        prompts.push_approval(request);
+        prompts.push_approval(seam.raise(request));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         terminal
@@ -735,13 +814,15 @@ mod tests {
     fn esc_denies_this_call_once_and_deny_is_remembered_visibly() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         press(&mut prompts, KeyCode::Esc);
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
         assert!(gate.memory().entries().is_empty(), "Esc was remembered");
 
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         press(&mut prompts, KeyCode::Char('d'));
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
         let remembered = gate.memory().entries();
@@ -756,7 +837,8 @@ mod tests {
     fn ctrl_c_cancels_the_call_and_remembers_nothing() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         let done = prompts.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert_eq!(done, Done::Interrupt);
         assert_eq!(admitted.join().unwrap(), Admission::Cancelled);
@@ -769,7 +851,8 @@ mod tests {
     fn enter_allows_once_from_where_the_prompt_opens() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         assert_eq!(prompts.sheet.focused().unwrap().id, "allow-once");
         press(&mut prompts, KeyCode::Enter);
         assert_eq!(admitted.join().unwrap(), Admission::Allowed);
@@ -783,11 +866,20 @@ mod tests {
         use crate::workbench::{Source, Workbench, sheet::Hit};
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         press(&mut prompts, KeyCode::Char('d'));
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
+        let _ = seam.hub.send(super::super::Update::Memory(gate.memory()));
         let mut s = crate::tui::ScreenState {
-            memory: Some(gate.memory()),
+            memory: Some(crate::engine::client::Memory::new(
+                gate.memory()
+                    .entries()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                seam.joined.link.clone(),
+            )),
             ..Default::default()
         };
         let mut u = Workbench::default();
@@ -846,6 +938,11 @@ mod tests {
             });
             u.event(&click, &mut s, &crate::tui::Notebook::default(), false);
         }
+        // The forgetting travels through the session's hub.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.memory().entries().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(gate.memory().entries().is_empty(), "Forget kept the denial");
         let (request, admitted) = asked(&gate, &requests);
         drop(request);
@@ -862,8 +959,9 @@ mod tests {
     fn the_prompt_draws_at_every_size() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
+        let seam = Seam::new();
         let mut prompts = Prompts::default();
-        prompts.push_approval(request);
+        prompts.push_approval(seam.raise(request));
         for (width, height) in [(100, 30), (20, 8), (1, 1)] {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
@@ -903,6 +1001,7 @@ mod tests {
             }
         }
         prompts.clear_approvals();
+        drop(seam);
         assert_eq!(admitted.join().unwrap(), Admission::Denied);
     }
 
@@ -957,7 +1056,8 @@ mod tests {
     #[test]
     fn a_refused_host_is_offered_before_leaving_the_sandbox() {
         let (request, admitted, allowed) = leaving(&["registry.example.org"]);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         let text = screen(&mut prompts);
         for shown in [
             "REACH A NEW HOST",
@@ -1005,7 +1105,8 @@ mod tests {
         let request = requests
             .recv_timeout(Duration::from_secs(5))
             .expect("the person is asked");
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         let text = screen(&mut prompts);
         for shown in [
             "REACH A NEW HOST",
@@ -1028,7 +1129,8 @@ mod tests {
     #[test]
     fn leaving_with_no_refused_host_is_titled_so() {
         let (request, admitted, _) = leaving(&[]);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         let text = screen(&mut prompts);
         assert!(text.contains("LEAVE THE SANDBOX"), "{text}");
         assert!(!text.contains("Always allow"), "{text}");
@@ -1067,9 +1169,10 @@ mod tests {
     fn a_second_press_never_answers_the_approval_behind_it() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (first, first_admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(first);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, first);
         let (second, second_admitted) = asked(&gate, &requests);
-        prompts.push_approval(second);
+        prompts.push_approval(seam.raise(second));
         press(&mut prompts, KeyCode::Char('o'));
         assert_eq!(first_admitted.join().unwrap(), Admission::Allowed);
         assert_eq!(press(&mut prompts, KeyCode::Char('o')), Done::Redraw);
@@ -1084,7 +1187,8 @@ mod tests {
     fn words_typed_straight_after_another_way_are_kept() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         press(&mut prompts, KeyCode::Char('a'));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
@@ -1106,7 +1210,8 @@ mod tests {
     fn arrows_and_digits_never_answer_a_prompt() {
         let (gate, requests) = Gate::channel(LiveLevel::new(Level::Ask));
         let (request, admitted) = asked(&gate, &requests);
-        let mut prompts = armed_with(request);
+        let seam = Seam::new();
+        let mut prompts = armed_with(&seam, request);
         let start = prompts.sheet.focused().unwrap().id.clone();
         press(&mut prompts, KeyCode::Right);
         assert_ne!(prompts.sheet.focused().unwrap().id, start, "→ moves on");

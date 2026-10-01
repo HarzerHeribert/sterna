@@ -314,6 +314,29 @@ fn reads_are_wide_and_secrets_stay_refused() {
     refusal(profile.check("Write", Access::Write, &home.join(".bashrc")));
 }
 
+/// Sterna's own data folder holds the token that opens every running session
+/// (`docs/engine.md`): a confined tool reads none of it, in any of the shapes
+/// the folder takes on any platform. (`~/.config`, where a moved settings
+/// folder keeps it, is refused whole already.)
+#[test]
+fn the_engines_data_folder_and_its_tokens_are_never_readable() {
+    let fixture = Fixture::new("engine-data");
+    let home = home();
+    let profile = Profile::compile(&fixture.root, None);
+    for path in [
+        home.join("Library/Application Support/sterna/host.json"),
+        home.join(".local/share/sterna/live/one.json"),
+        home.join("AppData/Local/sterna/data/host.json"),
+    ] {
+        let denied = refusal(profile.check("Read", Access::Read, &path));
+        assert!(
+            denied.rule.contains("never grantable 2"),
+            "{path:?}: {:?}",
+            denied.rule
+        );
+    }
+}
+
 /// §4. Every entry is refusable by no pattern at all -- not merely absent
 /// from the defaults. Each case below writes a settings document that tries
 /// to grant the entry and asserts the profile is unmoved.

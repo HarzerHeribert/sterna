@@ -16,11 +16,14 @@ sterna --sandbox full                    # no sandbox, nothing asked (see sandbo
 sterna doctor [--json]                   # what Sterna found and what is missing; starts nothing
 sterna update [--check]                  # install the newest release
 sterna config …                          # settings (see configuration.md)
+sterna host [--background]               # the host the desktop app talks to (see engine.md)
 sterna --version | --help
 ```
 
 `-p`/`--print`, `exec` and `--continue` must be the first argument; session
-flags follow. `exec` without a task reads all of stdin as one task.
+flags follow. Every session -- a terminal's too -- can be watched and
+answered from another client on its own port ([engine](engine.md)); closing
+the terminal still ends it. `exec` without a task reads all of stdin as one task.
 Ordinary piped input to a session is one turn per line. Every exit prints
 the session id and how to come back to it.
 

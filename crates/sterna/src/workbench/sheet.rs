@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 pub const ARMING: Duration = Duration::from_millis(500);
 
 /// What one row is. Every row is exactly one kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     /// Plain text, or with a value a fact: `Child processes   Seatbelt`.
     /// Not focusable; focus skips it.
@@ -57,7 +57,7 @@ pub enum Kind {
 }
 
 /// A text field's contents and caret.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     pub text: String,
     /// Byte offset of the caret in `text`.
@@ -979,7 +979,7 @@ fn sentence_case(label: &str) -> String {
 }
 
 /// A click target on a sheet, carried in [`Action::Sheet`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Hit {
     Item(usize),
     Value(usize, usize),

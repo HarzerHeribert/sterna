@@ -83,7 +83,9 @@ pub(super) fn level(
     {
         return Err("--sandbox full is supported on macOS, Linux and Windows; this platform has no unconfined applier".into());
     }
-    let attended = args.task.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
+    // A session served on its port is attended: its clients answer.
+    let attended = args.serve
+        || (args.task.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal());
     if level.needs_a_person() && !attended {
         return Err(
             "--sandbox ask requires an interactive terminal session; scripted calls cannot approve themselves"

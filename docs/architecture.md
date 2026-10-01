@@ -12,7 +12,11 @@ you ──► sterna ──HTTP──► inference-gateway ──► providers
 ## Sterna
 
 `crates/sterna`, binary `sterna`. One session of a coding agent in one
-project folder:
+project folder, in one process, which any number of clients drive through
+one seam ([engine](engine.md)): the terminal in the same process, the
+desktop app and the tests over a loopback port. `sterna host` keeps the
+list of every folder and session and starts the desktop's sessions, each as
+a process of its own.
 
 - **The loop.** Each turn the model writes one TypeScript program, a *cell*,
   that runs in an embedded V8 isolate. Tools (`read`, `grep`, `edit`,

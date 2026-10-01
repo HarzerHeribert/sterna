@@ -138,6 +138,12 @@ impl TerminalInput {
         self.console != Console::Unix
     }
 
+    /// Hands `event` back, to be read again first: the caller had news to
+    /// take in before answering it.
+    pub(super) fn put_back(&mut self, event: Event) {
+        self.ready.push_front(event);
+    }
+
     /// True while resolved events are waiting; the caller must drain them
     /// before it blocks on the terminal again.
     pub(super) fn queued(&self) -> bool {

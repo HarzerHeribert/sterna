@@ -98,7 +98,6 @@ fn rolled_back(record: &Value) -> Vec<Value> {
 /// rollback would undo B's change, so it is refused: it names the file and
 /// B, B's content stays, and A's cell is not marked as undone.
 #[test]
-#[ignore = "plan goal 7"]
 fn a_rollback_over_another_sessions_change_is_refused_and_names_that_session() {
     let provider = Provider::start(|request| {
         let task = task_of(request);

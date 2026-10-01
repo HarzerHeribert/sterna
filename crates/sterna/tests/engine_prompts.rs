@@ -99,7 +99,6 @@ answer("the second write was " + second);"#;
 /// it settled, its own answer is refused, and the call ran once. The next
 /// approval is the other client's to answer.
 #[test]
-#[ignore = "plan goal 6"]
 fn an_approval_is_answered_once_and_the_other_client_cannot_answer_it_again() {
     let provider = Provider::start(|request| match turn_of(request) {
         0 => cell("gated", TWO_WRITES),
@@ -210,7 +209,6 @@ fn an_approval_is_answered_once_and_the_other_client_cannot_answer_it_again() {
 /// answer and never the refused one. The next question is the other client's
 /// to answer.
 #[test]
-#[ignore = "plan goal 6"]
 fn a_question_is_answered_once_and_the_other_client_cannot_answer_it_again() {
     // The choices are built inside the cell, so a choice's whole name reaches
     // the model only as an answer.

@@ -7,6 +7,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::contract::{Conversation, ServedBy};
+use crate::engine::client::Raised;
+use crate::engine::hub::Out;
+use crate::engine::wire::{Command, Event as Said, SignIn, StoppedBy};
 use crate::tui::{self, Activity, Notebook, ScreenState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, MouseEventKind};
@@ -25,7 +28,7 @@ mod terminal_input;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static DRAWING: Mutex<()> = Mutex::new(());
-thread_local! { static OUTPUT: RefCell<Option<mpsc::Sender<Update>>> = const { RefCell::new(None) }; }
+thread_local! { static OUTPUT: RefCell<Option<crate::engine::hub::Hub>> = const { RefCell::new(None) }; }
 thread_local! { static STARTUP: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; }
 
 /// Whether this screen is reached over SSH, where a browser or a file
@@ -207,43 +210,10 @@ fn next_input(
     }
 }
 
-pub(super) enum Update {
-    Approval(crate::approval::Request),
-    /// A question a cell put to the person, waiting on the session thread.
-    Ask(crate::ask::Request),
-    /// The approval gate's memory, sent once when the gate is made, so the
-    /// Sandbox sheet can list and forget what was answered for the session.
-    Memory(crate::approval::Memory),
-    /// The network proxy's live allowed list, sent once when the session
-    /// starts one, so the hosts sheet changes what commands reach now.
-    Hosts(crate::sandbox::proxy::Allowed),
-    /// The transcript and how the turn stands; `None` when a control has
-    /// been answered, which leaves the turn's ending and its clock alone.
-    Snapshot(Box<(Conversation, Notebook, ServedBy, Option<Activity>)>),
-    /// Open a form sheet. The terminal thread answers it on the form
-    /// channel and on nothing else.
-    Form(Box<tui::Form>),
-    Model(String),
-    /// What the subagents are, after a change.
-    Tiers(String),
-    /// A chip offered first on the opening screen: its label, and what it types.
-    Suggest(String, String),
-    /// Take away the opening chip that sends this.
-    Unsuggest(String),
-    /// A sign-in started beside the session: how to stop it and feed it.
-    SignInStarted(super::controls::sign_in::Handle),
-    /// What a running sign-in says.
-    SignIn(super::controls::sign_in::Event),
-    Delta(String),
-    ToolDelta(String),
-    /// Readable reasoning as it arrives (`wire::StreamDelta::Reasoning`).
-    Reasoning(String),
-    Effort(crate::wire::Effort),
-    Panel(Box<tui::Panel>),
-    Notice(String),
-    Stop,
-}
-enum Input {
+pub(crate) use crate::engine::hub::Update;
+
+/// What the session thread is handed to act on: the next thing to do.
+pub(crate) enum Input {
     Submit(String),
     Exit,
     Failed(String),
@@ -255,7 +225,7 @@ enum Input {
 
 /// The person's two levers over a task already running, shared with the
 /// session loop because that loop is inside a call and cannot read a
-/// channel.
+/// channel. Only the engine's hub pulls them, for whichever client asked.
 ///
 /// **They are separate levers, and the order matters.** The first Escape
 /// raises `stop`, which the task loop reads at a cell boundary: the call in
@@ -267,7 +237,7 @@ enum Input {
 ///
 /// [`Interrupter::raise`]: super::Interrupter::raise
 #[derive(Default)]
-pub(super) struct Steer {
+pub(crate) struct Steer {
     /// A stop asked for, and by whom: the first Escape, or Ctrl-C.
     stop: Mutex<Option<tui::Stopper>>,
     cancel: AtomicBool,
@@ -279,12 +249,12 @@ pub(super) struct Steer {
 impl Steer {
     /// The first Escape, or a Ctrl-C. Idempotent: pressing it twice before
     /// the boundary is read asks for the same thing.
-    fn request_stop(&self, by: tui::Stopper) {
+    pub(crate) fn request_stop(&self, by: tui::Stopper) {
         *super::lock(&self.stop) = Some(by);
     }
 
     /// A control for the turn's next request.
-    fn request_control(&self, command: String) {
+    pub(crate) fn request_control(&self, command: String) {
         super::lock(&self.controls).push(command);
     }
 
@@ -294,7 +264,7 @@ impl Steer {
     }
 
     /// The second Escape.
-    fn request_cancel(&self) {
+    pub(crate) fn request_cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
@@ -319,54 +289,63 @@ impl Steer {
     }
 }
 
-/// The two channels the terminal thread answers on. A masked prompt's reply
-/// has its own, so a secret cannot arrive where a message is expected.
-struct Answers<'a> {
-    inputs: &'a mpsc::Sender<Input>,
-    secrets: &'a mpsc::Sender<Option<Vec<String>>>,
+/// What a session is before it has said anything: its id and folder, its
+/// facts, and where a level or a host it is told to keep is saved.
+pub(super) struct Opening {
+    pub(super) session: String,
+    pub(super) root: std::path::PathBuf,
+    pub(super) facts: crate::engine::wire::Facts,
+    pub(super) saves: crate::engine::hub::Saves,
+    pub(super) suggestions: Vec<(String, String)>,
 }
 
+/// The session's side of the seam: the hub every client speaks to, its
+/// port, its entry in the data folder, and -- in a terminal -- the terminal,
+/// which is a client like any other.
 pub(super) struct LiveUi {
     steer: Arc<Steer>,
-    updates: mpsc::Sender<Update>,
+    hub: crate::engine::hub::Hub,
+    hub_thread: Option<JoinHandle<()>>,
     inputs: mpsc::Receiver<Input>,
-    /// Answers to [`Update::Form`], on their own channel: a secret
-    /// must not be able to arrive as an `Input` and be taken for a message.
-    secrets: mpsc::Receiver<Option<Vec<String>>>,
+    /// The terminal's own thread, when there is a terminal.
     thread: Option<JoinHandle<()>>,
+    port: crate::engine::port::Port,
+    _published: Option<crate::engine::data::Published>,
 }
 impl LiveUi {
-    /// Forwards suspended exact actions to the terminal owner. Closing the
-    /// terminal drops pending requests and denies their waiting callbacks.
+    /// Forwards suspended exact actions to the hub, which puts them to every
+    /// client. The session ending drops pending requests and denies their
+    /// waiting callbacks.
     pub(super) fn approval_gate(
         &self,
         level: crate::permissions::LiveLevel,
     ) -> crate::approval::Gate {
-        let (gate, receiver) = crate::approval::Gate::channel(level);
-        let updates = self.updates.clone();
-        let _ = updates.send(Update::Memory(gate.memory()));
+        let (gate, receiver) = crate::approval::Gate::channel(level.clone());
+        let hub = self.hub.clone();
+        let _ = hub.send(Update::Level(level));
+        let _ = hub.send(Update::Memory(gate.memory()));
         thread::spawn(move || {
             for request in receiver {
-                if updates.send(Update::Approval(request)).is_err() {
+                if hub.send(Update::Approval(request)).is_err() {
                     break;
                 }
             }
         });
         gate
     }
-    /// Shares the proxy's live allowed list with the screen.
+    /// Shares the proxy's live allowed list with the hub.
     pub(super) fn share_hosts(&self, allowed: crate::sandbox::proxy::Allowed) {
-        let _ = self.updates.send(Update::Hosts(allowed));
+        let _ = self.hub.send(Update::Hosts(allowed));
     }
-    /// Forwards questions a cell asked to the terminal owner. Closing the
-    /// terminal drops the pending question, which the session reads as
-    /// nobody having answered -- never as a reason to wait.
+    /// Forwards questions a cell asked to the hub. The session ending drops
+    /// the pending question, which the session reads as nobody having
+    /// answered -- never as a reason to wait.
     pub(super) fn ask_gate(&self) -> crate::ask::Gate {
         let (gate, receiver) = crate::ask::Gate::channel();
-        let updates = self.updates.clone();
+        let hub = self.hub.clone();
         thread::spawn(move || {
             for request in receiver {
-                if updates.send(Update::Ask(request)).is_err() {
+                if hub.send(Update::Ask(request)).is_err() {
                     break;
                 }
             }
@@ -374,63 +353,123 @@ impl LiveUi {
         gate
     }
 
+    /// The hub, the port and the entry every session has, with or without a
+    /// terminal.
+    fn begin(
+        conversation: Conversation,
+        notebook: Notebook,
+        opening: Opening,
+    ) -> Result<(Self, mpsc::Sender<Input>), String> {
+        let mut state = crate::engine::wire::State {
+            session: opening.session.clone(),
+            facts: opening.facts,
+            reading: crate::engine::reading::of(&notebook),
+            conversation,
+            notebook,
+            suggestions: opening.suggestions,
+            ..crate::engine::wire::State::default()
+        };
+        state.notes = STARTUP
+            .with(|held| held.borrow_mut().take())
+            .unwrap_or_default();
+        let (input_sender, inputs) = mpsc::channel();
+        let steer = Arc::new(Steer::default());
+        let (hub, hub_thread) = crate::engine::hub::start(
+            state,
+            Arc::clone(&steer),
+            input_sender.clone(),
+            opening.saves,
+        );
+        let port = crate::engine::port::open(&hub, &opening.session)
+            .map_err(|e| format!("sterna could not open its port: {e}"))?;
+        // A session another client cannot find is still a session: the
+        // entry is how one finds it, and a data folder that cannot be
+        // written only costs that.
+        let published = crate::engine::data::Live {
+            id: opening.session,
+            root: opening.root.to_string_lossy().into_owned(),
+            listening: port.listening.to_string(),
+            token: port.token.clone(),
+            pid: std::process::id(),
+            started: crate::engine::wire::now_ms(),
+        }
+        .publish()
+        .ok();
+        OUTPUT.with(|slot| *slot.borrow_mut() = Some(hub.clone()));
+        Ok((
+            Self {
+                steer,
+                hub,
+                hub_thread: Some(hub_thread),
+                inputs,
+                thread: None,
+                port,
+                _published: published,
+            },
+            input_sender,
+        ))
+    }
+
+    /// A session in a terminal: the terminal is its first client.
     pub(super) fn start(
         mut state: ScreenState,
         conversation: Conversation,
         notebook: Notebook,
+        opening: Opening,
     ) -> Result<Self, String> {
         state.messages_seen = conversation.messages.len();
-        for note in STARTUP
-            .with(|held| held.borrow_mut().take())
-            .unwrap_or_default()
-        {
-            state.note(note);
-        }
-        let (updates, receiver) = mpsc::channel();
-        let (input_sender, inputs) = mpsc::channel();
-        let (secret_sender, secrets) = mpsc::channel();
+        let (mut live, _) = Self::begin(conversation, notebook, opening)?;
+        let joined = crate::engine::client::join(&live.hub, crate::engine::wire::TERMINAL);
         let (ready_sender, ready) = mpsc::sync_channel(1);
-        let steer = Arc::new(Steer::default());
-        let levers = steer.clone();
-        let thread = thread::spawn(move || {
-            let result = run(
-                state,
-                conversation,
-                notebook,
-                receiver,
-                Answers {
-                    inputs: &input_sender,
-                    secrets: &secret_sender,
-                },
-                ready_sender,
-                levers,
-            );
-            if let Err(error) = result {
-                let _ = input_sender.send(Input::Failed(error.to_string()));
+        live.thread = Some(thread::spawn(move || {
+            let link = joined.link.clone();
+            if let Err(error) = run(state, joined, ready_sender) {
+                link.failed(error.to_string());
             }
-        });
+        }));
         ready
             .recv()
             .map_err(|_| "terminal thread exited during setup".to_string())??;
-        OUTPUT.with(|slot| *slot.borrow_mut() = Some(updates.clone()));
-        Ok(Self {
-            steer,
-            updates,
-            inputs,
-            secrets,
-            thread: Some(thread),
-        })
+        Ok(live)
     }
-    /// Opens a form sheet and blocks until it is answered: `Some` is every
-    /// field's answer in order, `None` an Esc or a terminal that went away.
-    /// **Nothing typed into it reaches the editor, the transcript or the
-    /// input history** -- it comes back here and nowhere else.
+
+    /// A session with no terminal, for clients that reach it on its port
+    /// (`sterna session --serve`). It says where on its one ready line, and
+    /// ends when its stdin closes: the host that started it has gone.
+    pub(super) fn serve(
+        conversation: Conversation,
+        notebook: Notebook,
+        opening: Opening,
+    ) -> Result<Self, String> {
+        let session = opening.session.clone();
+        let (live, _) = Self::begin(conversation, notebook, opening)?;
+        let ready = serde_json::json!({
+            "id": session,
+            "listening": live.port.listening.to_string(),
+            "token": live.port.token,
+        });
+        println!("{ready}");
+        let _ = io::stdout().flush();
+        let hub = live.hub.sender();
+        thread::spawn(move || {
+            let mut sink = Vec::new();
+            let _ = io::Read::read_to_end(&mut io::stdin(), &mut sink);
+            let _ = hub.send(crate::engine::hub::In::Command {
+                client: 0,
+                command: crate::engine::wire::Command::End,
+            });
+        });
+        Ok(live)
+    }
+
+    /// Opens a form and blocks until it is answered: `Some` is every field's
+    /// answer in order, `None` when it was put away or the session is ending.
+    /// **Nothing typed into it reaches the record or any client but the one
+    /// that answers it** -- the values come back here and nowhere else.
     pub(super) fn form(&self, form: tui::Form) -> Option<Vec<String>> {
-        // An answer nobody collected must never answer a form that asks
-        // for a key.
-        while self.secrets.try_recv().is_ok() {}
-        self.updates.send(Update::Form(Box::new(form))).ok()?;
-        self.secrets.recv().ok().flatten()
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.hub.send(Update::Form(Box::new(form), reply)).ok()?;
+        answer.recv().ok().flatten()
     }
     pub(super) fn steer(&self) -> &Steer {
         &self.steer
@@ -439,8 +478,8 @@ impl LiveUi {
     pub(super) fn steer_handle(&self) -> Arc<Steer> {
         Arc::clone(&self.steer)
     }
-    /// The next thing typed; `changed` runs, on the session's thread, for
-    /// each change that arrives before it.
+    /// The next thing a client sent; `changed` runs, on the session's
+    /// thread, for each change that arrives before it.
     pub(super) fn next(&self, changed: &dyn Fn()) -> Result<Option<String>, String> {
         next_input(&self.inputs, changed)
     }
@@ -450,17 +489,17 @@ impl LiveUi {
         served: &ServedBy,
         activity: Activity,
     ) {
-        let _ = self.updates.send(Update::Snapshot(Box::new((
+        let _ = self.hub.send(Update::Snapshot(Box::new((
             transcript.conversation.clone(),
             transcript.notebook.clone(),
             served.clone(),
             Some(activity),
         ))));
     }
-    /// A control has been answered: the screen takes the transcript as it
-    /// now stands and stops waiting, and no turn is reported.
+    /// A control has been answered: the clients take the transcript as it
+    /// now stands and stop waiting, and no turn is reported.
     pub(super) fn control_done(&self, transcript: &super::Transcript) {
-        let _ = self.updates.send(Update::Snapshot(Box::new((
+        let _ = self.hub.send(Update::Snapshot(Box::new((
             transcript.conversation.clone(),
             transcript.notebook.clone(),
             ServedBy::default(),
@@ -468,43 +507,41 @@ impl LiveUi {
         ))));
     }
     pub(super) fn append_delta(&self, text: &str) {
-        let _ = self.updates.send(Update::Delta(text.into()));
+        let _ = self.hub.send(Update::Delta(text.into()));
     }
     pub(super) fn tool_delta(&self, fragment: &str) {
-        let _ = self.updates.send(Update::ToolDelta(fragment.into()));
+        let _ = self.hub.send(Update::ToolDelta(fragment.into()));
     }
     pub(super) fn reasoning_delta(&self, text: &str) {
-        let _ = self.updates.send(Update::Reasoning(text.into()));
+        let _ = self.hub.send(Update::Reasoning(text.into()));
     }
     pub(super) fn effort(&self, effort: crate::wire::Effort) {
-        let _ = self.updates.send(Update::Effort(effort));
+        let _ = self.hub.send(Update::Effort(effort));
     }
     pub(super) fn panel(&self, panel: tui::Panel) {
-        let _ = self.updates.send(Update::Panel(Box::new(panel)));
+        let _ = self.hub.send(Update::Panel(Box::new(panel)));
     }
     pub(super) fn model(&self, model: &str) {
-        let _ = self.updates.send(Update::Model(model.into()));
+        let _ = self.hub.send(Update::Model(model.into()));
     }
     pub(super) fn suggest(&self, label: &str, types: &str) {
-        let _ = self
-            .updates
-            .send(Update::Suggest(label.into(), types.into()));
+        let _ = self.hub.send(Update::Suggest(label.into(), types.into()));
     }
-    /// Hands the screen a sign-in that now runs beside the session.
+    /// Hands the hub a sign-in that now runs beside the session.
     pub(super) fn sign_in(&self, handle: super::controls::sign_in::Handle) {
-        let _ = self.updates.send(Update::SignInStarted(handle));
+        let _ = self.hub.send(Update::SignInStarted(handle));
     }
-    /// A sender for a thread that reports to the screen on its own.
-    pub(super) fn updates(&self) -> mpsc::Sender<Update> {
-        self.updates.clone()
+    /// A sender for a thread that reports to the clients on its own.
+    pub(super) fn updates(&self) -> crate::engine::hub::Hub {
+        self.hub.clone()
     }
     /// Takes the opening chip that sends `types` away.
     pub(super) fn unsuggest(&self, types: &str) {
-        let _ = self.updates.send(Update::Unsuggest(types.into()));
+        let _ = self.hub.send(Update::Unsuggest(types.into()));
     }
 
     pub(super) fn tiers(&self, subagents: &str) {
-        let _ = self.updates.send(Update::Tiers(subagents.into()));
+        let _ = self.hub.send(Update::Tiers(subagents.into()));
     }
 }
 /// The line a live session leaves in the terminal once its screen is gone.
@@ -532,7 +569,10 @@ pub(super) fn farewell(line: String) {
 impl Drop for LiveUi {
     fn drop(&mut self) {
         OUTPUT.with(|slot| *slot.borrow_mut() = None);
-        let _ = self.updates.send(Update::Stop);
+        let _ = self.hub.send(Update::Stop);
+        if let Some(thread) = self.hub_thread.take() {
+            let _ = thread.join();
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -578,15 +618,10 @@ fn set_mouse_capture(state: &mut tui::ScreenState, on: bool) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run(
     mut state: ScreenState,
-    mut conversation: Conversation,
-    mut notebook: Notebook,
-    updates: mpsc::Receiver<Update>,
-    answers: Answers<'_>,
+    joined: crate::engine::client::Joined,
     ready: mpsc::SyncSender<Result<(), String>>,
-    steer: Arc<Steer>,
 ) -> io::Result<()> {
     let setup = (|| {
         let _guard = super::lock(&DRAWING);
@@ -614,6 +649,35 @@ fn run(
     if state.background == crate::tui::background::Background::Auto {
         state.light = crate::tui::background::detected();
     }
+    // **The terminal is a client.** It holds a link to send commands on and
+    // the events meant for it; everything it draws arrives on the second,
+    // and everything a person does leaves on the first.
+    let link = joined.link;
+    let events = joined.events;
+    state.link = Some(link.clone());
+    let mut conversation = Conversation::default();
+    let mut notebook = Notebook::default();
+    // The prompt the open form answers.
+    let mut form_prompt: Option<u64> = None;
+    // Events taken in while an input waited, and whether that input has
+    // waited once already.
+    let mut pending: Vec<Out> = Vec::new();
+    let mut requeued = false;
+    link.send(Command::Attach { from: None });
+    match events.recv_timeout(Duration::from_secs(10)) {
+        Ok(Out::Event(envelope)) => {
+            if let Said::Snapshot { state: snapshot } = &envelope.event {
+                take_snapshot(
+                    &mut state,
+                    &mut conversation,
+                    &mut notebook,
+                    snapshot,
+                    &link,
+                );
+            }
+        }
+        _ => return Err(io::Error::other("the session did not answer its terminal")),
+    }
     let mut input = terminal_input::TerminalInput::new(console);
     let mut editor = Editor::default();
     editor.root = state.settings_root.clone();
@@ -622,14 +686,9 @@ fn run(
     // A sign-in running beside the session: its handle, its latest panel,
     // whether that panel has been shown, and whether the open form is the
     // one that takes its pasted address.
-    let mut sign_in = super::controls::sign_in::Running::default();
     let mut sign_in_panel: Option<tui::Panel> = None;
     let mut sign_in_shown = false;
     let mut paste_form = false;
-    // A prompt sent while idle, shown at once: the session records it only
-    // after the decision model's question about it, and until then the
-    // snapshots it sends do not hold it yet.
-    let mut sending: Option<Sending> = None;
     // Whether the previous pass through the loop was working, so the two
     // edges -- a task starting and a task ending -- can be told from the
     // many passes that are neither.
@@ -664,22 +723,63 @@ fn run(
         if !ACTIVE.load(Ordering::SeqCst) {
             break;
         }
-        if prompts.retain_pending() {
+        let arrived: Vec<Out> = pending.drain(..).chain(events.try_iter()).collect();
+        for out in arrived {
             dirty = true;
-        }
-        for update in updates.try_iter() {
-            dirty = true;
-            match update {
-                Update::Approval(request) => {
-                    prompts.push_approval(request);
+            let envelope = match out {
+                Out::Event(envelope) => envelope,
+                Out::Close => return Ok(()),
+            };
+            match &envelope.event {
+                Said::Snapshot { state: snapshot } => {
+                    take_snapshot(
+                        &mut state,
+                        &mut conversation,
+                        &mut notebook,
+                        snapshot,
+                        &link,
+                    );
                 }
-                Update::Ask(request) => {
-                    prompts.ask(request);
+                Said::Prompt { prompt } => {
+                    match crate::engine::client::raised(prompt.clone(), &link) {
+                        Raised::Approval(approval) => prompts.push_approval(approval),
+                        Raised::Question(question) => prompts.ask(question),
+                        // The form draws over the sheet that opened it, which
+                        // is still there when the form is done or put back.
+                        Raised::Form(id, form) => {
+                            state.form = Some(*form);
+                            form_prompt = Some(id);
+                            paste_form = false;
+                        }
+                    }
                 }
-                Update::Memory(memory) => state.memory = Some(memory),
-                Update::Hosts(allowed) => state.allowed = Some(allowed),
-                Update::Snapshot(snapshot) => {
-                    let (c, n, s, activity) = *snapshot;
+                Said::Settled { id, .. } => {
+                    prompts.settle(*id);
+                    if form_prompt == Some(*id) {
+                        state.form = None;
+                        form_prompt = None;
+                    }
+                }
+                Said::Hint { id, fits } => prompts.hint(*id, *fits),
+                Said::Memory { entries } => {
+                    state.memory = Some(crate::engine::client::Memory::new(
+                        entries.clone(),
+                        link.clone(),
+                    ));
+                }
+                Said::Hosts { hosts } => {
+                    state.allowed = Some(crate::engine::client::Hosts::new(
+                        hosts.clone(),
+                        link.clone(),
+                    ));
+                }
+                Said::Transcript {
+                    conversation: c,
+                    notebook: n,
+                    served: s,
+                    activity,
+                    reading,
+                } => {
                     let completed = n
                         .cells
                         .iter()
@@ -696,32 +796,26 @@ fn run(
                     }
                     if completed > previous
                         && !state.reduced_motion
-                        && n.cells.last().is_some_and(|cell| {
-                            cell.error.is_none()
-                                && cell.execution.as_deref().is_some_and(|calls| {
-                                    !calls.contains(" · failed") && !calls.contains(" · denied")
-                                })
-                        })
+                        && reading
+                            .cells
+                            .last()
+                            .is_some_and(|cell| cell.tone == "success")
                     {
                         state.completion_tick = Some(0);
                     }
-                    conversation = c;
-                    keep_sending(
-                        &mut conversation,
-                        &mut sending,
-                        activity.unwrap_or(Activity::Idle),
-                    );
+                    conversation = c.as_ref().clone();
                     state.messages_seen = conversation.messages.len();
-                    notebook = n;
+                    notebook = n.as_ref().clone();
+                    state.reading = reading.clone();
                     if s.is_known() {
-                        served = s;
+                        served = s.clone();
                     }
                     if served.is_known() {
                         state.connected = Some(true);
                     }
                     // A control answered: nothing waits any more, and the
                     // last turn's ending, clock and pulse stay as they were.
-                    let Some(activity) = activity else {
+                    let Some(activity) = *activity else {
                         busy = false;
                         continue;
                     };
@@ -748,131 +842,107 @@ fn run(
                             state.pulse.elapsed_ms = ms;
                         }
                     } else if clock.started.is_none() {
-                        // A turn started by a project command or skill,
-                        // which the screen sent as a control.
+                        // A turn started by a project command or skill, or by
+                        // a message another client sent.
                         clock.start();
                         state.pulse = tui::Pulse::default();
                     }
                     busy = activity.working();
                 }
-                Update::Delta(text) => {
+                Said::Delta { text } => {
                     reasoned(&mut state, reasoning_since);
                     state.pulse.receive(text.len());
                     state
                         .streaming_text
                         .get_or_insert_with(String::new)
-                        .push_str(&text);
+                        .push_str(text);
                     state.activity = Activity::Streaming;
                     busy = true;
                 }
-                Update::Reasoning(text) => {
+                Said::Reasoning { text } => {
                     state.pulse.receive(text.len());
                     state
                         .streaming_reasoning
                         .get_or_insert_with(String::new)
-                        .push_str(&text);
+                        .push_str(text);
                     busy = true;
                 }
-                Update::ToolDelta(fragment) => {
+                Said::ToolDelta { text } => {
                     reasoned(&mut state, reasoning_since);
-                    state.pulse.receive(fragment.len());
+                    state.pulse.receive(text.len());
                     state
                         .streaming_tool_input
                         .get_or_insert_with(String::new)
-                        .push_str(&fragment);
+                        .push_str(text);
                     state.activity = Activity::Streaming;
                     busy = true;
                 }
-                Update::Model(model) => state.model = Some(model),
-                Update::Suggest(label, types) => {
+                Said::Facts { facts } => take_facts(&mut state, facts),
+                Said::Suggest { label, types } => {
                     if state.suggestions.is_empty() {
                         state.suggestions = crate::workbench::voice::suggestions(None, 0, false);
                     }
-                    state.suggestions.retain(|(_, said)| *said != types);
-                    state.suggestions.insert(0, (label, types));
+                    state.suggestions.retain(|(_, said)| said != types);
+                    state.suggestions.insert(0, (label.clone(), types.clone()));
                 }
-                Update::Unsuggest(types) => {
-                    state.suggestions.retain(|(_, said)| *said != types);
+                Said::Unsuggest { types } => {
+                    state.suggestions.retain(|(_, said)| said != types);
                 }
-                // A new sign-in replaces one still running: the older one
-                // is cancelled rather than left holding its callback port.
-                Update::SignInStarted(handle) => {
-                    state.signing_in = Some(handle.label.clone());
-                    // Replacing the hold cancels the older one.
-                    sign_in = super::controls::sign_in::Running(Some(handle));
-                    sign_in_shown = false;
-                }
-                Update::SignIn(super::controls::sign_in::Event::Note(message)) => {
-                    workbench.notice = message.lines().next().unwrap_or("").to_owned();
-                    state.note(message);
-                    state.landed_note();
-                }
-                // The panel opens once; after Esc it is kept, and the dock's
-                // "signing in" chip brings it back.
-                Update::SignIn(super::controls::sign_in::Event::Panel(panel)) => {
-                    if let Some(open) = workbench.panel_mut(&panel.title) {
-                        *open = (*panel).clone();
-                    } else if state
-                        .panel
-                        .as_ref()
-                        .is_some_and(|pending| pending.title == panel.title)
-                        || !sign_in_shown
-                    {
-                        // Not drawn yet, or never shown: this one opens.
-                        state.panel = Some((*panel).clone());
-                        sign_in_shown = true;
+                Said::SignIn { sign_in } => match sign_in {
+                    // A new sign-in replaces one still running; the session
+                    // cancels the older one.
+                    SignIn::Started { label } => {
+                        state.signing_in = Some(label.clone());
+                        sign_in_shown = false;
                     }
-                    sign_in_panel = Some(*panel);
-                }
-                Update::SignIn(super::controls::sign_in::Event::Done) => {
-                    // Over on its own: nothing left to stop, and a setup
-                    // step it may have finished is counted again.
-                    sign_in.0 = None;
-                    state.signing_in = None;
-                    let _ = answers.inputs.send(Input::Changed);
-                }
-                Update::Tiers(subagents) => state.subagents = Some(subagents),
-                Update::Effort(effort) => state.effort = effort,
+                    SignIn::Note { text } => {
+                        workbench.notice = text.lines().next().unwrap_or("").to_owned();
+                        state.note(text.clone());
+                        state.landed_note();
+                    }
+                    // The panel opens once; after Esc it is kept, and the
+                    // dock's "signing in" chip brings it back.
+                    SignIn::Panel { panel } => {
+                        if let Some(open) = workbench.panel_mut(&panel.title) {
+                            *open = (**panel).clone();
+                        } else if state
+                            .panel
+                            .as_ref()
+                            .is_some_and(|pending| pending.title == panel.title)
+                            || !sign_in_shown
+                        {
+                            // Not drawn yet, or never shown: this one opens.
+                            state.panel = Some((**panel).clone());
+                            sign_in_shown = true;
+                        }
+                        sign_in_panel = Some((**panel).clone());
+                    }
+                    // Over on its own: nothing left to stop.
+                    SignIn::Done => state.signing_in = None,
+                },
                 // The screen's inbox: the workbench opens it as a sheet on the
                 // next frame, as the child of the row that asked for it.
-                Update::Panel(panel) => state.panel = Some(*panel),
-                Update::Notice(message) => {
-                    workbench.notice = message.lines().next().unwrap_or("").to_owned();
-                    state.note(message);
+                Said::Panel { panel } => state.panel = Some((**panel).clone()),
+                Said::Notice { text } => {
+                    workbench.notice = text.lines().next().unwrap_or("").to_owned();
+                    state.note(text.clone());
                     state.landed_note();
                 }
-                // The form draws over the sheet that opened it, which is
-                // still there when the form is done or put back.
-                Update::Form(form) => {
-                    state.form = Some(*form);
+                // The queue is the session's: whichever client added to it.
+                Said::Queue { items } => {
+                    state.queued = items.clone();
+                    if state.queued.is_empty() {
+                        unqueue_notice(&mut state);
+                    }
                 }
-                Update::Stop => return Ok(()),
+                Said::Refused { reason, .. } => state.note(reason.clone()),
+                Said::Ended { .. } => return Ok(()),
+                Said::Activity { .. } | Said::Usage { .. } => {}
             }
         }
         // An approval or a question on screen mid-turn: the card and the dock
         // say the turn waits for the person, and its clock stands still.
         if clock.hold(busy && prompts.active(), &mut state.activity) {
-            dirty = true;
-        }
-        // The session is free: the oldest held message is the next turn.
-        if !busy && !state.queued.is_empty() {
-            let text = state.queued.remove(0);
-            if state.queued.is_empty() {
-                unqueue_notice(&mut state);
-            }
-            let Ok(pending) = submit(
-                text,
-                &mut state,
-                &mut clock,
-                &mut workbench,
-                answers.inputs,
-                conversation.messages.len(),
-            ) else {
-                return Ok(());
-            };
-            busy = true;
-            sending = pending;
-            keep_sending(&mut conversation, &mut sending, Activity::Thinking);
             dirty = true;
         }
         // A stop that was asked for has been answered by the task ending;
@@ -991,6 +1061,21 @@ fn run(
         let Some(input_event) = input.read()? else {
             continue;
         };
+        // **What the session said while this input waited comes first**: a
+        // key is answered against the session as it now stands -- an Escape
+        // takes back the message the session still holds, not one it has
+        // already let go. Once per input, so a stream that never pauses
+        // cannot keep a key waiting.
+        if !requeued {
+            let arrived: Vec<Out> = events.try_iter().collect();
+            if !arrived.is_empty() {
+                pending.extend(arrived);
+                input.put_back(input_event);
+                requeued = true;
+                continue;
+            }
+        }
+        requeued = false;
         // The first thing the person does ends the opening: whatever the
         // session had already said about itself is its card, and anything
         // it says from here is a notice about what they just did.
@@ -1033,9 +1118,10 @@ fn run(
                 // The same Ctrl-C as over a running turn: it stops the
                 // turn, and says so.
                 decision::Done::Interrupt => {
-                    super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
                     state.stopping = true;
-                    steer.request_stop(tui::Stopper::Interrupt);
+                    link.send(Command::Stop {
+                        by: Some(StoppedBy::Interrupt),
+                    });
                     state.note(crate::workbench::voice::CTRL_C_STOPPING);
                     dirty = true;
                 }
@@ -1120,7 +1206,7 @@ fn run(
                     continue;
                 }
                 crate::workbench::Effect::PasteCallback => {
-                    if sign_in.0.is_some() {
+                    if state.signing_in.is_some() {
                         state.form = Some(paste_callback_form());
                         paste_form = true;
                     } else {
@@ -1132,22 +1218,15 @@ fn run(
                 // The resume sheet chose another session: this one ends as
                 // `/exit` ends it, and the chosen one starts in its place.
                 crate::workbench::Effect::Resume(id) => {
-                    super::resume::switch_to(id);
-                    if busy {
-                        steer.request_stop(tui::Stopper::You);
-                        steer.request_cancel();
-                    }
-                    let _ = answers.inputs.send(Input::Exit);
+                    link.send(Command::Resume { id });
                     return Ok(());
                 }
                 crate::workbench::Effect::CancelSignIn => {
-                    if let Some(handle) = &sign_in.0 {
-                        handle
-                            .cancel
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(label) = state.signing_in.clone() {
+                        link.send(Command::SignInCancel);
                         say(
                             &mut workbench,
-                            format!("Cancelling the sign-in to {}…", handle.label),
+                            format!("Cancelling the sign-in to {label}…"),
                         );
                     }
                     dirty = true;
@@ -1181,11 +1260,7 @@ fn run(
                 crate::workbench::Effect::Command(command) => {
                     if command.trim() == "/exit" {
                         ended_by("/exit");
-                        if busy {
-                            steer.request_stop(tui::Stopper::You);
-                            steer.request_cancel();
-                        }
-                        let _ = answers.inputs.send(Input::Exit);
+                        link.send(Command::End);
                         return Ok(());
                     }
                     if workbench.local_command(command.trim(), &mut state, &notebook) {
@@ -1195,10 +1270,16 @@ fn run(
                     } else if !(busy && state.activity.working()) {
                         busy = true;
                         workbench.sent(&command, &state);
-                        let _ = answers.inputs.send(Input::Submit(command));
+                        link.send(Command::Submit {
+                            text: command,
+                            images: Vec::new(),
+                        });
                     } else if crate::workbench::mid_turn(&command) {
                         workbench.sent(&command, &state);
-                        steer.request_control(command);
+                        link.send(Command::Submit {
+                            text: command,
+                            images: Vec::new(),
+                        });
                         say(&mut workbench, crate::workbench::voice::NEXT_REQUEST);
                     } else {
                         say(&mut workbench, crate::workbench::voice::BETWEEN_TURNS);
@@ -1241,22 +1322,12 @@ fn run(
                             Some(crate::workbench::FormHit::Submit) => {
                                 if form.enter() {
                                     let given = state.form.take().map(tui::Form::take);
-                                    answer_form(
-                                        given,
-                                        &mut paste_form,
-                                        sign_in.0.as_ref(),
-                                        answers.secrets,
-                                    );
+                                    answer_form(given, &mut paste_form, &mut form_prompt, &link);
                                 }
                             }
                             Some(crate::workbench::FormHit::Back) => {
                                 state.form = None;
-                                answer_form(
-                                    None,
-                                    &mut paste_form,
-                                    sign_in.0.as_ref(),
-                                    answers.secrets,
-                                );
+                                answer_form(None, &mut paste_form, &mut form_prompt, &link);
                             }
                             None => {}
                         }
@@ -1305,14 +1376,14 @@ fn run(
                                 answer_form(
                                     answers_given,
                                     &mut paste_form,
-                                    sign_in.0.as_ref(),
-                                    answers.secrets,
+                                    &mut form_prompt,
+                                    &link,
                                 );
                             }
                         }
                         KeyCode::Esc => {
                             state.form = None;
-                            answer_form(None, &mut paste_form, sign_in.0.as_ref(), answers.secrets);
+                            answer_form(None, &mut paste_form, &mut form_prompt, &link);
                         }
                         KeyCode::Tab | KeyCode::Down => form.move_focus(true),
                         KeyCode::BackTab | KeyCode::Up => form.move_focus(false),
@@ -1379,6 +1450,7 @@ fn run(
                     // A message still in the queue is taken back first, into
                     // the composer, before Escape means stop.
                     if let Some(taken) = state.queued.pop() {
+                        link.send(Command::TakeBack);
                         editor.text = if editor.text.trim().is_empty() {
                             taken
                         } else {
@@ -1406,11 +1478,13 @@ fn run(
                         continue;
                     }
                     if state.stopping {
-                        steer.request_cancel();
+                        link.send(Command::Cancel);
                         state.note("Cancelling the call in flight.");
                     } else {
                         state.stopping = true;
-                        steer.request_stop(tui::Stopper::You);
+                        link.send(Command::Stop {
+                            by: Some(StoppedBy::You),
+                        });
                         state.note(
                             "Stopping after this cell · Esc again cancels the call in flight",
                         );
@@ -1427,15 +1501,20 @@ fn run(
                         // it back; an empty composer arms the quit.
                         KeyCode::Char('c') => {
                             if busy && state.activity.working() {
-                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
                                 state.stopping = true;
-                                steer.request_stop(tui::Stopper::Interrupt);
+                                link.send(Command::Stop {
+                                    by: Some(StoppedBy::Interrupt),
+                                });
                                 state.note(crate::workbench::voice::CTRL_C_STOPPING);
                             } else if !editor.text.is_empty() {
                                 editor.clear();
                                 state.note(crate::workbench::voice::DRAFT_CLEARED);
                             } else {
-                                super::INTERRUPT.fetch_add(1, Ordering::SeqCst);
+                                // Counted where a second one within the
+                                // window ends the session.
+                                link.send(Command::Stop {
+                                    by: Some(StoppedBy::Interrupt),
+                                });
                                 state.notice = Some(crate::workbench::voice::QUIT_ARMED.into());
                                 quit_armed = Some(Instant::now());
                             }
@@ -1480,7 +1559,7 @@ fn run(
                         }
                         KeyCode::Char('d') if !busy && editor.text.is_empty() => {
                             ended_by("Ctrl-D on an empty prompt");
-                            let _ = answers.inputs.send(Input::Exit);
+                            link.send(Command::End);
                             return Ok(());
                         }
                         KeyCode::Char('d') if editor.text.is_empty() => {
@@ -1571,11 +1650,7 @@ fn run(
                     if editor.text.trim() == "/exit" {
                         editor.take();
                         ended_by("/exit");
-                        if busy {
-                            steer.request_stop(tui::Stopper::You);
-                            steer.request_cancel();
-                        }
-                        let _ = answers.inputs.send(Input::Exit);
+                        link.send(Command::End);
                         return Ok(());
                     }
                     let turn = busy && state.activity.working();
@@ -1587,7 +1662,10 @@ fn run(
                         if crate::workbench::mid_turn(&text) {
                             editor.take();
                             workbench.sent(&text, &state);
-                            steer.request_control(text);
+                            link.send(Command::Submit {
+                                text,
+                                images: Vec::new(),
+                            });
                             state.notice = Some(crate::workbench::voice::NEXT_REQUEST.into());
                         } else {
                             state.notice = Some(crate::workbench::voice::BETWEEN_TURNS.into());
@@ -1599,7 +1677,14 @@ fn run(
                     // Sterna's queue** and sent when it is free, so Escape
                     // can take it back until then (decision 8).
                     if busy && !editor.text.trim_start().starts_with('/') {
-                        state.queued.push(editor.take());
+                        // Shown in the queue at once; the session's own word
+                        // on its queue follows and settles it.
+                        let text = editor.take();
+                        state.queued.push(text.clone());
+                        link.send(Command::Submit {
+                            text,
+                            images: Vec::new(),
+                        });
                         state.notice = Some(crate::workbench::voice::QUEUED.into());
                         dirty = true;
                         continue;
@@ -1607,22 +1692,10 @@ fn run(
                     let text = editor.take();
                     state.scrollback = 0;
                     state.notice = None;
-                    let Ok(pending) = submit(
-                        text,
-                        &mut state,
-                        &mut clock,
-                        &mut workbench,
-                        answers.inputs,
-                        conversation.messages.len(),
-                    ) else {
+                    if !submit(text, &mut state, &mut clock, &mut workbench, &link) {
                         return Ok(());
-                    };
-                    busy = true;
-                    if pending.is_some() {
-                        sending = pending;
-                        keep_sending(&mut conversation, &mut sending, Activity::Thinking);
-                        dirty = true;
                     }
+                    busy = true;
                 }
             }
             _ => {}
@@ -1631,31 +1704,79 @@ fn run(
     Ok(())
 }
 
-/// Sends one input to the session. A message starts a turn and its clock,
-/// and comes back as the line the screen shows until the session records
-/// it; a slash command is a control and starts neither. `Err` when the
-/// session has gone.
+/// Sends one input to the session. A message starts a turn and its clock;
+/// the session shows it at once and until it has recorded it. A slash
+/// command is a control and starts neither. `false` when the session has
+/// gone.
 fn submit(
     text: String,
     state: &mut ScreenState,
     clock: &mut Clock,
     workbench: &mut crate::workbench::Workbench,
-    inputs: &mpsc::Sender<Input>,
-    recorded_at: usize,
-) -> Result<Option<Sending>, ()> {
+    link: &crate::engine::client::Link,
+) -> bool {
     let message = !text.trim_start().starts_with('/') && !text.trim().is_empty();
-    let pending = message.then(|| {
+    if message {
         clock.start();
         state.pulse = tui::Pulse::default();
         state.activity = Activity::Thinking;
-        Sending {
-            text: text.clone(),
-            recorded_at,
-        }
-    });
+    }
     workbench.sent(&text, state);
-    inputs.send(Input::Submit(text)).map_err(|_| ())?;
-    Ok(pending)
+    link.send(Command::Submit {
+        text,
+        images: Vec::new(),
+    })
+}
+
+/// What a session is when the terminal attaches: its record, its facts,
+/// what waits on an answer and what it has said so far.
+fn take_snapshot(
+    state: &mut ScreenState,
+    conversation: &mut Conversation,
+    notebook: &mut Notebook,
+    snapshot: &crate::engine::wire::State,
+    link: &crate::engine::client::Link,
+) {
+    *conversation = snapshot.conversation.clone();
+    *notebook = snapshot.notebook.clone();
+    state.messages_seen = conversation.messages.len();
+    state.reading = snapshot.reading.clone();
+    state.queued = snapshot.queue.clone();
+    take_facts(state, &snapshot.facts);
+    for note in &snapshot.notes {
+        state.note(note.clone());
+    }
+    if !snapshot.suggestions.is_empty() {
+        for (label, types) in snapshot.suggestions.iter().rev() {
+            state.suggestions.retain(|(_, said)| said != types);
+            state.suggestions.insert(0, (label.clone(), types.clone()));
+        }
+    }
+    state.memory = Some(crate::engine::client::Memory::new(
+        snapshot.memory.clone(),
+        link.clone(),
+    ));
+    state.allowed = snapshot
+        .hosts
+        .clone()
+        .map(|hosts| crate::engine::client::Hosts::new(hosts, link.clone()));
+    state.signing_in = snapshot.sign_in.clone();
+}
+
+/// The session's facts, as the terminal's chips and sheets show them.
+fn take_facts(state: &mut ScreenState, facts: &crate::engine::wire::Facts) {
+    if facts.model.is_some() {
+        state.model = facts.model.clone();
+    }
+    if let Some(effort) = crate::wire::Effort::parse(&facts.effort) {
+        state.effort = effort;
+    }
+    if let Some(level) = crate::permissions::Level::parse(&facts.level) {
+        state.level.set(level);
+    }
+    if facts.subagents.is_some() {
+        state.subagents = facts.subagents.clone();
+    }
 }
 
 /// The queue notice goes when the queue is empty.
@@ -1737,38 +1858,6 @@ impl Clock {
     }
 }
 
-/// A prompt the screen shows before the session has recorded it.
-struct Sending {
-    text: String,
-    /// The conversation's length when it was sent; a longer one holds it.
-    recorded_at: usize,
-}
-
-/// Shows a sent prompt until the session's own copy arrives: appended to a
-/// snapshot that does not hold it yet, dropped once one does or the task
-/// ends without it.
-fn keep_sending(
-    conversation: &mut Conversation,
-    sending: &mut Option<Sending>,
-    activity: Activity,
-) {
-    let Some(pending) = sending.as_ref() else {
-        return;
-    };
-    let ended = matches!(
-        activity,
-        Activity::Idle | Activity::Complete | Activity::Failed
-    );
-    if ended || conversation.messages.len() > pending.recorded_at {
-        *sending = None;
-        return;
-    }
-    conversation.messages.push(crate::contract::Message::text(
-        crate::contract::Role::User,
-        pending.text.as_str(),
-    ));
-}
-
 /// The top sheet's notice when one is open, else the dock's.
 fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
     let text = text.into();
@@ -1779,22 +1868,26 @@ fn say(workbench: &mut crate::workbench::Workbench, text: impl Into<String>) {
 }
 
 /// A form's answer, to whoever asked: the sign-in running beside the session
-/// for a pasted address, else the session thread waiting on the form.
+/// for a pasted address, else the session waiting on the form.
 fn answer_form(
     given: Option<Vec<String>>,
     paste_form: &mut bool,
-    sign_in: Option<&super::controls::sign_in::Handle>,
-    secrets: &mpsc::Sender<Option<Vec<String>>>,
+    form_prompt: &mut Option<u64>,
+    link: &crate::engine::client::Link,
 ) {
     if std::mem::take(paste_form) {
-        if let (Some(address), Some(handle)) =
-            (given.and_then(|given| given.into_iter().next()), sign_in)
-        {
-            let _ = handle.pastes.send(address);
+        if let Some(address) = given.and_then(|given| given.into_iter().next()) {
+            link.send(Command::SignInPaste { text: address });
         }
         return;
     }
-    let _ = secrets.send(given);
+    if let Some(prompt) = form_prompt.take() {
+        let answer = match given {
+            Some(values) => crate::engine::wire::Answer::Form(values),
+            None => crate::engine::wire::Answer::Dismiss,
+        };
+        link.send(Command::Answer { prompt, answer });
+    }
 }
 
 /// The form that takes the address a browser ended on after signing in on
@@ -1897,29 +1990,5 @@ mod tests {
         steer.request_cancel();
         assert!(steer.take_cancel());
         assert!(!steer.take_cancel(), "one press cancelled twice");
-    }
-
-    use super::*;
-
-    #[test]
-    fn a_sent_prompt_shows_until_the_session_records_it() {
-        use crate::contract::{Message, Role};
-        let mut sending = Some(Sending {
-            text: "build a todo app".into(),
-            recorded_at: 0,
-        });
-        // A preflight snapshot without the prompt still shows it.
-        let mut early = Conversation::default();
-        keep_sending(&mut early, &mut sending, Activity::Thinking);
-        assert_eq!(early.messages.len(), 1);
-        assert!(sending.is_some());
-        // The session's own copy arrives: shown once, not twice.
-        let mut recorded = Conversation::default();
-        recorded
-            .messages
-            .push(Message::text(Role::User, "build a todo app"));
-        keep_sending(&mut recorded, &mut sending, Activity::Thinking);
-        assert_eq!(recorded.messages.len(), 1);
-        assert!(sending.is_none());
     }
 }

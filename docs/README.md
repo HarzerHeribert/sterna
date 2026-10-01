@@ -20,6 +20,7 @@ Start with [architecture](architecture.md): two programs, one page.
 - [subagents](subagents.md) — delegating a whole goal to another model loop
 - [decisions](decisions.md) — Jev, the classifier
 - [project context](project-context.md) — instructions, MCP servers, source context
+- [engine](engine.md) — the seam every client speaks: the terminal, the desktop app, the host
 - [observing](observing.md) — the live event stream
 - [gateway](gateway.md) — the inference gateway
 

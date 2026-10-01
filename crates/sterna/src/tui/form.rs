@@ -14,11 +14,26 @@
 //! no key.
 
 /// A check against what is typed: `Ok` is what is worth saying about an
-/// answer that can be sent, `Err` what is wrong with one that cannot.
-pub type Check = fn(&str) -> Result<Verdict, String>;
+/// answer that can be sent, `Err` what is wrong with one that cannot. Named,
+/// so a form can travel to a client and be checked there the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Check {
+    KeyShape,
+    BaseUrl,
+}
+
+impl Check {
+    pub fn run(self, text: &str) -> Result<Verdict, String> {
+        match self {
+            Self::KeyShape => key_shape(text),
+            Self::BaseUrl => base_url(text),
+        }
+    }
+}
 
 /// What a check says of an answer it lets through.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Verdict {
     /// Worth a check mark.
     Fine(String),
@@ -27,7 +42,7 @@ pub enum Verdict {
 }
 
 /// What a field holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Text,
     Secret,
@@ -36,7 +51,7 @@ pub enum Kind {
 }
 
 /// One labelled field.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     pub label: String,
     /// Said under the field before anything is wrong: what goes here, and
@@ -110,12 +125,12 @@ impl Field {
         (!self.is_empty())
             .then_some(self.check)
             .flatten()
-            .map(|check| check(self.value.trim()))
+            .map(|check| check.run(self.value.trim()))
     }
 }
 
 /// A sheet of fields and what submitting it does.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Form {
     pub title: String,
     /// `Some((2, 3))` for "step 2 of 3" of a flow.
@@ -323,7 +338,7 @@ mod tests {
             "Your own endpoint",
             "",
             vec![
-                Field::new("Base URL", Kind::Text, "").checked(base_url),
+                Field::new("Base URL", Kind::Text, "").checked(Check::BaseUrl),
                 Field::new(
                     "It speaks",
                     Kind::Choice(vec!["openai".into(), "anthropic".into()]),
@@ -331,7 +346,7 @@ mod tests {
                 ),
                 Field::new("API key", Kind::Secret, "")
                     .optional()
-                    .checked(key_shape),
+                    .checked(Check::KeyShape),
             ],
         )
     }

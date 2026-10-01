@@ -5,7 +5,7 @@
 //! this module exists to close.
 
 pub mod output;
-mod ui;
+pub(crate) mod ui;
 
 use std::cell::{Cell, Ref, RefCell};
 use std::io::{self, IsTerminal};
@@ -52,15 +52,16 @@ macro_rules! session_println {
 mod args;
 mod ask;
 mod cell_view;
+mod clients;
 mod context;
-mod controls;
+pub(crate) mod controls;
 mod ending;
 use ending::delivered_the_interrupt;
-mod interrupt;
+pub(crate) mod interrupt;
 use interrupt::{DOUBLE_INTERRUPT_WINDOW, INTERRUPT, install_interrupt_handler, watch};
 mod native;
 mod notices;
-mod resume;
+pub(crate) mod resume;
 mod returned;
 mod setup;
 mod splash;
@@ -342,9 +343,12 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     output::session(session_id.as_str());
     wire::set_cache_key(session_id.as_str());
     let terminal = args.task.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
-    // Notes said before the terminal UI exists open its conversation rather
-    // than flashing on the screen the UI replaces.
-    let _startup_notes = terminal.then(ui::StartupNotes::hold);
+    // A session with clients: a terminal, or a port others attach to.
+    let attended = terminal || args.serve;
+    // Notes said before the clients can see them open the conversation
+    // rather than flashing on the screen the UI replaces -- or, on a served
+    // session, landing on the stdout its ready line is read from.
+    let _startup_notes = attended.then(ui::StartupNotes::hold);
     moved.drain(..).for_each(|line| session_println!("{line}"));
     let mut project = project::load(&args.root);
     let settings_store = crate::settings::Store::new(&args.root)?;
@@ -400,12 +404,12 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     if let Some(model) = default_decisions {
         config.borrow_mut().decisions.model = Some(model.to_string());
     }
-    if terminal {
+    if attended {
         notices::at_start(&gateway);
     }
-    if config.borrow().decisions.model.is_none() && !terminal {
+    if config.borrow().decisions.model.is_none() && !attended {
         session_println!("decisions: off (no model)");
-    } else if let Some(model) = default_decisions.filter(|_| !terminal) {
+    } else if let Some(model) = default_decisions.filter(|_| !attended) {
         session_println!("decisions: {model} (the gateway serves a TypeSafe account)");
     }
     // A terminal draws the level live on the top bar instead, so the line
@@ -533,59 +537,20 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
     install_interrupt_handler();
 
     drop(splash_frame);
-    let interactive =
-        if args.task.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal() {
-            Some(ui::LiveUi::start(
-                {
-                    let mut state = tui::ScreenState {
-                        model: started_on.clone(),
-                        level: level.clone(),
-                        effort: initial_effort,
-                        settings_root: Some(args.root.clone()),
-                        settings_global: crate::project::workflows::user_directory(),
-                        settings_profile: args.profile.clone(),
-                        compact: true,
-                        pretty: true,
-                        project: Some(startup::project_name(&args.root)),
-                        // The mechanism, for the surface that explains the
-                        // boundary. It is no longer the status line's words:
-                        // `3p/1c` is a path-rule count and a command-pattern
-                        // count, and nothing on a status line could ever have
-                        // said so.
-                        sandbox: Some(format!(
-                            "{} path rules · {} pre-approved commands",
-                            profile.rule_count(),
-                            profile.pre_approved().len(),
-                        )),
-                        subagents: Some(controls::tier_status(&config.borrow())),
-                        // The third half, which until 2026-09-19 no surface
-                        // carried: a rung and a grant are two choices, and
-                        // whether Sterna confines what it spawns is the one
-                        // that decided whether `cargo test` could link.
-                        confinement: Some(
-                            crate::tools::invoke::Confinement::for_session(&profile)
-                                .map_or("no-applier", crate::tools::invoke::Confinement::short)
-                                .to_string(),
-                        ),
-                        // The shell never has a network; the field names the
-                        // host tools that do (map 2657, design §8).
-                        network: Some(config.borrow().web.posture().into()),
-                        ..tui::ScreenState::default()
-                    };
-                    crate::settings_session::presentation(&mut state, &loaded_settings.values);
-                    state.settings_models = startup::served_models(&accounts);
-                    state.local_hour = crate::workbench::voice::local_hour();
-                    if let Some(root) = state.settings_root.clone() {
-                        state.suggestions = crate::workbench::voice::project_suggestions(&root);
-                    }
-                    state
-                },
-                transcript.conversation.clone(),
-                transcript.notebook.clone(),
-            )?)
-        } else {
-            None
-        };
+    let (interactive, folder) = clients::open(
+        &args,
+        &transcript,
+        clients::Seed {
+            session: session_id.as_str(),
+            started_on: started_on.clone(),
+            level: &level,
+            effort: initial_effort,
+            profile: &profile,
+            config: &config.borrow(),
+            values: &loaded_settings.values,
+            served_models: startup::served_models(&accounts),
+        },
+    )?;
 
     // **Spawned after the terminal exists, because it reads the terminal's
     // Escape lever as well as the signal handler's flag.** The handler is
@@ -635,6 +600,9 @@ fn run(mut args: SessionArgs, moved: &mut Vec<String>) -> Result<Option<String>,
         plan: RefCell::new(None),
         requests: std::cell::Cell::new(0),
         settings_global: crate::project::workflows::user_directory(),
+        // A session with a client is listed; a scripted one -- `-p`, `exec`,
+        // a benchmark's hundred runs -- is nobody's to come back to.
+        folder: interactive.as_ref().map(|_| folder.clone()),
     };
     output::interface(session.interface.get(), session.dialect());
     controls::announce_missing_credential(&session, _serving.is_some());
@@ -719,6 +687,9 @@ struct Session<'a> {
     /// is saved (decision 6). `None` -- a machine with no home, a test that
     /// names none -- saves to the project instead.
     settings_global: Option<std::path::PathBuf>,
+    /// The folder this session runs in, as the list of folders names it;
+    /// `None` for a session that is not to be listed (a unit test's).
+    folder: Option<std::path::PathBuf>,
 }
 
 impl Session<'_> {
@@ -753,6 +724,9 @@ struct RollbackCheckpoint {
     after: crate::changes::Snapshot,
     /// The cell whose change this is, marked when it is rolled back.
     cell: usize,
+    /// When the cell's change was taken, in Unix milliseconds: a change to
+    /// one of its files after this is not this session's to undo.
+    at: u64,
 }
 
 /// Handles scripted, live-composer, and piped input through the same task
@@ -982,6 +956,11 @@ fn run_task(
         return Err(refused.into());
     }
     transcript.notebook.handlers.clear();
+    // The one list of folders and sessions hears that this one was used; a
+    // list that cannot be written costs only the listing.
+    if let Some(folder) = &session.folder {
+        let _ = crate::engine::list::used(folder, session.id.as_str(), task);
+    }
     // Moves made while the last task ran reach the file here, at the boundary:
     // the UI thread that made them writes nothing itself.
     rollout.record_moves(session.level.as_ref());
@@ -1357,10 +1336,23 @@ fn run_task_inner(
             }
         }
         if let Some((before, after)) = step.rollback.take() {
+            let at = crate::engine::wire::now_ms();
+            let changed: Vec<_> = before
+                .changed_paths(&after)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+            crate::changes::ledger::record(
+                session.profile.root(),
+                session.id.as_str(),
+                &changed,
+                at,
+            );
             session.rollbacks.borrow_mut().push(RollbackCheckpoint {
                 before,
                 after,
                 cell: ordinal,
+                at,
             });
             session.rollback_pending.set(None);
         }
@@ -2872,6 +2864,7 @@ mod tests {
             plan: RefCell::new(None),
             requests: std::cell::Cell::new(0),
             settings_global: None,
+            folder: None,
         };
         let mut task_state = TaskState::new("admit", profile, &config.borrow());
         act_on(

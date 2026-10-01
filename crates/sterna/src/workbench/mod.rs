@@ -38,13 +38,13 @@ pub use sheets::{FormHit, keymap, render_form};
 use std::collections::BTreeSet;
 pub use view::{layout, render};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CellTab {
     Code,
     Diff,
     Output,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     Cell(usize),
     /// A row of the composer's popup: a command runs, a path completes.
@@ -199,7 +199,7 @@ pub(crate) fn contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
 }
 /// The answers a decision prompt offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Answer {
     AllowOnce,
     AllowForSession,

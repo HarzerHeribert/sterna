@@ -2,7 +2,10 @@
 
 Sterna's terminal interface. It draws with ratatui and needs no browser.
 Code: `crates/sterna/src/workbench/` (layout, input, sheets, themes),
-`src/session/ui.rs` (the live loop).
+`src/session/ui.rs` (the live loop). The terminal is a client of its
+session like any other ([engine](engine.md)): everything it draws arrives as
+the session's events, and everything a person does leaves as a command --
+so another client can watch the same session and answer its approvals.
 
 ## The screen
 

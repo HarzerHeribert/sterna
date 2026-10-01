@@ -56,6 +56,17 @@ const MUTED: Color = Color::Gray;
 const NOT_CONNECTED: &str = "gateway not connected.";
 
 impl ScreenState {
+    /// The sandbox level, set here and sent to the session.
+    pub fn set_level(&mut self, level: crate::permissions::Level) {
+        self.level.set(level);
+        if let Some(link) = &self.link {
+            link.send(crate::engine::wire::Command::SetLevel {
+                level: level.name().into(),
+                save: false,
+            });
+        }
+    }
+
     /// Whether this session runs without a sandbox right now.
     #[must_use]
     pub fn full_access(&self) -> bool {
@@ -173,16 +184,21 @@ pub struct ScreenState {
     /// The subscription a sign-in is running for, beside the session: the
     /// dock's chip that brings its panel back.
     pub signing_in: Option<String>,
-    /// The sandbox level, shared live with the approval gate: the settings
-    /// sheet changes it from this thread while a task runs.
+    /// The sandbox level as the session last said it. Changing it here
+    /// sends the change to the session ([`ScreenState::set_level`]).
     pub level: crate::permissions::LiveLevel,
-    /// The approval gate's memory: every call answered for the whole
-    /// session, which the Sandbox sheet lists and can forget.
-    pub memory: Option<crate::approval::Memory>,
-    /// The live list of hosts the session's network proxy lets through,
-    /// shared with it: the hosts sheet changes it from this thread. `None`
-    /// when no proxy runs.
-    pub allowed: Option<crate::sandbox::proxy::Allowed>,
+    /// Every call answered for the whole session, as the session listed it,
+    /// which the Sandbox sheet shows and can forget.
+    pub memory: Option<crate::engine::client::Memory>,
+    /// The hosts the session's network proxy lets through, as the session
+    /// listed them: the hosts sheet changes them. `None` when no proxy runs.
+    pub allowed: Option<crate::engine::client::Hosts>,
+    /// How this terminal reaches its session: the seam, and nothing else.
+    /// `None` on a screen with no session behind it (a test's).
+    pub link: Option<crate::engine::client::Link>,
+    /// How the session reads, as the session decided it: the words on each
+    /// card and under each answer.
+    pub reading: crate::engine::wire::Reading,
     pub effort: crate::wire::Effort,
     pub status_line: StatusLine,
     pub panel: Option<Panel>,
@@ -708,7 +724,7 @@ pub struct CellError {
 /// when there is one and estimates otherwise; a total that silently mixed
 /// them would be the one number on this screen a reader would trust without
 /// knowing what it was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Counted {
     /// Every turn so far carried a provider-reported usage row.
     Gateway,
@@ -739,7 +755,7 @@ impl Counted {
 }
 
 /// Cumulative task spend and its provenance. It deliberately has no cap.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TaskTokens {
     pub used: u64,
     pub counted: Counted,
@@ -751,7 +767,7 @@ pub struct TaskTokens {
 /// Occupancy of the most recent (or currently assembling) provider request.
 /// This is intentionally separate from [`TaskTokens`], which accumulates the
 /// cost of every request made for the task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextTokens {
     pub used: u64,
     pub cap: Option<u64>,
@@ -764,7 +780,7 @@ pub struct ContextTokens {
 /// What the session knows about the conversation beyond the messages
 /// themselves: one view per assistant cell, in cell order, and the task's
 /// token total.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notebook {
     pub inbox_depth: usize,
     pub batches_delivered: u64,

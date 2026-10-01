@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 /// Two, and no "other": work that belongs to neither is work whose cost
 /// nobody owns, and the right response to discovering some is to name a
 /// third tier rather than to hide it in a total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Tier {
     /// The model the person is talking to.
     Parent,

@@ -184,8 +184,9 @@ time it changes.
   `live/<id>.json`, the list, `<root>/.sterna/sessions/<id>.jsonl`,
   `sterna --sessions` and `--resume` name a session by the same id, whether
   a terminal or the host started it.
-- **The list.** Every session writes its own entry, whether or not a host
-  runs, under `sessions.lock`. A session's `last_used` (Unix ms) moves when
+- **The list.** Every session with a client -- a terminal's, or one served
+  on its port -- writes its own entry, whether or not a host runs, under
+  `sessions.lock`. A scripted run (`-p`, `exec`, `--task`) is not listed. A session's `last_used` (Unix ms) moves when
   a person sends it a message, never on attach, end, shutdown or restart; a
   folder's is its newest session's. Ties are ordered by id, then root. A
   root is the folder resolved, as the operating system spells it.

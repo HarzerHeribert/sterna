@@ -118,7 +118,7 @@ fn sandbox(sheet: &mut Sheet, s: &ScreenState) -> Vec<Item> {
     let remembered = s
         .memory
         .as_ref()
-        .map(crate::approval::Memory::entries)
+        .map(crate::engine::client::Memory::entries)
         .unwrap_or_default();
     for (allowed, heading) in [
         (true, "Allowed for this session"),

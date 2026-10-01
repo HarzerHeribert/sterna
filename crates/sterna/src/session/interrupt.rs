@@ -29,7 +29,7 @@ const INTERRUPT_POLL: Duration = Duration::from_millis(20);
 /// It is a count, not a flag: two presses read in one go -- a quick double
 /// tap, or a terminal that sends both at once -- land between two of the
 /// watcher's looks, and a flag raised twice reads as once.
-pub(super) static INTERRUPT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static INTERRUPT: AtomicUsize = AtomicUsize::new(0);
 static TERMINATE: AtomicBool = AtomicBool::new(false);
 
 /// Installs the process's SIGINT handler. Unix: `signal(2)`, whose BSD

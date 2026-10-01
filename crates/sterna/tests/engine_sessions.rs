@@ -89,7 +89,6 @@ fn unix_ms() -> u64 {
 /// terminal, both finish their task; they ran at the same time, and each
 /// wrote only inside its own folder.
 #[test]
-#[ignore = "plan goal 1"]
 fn two_sessions_in_two_folders_run_at_once_without_a_terminal_and_each_writes_only_its_own() {
     // Every reply waits, so a turn is still open when the other task asks.
     const PACE: Duration = Duration::from_secs(3);
@@ -216,7 +215,6 @@ fn tally(usage: &Value) -> Value {
 /// Two sessions' requests appear in the host's usage: each session's tokens
 /// are what its own replies said, and the total is their sum.
 #[test]
-#[ignore = "plan goal 9"]
 fn the_hosts_usage_counts_each_sessions_replies_and_totals_their_sum() {
     let said: Said = Arc::default();
     let record = Arc::clone(&said);

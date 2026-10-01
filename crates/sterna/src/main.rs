@@ -11,6 +11,7 @@ Usage:
   sterna update [--check]
   sterna config [global|local] [key] [value] [--root <path>]
   sterna session --root <path> [options]
+  sterna host [--background]
   sterna ruler run [options]
   sterna --help
   sterna --version
@@ -45,6 +46,13 @@ fn main() -> std::io::Result<()> {
     if args.first().map(String::as_str) == Some("ruler") {
         sterna::relocate::announce(None);
         if let Err(message) = sterna::ruler::cli::dispatch(&args[1..]) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("host") {
+        if let Err(message) = sterna::engine::host::main(&args[1..]) {
             eprintln!("{message}");
             std::process::exit(1);
         }

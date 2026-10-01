@@ -83,7 +83,7 @@ pub fn keep_hosts(s: &ScreenState, hosts: &[String]) -> String {
 /// prints. Full access is confirmed before it gets here (the Confirm sheet,
 /// which opens on Cancel), whichever route asked for it.
 pub fn set_level(s: &mut ScreenState, level: Level) -> String {
-    s.level.set(level);
+    s.set_level(level);
     match persist(s, Scope::Global, "sandbox.level", level.name()) {
         Ok(()) => level.now(),
         Err(error) => format!("{} · for this session only: {error}", level.now()),
