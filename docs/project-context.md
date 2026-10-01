@@ -96,14 +96,6 @@ ambiguous syntax falls back to a bounded window and names the omission.
 A definition is capped at 24,000 bytes and a result at 18 supporting
 excerpts.
 
-`mode` lets the model choose how much comes with the target. `normal`, the
-default, is everything above. `precise` is the definition alone: each
-neighbour is its first line under its whole range, imports, callers and
-tests are left out with a note saying how to get them, a small file asked
-for by `symbol` is that definition rather than the whole file, and a file
-named without a symbol is its outline. `generous` gives a file whole up to
-24,000 bytes instead of 16,384.
-
 `symbol` may name a member as `Class.member` (or `Outer.Inner.member`),
 walked member by member, so a method name two classes share is not
 ambiguous. A nearby definition is the one declared near the target, never

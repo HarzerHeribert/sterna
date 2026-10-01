@@ -1086,26 +1086,16 @@ fn perform_in_process(
             let Some(path) = resolved_path(checked, "path") else {
                 return Err(refuse("context needs a checked path".to_string()));
             };
-            let mode = text(checked, "mode")
-                .filter(|mode| !mode.is_empty())
-                .map_or(
-                    Ok(Default::default()),
-                    crate::project::source_context::Mode::parse,
-                );
-            let result = mode
-                .and_then(|mode| {
-                    crate::project::source_context::pack_with(
-                        profile,
-                        path,
-                        text(checked, "symbol").filter(|symbol| !symbol.is_empty()),
-                        mode,
-                    )
-                })
-                .map_err(|error| ToolError::Spawn {
-                    tool: tool.name().to_string(),
-                    program: PathBuf::from("(in-process)"),
-                    error: error.to_string(),
-                })?;
+            let result = crate::project::source_context::pack(
+                profile,
+                path,
+                text(checked, "symbol").filter(|symbol| !symbol.is_empty()),
+            )
+            .map_err(|error| ToolError::Spawn {
+                tool: tool.name().to_string(),
+                program: PathBuf::from("(in-process)"),
+                error: error.to_string(),
+            })?;
             let ranges: Vec<Value> = std::iter::once(&result.target)
                 .chain(result.supporting.iter())
                 .map(|excerpt| {

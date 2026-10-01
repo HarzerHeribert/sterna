@@ -181,60 +181,10 @@ impl SourceContext {
     }
 }
 
-/// How much a context carries besides its target: the model's choice
-/// (`context({mode})`). The user, 2026-10-01: "modes like generous, normal
-/// and precise so the model can choose" -- because how much a run chooses to
-/// read moved Sterna's fresh input as much as anything Sterna trimmed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Mode {
-    /// The target definition alone; each neighbour as its first line, so the
-    /// model knows what is there; no imports, callers or tests. A file named
-    /// without a symbol is its outline.
-    Precise,
-    /// The target, its imports, its neighbours whole, callers and tests; a
-    /// file under [`SMALL`] bytes whole.
-    #[default]
-    Normal,
-    /// As `Normal`, with a file whole up to [`DEF_CAP`] bytes.
-    Generous,
-}
-
-impl Mode {
-    pub fn parse(word: &str) -> Result<Self, ContextError> {
-        match word {
-            "precise" => Ok(Self::Precise),
-            "normal" => Ok(Self::Normal),
-            "generous" => Ok(Self::Generous),
-            other => Err(ContextError(format!(
-                "`mode` is `precise`, `normal` or `generous`; it was `{other}`"
-            ))),
-        }
-    }
-
-    /// Whether a file of `bytes` is delivered whole.
-    fn whole(self, bytes: usize) -> bool {
-        match self {
-            Self::Precise => false,
-            Self::Normal => bytes <= SMALL,
-            Self::Generous => bytes <= DEF_CAP,
-        }
-    }
-}
-
-/// [`pack_with`] in the default [`Mode::Normal`].
 pub fn pack(
     profile: &Profile,
     path: &Path,
     symbol: Option<&str>,
-) -> Result<SourceContext, ContextError> {
-    pack_with(profile, path, symbol, Mode::Normal)
-}
-
-pub fn pack_with(
-    profile: &Profile,
-    path: &Path,
-    symbol: Option<&str>,
-    mode: Mode,
 ) -> Result<SourceContext, ContextError> {
     let path = profile
         .check("source context", Access::Read, path)
@@ -245,8 +195,7 @@ pub fn pack_with(
     let rel = relative(profile, &path);
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
     let mut omissions = vec![];
-    let whole = mode.whole(text.len());
-    let inferred = (!whole && symbol.is_none())
+    let inferred = (text.len() > SMALL && symbol.is_none())
         .then(|| infer_incomplete_symbol(&lines, lang))
         .flatten();
     let selected_symbol = symbol.or(inferred.as_deref());
@@ -256,20 +205,8 @@ pub fn pack_with(
     // A body the miss branch builds itself, because an outline is drawn from
     // the whole file rather than sliced out of one range.
     let mut drawn: Option<String> = None;
-    let (role, range, complete) = if whole {
+    let (role, range, complete) = if text.len() <= SMALL {
         (ContextRole::CompleteFile, (0, lines.len()), true)
-    } else if mode == Mode::Precise && selected_symbol.is_none() {
-        let (body, found, dropped) = outline(&lines, lang);
-        omissions.push(format!(
-            "precise: the file's outline of {found} declaration(s), each prefixed by its line number; name the one you need as `symbol`"
-        ));
-        if dropped > 0 {
-            omissions.push(format!(
-                "{dropped} further declaration(s) omitted at the {OUTLINE_CAP}-name cap"
-            ));
-        }
-        drawn = Some(body);
-        (ContextRole::Outline, (0, lines.len()), false)
     } else if let Some(name) = selected_symbol {
         if let Some(r) = locate(&lines, name, lang) {
             (ContextRole::TargetDefinition, r, true)
@@ -349,32 +286,16 @@ pub fn pack_with(
     }
     let target = make(role, rel.clone(), range, body, complete);
     let mut supporting = vec![];
-    if mode == Mode::Precise {
-        // Each neighbour as its first line -- its signature -- under its
-        // whole range, so the model sees what is there and asks for the one
-        // it needs; nothing it was not shown can bind an edit.
-        if complete && target.role == ContextRole::TargetDefinition {
-            supporting.extend(nearby(&lines, &rel, range, lang).into_iter().map(|mut e| {
-                e.text = e.text.lines().next().unwrap_or_default().to_string();
-                e.complete = false;
-                e
-            }));
+    if text.len() > SMALL {
+        supporting.extend(imports(&lines, &rel, lang));
+        if complete {
+            supporting.extend(nearby(&lines, &rel, range, lang))
         }
-        omissions.push(
-            "precise: neighbours are their first line only, and imports, callers and tests are not shown; `mode: \"normal\"` adds them, `rg({pattern, around})` finds uses".into(),
-        );
-    } else {
-        if !whole {
-            supporting.extend(imports(&lines, &rel, lang));
-            if complete {
-                supporting.extend(nearby(&lines, &rel, range, lang))
-            }
-        }
-        if let Some(name) = selected_symbol {
-            let (mut refs, notes) = references(profile, &path, name);
-            supporting.append(&mut refs);
-            omissions.extend(notes)
-        }
+    }
+    if let Some(name) = selected_symbol {
+        let (mut refs, notes) = references(profile, &path, name);
+        supporting.append(&mut refs);
+        omissions.extend(notes)
     }
     if supporting.len() > SUPPORT_CAP {
         omissions.push(format!(

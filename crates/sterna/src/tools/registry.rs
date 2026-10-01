@@ -555,7 +555,6 @@ const CONTEXT: Tool = Tool::declare_in_process(
     &[
         Arg::required("path", ArgKind::Path),
         Arg::optional("symbol", ArgKind::Pattern),
-        Arg::optional("mode", ArgKind::Pattern),
     ],
     Purity::Pure,
 );

@@ -796,30 +796,29 @@ fn render_declaration(tool: &Tool) -> String {
     format!(
         "declare function {name}(a: {params}): Promise<{ret}>;\n// {summary} {purity}\n// @callers program",
         name = tool.name(),
-        params = render_params(tool.name(), tool.args()),
+        params = render_params(tool.args()),
         ret = entry.return_type,
         summary = entry.summary,
         purity = declarations::purity_clause(tool.purity()),
     )
 }
 
-fn render_params(tool: &str, args: &[Arg]) -> String {
+fn render_params(args: &[Arg]) -> String {
     if args.is_empty() {
         return "{}".to_string();
     }
-    let fields: Vec<String> = args
-        .iter()
-        .map(|arg| {
-            let optional_mark = if arg.is_required() { "" } else { "?" };
-            let value_type =
-                declarations::param_type(tool, arg.name()).unwrap_or(match arg.kind() {
+    let fields: Vec<String> =
+        args.iter()
+            .map(|arg| {
+                let optional_mark = if arg.is_required() { "" } else { "?" };
+                let value_type = match arg.kind() {
                     crate::tools::registry::ArgKind::Lines
                     | crate::tools::registry::ArgKind::Texts => "string[]",
                     _ => "string",
-                });
-            format!("{}{optional_mark}: {value_type}", arg.name())
-        })
-        .collect();
+                };
+                format!("{}{optional_mark}: {value_type}", arg.name())
+            })
+            .collect();
     format!("{{{}}}", fields.join("; "))
 }
 

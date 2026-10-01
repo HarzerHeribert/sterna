@@ -99,6 +99,21 @@ windows served as a preview: half were followed within two cells by a
 it. The window option was removed; the modes were kept for a run of their
 own.
 
+**`context` modes alone, 2026-10-01** (build `1d36e714`). The model chose
+`precise` on 146 of 347 contexts with no nudge to, and made more context
+calls instead (347 against 325): the text sent back was unchanged, 3.46M
+characters against 3.44M, and it resolved 24.3 to 25.0. The modes were
+removed; `context` decides what it returns, the same way every time.
+
+**What these comparisons can and cannot say.** The last three each ran one
+arm and set it against an earlier run, and the provider's cache served a
+different share of the input at different times of day: across the four
+runs fresh input moved −8 %, +11 % and +25 % while the result text the
+model read moved −3 %, −6 % and 0 %. Their fresh-input and cost figures
+mix the change with the day's cache; the result text and the behaviour
+counts are what they show. A comparison runs its control arm side by
+side in the same run, as the 2026-09-30 one did.
+
 ## Against the Codex CLI (2026-09-29, superseded by the section above)
 
 Same model (GPT-6 Sol) for both, three attempts per task. Sterna ran with its

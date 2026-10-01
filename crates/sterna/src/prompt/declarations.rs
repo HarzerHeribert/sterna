@@ -97,7 +97,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         name: "context",
         return_type: "{path: string; sha256: string; symbol: string | null; text: string; complete: boolean; ranges: {path: string; start: number; end: number; role: string}[]; omissions: string[]}",
-        summary: "Load the editing surface for one file or symbol. `mode` chooses how much comes with the target: `precise` is the definition alone with each neighbour as its first line (a file without `symbol` is its outline); `normal`, the default, adds neighbours whole, imports, callers and tests, and gives a file under 16 KB whole; `generous` gives a file under 24 KB whole. For a large source file, supply the target `symbol`; a member is named `Class.member`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
+        summary: "Load the editing surface for one file or symbol. For a large source file, supply the target `symbol`; a member is named `Class.member`. Its complete target, short display version, and ranked support are automatically printed once; the handle retains full `sha256` for rare disambiguation. A `symbol` the file does not hold is not a throw: it comes back with `complete: false` and an outline of the file's own declarations with their line numbers, so name the one you meant on the next call rather than guessing again. Do not print `text` or inspect the same file with `read`.",
     },
     Entry {
         name: "edit",
@@ -105,15 +105,6 @@ pub const ENTRIES: &[Entry] = &[
         summary: "After `const ctx = await context(...)` completed in the prior cell, call `edit({path, old, replacement})`, or use `oldLines` and `replacementLines` for literal blocks. For several hunks in one file pass `olds` and `replacements` (same length); they apply together or not at all, and a later `edit` of the same file binds to the version this one produced. Each array item is one logical line; do not build a multiline template literal. Pass exactly one form for each side. Sterna supplies `expected_sha256` when exactly one complete version is visible; pass `expected_sha256: ctx.sha256` only to disambiguate. Stale, missing, ambiguous, unseen, and no-op edits do not write.",
     },
 ];
-
-/// A parameter's TypeScript type where the registry's own (`string`) says
-/// less than the tool accepts.
-pub fn param_type(tool: &str, arg: &str) -> Option<&'static str> {
-    match (tool, arg) {
-        ("context", "mode") => Some("\"precise\" | \"normal\" | \"generous\""),
-        _ => None,
-    }
-}
 
 /// The entry for `name`, or `None` for a tool this table does not cover.
 pub fn lookup(name: &str) -> Option<&'static Entry> {
