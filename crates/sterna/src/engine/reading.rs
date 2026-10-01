@@ -40,7 +40,13 @@ pub fn cell(ordinal: usize, v: &CellView) -> CellReading {
         ("", "RECORDED", "muted")
     };
     let parts = line(v);
+    let calls = v.execution.as_deref().unwrap_or("");
+    let clean = v.error.is_none()
+        && v.execution.is_some()
+        && !calls.contains(" · failed")
+        && !calls.contains(" · denied");
     CellReading {
+        clean,
         cell: ordinal,
         state: state.into(),
         mark: mark.into(),
@@ -149,7 +155,13 @@ mod tests {
         let reading = cell(1, &v);
         assert_eq!(reading.state, "EXECUTED");
         assert_eq!(reading.line, "✓ executed · 1 file changed");
+        assert!(reading.clean);
         assert!(reading.facts.is_none(), "it returned no answer");
+        let denied = CellView {
+            execution: Some("write · denied".into()),
+            ..v.clone()
+        };
+        assert!(!cell(1, &denied).clean, "a denied call is not a clean run");
     }
 
     #[test]

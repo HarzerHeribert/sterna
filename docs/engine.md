@@ -86,6 +86,10 @@ answered, to that client only, with
 | `set_level` | `level`, `save` | the sandbox level: `ask`, `sandboxed` or `full` |
 | `forget` | `id` | forget an answer remembered for the session |
 | `rollback` | | undo the newest cell that changed files, without a preview |
+| `host` | `host`, `allow` | let a host through for the session, or stop letting it |
+| `sign_in_paste` | `text` | the address a browser ended on, for the sign-in running |
+| `sign_in_cancel` | | stop the sign-in running |
+| `resume` | `id` | the terminal only: end this session and start `id` in its place |
 | `end` | | end the session |
 
 An `answer` is one of `{"approval":"allow_once" | "allow_for_session" |
@@ -97,9 +101,11 @@ An `answer` is one of `{"approval":"allow_once" | "allow_for_session" |
 
 Every event is one line: `{"seq":<n>,"at":<unix ms>,"kind":"<kind>", …}`.
 `seq` counts up from 1 in a session and never repeats, and `at` is the
-session process's own clock. A session keeps every event for as long as it
-runs, so a client that attaches with `from: 1` gets exactly the events a
-client attached from the start was sent, and no snapshot. A client ignores
+session process's own clock. A session keeps every event, so a client that
+attaches with `from: 1` gets exactly the events a client attached from the
+start was sent, and no snapshot -- until the records it has sent add up to
+more than 64 MiB: then every record but the newest leaves the log, and a
+client attaching from before that point is sent a snapshot instead. A client ignores
 a kind it does not know.
 
 **Some lines are for one client only** and carry `seq: 0`: the
@@ -122,6 +128,11 @@ are never replayed.
 | `panel` | `panel` | a sheet the session built |
 | `facts` | `facts` | `{"model","effort","level","root","subagents"}` changed |
 | `usage` | `usage` | tokens used so far |
+| `hint` | `id`, `fits` | the decision model's reading of an approval arrived |
+| `memory` | `entries` | what was answered for the session, as the Sandbox sheet lists it |
+| `hosts` | `hosts` | the hosts a command may reach now |
+| `sign_in` | `sign_in` | a sign-in's progress: `started`, `note`, `panel`, `done` |
+| `suggest`, `unsuggest` | `label`, `types` | a chip offered on the opening screen, and taken away |
 | `ended` | `reason` | the session ended |
 
 A `prompt` is `{"id":<n>,"type":"approval"|"question"|"form", …}`. An
@@ -146,7 +157,10 @@ call. A cell still running has no reading: it is drawn from `activity`.
 ### Prompts, once
 
 A prompt is answered once. The first `answer` settles it: every client is
-sent `settled` with the answer and who gave it, once. An answer to a prompt
+sent `settled` with the answer and who gave it, once. A form is answered
+only by the client it was raised for, and is put away -- settled by the
+session -- when that client leaves. A call too large to confirm whole can
+be refused, never allowed. An answer to a prompt
 that is settled or unknown is `refused` (`to: "answer"`) to that client and
 changes nothing. A session with a client attached -- a terminal or a port
 -- is attended: an approval or a question waits for a client rather than

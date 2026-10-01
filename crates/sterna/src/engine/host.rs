@@ -28,7 +28,7 @@ const IDLE: Duration = Duration::from_secs(300);
 /// `sterna host [--background]`.
 pub fn main(args: &[String]) -> Result<(), String> {
     let folder = data::folder().ok_or("sterna host: there is no data folder for this user")?;
-    std::fs::create_dir_all(&folder).map_err(|e| format!("sterna host: {e}"))?;
+    std::fs::create_dir_all(folder.join("logs")).map_err(|e| format!("sterna host: {e}"))?;
     if args.iter().any(|a| a == "--background") {
         return background(&folder);
     }
@@ -79,7 +79,7 @@ fn background(folder: &Path) -> Result<(), String> {
 /// A process that outlives the one that started it: its own session on
 /// Unix, its own hidden console group on Windows.
 pub(crate) fn detach(command: &mut Process) {
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::process::CommandExt;
         // SAFETY: `setsid` is async-signal-safe and touches nothing of the
@@ -91,6 +91,8 @@ pub(crate) fn detach(command: &mut Process) {
             });
         }
     }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    std::os::unix::process::CommandExt::process_group(command, 0);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -184,7 +186,10 @@ fn serve(folder: &Path) -> Result<(), String> {
         std::thread::spawn(move || keep_time(&shared, &folder));
     }
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
+        let Ok(stream) = stream else {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
         let (shared, token, gateway) = (Arc::clone(&shared), token.clone(), Arc::clone(&gateway));
         let folder = folder.to_path_buf();
         std::thread::spawn(move || client(stream, &token, &shared, &gateway, &folder));
@@ -219,7 +224,9 @@ struct Gateway {
 
 impl Gateway {
     fn start(folder: &Path) -> Result<Self, String> {
-        let gateway = crate::gateway::select(None);
+        // The gateway installed beside this binary first: an app's bundle
+        // holds both, and a desktop app is started with no PATH to find one.
+        let gateway = crate::gateway::select(crate::gateway::installed().as_deref());
         let serving =
             crate::gateway::start_or_attach(&gateway, false, &folder.join("logs/gateway.log"))?;
         Ok(Self { serving })
@@ -345,7 +352,7 @@ fn start(
     if !root.is_absolute() || !root.is_dir() {
         return Err(format!("{} is not a folder", root.display()));
     }
-    let root = root.canonicalize().unwrap_or(root);
+    let root = data::plain(&root);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut process = Process::new(exe);
     process
@@ -368,27 +375,30 @@ fn start(
         .spawn()
         .map_err(|e| format!("could not start a session: {e}"))?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut reader = BufReader::new(stdout);
-    // The ready line is the first that says where the session listens.
-    let ready = loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("the session did not start".into());
-        }
-        if let Ok(ready) = serde_json::from_str::<Value>(line.trim())
-            && ready["listening"].is_string()
-        {
-            break ready;
-        }
-    };
+    // The ready line is the first that says where the session listens; the
+    // rest of its stdout is read and dropped, so it never blocks on a full
+    // pipe.
+    let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut rest = String::new();
-        while reader.read_line(&mut rest).unwrap_or(0) > 0 {
-            rest.clear();
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let mut ready = false;
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if !ready
+                && let Ok(value) = serde_json::from_str::<Value>(line.trim())
+                && value["listening"].is_string()
+            {
+                ready = true;
+                let _ = said.send(value);
+            }
+            line.clear();
         }
     });
+    let Ok(ready) = heard.recv_timeout(Duration::from_secs(60)) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("the session did not start".into());
+    };
     let id = ready["id"].as_str().unwrap_or_default().to_string();
     let listening = ready["listening"].as_str().unwrap_or_default().to_string();
     let token = ready["token"].as_str().unwrap_or_default().to_string();
@@ -471,7 +481,9 @@ fn watch_session(shared: &Shared, id: &str, listening: &str, token: &str, task: 
         lock(shared).watching.remove(id);
         return;
     };
-    line.send(&Command::Attach { from: Some(1) });
+    // Where the session stands, then what changes: the host needs its
+    // activity and usage, never its whole history.
+    line.send(&Command::Attach { from: None });
     if let Some(text) = task {
         line.send(&Command::Submit {
             text,
@@ -487,6 +499,11 @@ fn watch_session(shared: &Shared, id: &str, listening: &str, token: &str, task: 
                 Event::Activity { activity, since } => {
                     heard.activity = live_word(activity).into();
                     heard.since = since;
+                }
+                Event::Snapshot { state } => {
+                    heard.activity = live_word(state.activity).into();
+                    heard.since = state.since;
+                    heard.usage = state.usage;
                 }
                 Event::Usage { usage } => heard.usage = usage,
                 Event::Ended { .. } => heard.ended = true,
@@ -530,7 +547,8 @@ fn list(shared: &Shared) -> Value {
                 .sessions
                 .iter()
                 .map(|session| {
-                    let live = running.get(&session.id).map(|_| {
+                    let ended = hosting.heard.get(&session.id).is_some_and(|heard| heard.ended);
+                    let live = running.get(&session.id).filter(|_| !ended).map(|_| {
                         let heard = hosting.heard.get(&session.id).cloned().unwrap_or_default();
                         json!({
                             "state": if heard.activity.is_empty() { "idle" } else { heard.activity.as_str() },
@@ -584,8 +602,22 @@ fn usage(shared: &Shared) -> Value {
 
 /// Sends the list, and again each time it changes, until the client goes.
 fn watch(writer: &mut TcpStream, shared: &Shared) {
+    // A client that has gone is noticed by its end of the connection
+    // closing, whether or not the list changes.
+    let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Ok(reading) = writer.try_clone() {
+        let gone = Arc::clone(&gone);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(reading);
+            while read_line(&mut reader).is_some() {}
+            gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
     let mut last = Value::Null;
     loop {
+        if gone.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let now = list(shared);
         if now != last {
             if writeln!(writer, "{}", json!({ "list": now })).is_err() {
@@ -615,10 +647,17 @@ impl Line {
         let hello =
             json!({"hello": {"token": token, "protocol": wire::PROTOCOL, "client": client}});
         writeln!(line.writer, "{hello}").map_err(|e| e.to_string())?;
+        // A port that takes the connection and never answers is not a
+        // session: a stale entry whose port another program now holds.
+        let _ = line
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)));
         let welcome = read_line(&mut line.reader).ok_or("no welcome")?;
         if !welcome.contains("\"welcome\"") {
             return Err(welcome);
         }
+        let _ = line.reader.get_ref().set_read_timeout(None);
         Ok(line)
     }
 

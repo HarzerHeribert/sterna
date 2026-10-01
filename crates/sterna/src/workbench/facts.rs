@@ -61,24 +61,6 @@ pub fn save_list(s: &ScreenState, key: &str, values: &[String]) -> Result<(), St
     persist(s, Scope::Global, key, &array.to_string())
 }
 
-/// "Always allow": the hosts join the global `sandbox.hosts`, once each.
-/// The live proxy already has them (the gate added them); this is the part
-/// that outlives the session. Returns the notice.
-pub fn keep_hosts(s: &ScreenState, hosts: &[String]) -> String {
-    let mut kept = global_list(s, "sandbox.hosts").unwrap_or_default();
-    for host in hosts {
-        if !kept.iter().any(|h| h.eq_ignore_ascii_case(host)) {
-            kept.push(host.clone());
-        }
-    }
-    let names = hosts.join(", ");
-    let is = if hosts.len() == 1 { "is" } else { "are" };
-    match save_list(s, "sandbox.hosts", &kept) {
-        Ok(()) => format!("{names} {is} allowed in every session from now on."),
-        Err(error) => format!("{names} {is} allowed for this session only: {error}"),
-    }
-}
-
 /// The level, set now and saved globally; returns the notice every route
 /// prints. Full access is confirmed before it gets here (the Confirm sheet,
 /// which opens on Cancel), whichever route asked for it.

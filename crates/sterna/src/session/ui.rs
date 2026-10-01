@@ -452,8 +452,7 @@ impl LiveUi {
         let _ = io::stdout().flush();
         let hub = live.hub.sender();
         thread::spawn(move || {
-            let mut sink = Vec::new();
-            let _ = io::Read::read_to_end(&mut io::stdin(), &mut sink);
+            let _ = io::copy(&mut io::stdin(), &mut io::sink());
             let _ = hub.send(crate::engine::hub::In::Command {
                 client: 0,
                 command: crate::engine::wire::Command::End,
@@ -796,10 +795,7 @@ fn run(
                     }
                     if completed > previous
                         && !state.reduced_motion
-                        && reading
-                            .cells
-                            .last()
-                            .is_some_and(|cell| cell.tone == "success")
+                        && reading.cells.last().is_some_and(|cell| cell.clean)
                     {
                         state.completion_tick = Some(0);
                     }
@@ -1110,11 +1106,9 @@ fn run(
             match done {
                 decision::Done::Nothing => {}
                 decision::Done::Redraw => dirty = true,
-                decision::Done::KeepHosts(hosts) => {
-                    let notice = crate::workbench::facts::keep_hosts(&state, &hosts);
-                    state.note(notice);
-                    dirty = true;
-                }
+                // "Always allow": the session keeps the hosts in the global
+                // settings and says so, to every client.
+                decision::Done::KeepHosts(_) => dirty = true,
                 // The same Ctrl-C as over a running turn: it stops the
                 // turn, and says so.
                 decision::Done::Interrupt => {

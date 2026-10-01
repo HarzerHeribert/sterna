@@ -14,11 +14,23 @@ use super::wire::{self, Command, Event, HelloLine};
 /// The longest line a client may send: a hello, a message, a pasted key.
 const MAX_LINE: usize = 4 * 1024 * 1024;
 
-/// A port that is listening, and the token a client must say.
-#[derive(Clone, Debug)]
+/// A port that is listening, and the token a client must say. Dropped, it
+/// stops taking clients: a terminal that switches to another session must
+/// not leave the old one answering hellos.
+#[derive(Debug)]
 pub(crate) struct Port {
     pub(crate) listening: SocketAddr,
     pub(crate) token: String,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Port {
+    fn drop(&mut self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The accept loop wakes on a connection, finds the port closed, and
+        // ends.
+        let _ = TcpStream::connect_timeout(&self.listening, Duration::from_millis(200));
+    }
 }
 
 /// Opens the port for `session` and serves every client that says the token.
@@ -27,13 +39,22 @@ pub(crate) fn open(hub: &Hub, session: &str) -> std::io::Result<Port> {
     let port = Port {
         listening: listener.local_addr()?,
         token: super::data::token(),
+        closed: Arc::default(),
     };
     let token = Arc::new(port.token.clone());
     let session = Arc::new(session.to_string());
     let hub = hub.clone();
+    let closed = Arc::clone(&port.closed);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
+            if closed.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            let Ok(stream) = stream else {
+                // Out of descriptors, say: wait rather than spin.
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            };
             let (hub, token, session) = (hub.clone(), Arc::clone(&token), Arc::clone(&session));
             std::thread::spawn(move || serve(stream, &hub, &token, &session));
         }

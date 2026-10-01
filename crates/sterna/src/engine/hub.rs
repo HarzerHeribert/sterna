@@ -135,6 +135,17 @@ pub(crate) fn start(
     inputs: mpsc::Sender<Input>,
     saves: Saves,
 ) -> (Hub, std::thread::JoinHandle<()>) {
+    start_keeping(state, steer, inputs, saves, RECORDS_KEPT)
+}
+
+/// [`start`], keeping `records_kept` bytes of superseded records.
+fn start_keeping(
+    state: State,
+    steer: Arc<Steer>,
+    inputs: mpsc::Sender<Input>,
+    saves: Saves,
+    records_kept: usize,
+) -> (Hub, std::thread::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel();
     let mut hub = Engine {
         seq: 0,
@@ -155,6 +166,11 @@ pub(crate) fn start(
         owner: None,
         resumed: Activity::Idle,
         shown_hints: BTreeMap::new(),
+        raised: BTreeMap::new(),
+        trimmed: 0,
+        record_bytes: 0,
+        records_kept,
+        sign_in_owner: None,
     };
     let thread = std::thread::spawn(move || hub.run(&receiver));
     (Hub(sender), thread)
@@ -204,7 +220,23 @@ struct Engine {
     resumed: Activity,
     /// The decision model's reading of each approval, once sent.
     shown_hints: BTreeMap<u64, f64>,
+    /// Every prompt that waits, as it was raised and as a client attaching
+    /// now is to be shown it.
+    raised: BTreeMap<u64, Prompt>,
+    /// The newest event a superseded record was dropped from the log at: a
+    /// client attaching from before it is sent a snapshot instead.
+    trimmed: u64,
+    /// About how much the records still in the log hold.
+    record_bytes: usize,
+    /// How much of them the log keeps ([`RECORDS_KEPT`]).
+    records_kept: usize,
+    /// The client a running sign-in answers to.
+    sign_in_owner: Option<u64>,
 }
+
+/// How much of superseded records the log keeps before it drops them: a
+/// long session's records add up to a copy of the whole conversation each.
+const RECORDS_KEPT: usize = 64 * 1024 * 1024;
 
 impl Engine {
     fn run(&mut self, receiver: &mpsc::Receiver<In>) {
@@ -222,9 +254,7 @@ impl Engine {
                         },
                     );
                 }
-                Ok(In::Leave { client }) => {
-                    self.clients.remove(&client);
-                }
+                Ok(In::Leave { client }) => self.leave(client),
                 Ok(In::Command { client, command }) => self.command(client, command),
                 Ok(In::Tell { client, event }) => self.tell(client, *event),
                 Ok(In::Failed(reason)) => {
@@ -254,10 +284,92 @@ impl Engine {
             at: wire::now_ms(),
             event,
         });
+        if let Event::Transcript {
+            conversation,
+            notebook,
+            ..
+        } = &envelope.event
+        {
+            self.keep_one_record(record_size(conversation, notebook));
+        }
         self.log.push(Arc::clone(&envelope));
-        self.clients.retain(|_, client| {
-            !client.attached || client.sink.send(Out::Event(Arc::clone(&envelope))).is_ok()
+        let gone: Vec<u64> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| {
+                client.attached && client.sink.send(Out::Event(Arc::clone(&envelope))).is_err()
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for client in gone {
+            self.leave(client);
+        }
+    }
+
+    /// A record is about to join the log: once the records in it hold more
+    /// than [`RECORDS_KEPT`], every earlier one goes.
+    fn keep_one_record(&mut self, size: usize) {
+        self.record_bytes += size;
+        if self.record_bytes <= self.records_kept {
+            return;
+        }
+        let dropped = self
+            .log
+            .iter()
+            .filter(|e| matches!(e.event, Event::Transcript { .. }))
+            .map(|e| e.seq)
+            .max()
+            .unwrap_or(0);
+        self.log
+            .retain(|e| !matches!(e.event, Event::Transcript { .. }));
+        self.trimmed = self.trimmed.max(dropped);
+        self.record_bytes = size;
+    }
+
+    /// A client has gone: a form only it could answer is put away, so the
+    /// session waiting on it goes on.
+    fn leave(&mut self, client: u64) {
+        self.clients.remove(&client);
+        if self.sign_in_owner == Some(client) {
+            self.sign_in_owner = None;
+        }
+        let owned: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(
+                |(_, pending)| matches!(pending, Pending::Form(_, Some(owner)) if *owner == client),
+            )
+            .map(|(id, _)| *id)
+            .collect();
+        for id in owned {
+            self.dismiss(id);
+        }
+    }
+
+    /// A prompt nobody will answer: settled by the session, with nobody's
+    /// answer.
+    fn dismiss(&mut self, id: u64) {
+        let Some(pending) = self.pending.remove(&id) else {
+            return;
+        };
+        self.raised.remove(&id);
+        match pending {
+            Pending::Form(reply, _) => {
+                let _ = reply.send(None);
+            }
+            Pending::Ask(request) => {
+                request.respond(crate::ask::Answer::dismissed());
+            }
+            Pending::Approval(request) => {
+                request.respond(crate::approval::Decision::DenyOnce);
+            }
+        }
+        self.emit(Event::Settled {
+            id,
+            by: "session".into(),
+            answer: Answer::Dismiss,
         });
+        self.release();
     }
 
     /// A line for one client only, outside the session's sequence.
@@ -283,6 +395,18 @@ impl Engine {
         }
     }
 
+    /// A running sign-in's word, for the client that started it -- it runs
+    /// beside the session, long after that client's command was answered.
+    fn for_sign_in(&mut self, event: Event) {
+        match self
+            .sign_in_owner
+            .filter(|owner| self.clients.contains_key(owner))
+        {
+            Some(owner) => self.tell(owner, event),
+            None => self.emit(event),
+        }
+    }
+
     fn refuse(&mut self, client: u64, to: &str, reason: impl Into<String>) {
         self.tell(
             client,
@@ -295,25 +419,8 @@ impl Engine {
 
     fn snapshot(&self) -> State {
         let mut state = self.state.clone();
-        state.prompts = self
-            .pending
-            .iter()
-            .filter(|(_, pending)| !matches!(pending, Pending::Form(..)))
-            .filter_map(|(id, _)| self.prompt_of(*id))
-            .collect();
+        state.prompts = self.raised.values().cloned().collect();
         state
-    }
-
-    /// The prompt as it was raised: kept beside the handle for a client
-    /// that attaches while it waits.
-    fn prompt_of(&self, id: u64) -> Option<Prompt> {
-        self.log
-            .iter()
-            .rev()
-            .find_map(|envelope| match &envelope.event {
-                Event::Prompt { prompt } if prompt.id == id => Some(prompt.clone()),
-                _ => None,
-            })
     }
 
     fn set_activity(&mut self, activity: Activity) {
@@ -327,6 +434,11 @@ impl Engine {
     }
 
     fn facts(&mut self) {
+        // The level as it stands in the session: a control another route
+        // took moves it too.
+        if let Some(level) = &self.level {
+            self.state.facts.level = level.level().name().into();
+        }
         let facts = self.state.facts.clone();
         self.emit(Event::Facts { facts });
     }
@@ -361,9 +473,9 @@ impl Engine {
                     self.shown_hints.insert(id, fits);
                 }
                 self.pending.insert(id, Pending::Approval(request));
-                self.emit(Event::Prompt {
-                    prompt: Prompt { id, asks },
-                });
+                let prompt = Prompt { id, asks };
+                self.raised.insert(id, prompt.clone());
+                self.emit(Event::Prompt { prompt });
                 self.hold();
             }
             Update::Ask(request) => {
@@ -376,9 +488,9 @@ impl Engine {
                     guess: request.weights().map(|w| w.choice.clone()),
                 };
                 self.pending.insert(id, Pending::Ask(request));
-                self.emit(Event::Prompt {
-                    prompt: Prompt { id, asks },
-                });
+                let prompt = Prompt { id, asks };
+                self.raised.insert(id, prompt.clone());
+                self.emit(Event::Prompt { prompt });
                 self.hold();
             }
             Update::Form(form, reply) => {
@@ -459,7 +571,8 @@ impl Engine {
                 self.state.sign_in = Some(label.clone());
                 // A new sign-in replaces one still running, which is cancelled.
                 self.sign_in = crate::session::controls::sign_in::Running(Some(handle));
-                self.for_owner(Event::SignIn {
+                self.sign_in_owner = self.owner;
+                self.for_sign_in(Event::SignIn {
                     sign_in: wire::SignIn::Started { label },
                 });
             }
@@ -480,7 +593,7 @@ impl Engine {
                         wire::SignIn::Done
                     }
                 };
-                self.for_owner(Event::SignIn { sign_in });
+                self.for_sign_in(Event::SignIn { sign_in });
             }
             Update::Panel(panel) => self.for_owner(Event::Panel { panel }),
             Update::Notice(text) => {
@@ -526,7 +639,9 @@ impl Engine {
             Some(activity) => {
                 self.busy = activity.working();
                 if !self.busy {
-                    // A turn that ended takes the prompts nobody answered.
+                    // A turn that ended takes the prompts nobody answered,
+                    // and ends as it ended, not as it was before a wait.
+                    self.resumed = activity;
                     self.drop_settled();
                 }
                 if self.state.activity == Activity::AwaitingYou && self.waiting_on_a_person() {
@@ -699,7 +814,12 @@ impl Engine {
                 }
                 self.start(Some(client), "/rollback now".into());
             }
+            // Switching the session a process runs is the terminal's: a
+            // served session's host would lose the one it started.
             Command::Resume { id } => {
+                if name != wire::TERMINAL {
+                    return self.refuse(client, "resume", "only the terminal switches sessions");
+                }
                 crate::session::resume::switch_to(id);
                 self.end();
             }
@@ -713,7 +833,10 @@ impl Engine {
         };
         found.attached = true;
         match from {
-            Some(from) => {
+            // A record before `from` has been dropped from the log: what
+            // the client would have been sent is no longer whole, so it is
+            // sent where the session stands instead.
+            Some(from) if from > self.trimmed => {
                 let sink = found.sink.clone();
                 for envelope in self.log.iter().filter(|e| e.seq >= from) {
                     if sink.send(Out::Event(Arc::clone(envelope))).is_err() {
@@ -721,7 +844,7 @@ impl Engine {
                     }
                 }
             }
-            None => {
+            _ => {
                 let state = Box::new(self.snapshot());
                 self.tell(client, Event::Snapshot { state });
             }
@@ -730,7 +853,7 @@ impl Engine {
 
     /// A message or a command. A message sent while a turn runs waits in the
     /// queue; a control mid-turn applies from the turn's next request, and
-    /// any other command waits for the turn to end.
+    /// any other command is refused until the turn has ended.
     fn submit(&mut self, client: u64, text: String) {
         let command = text.trim_start().starts_with('/');
         if !self.busy {
@@ -791,6 +914,17 @@ impl Engine {
             self.steer.request_stop(Stopper::You);
             self.steer.request_cancel();
         }
+        // A form the session waits on would keep it from ever reading the
+        // end.
+        let forms: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| matches!(pending, Pending::Form(..)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in forms {
+            self.dismiss(id);
+        }
         let _ = self.inputs.send(Input::Exit);
     }
 
@@ -807,6 +941,25 @@ impl Engine {
             (Pending::Approval(request), answer) => {
                 use crate::approval::Decision;
                 let hosts = request.hosts().to_vec();
+                // A call too large to show whole cannot be allowed from any
+                // surface: nobody could have read what they allowed.
+                let allows = matches!(
+                    answer,
+                    Answer::Approval(
+                        wire::Choice::AllowOnce
+                            | wire::Choice::AllowForSession
+                            | wire::Choice::AllowHostSession
+                            | wire::Choice::AllowHostAlways
+                    )
+                );
+                if allows && !request.action().confirmation().complete {
+                    self.pending.insert(id, Pending::Approval(request));
+                    return self.refuse(
+                        client,
+                        "answer",
+                        "this call is too large to confirm; deny it and ask for a smaller one",
+                    );
+                }
                 let decision = match &answer {
                     Answer::Approval(choice) => match choice {
                         wire::Choice::AllowOnce => Decision::AllowOnce,
@@ -856,6 +1009,10 @@ impl Engine {
                 answer
             }
             (Pending::Form(reply, owner), answer) => {
+                if owner.is_some_and(|owner| owner != client) {
+                    self.pending.insert(id, Pending::Form(reply, owner));
+                    return self.refuse(client, "answer", "this form is another client's");
+                }
                 let given = match answer {
                     Answer::Form(values) => Some(values),
                     Answer::Dismiss => None,
@@ -869,6 +1026,7 @@ impl Engine {
                 Answer::Form(Vec::new())
             }
         };
+        self.raised.remove(&id);
         self.emit(Event::Settled {
             id,
             by: name.to_string(),
@@ -893,6 +1051,7 @@ impl Engine {
             .collect();
         for id in gone {
             self.pending.remove(&id);
+            self.raised.remove(&id);
             self.emit(Event::Settled {
                 id,
                 by: "session".into(),
@@ -921,10 +1080,24 @@ impl Engine {
             .collect();
         for (id, fits) in hints {
             self.shown_hints.insert(id, fits);
+            if let Some(Prompt {
+                asks: Asks::Approval { fits: shown, .. },
+                ..
+            }) = self.raised.get_mut(&id)
+            {
+                *shown = Some(fits);
+            }
             self.emit(Event::Hint { id, fits });
         }
         self.memory_changed();
         self.hosts_changed();
+        if self
+            .level
+            .as_ref()
+            .is_some_and(|level| level.level().name() != self.state.facts.level)
+        {
+            self.facts();
+        }
     }
 
     fn memory_changed(&mut self) {
@@ -945,13 +1118,24 @@ impl Engine {
         }
     }
 
-    /// Saves one global setting where the session's settings live.
+    /// Saves one global setting where the session's settings live, and says
+    /// so when it could not.
     fn save(&mut self, key: &str, value: &str) {
+        if let Err(error) = self.saved(key, value) {
+            let text = format!("{key} is set for this session only: {error}");
+            self.state.notes.push(text.clone());
+            self.emit(Event::Notice { text });
+        }
+    }
+
+    /// Saves one global setting; a session that names no settings folder
+    /// saves nothing, and that is not an error.
+    fn saved(&self, key: &str, value: &str) -> Result<(), String> {
         let (Some(root), Some(global)) = (self.saves.root.clone(), self.saves.global.clone())
         else {
-            return;
+            return Ok(());
         };
-        let saved = crate::settings::Store::with_global(&root, Some(global)).and_then(|store| {
+        crate::settings::Store::with_global(&root, Some(global)).and_then(|store| {
             let snapshot = store.read(crate::settings::Scope::Global)?;
             store
                 .save(
@@ -960,12 +1144,7 @@ impl Engine {
                     &[(key.to_string(), Some(value.to_string()))],
                 )
                 .map(|_| ())
-        });
-        if let Err(error) = saved {
-            let text = format!("{key} is set for this session only: {error}");
-            self.state.notes.push(text.clone());
-            self.emit(Event::Notice { text });
-        }
+        })
     }
 
     /// "Always allow": the hosts join the global `sandbox.hosts`.
@@ -998,8 +1177,202 @@ impl Engine {
             }
         }
         let array = toml::Value::Array(kept.into_iter().map(toml::Value::String).collect());
-        self.save("sandbox.hosts", &array.to_string());
+        let names = hosts.join(", ");
+        let is = if hosts.len() == 1 { "is" } else { "are" };
+        let text = match self.saved("sandbox.hosts", &array.to_string()) {
+            Ok(()) => format!("{names} {is} allowed in every session from now on."),
+            Err(error) => format!("{names} {is} allowed for this session only: {error}"),
+        };
+        self.state.notes.push(text.clone());
+        self.emit(Event::Notice { text });
     }
 }
 
 type RecordParts = (Conversation, Notebook, ServedBy, Option<Activity>);
+
+/// About how many bytes a record holds: its messages' text and its cells'.
+fn record_size(conversation: &Conversation, notebook: &Notebook) -> usize {
+    let messages: usize = conversation
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .map(|block| block.text().len() + 64)
+        .sum();
+    let cells: usize = notebook
+        .cells
+        .iter()
+        .map(|cell| {
+            [
+                &cell.changes,
+                &cell.stdout,
+                &cell.output,
+                &cell.table,
+                &cell.returned,
+            ]
+            .iter()
+            .filter_map(|text| text.as_ref().map(String::len))
+            .sum::<usize>()
+                + 256
+        })
+        .sum();
+    conversation.system.len() + messages + cells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::client::{Joined, join};
+    use crate::permissions::{Level, LiveLevel};
+
+    struct Running {
+        hub: Hub,
+        thread: Option<std::thread::JoinHandle<()>>,
+        _inputs: mpsc::Receiver<Input>,
+    }
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.hub.send(Update::Stop);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn running(records_kept: usize) -> Running {
+        let (inputs, received) = mpsc::channel();
+        let (hub, thread) = start_keeping(
+            State::default(),
+            Arc::new(Steer::default()),
+            inputs,
+            Saves::default(),
+            records_kept,
+        );
+        Running {
+            hub,
+            thread: Some(thread),
+            _inputs: received,
+        }
+    }
+
+    fn attached(hub: &Hub, name: &str) -> Joined {
+        let joined = join(hub, name);
+        joined.link.send(Command::Attach { from: None });
+        joined
+    }
+
+    /// The next event `wanted` matches, within five seconds.
+    fn next(joined: &Joined, wanted: impl Fn(&Event) -> bool) -> Arc<Envelope> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match joined.events.recv_timeout(left) {
+                Ok(Out::Event(envelope)) if wanted(&envelope.event) => return envelope,
+                Ok(_) => {}
+                Err(_) => panic!("the awaited event never came"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_form_whose_client_leaves_is_put_away_and_the_session_goes_on() {
+        let session = running(RECORDS_KEPT);
+        let owner = attached(&session.hub, "desktop");
+        // The form answers this client's command, so it is this client's.
+        owner.link.send(Command::Submit {
+            text: "/key openai".into(),
+            images: Vec::new(),
+        });
+        let (reply, answered) = mpsc::sync_channel(1);
+        let form = crate::tui::Form::new("Key", "Paste it.", Vec::new());
+        let _ = session.hub.send(Update::Form(Box::new(form), reply));
+        next(&owner, |event| matches!(event, Event::Prompt { .. }));
+        owner.link.leave();
+        assert_eq!(
+            answered.recv_timeout(Duration::from_secs(5)),
+            Ok(None),
+            "the session waiting on the form was let go"
+        );
+    }
+
+    #[test]
+    fn a_call_too_large_to_show_whole_is_refused_an_allow_and_takes_a_denial() {
+        let session = running(RECORDS_KEPT);
+        let watcher = attached(&session.hub, "desktop");
+        let (gate, requests) = crate::approval::Gate::channel(LiveLevel::new(Level::Ask));
+        let mut arguments = std::collections::BTreeMap::new();
+        arguments.insert("path".to_string(), "/tmp/root/big.txt".to_string());
+        arguments.insert("content".to_string(), "x".repeat(20 * 1024));
+        let action =
+            crate::approval::Action::new("write", std::path::Path::new("/tmp/root"), arguments);
+        let admitted = std::thread::spawn(move || gate.admit(action, || false));
+        let request = requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the person is asked");
+        let _ = session.hub.send(Update::Approval(request));
+        let raised = next(&watcher, |event| matches!(event, Event::Prompt { .. }));
+        let Event::Prompt { prompt } = &raised.event else {
+            unreachable!()
+        };
+        watcher.link.send(Command::Answer {
+            prompt: prompt.id,
+            answer: Answer::Approval(wire::Choice::AllowOnce),
+        });
+        next(
+            &watcher,
+            |event| matches!(event, Event::Refused { to, .. } if to == "answer"),
+        );
+        watcher.link.send(Command::Answer {
+            prompt: prompt.id,
+            answer: Answer::Approval(wire::Choice::DenyOnce),
+        });
+        assert_eq!(admitted.join().unwrap(), crate::approval::Admission::Denied);
+    }
+
+    #[test]
+    fn a_level_the_session_moves_on_its_own_reaches_every_client() {
+        let session = running(RECORDS_KEPT);
+        let watcher = attached(&session.hub, "desktop");
+        let level = LiveLevel::new(Level::Sandboxed);
+        let _ = session.hub.send(Update::Level(level.clone()));
+        // A snapshot is answered after the level was taken in.
+        let probe = attached(&session.hub, "probe");
+        next(&probe, |event| matches!(event, Event::Snapshot { .. }));
+        level.set(Level::Ask);
+        next(
+            &watcher,
+            |event| matches!(event, Event::Facts { facts } if facts.level == "ask"),
+        );
+    }
+
+    #[test]
+    fn a_client_attaching_from_before_a_dropped_record_is_sent_where_the_session_stands() {
+        let session = running(1024);
+        let record = |text: &str| {
+            let mut conversation = Conversation::default();
+            conversation.messages.push(crate::contract::Message::text(
+                crate::contract::Role::User,
+                text.repeat(400),
+            ));
+            Update::Snapshot(Box::new((
+                conversation,
+                Notebook::default(),
+                ServedBy::default(),
+                None,
+            )))
+        };
+        let early = attached(&session.hub, "early");
+        let _ = session.hub.send(record("first "));
+        let _ = session.hub.send(record("second "));
+        // Both records reached a client attached all along.
+        next(&early, |event| matches!(event, Event::Transcript { .. }));
+        next(&early, |event| matches!(event, Event::Transcript { .. }));
+        let late = join(&session.hub, "late");
+        late.link.send(Command::Attach { from: Some(1) });
+        let first = next(&late, |_| true);
+        assert!(
+            matches!(first.event, Event::Snapshot { .. }),
+            "the first record left the log, so a replay from it would not be whole"
+        );
+    }
+}

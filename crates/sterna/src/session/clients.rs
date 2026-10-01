@@ -29,7 +29,7 @@ pub(super) fn open(
     transcript: &Transcript,
     seed: Seed<'_>,
 ) -> Result<(Option<ui::LiveUi>, PathBuf), String> {
-    let folder = std::fs::canonicalize(&args.root).unwrap_or_else(|_| args.root.clone());
+    let folder = crate::engine::data::plain(&args.root);
     let opening = || ui::Opening {
         session: seed.session.to_string(),
         root: folder.clone(),
@@ -61,7 +61,9 @@ pub(super) fn open(
     }
     let mut state = tui::ScreenState {
         model: seed.started_on.clone(),
-        level: seed.level.clone(),
+        // The terminal's own copy, moved only by what the session says: the
+        // session's level is the session's.
+        level: crate::permissions::LiveLevel::new(seed.level.level()),
         effort: seed.effort,
         settings_root: Some(args.root.clone()),
         settings_global: crate::project::workflows::user_directory(),

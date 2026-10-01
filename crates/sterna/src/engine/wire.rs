@@ -399,6 +399,8 @@ pub struct CellReading {
     pub line: String,
     /// The same line in its parts, each with its tone.
     pub parts: Vec<Part>,
+    /// It ran, threw nothing, and no call it made failed or was denied.
+    pub clean: bool,
     /// The facts under the answer this cell returned, when it returned one.
     pub facts: Option<AnswerReading>,
 }

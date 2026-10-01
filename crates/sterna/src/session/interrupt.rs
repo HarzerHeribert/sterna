@@ -180,6 +180,9 @@ impl Interrupter {
         bg::shutdown_within(&self.session, REAP_GRACE);
         std::thread::sleep(REAP_GRACE);
         ui::restore_terminal();
+        // The exit below runs no destructor: the entry that says where this
+        // session listens goes now, or it would point at nothing.
+        crate::engine::data::withdraw_all();
         eprintln!("sterna: {message}");
         // Every way out says how to come back, Ctrl-C included.
         resume::goodbye()

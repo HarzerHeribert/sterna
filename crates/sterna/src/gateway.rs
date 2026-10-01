@@ -56,7 +56,7 @@ impl Gateway {
     pub(crate) fn control_command(&self, args: &[&str]) -> Option<Command> {
         let mut command = match self {
             Self::Command { gateway } => Command::new(gateway),
-            Self::Attached => Command::new(attached_gateway_binary()?),
+            Self::Attached => Command::new(installed()?),
         };
         command.args(args);
         Some(command)
@@ -237,7 +237,7 @@ const GATEWAY_NAMES: &[&str] = &["inference-gateway"];
 /// anywhere" has to be distinguishable from "the gateway refused".** A bare
 /// name handed to `Command::new` would fail at spawn either way, and the
 /// controls would report a reachable gateway that said no.
-fn attached_gateway_binary() -> Option<PathBuf> {
+pub(crate) fn installed() -> Option<PathBuf> {
     if let Some(named) = std::env::var_os("INFERENCE_GATEWAY_BIN").filter(|value| !value.is_empty())
     {
         return Some(PathBuf::from(named));

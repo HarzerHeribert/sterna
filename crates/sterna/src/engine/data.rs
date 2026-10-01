@@ -48,6 +48,26 @@ fn resolve(
     (usual.as_deref() != Some(config.as_path())).then(|| config.join("sterna").join("data"))
 }
 
+/// A folder as a person reads it: resolved, and on Windows without the
+/// `\\?\` a resolved drive path carries. A folder that cannot be resolved
+/// is kept as it was given.
+#[must_use]
+pub fn plain(path: &Path) -> PathBuf {
+    let Ok(resolved) = std::fs::canonicalize(path) else {
+        return path.to_path_buf();
+    };
+    #[cfg(windows)]
+    {
+        let text = resolved.to_string_lossy().into_owned();
+        if let Some(rest) = text.strip_prefix(r"\\?\")
+            && rest.chars().nth(1) == Some(':')
+        {
+            return PathBuf::from(rest);
+        }
+    }
+    resolved
+}
+
 /// A fresh 256-bit secret, as hex.
 #[must_use]
 pub fn token() -> String {
@@ -178,6 +198,9 @@ impl Live {
                 .map_err(std::io::Error::other)?
                 .as_bytes(),
         )?;
+        if let Ok(mut published) = PUBLISHED.lock() {
+            published.push(path.clone());
+        }
         Ok(Published(path))
     }
 }
@@ -186,9 +209,26 @@ impl Live {
 #[derive(Debug)]
 pub struct Published(PathBuf);
 
+/// Every entry this process published and has not taken back: what an exit
+/// that skips every destructor still removes ([`withdraw_all`]).
+static PUBLISHED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 impl Drop for Published {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        if let Ok(mut published) = PUBLISHED.lock() {
+            published.retain(|path| *path != self.0);
+        }
+    }
+}
+
+/// Takes back every entry this process published, for an exit that does
+/// not unwind: a second Ctrl-C, a SIGTERM.
+pub fn withdraw_all() {
+    if let Ok(published) = PUBLISHED.lock() {
+        for path in published.iter() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
