@@ -595,7 +595,10 @@ impl Document {
             d.blank(id);
         }
         d.notes(s, ui, &mut note, usize::MAX, room);
-        if s.streaming_reasoning.is_some() || s.reasoning_clock.is_some() {
+        if s.streaming_reasoning.is_some()
+            || s.reasoning_clock
+                .is_some_and(|clock| !clock.done || reasoning_asked(s))
+        {
             d.turn_sterna(usize::MAX - 4);
             d.reasoning(
                 s.streaming_reasoning.as_deref().unwrap_or_default(),
@@ -628,9 +631,11 @@ impl Document {
     /// The mark in front is the moving cell.
     fn reasoning(&mut self, text: &str, s: &ScreenState, width: usize) {
         let mark = self.caret(s, Mover::Reasoning);
+        let asked = !text.is_empty() || reasoning_asked(s);
         let head = match s.reasoning_clock {
             Some(clock) if clock.done => format!("{mark} reasoned for {}", seconds(clock.ms)),
-            Some(clock) => format!("{mark} reasoning · {}", seconds(clock.ms)),
+            Some(clock) if asked => format!("{mark} reasoning · {}", seconds(clock.ms)),
+            Some(clock) => format!("{mark} waiting for the model · {}", seconds(clock.ms)),
             None => format!("{mark} reasoning"),
         };
         let latest = text
@@ -1870,6 +1875,15 @@ pub(super) fn justify(
     out.extend(right);
     out
 }
+/// Whether the request in flight asked the model to reason: an effort was
+/// sent with it. A Claude model at `auto` gets none and does not reason, so
+/// its row says it is waiting rather than claiming reasoning.
+fn reasoning_asked(s: &ScreenState) -> bool {
+    s.model
+        .as_deref()
+        .is_some_and(|model| s.effort.sent_for(model) != crate::wire::Effort::Auto)
+}
+
 /// A reasoning clock's reading: tenths of a second under ten seconds, whole
 /// seconds under a minute, then minutes and seconds.
 fn seconds(ms: u64) -> String {

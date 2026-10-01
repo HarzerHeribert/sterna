@@ -41,10 +41,15 @@ bottom.
   nobody watches (`--task`, `-p`, `exec`) asks for none.
 - **While the model reasons, a row says so with a clock**: `reasoning ·
   3.2 s`, then `reasoned for 4.1 s` once the answer begins, with the newest
-  sentence of any readable summary beside it. A GPT model behind the
-  subscription sends its reasoning encrypted, so the time is what shows it
-  working; the providers' own count of reasoning tokens joins the task's
-  totals in the side card (`reasoned 1.2k tok`).
+  sentence of any readable reasoning beside it (Claude's streams; a GPT
+  model behind the subscription sends its reasoning encrypted, so there the
+  time is what shows it working). A request that asked for no reasoning --
+  a Claude model at `auto` -- shows `waiting for the model · 1.2 s` instead,
+  and nothing once the answer begins. Where the provider counts its
+  reasoning tokens (GPT through the subscription broker; OpenAI and Gemini
+  through the gateway's own translation) the count joins the task's totals
+  in the side card (`reasoned 1.2k tok`); where it does not, as with
+  Anthropic's API, there is no such line and nothing is guessed.
 - **The dock** carries the live status, a notice for a few seconds, an undo
   chip for the last change, the everyday chips, one hint and the context
   reading.

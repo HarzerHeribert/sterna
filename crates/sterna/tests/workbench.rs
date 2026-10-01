@@ -1923,6 +1923,8 @@ fn arriving_reasoning_shows_its_clock_and_newest_sentence_on_one_line() {
 fn a_silent_model_shows_how_long_it_has_been_reasoning() {
     let (c, n, mut s) = fixture();
     s.activity = Activity::Thinking;
+    // A GPT model reasons at every effort Sterna sends it.
+    s.model = Some("gpt-6.1-sol".into());
     let mut u = Workbench::default();
     let row = |s: &ScreenState, u: &mut Workbench| {
         text(&draw(&c, &n, s, u, 100, 40))
@@ -1952,12 +1954,47 @@ fn a_silent_model_shows_how_long_it_has_been_reasoning() {
     assert_eq!(row(&s, &mut u), None, "no request out, no row");
 }
 
+/// A request that asked for no reasoning -- a Claude model at `auto` -- is not
+/// said to be reasoning: the row waits for the model, and says nothing more
+/// once the answer has begun.
+#[test]
+fn a_model_asked_for_no_reasoning_is_waited_for() {
+    let (c, n, mut s) = fixture();
+    s.activity = Activity::Thinking;
+    s.model = Some("claude-opus-5".into());
+    s.effort = sterna::wire::Effort::Auto;
+    let mut u = Workbench::default();
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 1_200,
+        done: false,
+    });
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("waiting for the model · 1.2 s"), "{screen}");
+    assert!(!screen.contains("reasoning ·"), "{screen}");
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 1_200,
+        done: true,
+    });
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(!screen.contains("waiting for the model"), "{screen}");
+    assert!(!screen.contains("reasoned for"), "{screen}");
+    // The same model asked to reason is said to be reasoning.
+    s.effort = sterna::wire::Effort::High;
+    s.reasoning_clock = Some(ReasoningClock {
+        ms: 1_200,
+        done: false,
+    });
+    let screen = text(&draw(&c, &n, &s, &mut u, 100, 40));
+    assert!(screen.contains("reasoning · 1.2 s"), "{screen}");
+}
+
 /// While the clock runs the reasoning row carries the document's one moving
 /// mark; once the answer has begun it holds still.
 #[test]
 fn the_reasoning_row_moves_while_its_clock_runs() {
     let (c, n, mut s) = fixture();
     s.activity = Activity::Thinking;
+    s.model = Some("gpt-6.1-sol".into());
     let mut u = Workbench::default();
     let rows = |s: &mut ScreenState, u: &mut Workbench| {
         (0..12)
