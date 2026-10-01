@@ -615,8 +615,9 @@ fn a_search_with_around_prints_numbered_windows_an_edit_binds_to() {
     // checked on every CI cell rather than skipped where ripgrep is absent.
     let found = runtime.run_cell("await grep({pattern: 'needle_', path: 'src', around: 2});");
     let printed = &found.turn().stdout_tail;
+    // `src/many.py`, or `src\\many.py` on Windows.
     assert!(
-        printed.contains("## Around the matches in src/many.py"),
+        printed.contains("## Around the matches in src") && printed.contains("many.py\n"),
         "{printed}"
     );
     assert!(printed.contains("   18 | value_18 = 18"), "{printed}");

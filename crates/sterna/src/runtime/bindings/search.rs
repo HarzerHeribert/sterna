@@ -91,12 +91,21 @@ pub(super) fn match_line(found: &GrepMatch) -> String {
 /// (`Profile::check`). Measured 2026-09-23: a 405-hit search repeated a
 /// 90-character temporary root in every match, the largest single part of
 /// the tool results the parent re-read each turn.
+///
+/// Windows spells the same path two ways -- with and without the `\\?\`
+/// verbatim prefix -- and separates with `\`; both are read here, so a
+/// match there is relative too rather than carrying the whole root.
 pub(crate) fn in_root<'a>(path: &'a str, root: &std::path::Path) -> &'a str {
-    let Some(root) = root.to_str().map(|r| r.trim_end_matches('/')) else {
+    let Some(root) = root.to_str() else {
         return path;
     };
-    match path.strip_prefix(root) {
-        Some(rest) if rest.starts_with('/') && rest.len() > 1 => &rest[1..],
+    let root = root
+        .strip_prefix(r"\\?\")
+        .unwrap_or(root)
+        .trim_end_matches(['/', '\\']);
+    let bare = path.strip_prefix(r"\\?\").unwrap_or(path);
+    match bare.strip_prefix(root) {
+        Some(rest) if rest.starts_with(['/', '\\']) && rest.len() > 1 => &rest[1..],
         _ => path,
     }
 }
@@ -170,4 +179,28 @@ pub(super) fn build_glob<'s>(
         array.into(),
         Value::Array(ArrayValue::sampled(paths.len(), head, last)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_root;
+    use std::path::Path;
+
+    #[test]
+    fn a_match_is_relative_to_the_root_however_the_path_is_spelled() {
+        assert_eq!(in_root("/r/src/a.py", Path::new("/r")), "src/a.py");
+        assert_eq!(
+            in_root(r"\\?\C:\r\src\a.py", Path::new(r"C:\r")),
+            r"src\a.py"
+        );
+        assert_eq!(
+            in_root(r"C:\r\src\a.py", Path::new(r"\\?\C:\r")),
+            r"src\a.py"
+        );
+        assert_eq!(
+            in_root("/elsewhere/a.py", Path::new("/r")),
+            "/elsewhere/a.py"
+        );
+        assert_eq!(in_root("/rx/a.py", Path::new("/r")), "/rx/a.py");
+    }
 }
