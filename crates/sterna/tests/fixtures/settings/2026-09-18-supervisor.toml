@@ -1,0 +1,14 @@
+# Written while a supervisor watched tasks and spend had a cap.
+[model]
+parent = "fixture-model"
+
+[supervisor]
+enabled = true
+every = 5
+model = "fixture-model"
+
+[decisions]
+supervision_above = 0.7
+
+[limits]
+task_tokens = 200000

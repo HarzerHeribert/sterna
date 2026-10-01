@@ -10,4 +10,5 @@ pub mod hub;
 pub mod list;
 pub mod port;
 pub mod reading;
+pub mod setup;
 pub mod wire;

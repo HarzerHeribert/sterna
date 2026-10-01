@@ -56,6 +56,9 @@ fn background(folder: &Path) -> Result<(), String> {
     }
     let exe = std::env::current_exe().map_err(|e| format!("sterna host: {e}"))?;
     let mut command = Process::new(exe);
+    // The person's own PATH, which an app started from a desktop lacks.
+    let path = std::env::var("PATH").unwrap_or_default();
+    command.env("PATH", super::setup::login_path(&path));
     command
         .arg("host")
         .stdin(Stdio::null())
@@ -283,6 +286,16 @@ fn client(stream: TcpStream, token: &str, shared: &Shared, gateway: &Gateway, fo
                 watch(&mut writer, shared);
                 break;
             }
+            Ok(command) if command["do"] == "sign_in" => {
+                match super::setup::sign_in(
+                    command["provider"].as_str().unwrap_or(""),
+                    &mut reader,
+                    &mut writer,
+                ) {
+                    Ok(()) => continue,
+                    Err(error) => Err(error),
+                }
+            }
             Ok(command) if command["do"] == "shutdown" => {
                 let _ = writeln!(writer, "{}", json!({"ok": {}}));
                 shut_down(shared, folder);
@@ -327,6 +340,21 @@ fn answer(
             Ok(json!({}))
         }
         "usage" => Ok(usage(shared)),
+        "settings" => super::setup::settings(folder),
+        "set_setting" => super::setup::set_setting(
+            folder,
+            command["key"].as_str().ok_or("set_setting needs a key")?,
+            command["value"]
+                .as_str()
+                .ok_or("set_setting needs a value")?,
+        ),
+        "preferences" => Ok(super::setup::preferences(folder)),
+        "set_preferences" => super::setup::set_preferences(folder, &command["preferences"]),
+        "accounts" => super::setup::accounts(),
+        "set_key" => super::setup::set_key(
+            command["provider"].as_str().unwrap_or(""),
+            command["key"].as_str().ok_or("set_key needs a key")?,
+        ),
         "quit" => {
             if command["keep"].as_bool() != Some(true) {
                 let ids: Vec<String> = lock(shared).started.keys().cloned().collect();

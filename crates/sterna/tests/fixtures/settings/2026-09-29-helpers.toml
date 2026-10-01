@@ -1,0 +1,17 @@
+# Written while helpers read for the model: two of their keys moved, the
+# rest retired, and a web list became the one list of allowed hosts.
+[helpers]
+reduce_above_tokens = 4000
+reduce_returns = true
+
+[decisions]
+scout_above = 0.5
+scout_relevance_below = 0.2
+helper_no_below = 0.3
+judge_yes_above = 0.9
+judge_no_below = 0.1
+completion_yes_above = 0.8
+drift_no_below = 0.4
+
+[web]
+allow_domains = ["docs.example.com"]

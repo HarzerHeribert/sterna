@@ -856,7 +856,9 @@ impl Engine {
     /// any other command is refused until the turn has ended.
     fn submit(&mut self, client: u64, text: String) {
         let command = text.trim_start().starts_with('/');
-        if !self.busy {
+        // Free, or answering a control, which takes a moment: the session
+        // takes it next, in the order it was sent.
+        if !self.busy || !self.state.activity.working() {
             return self.start(Some(client), text);
         }
         if !command {
@@ -914,15 +916,10 @@ impl Engine {
             self.steer.request_stop(Stopper::You);
             self.steer.request_cancel();
         }
-        // A form the session waits on would keep it from ever reading the
-        // end.
-        let forms: Vec<u64> = self
-            .pending
-            .iter()
-            .filter(|(_, pending)| matches!(pending, Pending::Form(..)))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in forms {
+        // A prompt the session waits on -- a form, an approval, a question
+        // -- would keep it from ever reading the end.
+        let waiting: Vec<u64> = self.pending.keys().copied().collect();
+        for id in waiting {
             self.dismiss(id);
         }
         let _ = self.inputs.send(Input::Exit);

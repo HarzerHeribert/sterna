@@ -190,6 +190,17 @@ time it changes.
 | `quit` | `keep` | the client is leaving: `keep: false` ends the sessions the host started, `keep: true` leaves them running |
 | `watch` | | the list, again on every change |
 | `shutdown` | | the host ends its sessions and exits |
+| `settings` | | `{"values":{"<key>":"<value>"}}`: the person's global settings, as saved |
+| `set_setting` | `key`, `value` | saves one global setting; refused for a key or value that is not one |
+| `preferences` | | the desktop app's own preferences, whole; `{}` before it has any |
+| `set_preferences` | `preferences` | keeps them, whole |
+| `accounts` | | the gateway's accounts: `{"accounts":[{"account","provider","authenticated","models"}]}` |
+| `set_key` | `provider`, `key` | gives the gateway a provider's key, on its stdin and nowhere else |
+| `sign_in` | `provider` | `{"ok":{}}`, then the sign-in's progress as `{"sign_in":{…}}` lines and `{"done":{"connected":…}}` last; meanwhile the client may send `{"paste":"<address>"}` or `{"cancel":true}` on the same connection |
+
+**A key travels once.** `set_key`'s key, and a key a session's form takes,
+reach the gateway on its stdin and are written nowhere by the engine: not in
+a record, an event, a log, an argument list or a model request.
 
 `live` is `null` for a session that is not running, else
 `{"state":"idle"|"thinking"|"writing"|"running"|"waiting","since"}`.

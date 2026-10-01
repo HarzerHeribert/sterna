@@ -1,0 +1,16 @@
+# Written before working modes went: a mode, Explore's grants, and the
+# permission mode that chose how much ran without asking.
+[session]
+mode = "explore"
+effort = "default"
+
+[modes.explore]
+writable = ["notes/"]
+commands = ["ls"]
+
+[permissions]
+mode = "accept-edits"
+
+[decisions]
+mode_above = 0.8
+command_runs_above = 0.9

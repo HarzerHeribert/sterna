@@ -1,0 +1,9 @@
+# Written when the bird was its own setting and motion had a flag.
+[ui]
+look = "bird"
+voice = "playful"
+reduced_motion = true
+theme = "amber"
+
+[permissions]
+full_access = true

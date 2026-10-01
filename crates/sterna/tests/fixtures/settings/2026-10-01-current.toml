@@ -1,0 +1,14 @@
+# Today's shape: what Settings and the setup sheets save.
+[model]
+parent = "fixture-model"
+
+[session]
+effort = "high"
+
+[sandbox]
+level = "sandboxed"
+hosts = ["api.example.com"]
+
+[ui]
+theme = "amazon"
+motion = "calm"
