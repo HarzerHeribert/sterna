@@ -8,7 +8,9 @@
 mod engine;
 
 use engine::{Conn, PATIENCE, Provider, World, ending};
-use serde_json::{Value, json};
+#[cfg(unix)]
+use serde_json::Value;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -100,6 +102,7 @@ exit 0
 }
 
 /// Every file under `root`, `.sterna` folders and data folders included.
+#[cfg(unix)]
 fn every_file(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut folders = vec![root.to_path_buf()];

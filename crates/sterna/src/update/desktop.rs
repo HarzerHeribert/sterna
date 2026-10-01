@@ -166,10 +166,10 @@ fn open_from(root: &Path, dest: &Path, target: &str, source: &Source) -> Result<
             .map_err(|e| format!("{}: {e}", marker.display()));
     }
     if target.contains("linux") {
-        let image = dest.join("Sterna.AppImage");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let image = dest.join("Sterna.AppImage");
             fs::set_permissions(&image, fs::Permissions::from_mode(0o755))
                 .map_err(|e| format!("{}: {e}", image.display()))?;
         }
@@ -213,7 +213,7 @@ fn copy_bundle(from: &Path, to: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("{} could not be copied", from.display()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -227,7 +227,6 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_apps_own_engine_finds_the_install_it_came_with() {
         let base = scratch("of");
