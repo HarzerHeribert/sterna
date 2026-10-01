@@ -18,9 +18,62 @@ names SWE-bench. **Read the limits at the end before acting on a number.**
 | 2026-10-01 | the model choosing how much to read (search windows, `context` modes) | it read as much or more; both removed |
 | 2026-10-01 | `context` tuned from 951 recorded reads, neighbours ranked | 7 % cheaper, 8 % faster than the build before (pre.26) |
 | 2026-10-01 | pre.26 against Codex 0.159.3, both on GPT-6.1 Sol | the same 25 of 30 fixed; Sterna 1.38× the cost and 1.19× the time |
+| 2026-10-01 | why: Sterna's GPT `low` ran as `medium`; fixed, beside Codex again | with the fix: a fifth fewer requests, the same cost, time within noise |
 
 Each row has its section below; the limits at the end apply to all of
 them.
+
+## Why Sterna cost more on GPT-6.1 Sol, and the fix (2026-10-01)
+
+**The cause.** Sterna sent a GPT model's effort twice: as the word
+(`output_config.effort: "low"`) and as a Claude thinking budget
+(`thinking: enabled, budget_tokens: 4096`). The gateway forwards the bytes
+unchanged, and the subscription broker (CLIProxyAPI) lets a budget outrank
+the word and maps anything up to 8192 onto `medium`. So every GPT request
+Sterna sent at `low` ran at `medium`, and every one at `medium` ran at
+`high` -- with broker 8.0.8 and with 8.0.4, whose code reads the same.
+The 2026-09-30 comparison below was
+therefore Sterna at `medium` against Codex at `medium`, and its
+"`medium` bought nothing" was `high` against `medium`. A GPT model's effort
+now goes as the word alone (`thinking: adaptive`), which the broker passes
+through and the gateway's own translator now accepts.
+
+**Measured side by side** (`runs/2026-10-01-hops2`, pre-registered): the
+same 30 tasks on GPT-6.1 Sol, one attempt each, four arms at once -- pre.26
+as shipped, pre.26 with the effort fix, the fix plus a prompt-cache key per
+session, and Codex 0.159.3 at its default `low`. All three Sterna arms also
+asked an overloaded provider again (below).
+
+| | pre.26 as shipped | with the fix | fix + key per session | Codex 0.159.3 |
+|---|---|---|---|---|
+| fixed, of 30 | 25 | 26 | 25 | 25 |
+| model requests | 258 | 197 | 193 | 244 |
+| output per request | 236 | 209 | 201 | 195 |
+| cost per fixed bug | $0.12 | $0.08 | $0.08 | $0.08 |
+| time, all 30 tasks | 3561 s | 2502 s | 2320 s | 2762 s |
+
+- **The fix alone**, against pre.26 as shipped: requests 0.76× (0.71–0.82),
+  output 0.67×, cost 0.69× (0.63–0.75), time 0.70× (0.65–0.76).
+- **With the fix, against Codex**: requests 0.81× (0.70–0.93), cost 1.00×
+  (0.89–1.13), time 0.91× (0.77–1.05) -- a fifth fewer requests, the same
+  cost, and no measurable difference in time. With a key per session the
+  time was 0.84× (0.73–0.96), but against the fix alone the key changed
+  nothing measurable (cost 1.02×, time 0.93×, 0.86–1.00), so the shared keys
+  stay.
+- **Where a request's time goes.** Sterna to the gateway and back is 16 ms.
+  Above the same output, a request through the gateway and the broker takes
+  4.4 s with the fix (5.0 s without) against Codex's 3.5 s straight to the
+  provider. That 0.9 s is the broker or the provider; which is open.
+- **The cache.** Every Sterna session's first request found nothing cached
+  (30 of 30 in each arm; Codex 0 of 30, its instructions are the same for
+  every Codex user), and 6–8 % of later requests found nothing cached
+  (Codex none). A key per session did not change either. Open.
+- **An overloaded provider.** The run's first start was stopped: three of
+  twelve Sterna attempts ended on a 502 "servers are currently overloaded",
+  because Sterna ended a turn on the first such answer. Codex waits them
+  out. Sterna now asks again after 2, 4, 8, 16 and 32 s and then every
+  minute, as long as the turn's own timeout allows; the restarted run had no
+  attempt end that way.
 
 ## Against the Codex CLI on GPT-6.1 Sol (2026-10-01)
 

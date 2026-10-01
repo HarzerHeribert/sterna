@@ -59,11 +59,7 @@ impl Effort {
     /// ([`crate::session`]'s `turn_effort` states why). The screen shows this,
     /// so the effort it names is the one sent.
     pub fn sent_for(self, model: &str) -> Effort {
-        let openai = matches!(
-            crate::abi::Dialect::for_model(model),
-            crate::abi::Dialect::OpenAi
-        );
-        if self == Effort::Auto && openai {
+        if self == Effort::Auto && openai_family(model) {
             Effort::Low
         } else {
             self
@@ -333,7 +329,9 @@ fn with_reasoning_summary(body: Vec<u8>, model: &str) -> Vec<u8> {
         return body;
     }
     let mut value: serde_json::Value = serde_json::from_slice(&body).expect("serialized request");
-    if value.get("thinking").is_none() {
+    if value.get("thinking").is_none() && openai_family(model) {
+        value["thinking"] = serde_json::json!({"type": "adaptive"});
+    } else if value.get("thinking").is_none() {
         let budget = effort_budget(Effort::Medium);
         let max_tokens = value["max_tokens"].as_u64().unwrap_or(0);
         value["max_tokens"] = serde_json::json!(max_tokens + u64::from(budget));
@@ -687,15 +685,31 @@ fn configure_effort(body: Vec<u8>, model: &str, effort: Effort, response_tokens:
     // on the wire at all.
     value["output_config"] = serde_json::json!({"effort": effort.name()});
     if !model.contains("claude") {
-        // A budget as well, for the Anthropic-shaped leg that reads one --
-        // Glasshouse's codec keeps both and gives each target the form it
-        // uses.
         // Leave response space above the thinking allocation.
         let budget = effort_budget(effort);
         value["max_tokens"] = serde_json::json!(budget + response_tokens);
-        value["thinking"] = serde_json::json!({"type":"enabled", "budget_tokens":budget});
+        value["thinking"] = if openai_family(model) {
+            // **The word alone for a GPT model.** The subscription broker
+            // lets a budget outrank the word and maps 4096 onto `medium`,
+            // so `low` ran as `medium` (2026-10-01: 1.3x the output and
+            // 1.5 s more per request than Codex at the same `low`).
+            serde_json::json!({"type": "adaptive"})
+        } else {
+            // A budget as well, for the Anthropic-shaped leg that reads
+            // one -- Glasshouse's codec keeps both and gives each target the
+            // form it uses.
+            serde_json::json!({"type": "enabled", "budget_tokens": budget})
+        };
     }
     serde_json::to_vec(&value).expect("serialized request")
+}
+
+/// Whether a model speaks OpenAI's dialect, where effort is a word.
+fn openai_family(model: &str) -> bool {
+    matches!(
+        crate::abi::Dialect::for_model(model),
+        crate::abi::Dialect::OpenAi
+    )
 }
 
 fn to_wire_message(message: &Message) -> WireMessage {
@@ -2250,11 +2264,9 @@ mod tests {
             serde_json::from_slice(&with_reasoning_summary(body("gpt-6-sol"), "gpt-6-sol"))
                 .unwrap();
         assert_eq!(gpt["thinking"]["display"], "summarized");
-        assert_eq!(
-            gpt["thinking"]["budget_tokens"],
-            effort_budget(Effort::Medium)
-        );
-        assert_eq!(gpt["max_tokens"], 1000 + effort_budget(Effort::Medium));
+        assert_eq!(gpt["thinking"]["type"], "adaptive");
+        assert!(gpt["thinking"].get("budget_tokens").is_none());
+        assert_eq!(gpt["max_tokens"], 1000);
         let claude = with_reasoning_summary(body("claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(claude, body("claude-opus-5-5"));
         let mut acc = StreamAccumulator::new();
@@ -2723,6 +2735,33 @@ mod effort_tests {
         // The word rides along on the translated leg too, because a budget
         // saturates and cannot say `xhigh` or `max`.
         assert_eq!(translated["output_config"]["effort"], "medium");
+    }
+
+    /// A GPT model's effort is the word alone. The subscription broker reads a
+    /// budget before the word and maps 4096 onto `medium`, so with both on the
+    /// wire `low` ran as `medium`.
+    #[test]
+    fn a_gpt_models_effort_is_the_word_without_a_budget() {
+        let conversation = Conversation {
+            system: "system".into(),
+            messages: vec![],
+        };
+        for effort in [
+            Effort::Low,
+            Effort::Medium,
+            Effort::High,
+            Effort::Xhigh,
+            Effort::Max,
+        ] {
+            let gpt: serde_json::Value = serde_json::from_slice(&request_body_configured(
+                &conversation,
+                "gpt-6.1-sol",
+                effort,
+            ))
+            .unwrap();
+            assert_eq!(gpt["output_config"]["effort"], effort.name());
+            assert_eq!(gpt["thinking"], serde_json::json!({"type": "adaptive"}));
+        }
     }
 
     /// The task model keeps every token it had. The figures are spelled out

@@ -325,9 +325,10 @@ pub(super) fn decode_request(body: &[u8]) -> Result<Request, Unsupported> {
 /// `thinking` decoded as designed (`archive/glasshouse:docs/product/design-decisions.md`,
 /// *"Carrying effort across a translated pairing"*): `enabled` with a budget
 /// is carried as [`EffortRequest`] rather than refused; `disabled` carries
-/// nothing, exactly as a request that never set `thinking` at all; any other
-/// shape — including `adaptive`, which this package does not carry — is
-/// refused by name, as `thinking` itself always was before this change.
+/// nothing, exactly as a request that never set `thinking` at all;
+/// `adaptive` carries nothing of its own either -- the level is the
+/// `output_config.effort` word beside it, which is how Sterna states a GPT
+/// model's effort; any other shape is refused by name.
 fn decode_thinking(top: &mut Fields) -> Result<Option<EffortRequest>, Unsupported> {
     let Some(mut thinking) = top.take_object("thinking")? else {
         return Ok(None);
@@ -348,6 +349,13 @@ fn decode_thinking(top: &mut Fields) -> Result<Option<EffortRequest>, Unsupporte
             }))
         }
         "disabled" => {
+            thinking.finish()?;
+            Ok(None)
+        }
+        "adaptive" => {
+            // A summary display rides along; a translated target has no
+            // seam for it, so it is read and not carried.
+            let _ = thinking.take("display");
             thinking.finish()?;
             Ok(None)
         }
@@ -1457,6 +1465,25 @@ pub(super) mod tests {
         assert_eq!(request.effort, None);
     }
 
+    /// Adaptive thinking carries no level of its own; the word beside it does.
+    #[test]
+    fn adaptive_thinking_takes_its_level_from_the_word() {
+        let wire = br#"{"model": "m", "max_tokens": 1, "messages": [],
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": "low"}}"#;
+        let request = decode_request(wire).expect("adaptive thinking decodes");
+        assert_eq!(
+            request.effort,
+            Some(EffortRequest {
+                budget_tokens: None,
+                level: Some(EffortLevel::Low),
+            })
+        );
+        let alone = br#"{"model": "m", "max_tokens": 1, "messages": [],
+            "thinking": {"type": "adaptive"}}"#;
+        assert_eq!(decode_request(alone).expect("decodes").effort, None);
+    }
+
     #[test]
     fn enabled_thinking_with_no_budget_is_refused() {
         let wire =
@@ -1520,11 +1547,11 @@ pub(super) mod tests {
             )
         };
         let cases: Vec<(String, &str)> = vec![
-            // `thinking` moved from refused to carried (GH-EFFORT-CARRY);
-            // `thinking: {type: "adaptive"}` is a shape this package does
-            // not carry and stays refused, by the field's own name.
+            // `thinking` moved from refused to carried (GH-EFFORT-CARRY),
+            // and `adaptive` with it (2026-10-01); a mode this package does
+            // not know stays refused, by the field's own name.
             (
-                base(r#", "thinking": {"type": "adaptive"}"#),
+                base(r#", "thinking": {"type": "mystery"}"#),
                 "thinking.type",
             ),
             (base(r#", "top_k": 5"#), "top_k"),
