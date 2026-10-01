@@ -38,7 +38,11 @@ shell, which common executables exist, the project root and shell working
 directory, a scratch path, Git metadata the grant permits, the sorted
 top-level entries and recognised project files. It runs no project
 executable, creates nothing, guesses no language version, and stays the
-same between requests of the task.
+same between requests of the task. It rides in the task's own message,
+after the request, not in the system prompt: a system prompt that changed
+from one session to the next was never served from the provider's cache,
+and with the snapshot moved out a new session's first request finds 7,168
+of its 8,030 tokens cached (2026-10-01).
 
 ## Commands and skills
 
@@ -62,7 +66,7 @@ const out = mcp.call(tools[0].name, {query: "…"}); // content stays a handle
 }}
 ```
 
-- The environment orientation names the servers the grant admits, read
+- The environment snapshot names the servers the grant admits, read
   from `.mcp.json` without starting one, so the model knows to look. No tool
   schema is ever in the system prompt: `mcp.list()` delivers them in a
   cell's result when asked, so the prompt stays one fixed, cached block.

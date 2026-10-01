@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::contract::{Conversation, Message, Role, SessionId};
+use crate::contract::{Block, Conversation, Message, Role, SessionId};
 use crate::prompt::{self, Budget, CellResult, ErrorSection, Extracted};
 use crate::runtime::bindings::HostGlobals;
 use crate::runtime::isolate::Runtime;
@@ -265,12 +265,17 @@ fn run_subagent(
     let mut facts = crate::session::session_facts(profile);
     facts.interface = crate::abi::Interface::Cells;
     let instructions = instructions_for(&crate::project::instructions::root(profile));
-    let mut system = prompt::render_system_for(&instructions, &tools, &facts, HostGlobals::Every);
-    system.push_str("\n\n");
-    system.push_str(&crate::project::orientation::collect(profile));
+    let system = prompt::render_system_for(&instructions, &tools, &facts, HostGlobals::Every);
+    // The environment rides in the task's message, as the main model's does,
+    // so the system prompt is the same from one subagent to the next and is
+    // served from the provider's cache.
+    let mut first = Message::text(Role::User, task);
+    first
+        .content
+        .push(Block::Text(crate::project::orientation::collect(profile)));
     let mut conversation = Conversation {
         system,
-        messages: vec![Message::text(Role::User, task)],
+        messages: vec![first],
     };
     // Opened before the first request so a person who attaches during turn
     // one finds the system block and the task already written.

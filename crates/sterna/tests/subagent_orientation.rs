@@ -150,16 +150,25 @@ fn child_receives_root_orientation_and_nested_policy_before_nested_write() {
         first_system.contains("ROOT_CLAUDE_GUIDANCE"),
         "{first_system}"
     );
+    // The environment rides in the subagent's task message, so the system
+    // block is the same from one subagent to the next.
     assert!(
-        first_system.contains("## Environment orientation"),
+        !first_system.contains("## Environment orientation"),
         "{first_system}"
     );
+    let environment = bodies[0]["messages"][0]["content"][1]["text"]
+        .as_str()
+        .unwrap();
     assert!(
-        first_system.contains(&format!(
+        environment.starts_with("## Environment orientation"),
+        "{environment}"
+    );
+    assert!(
+        environment.contains(&format!(
             "project root: {}",
             fixture.profile().root().display()
         )),
-        "{first_system}"
+        "{environment}"
     );
     assert!(!first_system.contains("NESTED_WRITE_GUIDANCE"));
 

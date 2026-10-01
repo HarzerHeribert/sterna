@@ -58,8 +58,6 @@ pub(super) fn build_system_prompt(
             "\n\nDANGER: Sterna's OS process sandbox is disabled by an explicit CLI bypass. The surrounding container or VM is the only process boundary.",
         );
     }
-    system.push_str("\n\n");
-    system.push_str(&crate::project::orientation::collect(profile));
     if limits.turn_economy {
         system.push_str(prompt::TURN_ECONOMY);
     }
@@ -75,9 +73,9 @@ pub(super) fn build_system_prompt(
 /// first reads the whole earlier conversation from the provider's cache.
 ///
 /// It is replaced only when what it says changed -- the instructions, the
-/// grants, the model, the interface -- never for its orientation timestamp:
-/// that reaches the next session. Whatever differs per task rides in the
-/// task's own message ([`task_lines`], [`carry_task_context`]).
+/// grants, the model, the interface. Whatever differs per task, the
+/// environment with its start time included, rides in the task's own
+/// message ([`task_lines`], [`carry_task_context`]).
 pub(super) fn keep_session_system(session: &Session<'_>, transcript: &mut Transcript) {
     let mut fresh = system_prompt_for(session);
     if session.config().web.enabled {
@@ -88,24 +86,21 @@ pub(super) fn keep_session_system(session: &Session<'_>, transcript: &mut Transc
             "web.search has no search provider and will refuse.\n"
         });
     }
-    let current = &transcript.conversation.system;
-    if current.is_empty() || lasting_part(current) != lasting_part(&fresh) {
+    if transcript.conversation.system != fresh {
         transcript.conversation.system = fresh;
     }
 }
 
-/// A system prompt without the part that changes on its own between tasks
-/// and does not warrant a new cache.
-fn lasting_part(system: &str) -> String {
-    system
-        .lines()
-        .filter(|line| !line.starts_with("task-start UTC:"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// This task's request-mode line and the approved plan, if any: task
-/// context, carried in the task's message rather than the system prompt.
+/// This task's request-mode line, the approved plan if any, and the
+/// environment as the task finds it: task context, carried in the task's
+/// message rather than the system prompt.
+///
+/// **The environment is here, not in the system prompt,** because it holds
+/// the task's start time: a system prompt that differs from one session to
+/// the next is never served from the provider's cache. Measured 2026-10-01
+/// through the subscription broker: with only the start time changed, 0 of
+/// 6 first requests found anything cached; with the environment moved into
+/// the task's message, 4 of 5 found 7,168 of their 8,030 tokens.
 pub(super) fn task_lines(session: &Session<'_>) -> String {
     let mut lines = prompt::request_mode_line(session.mode.get()).unwrap_or_default();
     if session.mode.get() != RequestMode::Plan
@@ -113,6 +108,8 @@ pub(super) fn task_lines(session: &Session<'_>) -> String {
     {
         lines.push_str(&prompt::plan_section(&plan));
     }
+    lines.push_str("\n\n");
+    lines.push_str(&crate::project::orientation::collect(session.profile));
     lines
 }
 

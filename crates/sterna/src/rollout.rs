@@ -229,7 +229,14 @@ impl Rollout {
 
     /// Append a protocol message without flattening its typed content blocks.
     pub fn record_message(&mut self, message: &Message) -> io::Result<()> {
-        let text = message.content.iter().map(Block::text).collect::<String>();
+        // A person's turn is recorded as they wrote it; the task context that
+        // rides after it (mode, plan, environment) is in `blocks`, which is
+        // what a resume rebuilds the conversation from.
+        let text = if message.role == Role::User {
+            message.as_written()
+        } else {
+            message.content.iter().map(Block::text).collect::<String>()
+        };
         let blocks = message
             .content
             .iter()
