@@ -610,7 +610,10 @@ fn a_search_with_around_prints_numbered_windows_an_edit_binds_to() {
     let profile = Profile::compile(&root, None);
     let mut runtime = Runtime::new(&profile, &SessionId::new("around"));
 
-    let found = runtime.run_cell("await rg({pattern: 'needle_', path: 'src', around: 2});");
+    // `grep`, not `rg`: it runs on every host -- ripgrep where installed,
+    // the system grep or Sterna's own search where not -- so `around` is
+    // checked on every CI cell rather than skipped where ripgrep is absent.
+    let found = runtime.run_cell("await grep({pattern: 'needle_', path: 'src', around: 2});");
     let printed = &found.turn().stdout_tail;
     assert!(
         printed.contains("## Around the matches in src/many.py"),
@@ -636,7 +639,7 @@ fn a_search_with_around_prints_numbered_windows_an_edit_binds_to() {
     let text = std::fs::read_to_string(root.join("src/many.py")).unwrap();
     assert!(text.contains("needle_b = 'BEE'"), "{text}");
 
-    let refused = runtime.run_cell("await rg({pattern: 'needle_', path: 'src', around: 0});");
+    let refused = runtime.run_cell("await grep({pattern: 'needle_', path: 'src', around: 0});");
     assert!(
         matches!(&refused, CellOutcome::Threw { error, .. } if error.message.contains("`around` takes a whole number")),
         "{refused:?}"
