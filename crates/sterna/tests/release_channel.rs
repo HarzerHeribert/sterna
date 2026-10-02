@@ -11,8 +11,12 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde_json::json;
 use sha2::Digest as _;
 use sterna::update::{self, Source};
+
+#[path = "support/engine.rs"]
+mod engine;
 
 fn scratch(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sterna-update-{label}-{}", std::process::id()));
@@ -197,4 +201,84 @@ fn the_newest_release_is_chosen_by_version_not_by_the_lists_order() {
         launchers: None,
     };
     assert_eq!(update::latest_tag(&source).unwrap(), "v0.1.0-pre.10");
+}
+
+/// The host's `update` command, which the desktop app sends when it opens:
+/// a copy run from a build tree says why it does not update itself, and an
+/// install one release behind is told so and moved to the newest release
+/// beside the version it runs from.
+#[test]
+fn the_host_tells_an_install_a_newer_release_is_out_and_moves_it_there() {
+    let Some(target) = update::target() else {
+        return;
+    };
+    let provider = engine::Provider::start(|_| engine::ending("unused"));
+    let world = engine::World::new("host-update", &provider);
+    let check = json!({"do":"update","check":true});
+
+    let host = world.host();
+    let fixed = host.ask(check.clone());
+    assert_eq!(fixed["updates"], false, "{fixed}");
+    assert!(
+        fixed["why"].as_str().is_some_and(|why| !why.is_empty()),
+        "{fixed}"
+    );
+    host.shutdown();
+
+    // This build placed as v0.9.0 of an install, and v0.10.0 published.
+    let root = world.base.join("install");
+    let running = root.join("versions/v0.9.0/bin");
+    std::fs::create_dir_all(&running).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_sterna"), running.join("sterna")).unwrap();
+    std::os::unix::fs::symlink(root.join("versions/v0.9.0"), root.join("current")).unwrap();
+    let site = scratch("host-site");
+    publish(&site, "v0.10.0", target, &site.join("adopted.log"), false);
+    std::fs::write(
+        site.join("api"),
+        r#"[{"tag_name":"v0.9.0"},{"tag_name":"v0.10.0"}]"#,
+    )
+    .unwrap();
+    let base = serve(site);
+    let host = world.host_from(
+        &running.join("sterna"),
+        &[
+            ("STERNA_UPDATE_API", format!("{base}/api")),
+            ("STERNA_UPDATE_DOWNLOADS", format!("{base}/dl")),
+            ("STERNA_UPDATE_BROKER_DOWNLOADS", format!("{base}/broker")),
+        ],
+    );
+
+    let standing = host.ask(check.clone());
+    assert_eq!(
+        (
+            &standing["installed"],
+            &standing["latest"],
+            &standing["available"],
+            &standing["automatic"]
+        ),
+        (
+            &json!("v0.9.0"),
+            &json!("v0.10.0"),
+            &json!(true),
+            &json!(true)
+        ),
+        "{standing}"
+    );
+    let moved = host.ask(json!({"do":"update"}));
+    assert_eq!(moved["installed"], "v0.10.0", "{moved}");
+    assert_eq!(
+        std::fs::read_link(root.join("current")).unwrap(),
+        root.join("versions/v0.10.0")
+    );
+    assert!(
+        running.join("sterna").is_file(),
+        "the version the host runs from is kept whole"
+    );
+    let after = host.ask(check);
+    assert_eq!(
+        (&after["installed"], &after["available"]),
+        (&json!("v0.10.0"), &json!(false)),
+        "{after}"
+    );
+    host.shutdown();
 }

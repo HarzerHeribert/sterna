@@ -41,6 +41,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The notice the background check leaves for the session to show once.
 static NOTICE: Mutex<Option<String>> = Mutex::new(None);
+/// One install at a time from this process: the host answers each client on
+/// a thread of its own, and two updates would share their work folder.
+static INSTALLING: Mutex<()> = Mutex::new(());
 
 /// A release install: the root holding `versions/` and `current`, and the
 /// tag of the version directory the running binary lives in.
@@ -514,6 +517,50 @@ fn due(age: Option<Duration>) -> bool {
 
 /// `sterna update [--check]`: install the newest release now, or only say
 /// whether there is one. Exit 0 when up to date or updated.
+/// The host's `update` command (`docs/engine.md`), which the desktop app
+/// sends when it opens: with `check`, where this install stands against the
+/// newest release; without, the newest release installed beside the running
+/// one. A copy the updater does not move says why, in plain words.
+pub fn answer(check: bool) -> Result<serde_json::Value, String> {
+    let Some(install) = Install::of_running() else {
+        return Ok(serde_json::json!({
+            "updates": false,
+            "why": "This copy of Sterna was not installed with the install line, so it does not update itself.",
+        }));
+    };
+    let Some(target) = target() else {
+        return Ok(serde_json::json!({
+            "updates": false,
+            "why": "No release of Sterna is built for this computer, so it does not update itself.",
+        }));
+    };
+    let source = Source::from_env();
+    let latest = latest_tag(&source)?;
+    let installed = install.current_tag().unwrap_or_else(|| install.tag.clone());
+    let available = parse_tag(&installed).is_none() || newer(&latest, &installed);
+    if check {
+        let automatic = !opted_out(
+            std::env::var_os(DISABLE_ENV).is_some(),
+            std::env::var_os(RETIRED_DISABLE_ENV).is_some(),
+        );
+        return Ok(serde_json::json!({
+            "updates": true,
+            "installed": installed,
+            "latest": latest,
+            "available": available,
+            "automatic": automatic,
+        }));
+    }
+    if !available {
+        return Ok(serde_json::json!({ "installed": installed }));
+    }
+    let _one = INSTALLING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    install_release(&install.root, &latest, target, &source)?;
+    Ok(serde_json::json!({ "installed": latest }))
+}
+
 pub fn command(args: &[String]) -> i32 {
     let check_only = args.iter().any(|a| a == "--check");
     let Some(install) = Install::of_running() else {

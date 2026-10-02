@@ -368,7 +368,17 @@ impl World {
 
     /// Starts a host in this world and waits for its ready line.
     pub fn host(&self) -> Host {
-        let mut command = self.sterna();
+        self.host_from(Path::new(env!("CARGO_BIN_EXE_sterna")), &[])
+    }
+
+    /// A host run from `exe` -- a copy placed as an install places it --
+    /// with `variables` besides this world's own.
+    pub fn host_from(&self, exe: &Path, variables: &[(&str, String)]) -> Host {
+        let mut command = Command::new(exe);
+        self.environ(&mut command);
+        for (name, value) in variables {
+            command.env(name, value);
+        }
         command
             .arg("host")
             .stdin(Stdio::piped())
