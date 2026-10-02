@@ -20,6 +20,35 @@ test("the models sheet lists the gateway's accounts, and a choice changes the se
   await expect.poll(async () => (await world.host({ do: "settings" })).values["model.parent"]).toBe("fixture-two");
 });
 
+// A click inside a sheet changes it in place: the sheet is the one already
+// open, so it neither fades in nor rises again, and keeps where it was scrolled.
+test("a click inside a sheet redraws it in place: no fade, no rise, the same scroll", async ({ app }) => {
+  await newSession(app, "harbor");
+  await app.setViewportSize({ width: 1100, height: 520 });
+  await app.locator(".toolbar .pillbtn").first().click();
+  const sheet = app.getByRole("dialog", { name: "Models" });
+  await sheet.locator(".mrow").first().waitFor();
+  const opened = await app.evaluate(async () => {
+    await Promise.all(document.getAnimations()
+      .filter((a) => a.effect?.getTiming().iterations !== Infinity)
+      .map((a) => a.finished.catch(() => {})));
+    const body = document.querySelector(".sheet .sbd");
+    body.scrollTop = body.scrollHeight;
+    document.querySelector(".sheet").opened = true;
+    return body.scrollTop;
+  });
+  expect(opened, "the sheet scrolls at this height").toBeGreaterThan(0);
+  await sheet.locator(".mrow").filter({ has: app.locator(".nm", { hasText: /^fixture-two$/ }) }).click();
+  await expect(app.locator(".toolbar .pillbtn").first()).toHaveText(/^fixture-two/);
+  await expect(sheet.locator(".mrow", { hasText: "fixture-two" }).locator(".ck svg")).toHaveCount(1);
+  const after = await app.evaluate(() => ({
+    same: document.querySelector(".sheet").opened === true,
+    entering: document.getAnimations().map((a) => a.animationName).filter((name) => name === "fade" || name === "rise"),
+    scrolled: document.querySelector(".sheet .sbd").scrollTop,
+  }));
+  expect(after).toEqual({ same: true, entering: [], scrolled: opened });
+});
+
 test("signing in from the models sheet runs on the host: the link, the pasted address, connected", async ({ app, world }) => {
   await newSession(app, "harbor");
   await app.locator(".toolbar .pillbtn").first().click();

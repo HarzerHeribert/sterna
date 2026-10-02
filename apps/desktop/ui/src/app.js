@@ -1,7 +1,7 @@
 // The app: one store for every session the window knows -- whichever folder
 // it runs in -- the host's list, and what the window shows. Events from the
 // engine change the store; the views draw it; a click becomes a command.
-import { $, baseName, tilde, spaced } from "./util.js";
+import { $, baseName, morph, tilde, spaced } from "./util.js";
 import { applyTheme, themeOf } from "./theme.js";
 import { redrawBirds } from "./birds.js";
 import { startingPrefs, fromHost, ownPart, SHARED } from "./prefs.js";
@@ -632,7 +632,8 @@ export class App {
     // What is typed in a field that keeps its own value -- a key, a secret --
     // lives in the field alone: carried across a redraw, never in the page's HTML.
     const kept = [...host.querySelectorAll("input[data-keep]")].map((e) => [e.id, e.value]);
-    host.innerHTML = wrapped;
+    // In place, never afresh: a sheet drawn anew would fade in and rise again on every click.
+    morph(host, wrapped);
     host._html = wrapped;
     for (const [id, value] of kept) { const e = document.getElementById(id); if (e) e.value = value; }
     if (had && wrapped) host.querySelectorAll(".sbd,.setpane").forEach((e, i) => { e.scrollTop = scrolls[i] || 0; });

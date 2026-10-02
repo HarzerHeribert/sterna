@@ -13,6 +13,40 @@ export const agoMs = (unixMs) => ago(Math.max(0, (Date.now() - unixMs) / 1000));
 export const kilo = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
 export const timeOf = (unixMs) => new Date(unixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+/**
+ * Brings `host`'s content to `html` in place: a node still there is kept,
+ * with what it holds -- hover, focus, its scroll, a running transition, an
+ * entrance already played -- and only what changed is written.
+ */
+export function morph(host, html) {
+  const next = document.createElement("template");
+  next.innerHTML = html;
+  patchChildren(host, next.content);
+}
+
+function patchChildren(from, to) {
+  const was = [...from.childNodes], now = [...to.childNodes];
+  now.forEach((node, i) => {
+    const old = was[i];
+    if (!old) from.appendChild(node);
+    else if (old.nodeType !== node.nodeType || old.nodeName !== node.nodeName) from.replaceChild(node, old);
+    else if (node.nodeType === Node.ELEMENT_NODE) { patchAttributes(old, node); patchChildren(old, node); }
+    else if (old.nodeValue !== node.nodeValue) old.nodeValue = node.nodeValue;
+  });
+  for (const old of was.slice(now.length)) old.remove();
+}
+
+function patchAttributes(old, node) {
+  for (const { name } of [...old.attributes]) if (!node.hasAttribute(name)) old.removeAttribute(name);
+  for (const { name, value } of [...node.attributes]) {
+    if (old.getAttribute(name) === value) continue;
+    old.setAttribute(name, value);
+    // A field the person has typed in no longer follows its attribute: a
+    // value the state changed is put in the field itself.
+    if (name === "value" && "value" in old) old.value = value;
+  }
+}
+
 /** A folder's name: the last part of its path. */
 export const baseName = (root) => String(root || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || root;
 /** A path as a person reads it: the home folder as ~. */
