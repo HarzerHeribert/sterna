@@ -20,6 +20,24 @@ test("the models sheet lists the gateway's accounts, and a choice changes the se
   await expect.poll(async () => (await world.host({ do: "settings" })).values["model.parent"]).toBe("fixture-two");
 });
 
+// The providers the accounts come from are chips over the list: one shows
+// only that provider's accounts, with its count, and All shows them all again.
+test("the models sheet shows one provider's accounts at a click, and all of them again", async ({ app }) => {
+  await newSession(app, "harbor");
+  await app.locator(".toolbar .pillbtn").first().click();
+  const sheet = app.getByRole("dialog", { name: "Models" });
+  const chips = sheet.getByRole("group", { name: "Provider" });
+  await expect(chips.getByRole("button")).toHaveText(["All3", "OpenAI2", "Anthropic1"]);
+  await expect(chips.getByRole("button", { name: /^All/ })).toHaveAttribute("aria-pressed", "true");
+  await chips.getByRole("button", { name: /^Anthropic/ }).click();
+  await expect(sheet.locator(".acct .ghd")).toHaveCount(1);
+  await expect(sheet.locator(".acct .ghd")).toContainText("Anthropicclaude-max");
+  await expect(sheet.locator(".sft")).toContainText("1 of 3 models");
+  await chips.getByRole("button", { name: /^All/ }).click();
+  await expect(sheet.locator(".acct .ghd b")).toHaveText(["OpenAI", "Anthropic"]);
+  await expect(sheet.locator(".sft")).toContainText("3 of 3 models");
+});
+
 // A click inside a sheet changes it in place: the sheet is the one already
 // open, so it neither fades in nor rises again, and keeps where it was scrolled.
 test("a click inside a sheet redraws it in place: no fade, no rise, the same scroll", async ({ app }) => {

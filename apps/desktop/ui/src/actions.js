@@ -2,6 +2,7 @@
 // every surface. An element names its action in `data-act`.
 import { $ } from "./util.js";
 import { RELEASES_PAGE } from "./views/releases.js";
+import { cellStates } from "./views/convo.js";
 import { actionOf, kindOf } from "./views/panel-sheets.js";
 import { loadAccounts, loadSettings, chooseModel, chooseEffort, chooseLevel, startSignIn, cancelSignIn, saveKey, saveSetting } from "./choices.js";
 
@@ -86,6 +87,14 @@ export function wire(app) {
     cell: (el) => { const k = el.dataset.k; S.sel = k; S.open[k] = !(el.getAttribute("aria-expanded") === "true"); redraw(); },
     tab: (el) => { S.tab[el.dataset.k] = el.dataset.v; S.sel = el.dataset.k; redraw(); },
     toggle: (el) => { S.open[el.dataset.k] = !app.isOpen(el.dataset.k, false); redraw(); },
+    // Every cell folded, or, when every one already is, every one open.
+    foldall: () => {
+      const s = cur();
+      if (!s) return;
+      const cells = cellStates(app, s), open = !cells.some((c) => c.open);
+      for (const c of cells) S.open[c.key] = open;
+      redraw();
+    },
     raw: (el) => { S.raw[el.dataset.k] = !S.raw[el.dataset.k]; redraw(); },
     path: (el) => {
       const s = cur(), p = el.dataset.v;
@@ -150,6 +159,7 @@ export function wire(app) {
     role: (el) => { S.m.role = el.dataset.v; S.m.focus = -1; redraw(); },
     sources: (el) => { S.m.all = el.dataset.v === "1"; S.m.focus = -1; redraw(); },
     order: (el) => { S.m.byScore = el.dataset.v === "1"; S.m.focus = -1; redraw(); },
+    provider: (el) => { S.m.provider = el.dataset.v || null; S.m.focus = -1; redraw(); },
     effort: (el) => chooseEffort(app, el.dataset.v),
     model: (el) => { const r = S.modelRows[+el.dataset.i]; if (r?.avail) { S.m.focus = +el.dataset.i; chooseModel(app, r.model); } },
     signin: (el) => startSignIn(app, el.dataset.v, el.dataset.l || el.dataset.v),
@@ -310,6 +320,7 @@ export function wire(app) {
     if (e.key === "F2" || (e.key === "," && mod)) { e.preventDefault(); A.settings(); return; }
     if (key === "n" && mod && !e.shiftKey) { e.preventDefault(); A.newsession(); return; }
     if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); selectCell(e.key === "ArrowDown" ? 1 : -1); return; }
+    if (e.ctrlKey && e.shiftKey && key === "o") { e.preventDefault(); A.foldall(); return; }
     if (e.ctrlKey && key === "o" && S.sel) { e.preventDefault(); S.open[S.sel] = !app.isOpen(S.sel, true); redraw(); return; }
     if (e.key === "F4" && S.sel) { e.preventDefault(); A.showdiff({ dataset: { k: S.sel } }); return; }
     if (e.key === "Escape" && s?.busy) {

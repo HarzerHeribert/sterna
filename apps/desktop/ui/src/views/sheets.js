@@ -36,7 +36,7 @@ function folderSheet(app) {
 // -- help ------------------------------------------------------------------
 
 function helpSheet() {
-  const K = [["Send", "Enter"], ["New line", "Shift-Enter"], ["Stop after this cell, unless a question or an approval is in focus", "Esc"], ["Cancel the call in flight", "Esc twice"], ["Models", "F3"], ["Settings", "⌘ ,"], ["New session", "⌘ N"], ["Select the previous or next cell", "Alt ↑ ↓"], ["Fold or open the selected cell", "Ctrl O"], ["The selected cell's changes", "F4"], ["With an approval in focus: allow once, for the session, deny", "O S D"], ["With an approval in focus: refuse this once", "Esc"]];
+  const K = [["Send", "Enter"], ["New line", "Shift-Enter"], ["Stop after this cell, unless a question or an approval is in focus", "Esc"], ["Cancel the call in flight", "Esc twice"], ["Models", "F3"], ["Settings", "⌘ ,"], ["New session", "⌘ N"], ["Select the previous or next cell", "Alt ↑ ↓"], ["Fold or open the selected cell", "Ctrl O"], ["Fold every cell, or open every one", "Ctrl Shift O"], ["The selected cell's changes", "F4"], ["With an approval in focus: allow once, for the session, deny", "O S D"], ["With an approval in focus: refuse this once", "Esc"]];
   return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-labelledby="h-t">
     ${head("h-t", "Help", "Everything is a tap or a click. With a keyboard, these do the same.")}
     <div class="sbd"><div class="group">${K.map(([d, k]) => `<div class="row">${d}<span class="v"><kbd>${k}</kbd></span></div>`).join("")}</div>

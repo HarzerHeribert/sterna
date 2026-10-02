@@ -3,7 +3,7 @@
 import { esc, plural, agoMs, clock, timeOf } from "../util.js";
 import { icon } from "../icons.js";
 import { birdArt } from "../birds.js";
-import { glyph, stateWords, levelOf } from "./convo.js";
+import { glyph, stateWords, levelOf, cellStates } from "./convo.js";
 import { working } from "../session.js";
 
 const lights = (app) => `<div class="lights${app.bridge.os === "macos" ? " space" : ""}" aria-hidden="true"><i></i><i></i><i></i></div>`;
@@ -121,7 +121,10 @@ export function statusHTML(app) {
   const lost = app.S.hostLost ? `<button class="txt warn" data-act="retry-host" title="${esc(app.S.hostLost)}">The engine stopped. Try again${icon("right", "s")}</button>` : "";
   const others = app.listSessions().filter((x) => x.id !== s?.id && app.liveOf(x)?.kind === "waiting").length;
   const elsewhere = others ? `<button class="txt warn" data-act="overview">${plural(others, "other session needs", "other sessions need")} you${icon("right", "s")}</button>` : "";
-  return `${left}<span class="grow"></span>${lost}${signing}${elsewhere}`;
+  // Every cell folded to its title reads as the line of thought, top to bottom.
+  const cells = s && ["main", "new"].includes(v) ? cellStates(app, s) : [];
+  const fold = cells.length > 1 ? `<button class="txt mut" data-act="foldall" title="Ctrl Shift O">${cells.some((c) => c.open) ? "Fold all cells" : "Open all cells"}</button>` : "";
+  return `${left}<span class="grow"></span>${lost}${signing}${elsewhere}${fold}`;
 }
 
 export function cbarHTML(app) {

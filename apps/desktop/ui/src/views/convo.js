@@ -90,13 +90,35 @@ const pillOf = (mode, reading, since) => ({
   return `<span class="pill ${tone === "mut" ? "" : tone}" style="${tone === "mut" ? "color:var(--muted);background:var(--press)" : ""}">${ic}${esc(word[0].toUpperCase() + word.slice(1))}</span>`;
 })());
 
+/** Whether a cell shows open until the person folds or opens it: the one at work, and the latest turn's unless it only answered. */
+function openByDefault(item, mode, latest) {
+  const answerOnly = !(item.calls || []).length && item.view.returned != null && !item.view.error;
+  return mode !== "done" || (latest && !answerOnly);
+}
+
+/** The newest cell that has no outcome yet is the one that runs: its number, or 0. */
+function liveCellOf(session, turns) {
+  if (!["executing", "awaiting_you", "searching"].includes(session.state.activity)) return 0;
+  const all = turns.flatMap((t) => t.items.filter((i) => i.kind === "cell"));
+  const last = all[all.length - 1];
+  return last && !settledCell(last.view) ? last.n : 0;
+}
+
+/** Every cell of `session` by its key, with whether it shows open now. */
+export function cellStates(app, session) {
+  const { turns } = app.turnsOf(session), liveN = liveCellOf(session, turns);
+  return turns.flatMap((turn, ti) => turn.items.filter((i) => i.kind === "cell").map((item) => {
+    const key = `${session.id}:c${item.n}`;
+    return { key, open: app.isOpen(key, openByDefault(item, item.n === liveN ? "running" : "done", ti === turns.length - 1)) };
+  }));
+}
+
 /** One cell's card. `mode` is done, running or waiting. */
 function cellHTML(app, session, item, { mode, latest, prompts }) {
   const { n, view, reading, code } = item;
   const key = `${session.id}:c${n}`;
   const calls = [...(item.calls || [])];
-  const answerOnly = !calls.length && view.returned != null && !view.error;
-  const open = app.isOpen(key, mode !== "done" || (latest && !answerOnly));
+  const open = app.isOpen(key, openByDefault(item, mode, latest));
   const failed = reading?.tone === "failure";
   const since = session.state.since || Date.now();
   const cls = mode === "done" ? (failed ? "failed" : "") : mode;
@@ -239,13 +261,7 @@ export function recordHTML(app) {
   if (!turns.length) return session.busy ? "" : openingHTML(app, session);
   const st = session.state, act = st.activity;
   const prompts = st.prompts.filter((p) => p.type === "approval" || p.type === "question");
-  // The newest cell that has no outcome yet is the one that runs.
-  let liveN = 0;
-  if (["executing", "awaiting_you", "searching"].includes(act)) {
-    const all = turns.flatMap((t) => t.items.filter((i) => i.kind === "cell"));
-    const last = all[all.length - 1];
-    if (last && !settledCell(last.view)) liveN = last.n;
-  }
+  const liveN = liveCellOf(session, turns);
   app.S.promptsInCell = liveN && act === "awaiting_you" && prompts.length ? new Set(prompts.map((p) => p.id)) : new Set();
   let h = "";
   turns.forEach((turn, ti) => {

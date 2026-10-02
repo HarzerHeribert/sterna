@@ -27,18 +27,33 @@ function accountState(a) {
   return a.authenticated === true ? "signed" : "key";
 }
 
-/** The models the accounts serve, as rows: usable ones first, in account order. */
-function modelRows(app) {
+// A provider by the name people know it by; the gateway names Anthropic's
+// subscription broker `claude` and Google's `gemini`.
+const NAMES = { anthropic: "Anthropic", claude: "Anthropic", openai: "OpenAI", google: "Google", gemini: "Google", deepseek: "DeepSeek", openrouter: "OpenRouter", mistral: "Mistral", xai: "xAI", groq: "Groq", moonshot: "Moonshot", zai: "Z.ai", litellm: "LiteLLM" };
+const SAME = { claude: "anthropic", gemini: "google" };
+/** An account's provider, as one key and the name shown for it. */
+export function providerOf(a) {
+  const raw = lower(a.provider || a.account);
+  const key = SAME[raw] || raw;
+  return { key, name: NAMES[raw] || (raw ? raw[0].toUpperCase() + raw.slice(1) : "Other") };
+}
+
+/**
+ * The models the accounts serve, as rows: usable ones first, in account
+ * order. `provider` narrows them to one provider's accounts (null for all).
+ */
+function modelRows(app, provider = app.S.m.provider) {
   const m = app.S.m, q = m.q.trim().toLowerCase(), rows = [];
   const scores = app.S.catalogue?.intelligence || {};
   const score = (name) => scores[name] ?? scores[lower(name)] ?? null;
   for (const [ai, a] of (app.S.accounts?.list || []).entries()) {
     const state = accountState(a), avail = state === "signed" || state === "key";
     if (!m.all && !avail) continue;
-    const name = a.provider && a.provider !== a.account ? `${a.account} (${a.provider})` : a.account;
+    const by = providerOf(a);
+    if (provider && by.key !== provider) continue;
     for (const model of a.models || []) {
-      if (q && !lower(model).includes(q) && !lower(name).includes(q)) continue;
-      rows.push({ a, ai, name, model, score: score(model), avail, state });
+      if (q && !lower(model).includes(q) && !lower(a.account).includes(q) && !lower(by.name).includes(q)) continue;
+      rows.push({ a, ai, name: by.name, account: a.account, provider: by.key, model, score: score(model), avail, state });
     }
   }
   if (m.byScore) rows.sort((x, y) => (y.score ?? -1) - (x.score ?? -1) || y.avail - x.avail);
@@ -46,35 +61,51 @@ function modelRows(app) {
   return rows;
 }
 
+/** The providers the accounts in view come from, each with how many of their models match. */
+function providerChips(app) {
+  const chips = new Map();
+  for (const r of modelRows(app, null)) {
+    const chip = chips.get(r.provider) || { key: r.provider, name: r.name, n: 0 };
+    chip.n += 1;
+    chips.set(r.provider, chip);
+  }
+  return [...chips.values()];
+}
+
 export function modelsSheet(app) {
   const s = live(app), m = app.S.m, main = m.role === "main", f = s?.state.facts || {}, saved = app.S.settings || {};
   const cur = s ? (main ? f.model : f.subagents) : (main ? saved["model.parent"] : saved["agents.model"]);
   const effortNow = s ? f.effort : saved["session.effort"];
   const accounts = app.S.accounts;
+  const chips = accounts?.list ? providerChips(app) : [];
+  // A provider chosen earlier and no longer in view narrows nothing.
+  if (m.provider && !chips.some((c) => c.key === m.provider)) m.provider = null;
   const rows = accounts?.list ? modelRows(app) : [];
   app.S.modelRows = rows;
   const scored = rows.some((r) => r.score != null);
-  const mrow = (r, i) => `<button class="mrow${r.avail ? "" : " locked"}${m.focus === i ? " focus" : ""}" data-act="${r.avail ? "model" : "noop"}" data-i="${i}"${r.avail ? "" : ' aria-disabled="true"'}>` +
-    `<span class="nm">${esc(r.model)}</span><span class="sc">${[!r.avail && "Locked", r.score != null && `★ ${Math.round(r.score)}`, m.byScore && r.name].filter(Boolean).map((w) => `<span>${esc(w)}</span>`).join(" ")}</span>` +
+  const mrow = (r, i, named) => `<button class="mrow${r.avail ? "" : " locked"}${m.focus === i ? " focus" : ""}" data-act="${r.avail ? "model" : "noop"}" data-i="${i}"${r.avail ? "" : ' aria-disabled="true"'}>` +
+    `<span class="nm">${esc(r.model)}</span>${named ? `<span class="by">${esc(r.name)}</span>` : ""}<span class="sc">${[!r.avail && "Locked", r.score != null && `★ ${Math.round(r.score)}`].filter(Boolean).map((w) => `<span>${esc(w)}</span>`).join(" ")}</span>` +
     `<span class="ck">${r.model === cur && r.avail ? icon("check") : ""}</span></button>`;
   let list = "";
   if (!accounts || (accounts.loading && !accounts.list?.length)) list = `<p class="cap2" style="padding:18px 0">Asking the gateway which accounts it serves…</p>`;
   else if (accounts.error && !accounts.list?.length) {
     list = `<div class="ghd">No accounts</div><p class="cap2" style="font-size:13.5px;color:var(--text)">The gateway did not list its accounts: ${esc(accounts.error)}</p><button class="btn small" style="margin:8px 6px 0" data-act="accounts">Try again</button>`;
   } else if (m.byScore && scored) {
-    list = rows.length ? `<div class="ghd">By measured intelligence</div><div class="group">${rows.map(mrow).join("")}</div>` : "";
+    list = rows.length ? `<div class="group mlist">${rows.map((r, i) => mrow(r, i, !m.provider)).join("")}</div>` : "";
   } else {
     // Every account, its sign-in or key, and its models; an account with none listed says so.
-    const shown = (accounts.list || []).map((a, ai) => ({ a, ai, state: accountState(a) })).filter(({ state }) => m.all || state === "signed" || state === "key");
-    for (const { a, ai, state } of shown) {
+    const shown = (accounts.list || []).map((a, ai) => ({ a, ai, state: accountState(a), by: providerOf(a) }))
+      .filter(({ state, by }) => (m.all || state === "signed" || state === "key") && (!m.provider || by.key === m.provider));
+    for (const { a, ai, state, by } of shown) {
       const mine = rows.map((r, i) => [r, i]).filter(([r]) => r.ai === ai);
       if (m.q && !mine.length) continue;
-      const kind = a.authenticated == null ? "API key" : "subscription";
+      const kind = a.authenticated == null ? "API key" : "Subscription";
       const st = state === "signin" ? `<button class="btn small" data-act="signin" data-v="${esc(a.connect_with)}" data-l="${esc(a.account)}">Sign in</button>`
         : state === "signed" ? `<span class="ok">${icon("check", "s")} Signed in</span>`
         : state === "locked" ? `<span class="mut">${esc(a.unavailable_reason || "Not available")}</span>` : `<span class="mut">Key set</span>`;
-      list += `<div class="ghd"><span>${esc(a.account)}${a.provider && a.provider !== a.account ? ` <span class="mut">${esc(a.provider)}</span>` : ""} <span class="mut">${kind}</span></span>${st}</div>` +
-        (mine.length ? `<div class="group">${mine.map(([r, i]) => mrow(r, i)).join("")}</div>` : `<p class="cap2" style="margin:0 6px">No models listed yet${state === "signin" ? ": sign in first" : ""}.</p>`);
+      const count = mine.length ? `<span class="mut">${mine.length === 1 ? "1 model" : `${mine.length} models`}</span>` : "";
+      list += `<section class="acct"><div class="ghd ahd"><span class="who"><b>${esc(by.name)}</b><span class="an">${esc(a.account)}</span><span class="kind">${kind}</span>${count}</span>${st}</div>` +
+        (mine.length ? `<div class="group mlist">${mine.map(([r, i]) => mrow(r, i, false)).join("")}</div>` : `<p class="cap2 none">No models listed yet${state === "signin" ? ": sign in first" : ""}.</p>`) + `</section>`;
     }
     if (!shown.length) list = `<p class="cap2" style="padding:12px 0">${m.all ? "The gateway has no accounts yet." : "No account is connected yet."} Sign in to a subscription, or add an API key below.</p>`;
     else if (m.q && !rows.length) list = `<p class="cap2" style="padding:18px 0">No models match. Clear the search to see them all.</p>`;
@@ -84,16 +115,22 @@ export function modelsSheet(app) {
     ? `<div class="ghd">Effort</div><div class="segctl full big">${EFFORTS.map((e) => `<button data-act="effort" data-v="${e}" aria-pressed="${effortNow === e}">${e}</button>`).join("")}</div><p class="cap2">auto lets the model choose; higher thinks longer and costs more.</p>` : "";
   const scope = s ? "" : `<p class="cap2" style="margin-top:10px">No session is open: a choice here is saved for the sessions you start next.</p>`;
   const pinned = !main ? `<p class="cap2" style="margin-top:12px">Every subagent runs on the model ticked below; Main picks the effort for each job.</p>` : "";
+  const all = chips.reduce((n, c) => n + c.n, 0);
+  const providers = chips.length > 1
+    ? `<div class="pchips" role="group" aria-label="Provider"><button class="pchip" data-act="provider" data-v="" aria-pressed="${!m.provider}">All<span>${all}</span></button>` +
+      chips.map((c) => `<button class="pchip" data-act="provider" data-v="${esc(c.key)}" aria-pressed="${m.provider === c.key}">${esc(c.name)}<span>${c.n}</span></button>`).join("") + `</div>`
+    : "";
   return `<div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="m-t">
     ${head("m-t", "Models", `Which model answers, and how hard.${scored ? " ★ is intelligence the gateway measured." : ""}`)}
     <div class="sbd">
       <div class="segctl full big" style="margin-top:6px"><button data-act="role" data-v="main" aria-pressed="${main}">Main, answers you</button><button data-act="role" data-v="sub" aria-pressed="${!main}">Subagents, work in parallel</button></div>
-      <div style="margin-top:14px"><label class="searchbox">${icon("search")}<input id="msearch" placeholder="Search models" value="${esc(m.q)}" aria-label="Search models"></label></div>
-      <div class="filters">
+      ${scope}${effort}${pinned}
+      <div class="ghd">Model</div>
+      <div class="mtools"><label class="searchbox">${icon("search")}<input id="msearch" placeholder="Search models" value="${esc(m.q)}" aria-label="Search models"></label>
         <div class="segctl"><button data-act="sources" data-v="0" aria-pressed="${!m.all}">Connected</button><button data-act="sources" data-v="1" aria-pressed="${m.all}">All accounts</button></div>
         ${scored ? `<div class="segctl"><button data-act="order" data-v="0" aria-pressed="${!m.byScore}">By account</button><button data-act="order" data-v="1" aria-pressed="${m.byScore}">By intelligence</button></div>` : ""}
       </div>
-      ${scope}${effort}${pinned}${list}
+      ${providers}${list}
       <div class="group" style="margin-top:16px"><button class="row" data-act="sheet" data-v="key"><span class="mut">${icon("plus")}</span>Add an API key<span class="v chev">${icon("right", "s")}</span></button></div>
     </div>
     <div class="sft"><span>${accounts?.list ? `${rows.length} of ${total} models` : ""}</span><span class="grow"></span><span>${app.noticeOn() ? `<b style="color:var(--text)">${esc(app.S.notice)}</b>` : "A choice saves at once"}</span></div>

@@ -99,6 +99,26 @@ for (const width of [1480, 980]) {
   });
 }
 
+// The conversation's column grows with a wide window rather than leaving it
+// empty, and stops where a line of prose still reads.
+test("the conversation's column grows with the window, up to a reading width", async ({ app }) => {
+  await app.getByRole("dialog", { name: "Choose a folder" }).getByRole("button", { name: "Cancel" }).click();
+  await app.locator(".sidebar .sitem", { hasText: "Add CSV export to report" }).first().click();
+  const at = async (width, height) => {
+    await app.setViewportSize({ width, height });
+    return app.evaluate(() => ({
+      column: Math.round(document.querySelector("#convo").getBoundingClientRect().width),
+      dock: Math.round(document.querySelector("#dock .column").getBoundingClientRect().width),
+      centre: document.querySelector("#scroll").clientWidth,
+    }));
+  };
+  const usual = await at(1480, 940), wide = await at(1920, 1080), widest = await at(2560, 1300);
+  expect(wide.column, "a wider window, a wider column").toBeGreaterThan(usual.column);
+  expect(wide.column / wide.centre, "most of the centre, not a strip in it").toBeGreaterThan(0.8);
+  expect(widest.column, "and it stops at a reading width").toBe(1120);
+  expect([usual.dock, wide.dock, widest.dock], "the composer is as wide as the conversation").toEqual([usual.column, wide.column, widest.column]);
+});
+
 test.describe("a call too large to confirm whole", () => {
   test.use({ scenario: "empty", pace: 0.5 });
   test("can be refused and never allowed, by a button or a key, and the card says why", async ({ app }) => {

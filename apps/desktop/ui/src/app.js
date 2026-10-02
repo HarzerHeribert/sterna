@@ -32,7 +32,7 @@ export class App {
       fresh: null, sheet: null, pickFolder: null, extraFolders: [], starting: false,
       open: {}, tab: {}, sel: null, raw: {},
       notice: "", noticeAt: 0, undo: null,
-      m: { role: "main", all: true, byScore: false, q: "", focus: -1 },
+      m: { role: "main", all: true, byScore: false, provider: null, q: "", focus: -1 },
       catalogue: null, modelsWaiting: false, modelsNote: null, modelRows: [],
       set: "appearance", sessQ: "", folded: {}, allRows: {}, unread: new Set(),
       signinConfirm: false, confirmFull: false,

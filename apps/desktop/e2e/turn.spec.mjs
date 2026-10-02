@@ -32,6 +32,25 @@ test("a turn reads as reasoning, writing, running, waiting for you, then its ans
   expect(world.read("harbor/note.txt")).toBe("fixed");
 });
 
+// Every cell folded to its title reads as the line of thought; a click or
+// Ctrl Shift O folds them all, and the same opens them all again.
+test("Fold all cells leaves each cell's title, and Open all cells brings them back", async ({ app }) => {
+  await newSession(app, "harbor");
+  await say(app, "Fix the note in this folder.");
+  await app.locator("#cell-1 .ask").getByRole("button", { name: "Allow once" }).click({ timeout: 30000 });
+  await expect(app.locator("#status")).toContainText("Complete", { timeout: 30000 });
+  const heads = app.locator("article.cell .chead");
+  await expect(heads).toHaveCount(2);
+  await app.locator("#status").getByRole("button", { name: "Fold all cells" }).click();
+  await expect(heads.and(app.locator('[aria-expanded="false"]'))).toHaveCount(2);
+  await expect(app.locator("article.cell .calls")).toHaveCount(0);
+  await expect(app.locator("#status").getByRole("button", { name: "Open all cells" })).toBeVisible();
+  await app.locator("#status").getByRole("button", { name: "Open all cells" }).click();
+  await expect(heads.and(app.locator('[aria-expanded="true"]'))).toHaveCount(2);
+  await app.keyboard.press("Control+Shift+O");
+  await expect(heads.and(app.locator('[aria-expanded="false"]'))).toHaveCount(2);
+});
+
 test("a denied call fails its cell, and Sterna works on", async ({ app }) => {
   await newSession(app, "harbor");
   await say(app, "Write note.txt in this folder.");
