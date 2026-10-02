@@ -33,7 +33,7 @@
     <div class="hero-bottom">
       <div class="hero-lede">
         <p>One developer's study of a coding agent<br>whose model writes one program per turn.</p>
-        <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-hero" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-hero">Copy</button></div>
+        <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS and Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-hero" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-hero">Copy</button></div>
       </div>
       <a class="text-link" href="#why">Why Sterna <span aria-hidden="true">↓</span></a>
     </div>
@@ -103,18 +103,41 @@
       <h2>EVERY SESSION.<br><span class="outline">ONE WINDOW.</span></h2>
       <p>The desktop app shows every session Sterna is running, in every folder. Start one in any folder, follow each step as it runs, and answer what it asks without finding the terminal it is in. A session started in the terminal shows up there too, live.</p>
     </div>
-    <img class="desktop-shot" src="./desktop-overview.png" width="1480" height="940" loading="lazy" alt="The Sterna desktop app's overview: two sessions at work and one waiting for an answer, its question shown with Allow once, Allow for this session and Deny.">
-    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-desktop" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop" data-windows="$env:STERNA_DESKTOP='1'; irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop</code><button class="copy" type="button" data-copy="cmd-desktop">Copy</button></div>
+    <figure class="showcase">
+      <div class="stage">
+        <div class="fan" data-front="session">
+          <div class="layer" data-win="running"><video class="win" muted loop playsinline preload="none" poster="./showcase/running.jpg" data-src="./showcase/running.mp4" width="1480" height="940" aria-label="A session running its first cell, its clock moving, in the Arctic Tern theme, dark."></video></div>
+          <div class="layer" data-win="overview"><video class="win" muted loop playsinline preload="none" poster="./showcase/overview.jpg" data-src="./showcase/overview.mp4" width="1480" height="940" aria-label="The overview of every session while two work and one waits for an answer, in the Blue-fronted Amazon theme."></video></div>
+          <div class="layer" data-win="session"><video class="win" muted loop playsinline preload="none" poster="./showcase/session.jpg" data-src="./showcase/session.mp4" width="1480" height="940" aria-label="A whole turn: Sterna reasons, writes a cell, runs it, asks to reach a package registry, is allowed, and answers, in the Hyacinth Macaw theme, dark."></video></div>
+          <div class="layer" data-win="done"><img class="win" src="./showcase/done.jpg" width="2220" height="1410" loading="lazy" decoding="async" alt="A finished turn with its diff, its test output and its answer, in the Sun Conure theme."></div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="themes-label">Four of its themes</span>
+        <span class="themes" role="group" aria-label="Show a theme in front">
+          <button class="theme" type="button" data-win="running" style="--swatch:#dce1e6">Arctic Tern</button>
+          <button class="theme" type="button" data-win="overview" style="--swatch:#45b653">Blue-fronted Amazon</button>
+          <button class="theme" type="button" data-win="session" style="--swatch:#5b7cf0" aria-pressed="true">Hyacinth Macaw</button>
+          <button class="theme" type="button" data-win="done" style="--swatch:#ffb020">Sun Conure</button>
+        </span>
+      </figcaption>
+    </figure>
+    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS and Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-desktop" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop" data-windows="$env:STERNA_DESKTOP='1'; irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh -s -- --desktop</code><button class="copy" type="button" data-copy="cmd-desktop">Copy</button></div>
     <div class="features desktop-features">
       <article><h3>The same sessions</h3><p>The app and the terminal show the same session as it runs. Answer a question in either; the other sees the answer.</p></article>
       <article><h3>Updates with Sterna</h3><p>The line above installs the app with the terminal's sterna, from the same release. When sterna updates, the app does too, into a new folder, so an app that is open keeps running.</p></article>
-      <article><h3>Or download it</h3><p><a class="inline-link" data-asset=".dmg" href="https://github.com/HarzerHeribert/sterna/releases">macOS, Apple silicon</a> · <a class="inline-link" data-asset=".AppImage" href="https://github.com/HarzerHeribert/sterna/releases">Linux AppImage</a> · <a class="inline-link" data-asset=".deb" href="https://github.com/HarzerHeribert/sterna/releases">Debian and Ubuntu</a> · <a class="inline-link" data-asset="-setup.exe" href="https://github.com/HarzerHeribert/sterna/releases">Windows</a>. They are not signed yet, so macOS and Windows ask before they open one the first time. The line above does not need that.</p></article>
+      <article><h3>Or download it</h3><ul class="downloads">
+        <li><a class="inline-link" data-asset=".dmg" href="https://github.com/HarzerHeribert/sterna/releases">macOS, Apple silicon</a></li>
+        <li><a class="inline-link" data-asset=".AppImage" href="https://github.com/HarzerHeribert/sterna/releases">Linux AppImage</a></li>
+        <li><a class="inline-link" data-asset=".deb" href="https://github.com/HarzerHeribert/sterna/releases">Debian and Ubuntu</a></li>
+        <li><a class="inline-link" data-asset="-setup.exe" href="https://github.com/HarzerHeribert/sterna/releases">Windows</a></li>
+      </ul><p>They are not signed yet, so macOS and Windows ask before they open one the first time. The line above does not need that.</p></article>
     </div>
   </section>
 
   <section id="start" class="section start">
     <h2>START IN<br>A <span class="outline">MINUTE.</span></h2>
-    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS · Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-start" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-start">Copy</button></div>
+    <div class="os-switch" role="group" aria-label="Your system"><button class="os" type="button" data-os="unix" aria-pressed="true">macOS and Linux</button><button class="os" type="button" data-os="windows" aria-pressed="false">Windows</button></div><div class="install install-wide"><span class="install-prompt" aria-hidden="true">$</span><code id="cmd-start" data-unix="curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh" data-windows="irm https://harzerheribert.github.io/sterna/install.ps1 | iex">curl -fsSL https://harzerheribert.github.io/sterna/install.sh | sh</code><button class="copy" type="button" data-copy="cmd-start">Copy</button></div>
     <div class="steps">
       <article><span class="step-number">01</span><h3>Install</h3><p>One line, on macOS, Linux or Windows. It checks the release against its checksums before it installs anything.</p></article>
       <article><span class="step-number">02</span><h3>Sign in</h3><p>Start <code>sterna</code> in a project and type <code>/login</code>: a ChatGPT or Claude subscription, or an API key.</p></article>
@@ -126,7 +149,7 @@
 
 <footer>
   <a class="wordmark" href="./">STERNA</a>
-  <span class="credit">Arctic terns after photographs by Charles J. Sharp (in flight, Mýrar; with eel, Blönduós) and Buiobuione (a flock, Svalbard), <a class="inline-link" href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Pre-release · every archive is on the <a class="inline-link" href="https://github.com/HarzerHeribert/sterna/releases">releases page</a>.</span>
+  <span class="credit">Arctic terns after photographs by Charles J. Sharp (in flight, Mýrar; with eel, Blönduós) and Buiobuione (a flock, Svalbard), <a class="inline-link" href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Pre-release. Every archive is on the <a class="inline-link" href="https://github.com/HarzerHeribert/sterna/releases">releases page</a>.</span>
   <button class="motion-toggle" type="button" aria-pressed="false">Pause motion</button>
   <a href="https://github.com/HarzerHeribert/sterna">GitHub <span aria-hidden="true">↗</span></a>
 </footer>

@@ -84,7 +84,42 @@ h2{font:600 clamp(48px,6.7vw,104px)/.92 var(--display);letter-spacing:-.02em}
 
 .desktop .install-wide{width:min(1000px,100%);margin-bottom:0}
 .desktop-features{margin-top:64px}
-.desktop-shot{display:block;width:100%;height:auto;margin:0 0 56px;border:1px solid var(--ink)}
+/* The desktop showcase: the app's windows fanned out on a slanted stage.
+   Each window is its own slanted plane, stacked by order rather than by
+   depth, so none ever cuts through another. */
+.showcase{margin:0 -4vw 56px;--rx:0deg;--ry:0deg;--slant:perspective(2400px) rotateX(calc(22deg + var(--rx))) rotateY(var(--ry)) rotateZ(-7deg)}
+.stage{position:relative;height:clamp(400px,47vw,780px);overflow:hidden;
+  -webkit-mask-image:linear-gradient(to bottom,#000 82%,transparent);mask-image:linear-gradient(to bottom,#000 82%,transparent)}
+.fan{position:absolute;inset:0}
+/* A layer drifts with the scroll at its own depth; the window in it keeps
+   the slant and eases forward when it is chosen. */
+.layer{position:absolute;width:52%;transform:translate3d(0,var(--py,0px),0);will-change:transform}
+.layer[data-win="running"]{left:3%;top:3%;z-index:1}
+.layer[data-win="overview"]{left:18%;top:10%;z-index:2}
+.layer[data-win="session"]{left:33%;top:17%;z-index:3}
+.layer[data-win="done"]{left:48%;top:24%;z-index:4}
+.win{display:block;width:100%;height:auto;aspect-ratio:1480/940;object-fit:cover;border-radius:12px;background:#d5d9de;
+  transform:var(--slant) translateY(var(--lift,0%));transform-origin:50% 50%;
+  box-shadow:0 0 0 1px rgba(19,23,30,.10),0 22px 44px -18px rgba(19,23,30,.38),0 60px 110px -40px rgba(19,23,30,.42);
+  transition:transform .7s cubic-bezier(.2,.7,.1,1),opacity .9s ease,box-shadow .5s}
+.fan[data-front="running"] .layer[data-win="running"],.fan[data-front="overview"] .layer[data-win="overview"],
+.fan[data-front="session"] .layer[data-win="session"],.fan[data-front="done"] .layer[data-win="done"]{z-index:9}
+.fan[data-front="running"] [data-win="running"] .win,.fan[data-front="overview"] [data-win="overview"] .win,
+.fan[data-front="session"] [data-win="session"] .win,.fan[data-front="done"] [data-win="done"] .win{--lift:-3%;
+  box-shadow:0 0 0 1px rgba(19,23,30,.12),0 30px 60px -18px rgba(19,23,30,.45),0 80px 140px -40px rgba(19,23,30,.5)}
+.showcase.ready:not(.in) .win{opacity:0;--lift:12%}
+.showcase.in [data-win="overview"] .win{transition-delay:.08s}
+.showcase.in [data-win="session"] .win{transition-delay:.16s}
+.showcase.in [data-win="done"] .win{transition-delay:.24s}
+.showcase figcaption{display:flex;flex-wrap:wrap;align-items:center;gap:14px 22px;margin:22px 4vw 0;font:12px var(--mono)}
+.themes-label{color:var(--muted)}
+.downloads{list-style:none;margin:0 0 14px;padding:0;display:grid;gap:8px;font-size:16px}
+.themes{display:flex;flex-wrap:wrap;gap:8px}
+.theme{display:inline-flex;align-items:center;gap:9px;background:none;border:1px solid var(--line);padding:7px 13px;font:12px var(--mono);color:var(--ink);cursor:pointer}
+.theme::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--swatch);box-shadow:0 0 0 1px rgba(19,23,30,.25)}
+.theme:hover{border-color:var(--ink)}
+.theme[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+@media (prefers-reduced-motion:reduce){.win{transition:none}.showcase.ready:not(.in) .win{opacity:1;--lift:0}}
 .study-note{margin:-24px 0 0;font-size:16px;line-height:1.65;color:var(--muted)}
 
 .start h2{font-size:clamp(58px,8vw,120px);margin:27px 0 60px}
@@ -152,3 +187,10 @@ footer>a:last-child{font:11px var(--mono)}
   footer{margin:0 6%;flex-wrap:wrap}.credit{order:3;width:100%;max-width:none;font-size:9px}
 }
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important}}
+@media(max-width:600px){
+  .showcase{margin:0 -6% 44px;--slant:perspective(1600px) rotateX(calc(18deg + var(--rx))) rotateY(var(--ry)) rotateZ(-6deg)}
+  .stage{height:92vw}
+  .layer{width:84%}.layer[data-win="running"],.themes .theme[data-win="running"]{display:none}
+  .layer[data-win="overview"]{left:2%;top:5%}.layer[data-win="session"]{left:10%;top:18%}.layer[data-win="done"]{left:18%;top:31%}
+  .showcase figcaption{margin:18px 6% 0}
+}
