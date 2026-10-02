@@ -65,7 +65,10 @@ for (const width of [1480, 980]) {
       expect(one(await box(".ov .srow .sm", "right")), "the meta column ends at one x").toHaveLength(1);
       expect(one(await box(".ov .srow .sm", "left")), "and is one width").toHaveLength(1);
       expect(one(await box(".ovbody .ask .h, .ovbody .ask .row2", "left")), "the waiting card's body is indented to the titles").toEqual(one(titles));
-      expect(one([...await box(".ov .ghd", "left"), ...await box(".ov .group, .ov .ovcard", "left")]), "section labels sit at the cards' edge").toHaveLength(1);
+      // Polled: on a slow runner a section is still easing in when it is first
+      // read; one that never lines up still fails.
+      await expect.poll(async () => one([...await box(".ov .ghd", "left"), ...await box(".ov .group, .ov .ovcard", "left")]).length,
+        { message: "section labels sit at the cards' edge", timeout: 5000 }).toBe(1);
       const lines = await app.locator(".ovt").evaluate((e) => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)));
       expect(lines, "the heading is one line").toBe(1);
       const row = await app.locator(".ovbody .ask .row2").evaluate((r) => [...r.querySelectorAll("button")].map((b) => { const q = b.getBoundingClientRect(); return Math.round(q.top + q.height / 2); }));

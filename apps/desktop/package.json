@@ -16,7 +16,8 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --test \"ui/test/*.test.mjs\"",
     "test:e2e": "playwright test",
-    "shots": "node scripts/shots.mjs"
+    "shots": "node scripts/shots.mjs",
+    "showcase": "node scripts/showcase.mjs"
   },
   "dependencies": {
     "@fontsource/barlow-condensed": "^5.2.8",
