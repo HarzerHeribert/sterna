@@ -73,6 +73,12 @@ fn the_model_the_effort_and_the_level_a_client_sets_hold_and_the_next_request_us
 /// stdin, and runs a sign-in that takes a pasted address.
 #[cfg(unix)]
 fn fake_gateway(world: &World) {
+    fake_gateway_listing(world, "[]");
+}
+
+/// `fake_gateway`, listing `accounts` (a JSON array) for every other control.
+#[cfg(unix)]
+fn fake_gateway_listing(world: &World, accounts: &str) {
     use std::os::unix::fs::PermissionsExt;
     let base = world.base.display().to_string();
     let script = format!(
@@ -90,7 +96,7 @@ case "$1 $2" in
     printf '%s\n' '{{"state":"connected","account":"me@example.com"}}'
     ;;
   *)
-    printf '%s\n' '{{"version":1,"accounts":[]}}'
+    printf '%s\n' '{{"version":1,"accounts":{accounts}}}'
     ;;
 esac
 exit 0
@@ -117,6 +123,28 @@ fn every_file(root: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// The accounts a client is shown carry only the models a session can run
+/// on: a subscription's image models and its approval reviewer are left out,
+/// as the terminal's picker leaves them out.
+#[cfg(unix)]
+#[test]
+fn the_accounts_a_client_is_shown_carry_only_models_a_session_can_run_on() {
+    let provider = Provider::start(|_| ending("done"));
+    let world = World::new("setup-chat-models", &provider);
+    fake_gateway_listing(
+        &world,
+        r#"[{"account":"chatgpt-subscription","provider":"openai","authenticated":true,"models":["codex-auto-review","gpt-6-sol","gpt-image-2.5","whisper-large-v3","gpt-6-luna:batch","gpt-6-luna"]}]"#,
+    );
+    let host = world.host();
+    let answer = host.ask(json!({"do":"accounts"}));
+    assert_eq!(
+        answer["accounts"][0]["models"],
+        json!(["gpt-6-sol", "gpt-6-luna"]),
+        "{answer}"
+    );
+    assert_eq!(answer["accounts"][0]["account"], "chatgpt-subscription");
 }
 
 /// A key given on the host and a key given in a session's own form reach

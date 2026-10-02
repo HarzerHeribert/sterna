@@ -102,18 +102,26 @@ fn gateway() -> Result<Process, String> {
     Ok(command)
 }
 
-/// The gateway's accounts, as `entitlements` lists them.
+/// The gateway's accounts, as `entitlements` lists them, each with only the
+/// models that answer a conversation: an account's list also carries image,
+/// speech, batch and approval-review ids, which a client must not offer as a
+/// session's model (the terminal's picker leaves them out by the same rule).
 pub(crate) fn accounts() -> Result<Value, String> {
     let output = gateway()?
         .args(["entitlements", "--json"])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("the gateway could not be run: {e}"))?;
-    let listed: Value = String::from_utf8_lossy(&output.stdout)
+    let mut listed: Value = String::from_utf8_lossy(&output.stdout)
         .lines()
         .find_map(|line| serde_json::from_str(line).ok())
         .ok_or("the gateway did not list its accounts")?;
-    Ok(json!({ "accounts": listed["accounts"].clone() }))
+    for account in listed["accounts"].as_array_mut().into_iter().flatten() {
+        if let Some(models) = account["models"].as_array_mut() {
+            models.retain(|id| id.as_str().is_some_and(crate::models::chat_capable));
+        }
+    }
+    Ok(json!({ "accounts": listed["accounts"].take() }))
 }
 
 /// Hands the gateway `provider`'s key on its stdin.
