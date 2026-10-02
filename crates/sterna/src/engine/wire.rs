@@ -449,6 +449,10 @@ pub struct AnswerReading {
     pub failed: bool,
     /// `1 file · +1 −0 · 1 call`, or `complete.` when there are none.
     pub facts: String,
+    /// The same facts one by one, so a client lays them out as it draws:
+    /// `1 file` and `1 call` muted, `+1` added, `−0` removed. Empty when
+    /// there are none.
+    pub parts: Vec<Part>,
 }
 
 /// An activity as one word: `stopped` for a stop by either hand.

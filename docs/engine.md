@@ -152,7 +152,10 @@ turn's answer joins `conversation` as an assistant message.
 too: `{"tool","target","outcome","detail"}`, `outcome` one of `returned`,
 `started`, `failed`, `denied`; and `facts.reasoning` says whether a turn's
 request asks the model to reason):
-`{"cells":[{"cell":<n>,"state":"EXECUTED","mark":"✓","tone":"success","line":"✓ executed · 1 file changed","parts":[…],"facts":…}],"answer":{"cell":<n>,"facts":"1 file · +1 −0 · 1 call","mark":"✓","failed":false}}`.
+`{"cells":[{"cell":<n>,"state":"EXECUTED","mark":"✓","tone":"success","line":"✓ executed · 1 file changed","parts":[…],"facts":…}],"answer":{"cell":<n>,"facts":"1 file · +1 −0 · 1 call","parts":[{"text":"1 file","tone":"muted"},{"text":"+1","tone":"added"},{"text":"−0","tone":"removed"},{"text":"1 call","tone":"muted"}],"mark":"✓","failed":false}}`.
+`facts` is the terminal's one line; `parts` are the same facts one by one,
+for a client that lays them out itself (a cell's `parts` likewise: a part
+of tone `line` is only a separator between the others).
 Cells count from 1; `answer` is the newest answer's, `null` until there is
 one, and `complete.` or `failed.` when its cell changed nothing and made no
 call. A cell still running has no reading: it is drawn from `activity`.

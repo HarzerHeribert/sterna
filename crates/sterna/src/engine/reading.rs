@@ -87,18 +87,20 @@ pub fn line(v: &CellView) -> Vec<Part> {
 pub fn answer(ordinal: usize, v: &CellView) -> AnswerReading {
     let files = changed_files(v);
     let (added, removed) = v.changes.as_deref().map_or((0, 0), count_changes);
+    let calls = v.call_count.filter(|c| *c > 0);
+    let files_noun = if files == 1 { "file" } else { "files" };
+    let calls_noun = |n: usize| if n == 1 { "call" } else { "calls" };
     let mut facts = Vec::new();
+    let mut parts = Vec::new();
     if files > 0 {
-        facts.push(format!(
-            "{files} {} · +{added} −{removed}",
-            if files == 1 { "file" } else { "files" }
-        ));
+        facts.push(format!("{files} {files_noun} · +{added} −{removed}"));
+        parts.push(Part::new(format!("{files} {files_noun}"), "muted"));
+        parts.push(Part::new(format!("+{added}"), "added"));
+        parts.push(Part::new(format!("−{removed}"), "removed"));
     }
-    if let Some(calls) = v.call_count.filter(|c| *c > 0) {
-        facts.push(format!(
-            "{calls} {}",
-            if calls == 1 { "call" } else { "calls" }
-        ));
+    if let Some(calls) = calls {
+        facts.push(format!("{calls} {}", calls_noun(calls)));
+        parts.push(Part::new(format!("{calls} {}", calls_noun(calls)), "muted"));
     }
     let failed = v.error.is_some();
     AnswerReading {
@@ -110,6 +112,7 @@ pub fn answer(ordinal: usize, v: &CellView) -> AnswerReading {
         } else {
             facts.join(" · ")
         },
+        parts,
     }
 }
 
@@ -208,12 +211,28 @@ mod tests {
     fn an_answer_counts_its_cells_files_lines_and_calls() {
         let mut v = executed("--- a/n.txt\n+++ b/n.txt\n-old\n+new\n+more\n", 2);
         v.returned = Some("done".into());
-        assert_eq!(answer(1, &v).facts, "1 file · +2 −1 · 2 calls");
+        let read = answer(1, &v);
+        assert_eq!(read.facts, "1 file · +2 −1 · 2 calls");
+        let parts: Vec<(&str, &str)> = read
+            .parts
+            .iter()
+            .map(|p| (p.text.as_str(), p.tone.as_str()))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("1 file", "muted"),
+                ("+2", "added"),
+                ("−1", "removed"),
+                ("2 calls", "muted")
+            ]
+        );
         let bare = CellView {
             returned: Some("done".into()),
             ..CellView::default()
         };
         assert_eq!(answer(1, &bare).facts, "complete.");
+        assert!(answer(1, &bare).parts.is_empty());
     }
 
     #[test]
