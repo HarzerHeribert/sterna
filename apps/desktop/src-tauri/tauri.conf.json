@@ -42,18 +42,9 @@
     "externalBin": ["binaries/sterna-desktop-engine", "binaries/sterna-desktop-gateway"],
     "category": "DeveloperTool",
     "shortDescription": "A coding agent",
-    "createUpdaterArtifacts": false,
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "Entitlements.plist"
-    }
-  },
-  "plugins": {
-    "updater": {
-      "endpoints": [
-        "https://github.com/HarzerHeribert/sterna/releases/latest/download/latest.json"
-      ],
-      "pubkey": ""
     }
   }
 }

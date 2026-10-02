@@ -28,7 +28,9 @@ test("every folder is listed, the one used last first, with how each session sta
   await pastTheFolderChoice(page);
   await expect(page.locator(".sidebar .fn")).toHaveText(["gamma", "beta", "alpha"]);
   await expect(page.locator(".sitem", { hasText: "Write note.txt" }).locator(".m")).toHaveText("Waiting for you");
-  await expect(page.locator(".fgroup", { hasText: "beta" }).locator(".fc")).toHaveText("1 needs you");
+  const count = page.locator(".fgroup", { hasText: "beta" }).locator(".fc");
+  await expect(count).toHaveText("1");
+  await expect(count).toHaveAttribute("aria-label", "1 session needs you");
   await expect(page.locator(".navrow .badge")).toHaveText("1 needs you");
   await expect(page.locator("#status")).toContainText("1 other session needs you");
 });

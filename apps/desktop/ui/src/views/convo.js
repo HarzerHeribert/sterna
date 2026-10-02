@@ -55,7 +55,7 @@ export function askHTML(app, session, prompt, { overview = false } = {}) {
   const sid = esc(session.id), pid = prompt.id;
   if (prompt.type === "question") {
     const choices = (prompt.choices || []).map((c) => `<button class="btn" data-act="choose" data-s="${sid}" data-p="${pid}" data-v="${esc(c)}">${esc(c)}${prompt.guess === c ? `<span class="guess">Sterna's guess</span>` : ""}</button>`).join("");
-    return `<div class="ask" role="group" aria-label="A question for you" tabindex="-1" data-s="${sid}" data-p="${pid}"><div class="h">${icon("help")}A question for you</div><p>${esc(prompt.question)}</p>` +
+    return `<div class="ask" role="group" aria-label="A question for you" tabindex="-1" data-s="${sid}" data-p="${pid}"><div class="h">${overview ? "" : icon("help")}A question for you</div><p>${esc(prompt.question)}</p>` +
       `<div class="choices">${choices}</div><div class="row2"><span class="grow"></span>` +
       (overview ? `<button class="plain" data-act="open" data-id="${sid}">Open the session${icon("right", "s")}</button>` : `<button class="plain m" data-act="dismiss" data-s="${sid}" data-p="${pid}">Leave it to Sterna</button>`) + `</div></div>`;
   }
@@ -70,7 +70,7 @@ export function askHTML(app, session, prompt, { overview = false } = {}) {
   const once = " Refuse this once refuses only this call: the next identical one asks again.";
   const btn = (a, words) => `<button class="btn" data-act="approve" data-s="${sid}" data-p="${pid}" data-a="${a}"${!can && (a === "once" || a === "session") ? " disabled" : ""}>${words}</button>`;
   return `<div class="ask" role="group" aria-label="A call waits for you" tabindex="-1" data-s="${sid}" data-p="${pid}">
-    <div class="h">${icon("shield")}${head}</div>
+    <div class="h">${overview ? "" : icon("shield")}${head}</div>
     ${prompt.reason ? `<p>${inlineHTML(prompt.reason)}</p>` : ""}
     ${prompt.confirmation ? `<pre class="code wrap">${esc(prompt.confirmation)}</pre>` : ""}
     ${raw ? `<pre class="code wrap" style="margin-top:8px">${esc(JSON.stringify(prompt.arguments || {}, null, 2))}</pre>` : ""}
@@ -296,10 +296,22 @@ export function liveHTML(app) {
 
 export function liveMeta(l) {
   if (!l) return "";
-  if (l.kind === "waiting") return `<span class="warn">Waiting for you</span>`;
-  if (l.kind === "unread") return `<span class="unread"></span><span>Finished · not read yet</span>`;
+  if (l.kind === "waiting") return `<span class="state warn">Waiting for you</span>`;
+  if (l.kind === "unread") return `<span class="state"><span class="unread"></span>Finished · not read yet</span>`;
   const said = { running: l.cell ? `Executing cell ${pad3(l.cell)}` : "Executing", writing: l.cell ? `Writing cell ${pad3(l.cell)}` : "Writing", thinking: "Thinking" }[l.kind];
-  return `${dots()}<span class="acc">${said}</span>`;
+  return `<span class="state acc">${dots()}${said}</span>`;
+}
+
+/** A meta line: its parts joined by a middle dot. */
+const metaLine = (...parts) => parts.filter(Boolean).join(`<span class="sep" aria-hidden="true">·</span>`);
+
+/**
+ * One session as a row, the same in every list of the overview: its title
+ * (two lines at most) over its folder, its state and its time, in one text
+ * column; `end` is the fixed column at the right.
+ */
+function sessionRowHTML(title, meta, end) {
+  return `<span class="sx"><span class="st">${esc(title)}</span><span class="sm">${meta}</span></span><span class="se">${end}</span>`;
 }
 
 function overviewHTML(app) {
@@ -309,9 +321,12 @@ function overviewHTML(app) {
   const busy = all.filter((x) => ["running", "writing", "thinking"].includes(of(x)?.kind));
   const unread = all.filter((x) => of(x)?.kind === "unread");
   const nfold = new Set(all.filter((x) => of(x) && of(x).kind !== "unread").map((x) => x.root)).size;
-  const chip = (x) => `<span class="fchip">${icon("folder", "s")}${esc(app.folderName(x.root))}</span>`;
-  // The heading says what it counts: sessions at work, and apart from them, sessions waiting for you.
-  const parts = [busy.length && `${plural(busy.length, "session", "sessions")} at work`, waiting.length && `${plural(waiting.length, "session waits", "sessions wait")} for you`].filter(Boolean);
+  const folder = (x) => `<span class="fw">${esc(app.folderName(x.root))}</span>`;
+  const chev = `<span class="chev">${icon("right", "s")}</span>`;
+  const ticking = (since) => `<span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span>`;
+  // The heading says what it counts: sessions at work, and apart from them, the ones waiting for you.
+  const parts = [busy.length && `${plural(busy.length, "session", "sessions")} at work`,
+    waiting.length && (busy.length ? `${waiting.length} ${waiting.length === 1 ? "waits" : "wait"} for you` : `${plural(waiting.length, "session waits", "sessions wait")} for you`)].filter(Boolean);
   let h = `<div class="ovhead"><h1 class="greet ovt">${parts.length ? parts.join(" · ") : "Nothing is running"}</h1>` +
     `<p class="lead">${parts.length ? `In ${plural(nfold, "folder", "folders")}. Answer a question here, or open a session to see it.` : "Start a session, or open one from the list."}</p></div>`;
   if (waiting.length) {
@@ -319,23 +334,21 @@ function overviewHTML(app) {
       const s = app.sessionById(x.id);
       const prompt = s?.state.prompts.find((p) => p.type === "approval" || p.type === "question");
       const since = s?.state.since || x.live?.since || Date.now();
-      return `<article class="cell waiting ovcard"><div class="ovtop">${chip(x)}<span class="ovtitle">${esc(x.title)}</span>` +
-        `<span class="pill warn">Waiting for you <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span></span></div>` +
-        (prompt ? askHTML(app, s, prompt, { overview: true }) : `<div class="row2" style="padding:0 16px 14px"><button class="plain" data-act="open" data-id="${esc(x.id)}">Open the session${icon("right", "s")}</button></div>`) + `</article>`;
+      return `<article class="ovcard"><div class="srow">${sessionRowHTML(x.title, metaLine(folder(x)), `<span class="pill warn">Waiting for you ${ticking(since)}</span>`)}</div>` +
+        `<div class="ovbody">${prompt ? askHTML(app, s, prompt, { overview: true }) : `<div class="row2"><span class="grow"></span><button class="plain" data-act="open" data-id="${esc(x.id)}">Open the session${icon("right", "s")}</button></div>`}</div></article>`;
     }).join("");
   }
   if (busy.length) {
     h += `<div class="ghd">Running</div><div class="group">` + busy.map((x) => {
-      const l = of(x), since = app.sessionById(x.id)?.turnStart || x.live?.since;
-      const clockEl = since ? `<span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span>` : "";
-      return `<button class="ovrow" data-act="open" data-id="${esc(x.id)}">${chip(x)}<span class="ovx"><span class="ovtitle">${esc(x.title)}</span><span class="ovst">${liveMeta(l)}${clockEl ? ` <span class="mut">· ${clockEl}</span>` : ""}</span></span><span class="v chev">${icon("right", "s")}</span><span class="progress"><i></i></span></button>`;
+      const since = app.sessionById(x.id)?.turnStart || x.live?.since;
+      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(x.title, metaLine(folder(x), liveMeta(of(x)), since && ticking(since)), chev)}</button>`;
     }).join("") + `</div>`;
   }
   if (unread.length) {
     h += `<div class="ghd">Finished, not read yet</div><div class="group">` + unread.map((x) => {
       const s = app.sessionById(x.id), facts = s?.state.reading?.answer?.facts;
-      const when = s?.turnEnd ? `Finished ${agoMs(s.turnEnd)}` : "Finished";
-      return `<button class="ovrow" data-act="open" data-id="${esc(x.id)}">${chip(x)}<span class="ovx"><span class="ovtitle">${esc(x.title)}</span><span class="ovst"><span class="unread"></span>${esc(when)}${facts ? ` · ${esc(facts)}` : ""}</span></span><span class="v chev">${icon("right", "s")}</span></button>`;
+      const state = `<span class="state"><span class="unread"></span>Finished</span>`;
+      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(x.title, metaLine(folder(x), state, s?.turnEnd && esc(agoMs(s.turnEnd)), ...String(facts || "").split(" · ").map(esc)), chev)}</button>`;
     }).join("") + `</div>`;
   }
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
@@ -348,5 +361,5 @@ function overviewHTML(app) {
     `<div><b>${cells}</b><span>cells run</span></div>` +
     `<div><b>${fmt(total ? total.input_tokens + total.output_tokens : null)}</b><span>tokens used</span></div>` +
     `<div><b>${fmt(total?.requests)}</b><span>requests</span></div></div>`;
-  return h;
+  return `<div class="ov">${h}</div>`;
 }

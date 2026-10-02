@@ -20,6 +20,33 @@ export function tilde(root, home) {
   return root;
 }
 
+/** The folder a path sits in, as written: "~/code" for "~/code/quill"; "" for a root of its own. */
+export function parentPath(path) {
+  const p = String(path || "").replace(/[\\/]+$/, "");
+  const at = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  if (at < 0) return "";
+  return at === 0 ? p[0] : p.slice(0, at);
+}
+
+/**
+ * A path that has to fit, cut at its start a whole folder at a time:
+ * "…/work/clients" rather than "~/wo…". `fits` says whether a text fits;
+ * when not even the last folder does, nothing is shown.
+ */
+export function clipStart(path, fits) {
+  const p = String(path || "");
+  if (!p || fits(p)) return p;
+  const sep = p.includes("/") ? "/" : "\\";
+  const parts = p.split(sep);
+  for (let i = 1; i < parts.length; i++) {
+    const rest = parts.slice(i).join(sep);
+    if (!rest) continue;
+    const cut = "…" + sep + rest;
+    if (fits(cut)) return cut;
+  }
+  return "";
+}
+
 /** Does this text look like a relative path to a file, the way answers name them? */
 const PATH = /(?<![\w/.~-])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,8})(?![\w/])/g;
 

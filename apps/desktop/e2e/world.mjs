@@ -102,6 +102,8 @@ export const test = base.extend({
       XDG_DATA_HOME: path.join(root, "data"), XDG_CONFIG_HOME: path.join(root, "global-config"),
       ANTHROPIC_BASE_URL: provider.url, INFERENCE_GATEWAY_BIN: gateway,
       INFERENCE_GATEWAY_CONFIG: path.join(root, "gateway-config", "gateway.toml"), INFERENCE_GATEWAY_DATA_DIR: path.join(root, "gateway-data"),
+      // The release check the window makes on open never leaves this machine.
+      STERNA_UPDATE_API: "http://127.0.0.1:9/releases", STERNA_UPDATE_DOWNLOADS: "http://127.0.0.1:9/download",
     });
     for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "COLORTERM", "STERNA_HOME"]) delete process.env[k];
     // The folder chooser gives harbor, then alpha, then scratch folders.

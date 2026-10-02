@@ -23,8 +23,7 @@
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-dialog": "^2.8.1",
-    "@tauri-apps/plugin-notification": "^2.5.1",
-    "@tauri-apps/plugin-updater": "^2.13.1"
+    "@tauri-apps/plugin-notification": "^2.5.1"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

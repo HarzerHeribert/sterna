@@ -6,6 +6,7 @@
 // reads back, under the same names the Tauri shell emits.
 //
 //   node dev/bridge.mjs --mock [--scenario busy] [--pace 0.4]   a mock host, in this process
+//   … --releases newer                                          and what its release check finds
 //   node dev/bridge.mjs --sterna ../../target/debug/sterna      the real `sterna host --background`
 //   … --shutdown-host                                           and end that host when the bridge stops
 //
@@ -46,11 +47,11 @@ function hear(line) {
 const OS = { darwin: "macos", win32: "windows" }[process.platform] || "linux";
 
 let mockHost = null, realReady = null;
-const quits = [];
+const quits = [], restarts = [];
 
 async function hostStart() {
   if (mock) {
-    if (!mockHost) mockHost = await startMockHost({ scenario: flag("scenario", "empty"), pace: Number(flag("pace", "1")), anyFolder: has("any-folder") });
+    if (!mockHost) mockHost = await startMockHost({ scenario: flag("scenario", "empty"), pace: Number(flag("pace", "1")), anyFolder: has("any-folder"), releases: flag("releases", "current") });
     announced.add(mockHost.ready.listening);
     return mockHost.ready;
   }
@@ -140,6 +141,8 @@ wss.on("connection", (ws) => {
       return null;
     },
     app_quit: () => { quits.push(Date.now()); return null; },
+    // The app opening its newest release again: a browser cannot, so it is only counted.
+    app_restart: () => { restarts.push(Date.now()); return null; },
     // Test hooks: what the window's close button does, and what the host heard.
     test_request_quit: () => { for (const c of clients) c.send(JSON.stringify({ ev: "quit-requested" })); return null; },
     test_host_quits: () => (mockHost ? mockHost.host.quits : []),
@@ -147,6 +150,9 @@ wss.on("connection", (ws) => {
     test_drop: ({ address }) => { let n = 0; for (const s of conns.values()) if (s.address_ === address) { s.destroy(); n++; } return n; },
     test_cut: ({ address, off }) => { if (off) cutting.delete(address); else { cutting.add(address); for (const s of conns.values()) if (s.address_ === address) s.destroy(); } return null; },
     test_app_quits: () => quits.length,
+    test_app_restarts: () => restarts.length,
+    // What the mock host's release check finds from now on, and how many moves it made.
+    test_releases: ({ mode }) => { if (!mockHost) throw new Error("no mock host"); if (mode) mockHost.host.releases = mode; return { moves: mockHost.host.moves }; },
   };
   ws.on("message", async (data) => {
     let msg;

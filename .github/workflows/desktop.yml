@@ -29,17 +29,12 @@ name: Desktop
 #   APPLE_SIGNING_IDENTITY        sign the macOS app and its sidecars;
 #   APPLE_ID, APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID
 #                                 notarize it as well;
-#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-#                                 the updater key, for when update artifacts
-#                                 are turned on;
 #   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
 #                                 a placeholder: Windows signing is not wired.
 #
-# The in-app updater stays OFF until `plugins.updater.pubkey` in
-# apps/desktop/src-tauri/tauri.conf.json holds a public key (and
-# `bundle.createUpdaterArtifacts` is turned on to produce signed update
-# files). With the key empty the app does not even register the updater
-# plugin, so no update can be fetched or offered.
+# The app updates with the engine, not by a feed of its own: the archives
+# above are what `sterna update` places beside each new release, and the app
+# asks the engine for a newer release when it opens.
 #
 # Each secret is given only to the step that needs it, never to the job's
 # environment; the job carries only HAVE_* flags saying whether each one is
@@ -282,8 +277,8 @@ jobs:
 
       # `tauri build` runs `npm run build` (the UI, into apps/desktop/dist)
       # first. It signs and notarizes on macOS when the APPLE_* variables are
-      # present, and signs update files only when TAURI_SIGNING_PRIVATE_KEY
-      # is; an empty secret is unset rather than passed on as an empty value.
+      # present; an empty secret is unset rather than passed on as an empty
+      # value.
       # `-- --locked` reaches cargo: the app builds from its committed lock.
       # APPIMAGE_EXTRACT_AND_RUN lets the AppImage tools run without FUSE;
       # it means nothing on the other two systems.
@@ -298,8 +293,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" != "macOS" ] || [ "$HAVE_APPLE_CERTIFICATE" != "true" ] \
@@ -309,9 +302,6 @@ jobs:
           if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] || [ -z "$APPLE_ID" ] \
             || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
             unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
-          fi
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           fi
           signing=off notarizing=off
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then signing=on; fi

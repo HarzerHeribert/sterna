@@ -10,8 +10,9 @@ import { Engine } from "./engine.js";
 import { Session, working, ENDINGS } from "./session.js";
 import { turnsOf } from "./record.js";
 import { recordHTML, liveHTML } from "./views/convo.js";
-import { sidebarHTML, sessionList, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
+import { sidebarHTML, sessionList, fitPaths, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
 import { inspectorHTML } from "./views/inspector.js";
+import { releaseCard } from "./views/releases.js";
 import { overlayHTML } from "./views/sheets.js";
 import { splashHTML, flight } from "./views/splash.js";
 import { clock, secs } from "./util.js";
@@ -38,6 +39,8 @@ export class App {
       panel: null, forms: new Map(), follow: true, blink: false, gone: false,
       settings: {}, accounts: null, signin: null, keyProvider: "", keySaving: false,
       hostLost: "", started: new Set(),
+      // Releases: `phase` is idle, checking, checked, failed, moving, moved or unmoved (a move that failed).
+      releases: { phase: "idle", answer: null, error: "", asked: false, moved: "" },
     };
     this.memo = new WeakMap();
     this.dirty = false;
@@ -142,7 +145,7 @@ export class App {
     this.S.sheet = "folder";
     this.S.view = "nofolder";
     this.render();
-    this.checkForUpdate();
+    this.checkReleases();
   }
 
   async watch() {
@@ -258,13 +261,56 @@ export class App {
     this.changed();
   }
 
-  async checkForUpdate() {
-    if (!(await this.bridge.updaterEnabled())) return;
+  /**
+   * Is a newer release out? Asked once on open, and again by Check now
+   * (`asked`). On open, nothing is said unless one is and the person has
+   * automatic checks on; a check that fails on open stays quiet too, and
+   * Settings says why.
+   */
+  async checkReleases({ asked = false } = {}) {
+    const R = this.S.releases;
+    if (R.phase === "checking" || R.phase === "moving") return;
+    Object.assign(R, { phase: "checking", error: "", asked: R.asked || asked });
+    this.changed();
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update) this.say(`Sterna ${update.version} is ready`, { label: "Install", run: () => update.downloadAndInstall().then(() => this.say("Installed · it starts the next time Sterna opens")) }, 30000);
-    } catch { /* no update reachable: nothing to say */ }
+      R.answer = await this.engine.releases(!asked);
+      R.phase = "checked";
+    } catch (e) {
+      R.phase = "failed";
+      R.error = String(e?.message || e);
+    }
+    this.changed();
+  }
+
+  /** Moves to the newest release, beside the running one; the app opens it on Restart. */
+  async moveToNewest() {
+    const R = this.S.releases;
+    if (R.phase === "moving") return;
+    Object.assign(R, { phase: "moving", error: "" });
+    this.changed();
+    try {
+      const done = await this.engine.moveToNewest();
+      R.moved = done.installed || R.answer?.latest || "";
+      R.phase = "moved";
+    } catch (e) {
+      R.phase = "unmoved";
+      R.error = String(e?.message || e);
+    }
+    this.changed();
+  }
+
+  /** Opens the new release: every session is left running, as Keep running leaves them, and the app opens again from where it is opened. */
+  async restartIntoNewest() {
+    this.S.sheet = null;
+    try { await this.engine.quit(true); } catch { /* the host is gone already: its sessions run on */ }
+    this.S.gone = "Sterna is opening again.";
+    this.changed();
+    try {
+      await this.bridge.restart();
+    } catch (e) {
+      this.S.gone = false;
+      this.say(`Sterna could not open again: ${e.message}. Quit it and open it yourself.`, null, 10000);
+    }
   }
 
   // -- what the sessions say ----------------------------------------------
@@ -543,7 +589,7 @@ export class App {
     const put = (el, html) => { if (el && el._html !== html) { el.innerHTML = html; el._html = html; return true; } return false; };
     const splash = S.phase !== "ready" && !S.gone ? splashHTML(this) : "";
     if (put($("#splash"), splash) && splash) flight(this, performance.now());
-    if (S.gone) { put($("#overlay"), `<div class="gone"><b>Sterna has quit.</b><span>You can close this window.</span></div>`); return; }
+    if (S.gone) { put($("#overlay"), `<div class="gone"><b>${typeof S.gone === "string" ? S.gone : "Sterna has quit."}</b><span>You can close this window.</span></div>`); return; }
     const sc = $("#scroll");
     const atBottom = S.follow;
     if (!liveOnly) {
@@ -555,8 +601,9 @@ export class App {
       const ta = $("#draft"), s = this.cur();
       ta.disabled = S.view === "nofolder" || !s || !!s.ended;
       ta.placeholder = S.view === "nofolder" || !s ? "Choose a folder first" : s.ended ? "This session has ended" : "Describe the next step — a message, or / for commands";
-      if (document.activeElement?.id !== "sessq") put($("#sidebar"), sidebarHTML(this));
-      else put($("#slist"), sessionList(this));
+      const listed = document.activeElement?.id !== "sessq" ? put($("#sidebar"), sidebarHTML(this)) : put($("#slist"), sessionList(this));
+      if (listed) fitPaths($("#slist"));
+      put($("#sbfoot"), releaseCard(this));
       put($("#toolbar"), toolbarHTML(this));
       put($("#record"), recordHTML(this));
       put($("#inspector"), inspectorHTML(this));

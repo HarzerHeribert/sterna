@@ -29,13 +29,13 @@ class Conn {
     for (const w of this.waiters.splice(0)) w.fail(new Error("the connection closed"));
     this.onClosed?.();
   }
-  /** The next line, within `ms`. */
+  /** The next line, within `ms`; with `ms` null, whenever it comes or the connection closes. */
   next(ms = 15000) {
     if (this.queue.length) return Promise.resolve(this.queue.shift());
     if (this.closed) return Promise.reject(new Error("the connection closed"));
     return new Promise((ok, fail) => {
       const waiter = { ok: (v) => { clearTimeout(t); ok(v); }, fail: (e) => { clearTimeout(t); fail(e); } };
-      const t = setTimeout(() => { this.waiters = this.waiters.filter((w) => w !== waiter); fail(new Error("no answer in time")); }, ms);
+      const t = ms == null ? null : setTimeout(() => { this.waiters = this.waiters.filter((w) => w !== waiter); fail(new Error("no answer in time")); }, ms);
       this.waiters.push(waiter);
     });
   }
@@ -120,6 +120,10 @@ export class Engine {
   stop(id) { return this.ask({ do: "stop", id }); }
   usage() { return this.ask({ do: "usage" }); }
   quit(keep) { return this.ask({ do: "quit", keep: !!keep }); }
+  /** Whether a newer release is out, and whether this copy can move to it. */
+  releases(automatic) { return this.ask({ do: "update", check: true, automatic: !!automatic }, 60000); }
+  /** Places the newest release beside the running one: a download, so on a connection of its own with no timeout. */
+  moveToNewest() { return this.ask({ do: "update" }, null); }
 
   // -- setup, on the host (docs/engine.md) --------------------------------
   settings() { return this.ask({ do: "settings" }).then((ok) => ok.values || {}); }

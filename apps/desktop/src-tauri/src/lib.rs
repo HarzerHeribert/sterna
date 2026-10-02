@@ -8,7 +8,7 @@
 //! the web UI in `apps/desktop/ui`.
 //!
 //! What the UI calls (`invoke`): `host_start`, `conn_open`, `conn_send`,
-//! `conn_close`, `open_path`, `open_url`, `app_quit`, `updater_enabled`,
+//! `conn_close`, `open_path`, `open_url`, `app_quit`, `app_restart`,
 //! `platform`.
 //! What it hears (`listen`): `engine-line`, `engine-closed`,
 //! `quit-requested`.
@@ -17,11 +17,12 @@ mod conn;
 mod engine;
 mod host;
 mod open;
+mod restart;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
-use tauri::utils::config::PluginConfig;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, State, WindowEvent};
 
 /// The app event that asks the UI whether the person really means to quit.
@@ -30,28 +31,6 @@ const QUIT_REQUESTED: &str = "quit-requested";
 /// Set by `app_quit`: from then on a close or an exit request goes through.
 #[derive(Default)]
 struct Quitting(AtomicBool);
-
-/// Whether the updater plugin was registered (see [`updater_on`]).
-struct Updater(bool);
-
-/// The update channel stays shut until the release key exists.
-///
-/// `plugins.updater.pubkey` in tauri.conf.json is empty until the person who
-/// cuts releases generates an updater key pair (`npx tauri signer generate`)
-/// and pastes the public half there. Until then the updater plugin is not
-/// registered at all, so nothing can fetch or install an update that no key
-/// could verify, and `updater_enabled` answers `false` so the UI never offers
-/// to look for one. The capability still lists `updater:default`: the
-/// permission is resolved at build time from the plugin crate, and with the
-/// plugin unregistered its commands simply do not exist at run time.
-fn updater_on(plugins: &PluginConfig) -> bool {
-    plugins
-        .0
-        .get("updater")
-        .and_then(|updater| updater.get("pubkey"))
-        .and_then(Value::as_str)
-        .is_some_and(|key| !key.trim().is_empty())
-}
 
 /// Asks the UI, unless `app_quit` already said the app may go.
 ///
@@ -78,9 +57,27 @@ fn app_quit(app: AppHandle, quitting: State<'_, Quitting>) {
     app.exit(0);
 }
 
+/// A newer release is in place (the host's `update`): open it once this app
+/// has gone, and go. The UI has told the host to keep every session running.
 #[tauri::command]
-fn updater_enabled(updater: State<'_, Updater>) -> bool {
-    updater.0
+fn app_restart(app: AppHandle, quitting: State<'_, Quitting>) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let places = engine::Places::of(&app);
+    let appimage = std::env::var_os("APPIMAGE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let os = std::env::consts::OS;
+    let target = restart::target(
+        os,
+        &exe,
+        places.install_root.as_deref(),
+        appimage.as_deref(),
+    )
+    .ok_or("there is no copy of the app here to open again")?;
+    restart::open_after_exit(os, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+    quitting.0.store(true, Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
 }
 
 /// `{"os": "macos" | "windows" | "linux", "home": "<home folder or empty>"}`.
@@ -127,19 +124,13 @@ const QUIT_MENU_ID: &str = "sterna-quit";
 /// Builds and runs the app; returns when it exits.
 pub fn run() {
     let context = tauri::generate_context!();
-    let updater = updater_on(&context.config().plugins);
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Quitting::default())
-        .manage(Updater(updater))
         .manage(conn::Connections::default())
-        .manage(conn::Announced::default());
-    if updater {
-        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    }
-    let builder = builder
+        .manage(conn::Announced::default())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event
                 && window.label() == "main"
@@ -156,7 +147,7 @@ pub fn run() {
             open::open_path,
             open::open_url,
             app_quit,
-            updater_enabled,
+            app_restart,
             platform,
         ]);
 
@@ -207,21 +198,5 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{PluginConfig, updater_on};
-    use serde_json::json;
-
-    #[test]
-    fn the_release_feed_opens_only_with_a_public_key() {
-        let plugins = |updater| PluginConfig([("updater".to_string(), updater)].into());
-        assert!(!updater_on(&PluginConfig::default()));
-        assert!(!updater_on(&plugins(json!({"pubkey": ""}))));
-        assert!(!updater_on(&plugins(json!({"pubkey": "  "}))));
-        assert!(!updater_on(&plugins(json!({"endpoints": []}))));
-        assert!(updater_on(&plugins(json!({"pubkey": "a-public-key"}))));
     }
 }

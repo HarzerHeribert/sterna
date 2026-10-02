@@ -32,3 +32,13 @@ test("each bird carries one plain fact, as plumage.rs says it", () => {
   assert.equal(facts["arctic-tern"], "the longest migration of any bird");
   assert.equal(Object.values(facts).filter(Boolean).length, 9);
 });
+
+test("on the sidebar's own ground every accent reads at 4.5:1, and so does a count on its fill", async () => {
+  const { sideOf, sideAccentOf, inkOf } = await import("../src/theme.js");
+  for (const light of [true, false]) for (const t of THEMES) {
+    const a = sideAccentOf(t, light), where = `${t.id} ${light ? "light" : "dark"}`;
+    assert.ok(contrast(a, sideOf(t, light)) >= 4.5, `${where}: ${contrast(a, sideOf(t, light)).toFixed(2)}`);
+    assert.ok(contrast(inkOf(a), a) >= 4.5, `${where}: the count's ink ${contrast(inkOf(a), a).toFixed(2)}`);
+  }
+  for (const [warn, ink] of [[0x8a5a00, 0xffffff], [0xffca80, 0x15191f]]) assert.ok(contrast(warn, ink) >= 4.5);
+});

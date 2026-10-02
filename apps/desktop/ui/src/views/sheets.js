@@ -8,6 +8,7 @@ import { THEMES, FAMILIES, accentOf, hex } from "../theme.js";
 import { levelOf } from "./convo.js";
 import { head, EFFORTS, modelsSheet, signinSheet, keySheet, levelSheet } from "./choice-sheets.js";
 import { panelSheet, formSheet, activitySheet, telemetrySheet } from "./panel-sheets.js";
+import { releasesPane } from "./releases.js";
 
 const sw = (on) => `<span class="switch${on ? " on" : ""}" aria-hidden="true"></span>`;
 
@@ -44,7 +45,7 @@ function helpSheet() {
 
 // -- settings --------------------------------------------------------------
 
-const SECTIONS = [["appearance", "Appearance", "palette"], ["sessions", "Sessions", "shield"], ["window", "Window", "window"], ["notify", "Notifications", "bell"], ["cells", "Cells", "cell"], ["motion", "Motion", "motion"], ["instruments", "Instruments", "gauge"]];
+const SECTIONS = [["appearance", "Appearance", "palette"], ["sessions", "Sessions", "shield"], ["window", "Window", "window"], ["notify", "Notifications", "bell"], ["cells", "Cells", "cell"], ["motion", "Motion", "motion"], ["instruments", "Instruments", "gauge"], ["releases", "Updates", "release"]];
 
 function toggleRow(app, k, label, sub, disabled) {
   const on = app.prefs[k];
@@ -95,6 +96,7 @@ function settingsPane(app) {
         ${toggleRow(app, "handles", "Handles kept live", "The names a cell's results stay under, at the foot of its card")}</div>`;
     case "motion": return `<div class="ghd">Motion</div>${seg(app, "motion", [["full", "Full"], ["calm", "Calm"], ["off", "Off"]])}
       <p class="cap2">Motion is decoration: the start's flight, the moving marks, the bird's blink. Clocks and states stay on screen at every setting.</p>`;
+    case "releases": return releasesPane(app);
     case "instruments": return `<div class="ghd">Instruments</div><div class="group">
         <button class="row" data-act="sheet" data-v="activity">Activity<span class="sub" style="margin-left:8px">every notice this session</span><span class="v chev">${icon("right", "s")}</span></button>
         <button class="row" data-act="sheet" data-v="telemetry">Telemetry<span class="sub" style="margin-left:8px">requests, tokens and time</span><span class="v chev">${icon("right", "s")}</span></button></div>

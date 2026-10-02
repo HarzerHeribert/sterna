@@ -1,6 +1,7 @@
 // Screenshots of the running UI, light and dark, at 1480 and 980 px wide:
 // the start, the folder choice, a new session, each state of a turn, the
-// overview and the setup sheets, against the mock host (dev/bridge.mjs).
+// overview, the setup sheets and a newer release's card, against the mock
+// host (dev/bridge.mjs).
 //   npm run shots            writes shots/<state>-<scheme>-<width>.png
 import { chromium } from "@playwright/test";
 import { createServer } from "vite";
@@ -74,6 +75,17 @@ async function run(scheme, width) {
   await page.getByRole("button", { name: /^Overview/ }).click();
   await page.waitForTimeout(600);
   await shot("overview");
+  // A newer release, found by Check now: the quiet card at the foot of the list.
+  await page.evaluate(() => window.__sterna.app.bridge.test("test_releases", { mode: "newer" }));
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Updates" }).click();
+  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Check now" }).click();
+  await page.locator(".sbfoot .relcard").waitFor();
+  await page.waitForTimeout(300);
+  await shot("settings-releases");
+  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Done" }).click();
+  await page.waitForTimeout(400);
+  await shot("release-card");
   await page.close();
   bridge.child.kill("SIGTERM");
 }

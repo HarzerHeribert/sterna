@@ -40,6 +40,6 @@ export async function tauriBridge() {
     },
     setBadge: (n) => getCurrentWindow().setBadgeCount(n > 0 ? n : undefined).catch(() => {}),
     quit: () => invoke("app_quit"),
-    updaterEnabled: () => invoke("updater_enabled").catch(() => false),
+    restart: () => invoke("app_restart"),
   };
 }

@@ -32,9 +32,9 @@ export const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) 
 export const hex = (n) => "#" + n.toString(16).padStart(6, "0");
 export const LIGHT_GROUND = 0xf4f6f8, DARK_GROUND = 0x0a0e12;
 
-/** A colour moved toward black (light) or white (dark) until it reads at `ratio`. */
-export function readable(rgb, light, ratio) {
-  const ground = light ? LIGHT_GROUND : DARK_GROUND, toward = light ? 0 : 255;
+/** A colour moved toward black (light) or white (dark) until it reads at `ratio` on `ground`. */
+export function readable(rgb, light, ratio, ground = light ? LIGHT_GROUND : DARK_GROUND) {
+  const toward = light ? 0 : 255;
   let c = rgb;
   for (let i = 0; i < 40 && contrast(c, ground) < ratio; i++) {
     const [r, g, b] = chan(c).map((v) => Math.round(v + (toward - v) * 0.08));
@@ -44,6 +44,19 @@ export function readable(rgb, light, ratio) {
 }
 export const mixHex = (a, b, t) => { const [x, y] = [chan(a), chan(b)]; return x.map((v, i) => Math.round(v + (y[i] - v) * t)).reduce((s, v) => s * 256 + v, 0); };
 export const accentOf = (t, light) => (t.accent == null ? null : light ? readable(t.accent, true, 4.5) : t.accent);
+const TEXT = (light) => (light ? 0x15191f : 0xeceef1);
+/** The sidebar's ground: the bird's own on dark, a breath of its accent on light. */
+export function sideOf(t, light) {
+  const a = accentOf(t, light), base = light ? 0xe9ecef : 0x101317;
+  return t.ground && !light ? t.ground : a == null ? base : mixHex(base, a, light ? 0.07 : 0.05);
+}
+/** The accent as the sidebar draws it: moved until it reads at 4.5:1 on that ground. */
+export function sideAccentOf(t, light) {
+  const a = accentOf(t, light);
+  return a == null ? TEXT(light) : readable(a, light, 4.5, sideOf(t, light));
+}
+/** Black or white, whichever reads better on a fill of `rgb`. */
+export const inkOf = (rgb) => (contrast(rgb, 0) >= contrast(rgb, 0xffffff) ? 0 : 0xffffff);
 
 /** Whether the window draws on a light ground now. */
 export function isLight(appearance) {
@@ -60,12 +73,12 @@ export function applyTheme(prefs) {
   // Mono's accent is the text itself; a filled control reverses.
   st.setProperty("--accent", hex(a == null ? text : a));
   const fill = a == null ? text : a;
-  st.setProperty("--accent-ink", contrast(fill, 0) >= contrast(fill, 0xffffff) ? "#000000" : "#ffffff");
+  st.setProperty("--accent-ink", hex(inkOf(fill)));
   st.setProperty("--fill", hex(text));
   st.setProperty("--on-fill", hex(card));
-  // The sidebar is the bird's ground on dark, a breath of its accent on light.
-  const base = light ? 0xe9ecef : 0x101317;
-  st.setProperty("--side", hex(t.ground && !light ? t.ground : a == null ? base : mixHex(base, a, light ? 0.07 : 0.05)));
+  st.setProperty("--side", hex(sideOf(t, light)));
+  st.setProperty("--side-accent", hex(sideAccentOf(t, light)));
+  st.setProperty("--side-accent-ink", hex(inkOf(sideAccentOf(t, light))));
   if (t.id === "mono") { st.setProperty("--evid", hex(text)); st.setProperty("--you", hex(text)); }
   else { st.removeProperty("--evid"); st.removeProperty("--you"); }
   return { light, theme: t };

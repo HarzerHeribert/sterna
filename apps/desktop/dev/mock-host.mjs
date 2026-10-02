@@ -541,6 +541,24 @@ class Host {
     this.settings = { "model.parent": "gpt-6.1-sol", "session.effort": "low", "sandbox.level": "sandboxed", "ui.theme": "amazon" };
     this.preferences = {};
     this.keys = [];
+    // What the release check finds (`--releases`): current, newer, manual
+    // (newer, with automatic checks off), unmoved (a copy the updater does
+    // not move), unreachable (GitHub is not), fails (the first move fails).
+    this.releases = "current";
+    this.moves = 0;
+  }
+
+  /** The host's `update`: a check, or the move to the newest release. */
+  async release(c) {
+    const mode = this.releases, installed = "v0.1.0-pre.30", latest = "v0.1.0-pre.31";
+    if (mode === "unreachable") throw new Error("https://api.github.com/repos/HarzerHeribert/sterna/releases?per_page=30: io: Connection refused (os error 61)");
+    if (mode === "unmoved") return { updates: false, why: "This copy of Sterna was not installed with the install line, so it does not update itself." };
+    if (c.check) return { updates: true, installed, latest: mode === "current" ? installed : latest, available: mode !== "current", automatic: mode !== "manual" };
+    if (mode === "current") return { installed };
+    await new Promise((ok) => setTimeout(ok, 1500 * this.pace));
+    this.moves++;
+    if (mode === "fails" && this.moves === 1) throw new Error("https://github.com/HarzerHeribert/sterna/releases/download/v0.1.0-pre.31/sterna-desktop-0.1.0-pre.31-aarch64-apple-darwin.tar.gz: the archive's checksum does not match");
+    return { installed: latest };
   }
 
   /** The gateway's accounts, as `entitlements --json` lists them. */
@@ -701,6 +719,7 @@ class Host {
         if (!this.keys.includes(c.provider)) this.keys.push(c.provider);
         // The key itself goes nowhere: the mock keeps only that one was given.
         return { provider: c.provider, stored_in: "credentials.toml" };
+      case "update": return this.release(c);
       case "mock_quits": return { quits: this.quits };
       default: throw new Error(`the host takes no command "${c.do}"`);
     }
@@ -768,9 +787,10 @@ class Host {
 }
 
 /** Starts a mock host; `scenario` is "empty" (a first run) or "busy". */
-export async function startMockHost({ scenario = "empty", pace = 1, data = null, anyFolder = false } = {}) {
+export async function startMockHost({ scenario = "empty", pace = 1, data = null, anyFolder = false, releases = "current" } = {}) {
   const host = new Host({ pace });
   host.anyFolder = anyFolder;
+  host.releases = releases;
   await host.listen();
   await host.seed(scenario);
   const ready = { listening: host.listening, token: host.token, pid: process.pid, version: "0.0.0-mock", protocol: PROTOCOL };

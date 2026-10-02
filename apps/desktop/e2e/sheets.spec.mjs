@@ -101,3 +101,18 @@ test("settings save at once and come back: the theme is the person's, dark is th
   await page.evaluate(() => { const a = window.__sterna.app; a.prefs.appearance = "light"; a.changed(); });
   await expect.poll(() => page.evaluate(() => document.body.style.getPropertyValue("--accent"))).not.toBe("#5b7cf0");
 });
+
+test("a copy the engine does not move itself says why in Settings, with the releases page", async ({ app }) => {
+  await app.getByRole("dialog", { name: "Choose a folder" }).getByRole("button", { name: "Cancel" }).click({ timeout: 30000 });
+  // A build tree's engine answers the check with `updates: false` and its reason; nothing is said in the sidebar.
+  await app.getByRole("button", { name: "Settings" }).click();
+  const sheet = app.getByRole("dialog", { name: "Settings" });
+  await sheet.getByRole("button", { name: "Updates" }).click();
+  const why = sheet.locator(".relrow").nth(1);
+  await expect(why).toContainText("This copy of Sterna was not installed with the install line, so it does not update itself.", { timeout: 30000 });
+  await expect(app.locator(".sbfoot")).toBeEmpty();
+  // The releases page opens in the browser; here the page is answered locally.
+  await app.context().route("https://github.com/**", (route) => route.fulfill({ body: "the releases page" }));
+  const [opened] = await Promise.all([app.waitForEvent("popup"), why.getByRole("button", { name: "Releases page" }).click()]);
+  expect(opened.url()).toBe("https://github.com/HarzerHeribert/sterna/releases");
+});

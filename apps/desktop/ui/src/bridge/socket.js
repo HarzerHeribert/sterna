@@ -44,7 +44,7 @@ export function socketBridge(url) {
           notify: async () => {},
           setBadge: async () => {},
           quit: () => call("app_quit"),
-          updaterEnabled: async () => false,
+          restart: () => call("app_restart"),
           test: (op, args) => call(op, args),
         };
         resolve(bridge);

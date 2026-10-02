@@ -10,7 +10,8 @@ state comes from the engine's `reading`.
 ui/            the window: vanilla JS and CSS, built by vite into dist/
   src/bridge/  the one seam to the machine: tauri.js in the app, socket.js in a browser
 src-tauri/     the Tauri v2 shell: starts the host, carries lines to and from loopback ports,
-               the folder chooser, opening files and links, asking before quitting
+               the folder chooser, opening files and links, asking before quitting,
+               opening a newer release once it is in place
 dev/           development only: a mock host (mock-host.mjs, mock-sterna.mjs), the bridge a
                browser talks to (bridge.mjs), a scripted model endpoint (provider.mjs)
 e2e/           Playwright checks of the UI in Chromium, one bridge per check
@@ -50,10 +51,15 @@ how a cell being written is shown are the person's settings (`ui.theme`,
 `ui.motion`, `ui.stream`, the same the terminal reads), and everything else
 is kept by the host's `set_preferences`.
 
-The updater (`plugins.updater` in `src-tauri/tauri.conf.json`, pointed at
-the GitHub release's `latest.json`) stays off until `pubkey` holds the
-public half of an updater key (`npx tauri signer generate`); with it empty
-the plugin is not registered at all.
+Newer releases come through the engine, as the terminal's do: when the
+window opens it sends the host's `update` check (docs/engine.md), and when
+a newer release is out a card at the foot of the sessions list offers
+Update. The host places the release beside the running one; Restart
+leaves every session running, as Keep running does, and opens the new app
+from where the person opens it (`src-tauri/src/restart.rs`). With
+`STERNA_DISABLE_AUTOUPDATE` set nothing is said until Check now, in
+Settings, Updates; a copy the updater does not move says why there, with
+the releases page.
 
 ## Run it in a browser
 
@@ -66,7 +72,8 @@ The bridge prints the page to open (`"open"` in its ready line): it takes
 a WebSocket only from the dev server's page, and only with the secret in
 that address, and it connects only to ports the host announced.
 `--scenario empty` is a first run; `--pace 0.5` plays the mock's turns
-faster. Against the real engine: `node dev/bridge.mjs --sterna
+faster; `--releases newer` has its release check find a newer release
+(also `current`, `manual`, `unmoved`, `unreachable`, `fails`). Against the real engine: `node dev/bridge.mjs --sterna
 ../../target/debug/sterna`. Add `&dev` to the address for a development
 switcher (light, dark, a scripted task, the overview, quit); a built app
 never has it, nor the checks' `window.__sterna` handle.
@@ -77,7 +84,7 @@ never has it, nor the checks' `window.__sterna` handle.
 npm test            # unit tests (node --test), then the Playwright checks
 npm run test:unit
 npm run test:e2e
-npm run shots       # shots/<state>-<light|dark>-<1480|980>.png
+npm run shots       # shots/<state>-<light|dark>-<1480|980>.png, release-card the sidebar's card
 ```
 
 The checks use Chromium from Playwright's own cache. They run the real
@@ -85,9 +92,13 @@ The checks use Chromium from Playwright's own cache. They run the real
 their own (`e2e/world.mjs`): scratch data and settings folders,
 `dev/provider.mjs` as the model, a fake gateway script that records what it
 is handed, and no credential, the way the engine's own checks do. Without
-that binary they fail and say what to build. One spec,
-`e2e/busy.spec.mjs`, uses the mock host: several sessions held at once in
+that binary they fail and say what to build. Two specs use
+the mock host: `e2e/busy.spec.mjs`, for several sessions held at once in
 states the real engine passes through in a moment (a cell being written, a
-cell running). Plan goal 17 (the app installs, runs and updates into a new
-version) is checked on the engine's side, by
-`crates/sterna/tests/desktop_release.rs`, against release archives.
+cell running) and the one row grid they are drawn in, and
+`e2e/versions.spec.mjs`, for plan goal 17 in the window: a newer release
+offered, moved to, failing and tried again, and Restart, which the browser
+bridge only counts. A copy that does not move itself is checked on the real
+engine (`e2e/sheets.spec.mjs`); the move itself, from release archives, by
+the engine's `crates/sterna/tests/release_channel.rs` and
+`desktop_release.rs`.

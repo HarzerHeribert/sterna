@@ -1,6 +1,7 @@
 // Every click, and the keys that do the same: one interaction model for
 // every surface. An element names its action in `data-act`.
 import { $ } from "./util.js";
+import { RELEASES_PAGE } from "./views/releases.js";
 import { actionOf, kindOf } from "./views/panel-sheets.js";
 import { loadAccounts, loadSettings, chooseModel, chooseEffort, chooseLevel, startSignIn, cancelSignIn, saveKey, saveSetting } from "./choices.js";
 
@@ -53,6 +54,11 @@ export function wire(app) {
     noop: () => {},
     retry: () => app.start(),
     "retry-host": () => { app.S.hostLost = ""; app.restartHost(); redraw(); },
+    // Newer releases
+    "rel-check": () => app.checkReleases({ asked: true }),
+    "rel-move": () => app.moveToNewest(),
+    "rel-restart": () => app.restartIntoNewest(),
+    "rel-page": () => app.bridge.openUrl(RELEASES_PAGE).catch((e) => app.say(`The releases page did not open: ${e.message}`)),
     scrim: (el, e) => { if (e.target === el && S.sheet !== "quit" && S.sheet !== "form") closeSheet(); },
     close: () => closeSheet(),
     // Sessions and folders

@@ -1,6 +1,6 @@
 // The window's frame: the list of every folder and session, the toolbar,
 // the status line, the composer's buttons, the queue and the toast.
-import { esc, plural, agoMs, pad3 } from "../util.js";
+import { esc, plural, agoMs, pad3, parentPath, clipStart } from "../util.js";
 import { icon } from "../icons.js";
 import { birdArt } from "../birds.js";
 import { liveMeta, levelOf } from "./convo.js";
@@ -18,10 +18,20 @@ function counts(app, entries) {
 
 function sessionRow(app, x) {
   const cur = app.S.view !== "overview" && app.S.current === x.id;
-  if (x.fresh) return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}"><span class="t">New session</span><span class="m">Nothing asked yet</span></button>`;
-  const l = app.liveOf(x);
-  const meta = l ? liveMeta(l) : `${agoMs(x.last_used)}`;
-  return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}"><span class="t">${esc(x.title)}</span><span class="m">${meta}</span></button>`;
+  const l = x.fresh ? null : app.liveOf(x);
+  const title = x.fresh ? "New session" : esc(x.title);
+  const meta = x.fresh ? "Nothing asked yet" : l ? liveMeta(l) : agoMs(x.last_used);
+  return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}"><span class="t">${title}</span><span class="m">${meta}</span></button>`;
+}
+
+/** A folder's header: what it is, where it is, how many of its sessions need you or run, and its New session. */
+function folderHead(app, f, closed) {
+  const name = app.folderName(f.root), c = counts(app, f.sessions);
+  const [n, tone, words] = c.needs ? [c.needs, "warn", plural(c.needs, "session needs", "sessions need") + " you"] : c.busy ? [c.busy, "", plural(c.busy, "session", "sessions") + " running"] : [0];
+  const pill = n ? `<span class="fc${tone ? " " + tone : ""}" title="${words}" aria-label="${words}">${n}</span>` : "";
+  const parent = parentPath(app.tilde(f.root));
+  return `<div class="fhead"><button class="fbtn" data-act="fold" data-f="${esc(f.root)}" aria-expanded="${!closed}" title="${esc(app.tilde(f.root))}"><span class="chev">${icon(closed ? "right" : "down", "s")}</span><span class="fn">${esc(name)}</span><span class="fp" data-path="${esc(parent)}">${esc(parent)}</span>${pill}</button>` +
+    `<button class="iconbtn sm" data-act="newin" data-f="${esc(f.root)}" aria-label="New session in ${esc(name)}" title="New session in ${esc(name)}">${icon("plus")}</button></div>`;
 }
 
 /** Every session runs in a folder: listed under it, the folder used last first, and in each folder the session used last first. */
@@ -34,15 +44,20 @@ export function sessionList(app) {
     const rows = f.sessions.filter(hit);
     if (q && !rows.length) return "";
     if (!f.sessions.length && !f.fresh) return "";
-    const closed = app.S.folded[f.root] && !q, c = counts(app, f.sessions);
-    const busy = c.needs ? `<span class="fc warn">${c.needs} ${c.needs === 1 ? "needs" : "need"} you</span>` : c.busy ? `<span class="fc">${c.busy} running</span>` : "";
-    return `<div class="fgroup"><div class="fhead"><button class="fbtn" data-act="fold" data-f="${esc(f.root)}" aria-expanded="${!closed}"><span class="chev">${icon(closed ? "right" : "down", "s")}</span><span class="fn">${esc(name)}</span><span class="fp">${esc(where)}</span>${busy}</button>` +
-      `<button class="iconbtn sm" data-act="newin" data-f="${esc(f.root)}" aria-label="New session in ${esc(name)}" title="New session in ${esc(name)}">${icon("plus")}</button></div>` +
+    const closed = app.S.folded[f.root] && !q;
+    return `<div class="fgroup">${folderHead(app, f, closed)}` +
       (closed ? "" : (f.fresh ? sessionRow(app, f.fresh) : "") + rows.map((x) => sessionRow(app, x)).join("")) + `</div>`;
   }).join("");
   if (body) return body;
   return q ? `<p class="cap2" style="padding:8px 12px">No session matches “${esc(app.S.sessQ)}”.</p>`
     : `<p class="cap2" style="padding:8px 12px">No sessions yet. A session is listed once you ask it something.</p>`;
+}
+
+/** Each folder's parent path, cut at its start until it fits beside the name: measured, as drawn. */
+export function fitPaths(root) {
+  for (const el of root?.querySelectorAll(".fp[data-path]") || []) {
+    el.textContent = clipStart(el.dataset.path, (text) => { el.textContent = text; return el.scrollWidth <= el.clientWidth; });
+  }
 }
 
 export function sidebarHTML(app) {
@@ -53,7 +68,9 @@ export function sidebarHTML(app) {
     `<button class="newbtn" data-act="newsession">${icon("compose")}New session</button>` +
     `<button class="navrow${app.S.view === "overview" ? " cur" : ""}" data-act="overview">${icon("grid")}<span>Overview</span><span class="grow"></span>${badge}</button>` +
     `<div class="sbtools"><label class="searchbox">${icon("search", "s")}<input id="sessq" placeholder="Search sessions" value="${esc(app.S.sessQ)}" aria-label="Search sessions"></label></div>` +
-    `<div class="slist" id="slist">${sessionList(app)}</div>`;
+    `<div class="slist" id="slist">${sessionList(app)}</div>` +
+    // A newer release, when there is one: filled on every draw (app.render).
+    `<div class="sbfoot" id="sbfoot"></div>`;
 }
 
 export function toolbarHTML(app) {
