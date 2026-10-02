@@ -520,8 +520,10 @@ fn due(age: Option<Duration>) -> bool {
 /// The host's `update` command (`docs/engine.md`), which the desktop app
 /// sends when it opens: with `check`, where this install stands against the
 /// newest release; without, the newest release installed beside the running
-/// one. A copy the updater does not move says why, in plain words.
-pub fn answer(check: bool) -> Result<serde_json::Value, String> {
+/// one. A copy the updater does not move says why, in plain words. An
+/// `automatic` check -- the app's own, on opening -- asks nothing of the
+/// network when the person turned automatic checks off.
+pub fn answer(check: bool, automatic: bool) -> Result<serde_json::Value, String> {
     let Some(install) = Install::of_running() else {
         return Ok(serde_json::json!({
             "updates": false,
@@ -534,15 +536,24 @@ pub fn answer(check: bool) -> Result<serde_json::Value, String> {
             "why": "No release of Sterna is built for this computer, so it does not update itself.",
         }));
     };
+    let installed = install.current_tag().unwrap_or_else(|| install.tag.clone());
+    let off = opted_out(
+        std::env::var_os(DISABLE_ENV).is_some(),
+        std::env::var_os(RETIRED_DISABLE_ENV).is_some(),
+    );
+    if check && automatic && off {
+        return Ok(serde_json::json!({
+            "updates": true,
+            "installed": installed,
+            "available": false,
+            "automatic": false,
+        }));
+    }
     let source = Source::from_env();
     let latest = latest_tag(&source)?;
-    let installed = install.current_tag().unwrap_or_else(|| install.tag.clone());
     let available = parse_tag(&installed).is_none() || newer(&latest, &installed);
     if check {
-        let automatic = !opted_out(
-            std::env::var_os(DISABLE_ENV).is_some(),
-            std::env::var_os(RETIRED_DISABLE_ENV).is_some(),
-        );
+        let automatic = !off;
         return Ok(serde_json::json!({
             "updates": true,
             "installed": installed,

@@ -357,7 +357,10 @@ fn answer(
             Ok(json!({}))
         }
         "usage" => Ok(usage(shared)),
-        "update" => crate::update::answer(command["check"].as_bool() == Some(true)),
+        "update" => crate::update::answer(
+            command["check"].as_bool() == Some(true),
+            command["automatic"].as_bool() == Some(true),
+        ),
         "settings" => super::setup::settings(folder),
         "set_setting" => super::setup::set_setting(
             folder,

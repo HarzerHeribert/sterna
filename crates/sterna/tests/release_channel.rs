@@ -274,6 +274,43 @@ fn the_host_tells_an_install_a_newer_release_is_out_and_moves_it_there() {
         running.join("sterna").is_file(),
         "the version the host runs from is kept whole"
     );
+    // Automatic checks turned off: the app's own check on opening asks
+    // nothing of the network, and a person's Check now still does.
+    host.shutdown();
+    let off = world.host_from(
+        &running.join("sterna"),
+        &[
+            (
+                "STERNA_UPDATE_API",
+                "http://127.0.0.1:9/unreachable".to_string(),
+            ),
+            ("STERNA_DISABLE_AUTOUPDATE", "1".to_string()),
+        ],
+    );
+    let quiet = off.ask(json!({"do":"update","check":true,"automatic":true}));
+    assert_eq!(
+        (
+            &quiet["automatic"],
+            &quiet["available"],
+            quiet.get("latest")
+        ),
+        (&json!(false), &json!(false), None),
+        "{quiet}"
+    );
+    let mut asked = off.connect("check");
+    let refused = asked.request(json!({"do":"update","check":true}));
+    assert!(
+        refused["error"].is_string(),
+        "Check now asks the network: {refused}"
+    );
+    off.shutdown();
+    let host = world.host_from(
+        &running.join("sterna"),
+        &[
+            ("STERNA_UPDATE_API", format!("{base}/api")),
+            ("STERNA_UPDATE_DOWNLOADS", format!("{base}/dl")),
+        ],
+    );
     let after = host.ask(check);
     assert_eq!(
         (&after["installed"], &after["available"]),

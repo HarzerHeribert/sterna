@@ -190,7 +190,7 @@ time it changes.
 | `locate` | `id` | `{"id","listening","token"}` for a running session |
 | `stop` | `id` | ends a running session |
 | `usage` | | `{"sessions":[{"id","input_tokens","output_tokens"}],"total":{"input_tokens","output_tokens"}}` |
-| `update` | `check` (optional) | with `check: true`, `{"updates":true,"installed","latest","available","automatic"}` -- `automatic: false` when the person turned automatic checks off -- or `{"updates":false,"why"}` for a copy the updater does not move (a hand download, a build tree); without `check`, the newest release is installed beside the running one, the app with it when the install has the app, and the answer is `{"installed"}`. A download can take a minute: send it on a connection of its own |
+| `update` | `check`, `automatic` (each optional) | with `check: true`, `{"updates":true,"installed","latest","available","automatic"}` -- `automatic: false` when the person turned automatic checks off, and then a check sent with `automatic: true` (the app's own, on opening) asks nothing of the network and carries no `latest` -- or `{"updates":false,"why"}` for a copy the updater does not move (a hand download, a build tree); without `check`, the newest release is installed beside the running one, the app with it when the install has the app, and the answer is `{"installed"}`. A download can take a minute: send it on a connection of its own |
 | `quit` | `keep` | the client is leaving: `keep: false` ends the sessions the host started, `keep: true` leaves them running |
 | `watch` | | the list, again on every change |
 | `shutdown` | | the host ends its sessions and exits |
