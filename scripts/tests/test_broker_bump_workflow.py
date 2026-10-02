@@ -66,10 +66,17 @@ class BumpWorkflow(unittest.TestCase):
         self.assertIn("-p inference-gateway --lib models", named("The gateway reads the refreshed figures")["run"])
         self.assertIn("crates/inference-gateway/data/model-index.json", named("Commit, tag and push")["run"])
 
-    def test_a_release_can_be_cut_by_hand(self):
+    def test_a_release_can_be_cut_by_hand_and_a_trial_commits_nothing(self):
         inputs = load()[True]["workflow_dispatch"]["inputs"]
         self.assertEqual(inputs["release"]["type"], "boolean")
-        self.assertIn("env.CUT == 'true'", named("Commit, tag and push")["if"])
+        self.assertEqual(inputs["trial"]["type"], "boolean")
+        commit = named("Commit, tag and push")["if"]
+        self.assertIn("env.CUT == 'true'", commit)
+        self.assertNotIn("TRIAL", commit)
+        self.assertIn("env.TRIAL == 'true'", named("Refresh the model figures")["if"])
+
+    def test_a_failed_fetch_never_holds_up_a_release(self):
+        self.assertIs(named("Refresh the model figures").get("continue-on-error"), True)
 
     def test_every_action_is_pinned_to_a_commit(self):
         for line in WORKFLOW.read_text().splitlines():
