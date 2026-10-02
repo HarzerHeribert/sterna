@@ -87,19 +87,21 @@ h2{font:600 clamp(48px,6.7vw,104px)/.92 var(--display);letter-spacing:-.02em}
 /* The desktop showcase: the app's windows fanned out on a slanted stage.
    Each window is its own slanted plane, stacked by order rather than by
    depth, so none ever cuts through another. */
-.showcase{margin:0 -4vw 56px;--rx:0deg;--ry:0deg;--slant:perspective(2400px) rotateX(calc(22deg + var(--rx))) rotateY(var(--ry)) rotateZ(-7deg)}
+.showcase{margin:0 -4vw 56px;--rx:0deg;--ry:0deg;--open:0;
+  --slant:perspective(2400px) rotateX(calc(22deg - var(--open) * 8deg + var(--rx))) rotateY(var(--ry)) rotateZ(calc(-7deg + var(--open) * 2.5deg))}
 .stage{position:relative;height:clamp(400px,47vw,780px);overflow:hidden;
   -webkit-mask-image:linear-gradient(to bottom,#000 82%,transparent);mask-image:linear-gradient(to bottom,#000 82%,transparent)}
 .fan{position:absolute;inset:0}
-/* A layer drifts with the scroll at its own depth; the window in it keeps
-   the slant and eases forward when it is chosen. */
-.layer{position:absolute;width:52%;transform:translate3d(0,var(--py,0px),0);will-change:transform}
+/* A layer is a slanted plane that drifts with the scroll at its own depth,
+   and lifts toward the reader as the stage passes; the window in it eases
+   forward when it is chosen. */
+.layer{position:absolute;width:52%;transform:translate3d(var(--px,0px),var(--py,0px),0) var(--slant);transform-origin:50% 50%;will-change:transform}
 .layer[data-win="running"]{left:3%;top:3%;z-index:1}
 .layer[data-win="overview"]{left:18%;top:10%;z-index:2}
 .layer[data-win="session"]{left:33%;top:17%;z-index:3}
 .layer[data-win="done"]{left:48%;top:24%;z-index:4}
 .win{display:block;width:100%;height:auto;aspect-ratio:1480/940;object-fit:cover;border-radius:12px;background:#d5d9de;
-  transform:var(--slant) translateY(var(--lift,0%));transform-origin:50% 50%;
+  transform:translateY(var(--lift,0%));
   box-shadow:0 0 0 1px rgba(19,23,30,.10),0 22px 44px -18px rgba(19,23,30,.38),0 60px 110px -40px rgba(19,23,30,.42);
   transition:transform .7s cubic-bezier(.2,.7,.1,1),opacity .9s ease,box-shadow .5s}
 .fan[data-front="running"] .layer[data-win="running"],.fan[data-front="overview"] .layer[data-win="overview"],
@@ -188,7 +190,7 @@ footer>a:last-child{font:11px var(--mono)}
 }
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important}}
 @media(max-width:600px){
-  .showcase{margin:0 -6% 44px;--slant:perspective(1600px) rotateX(calc(18deg + var(--rx))) rotateY(var(--ry)) rotateZ(-6deg)}
+  .showcase{margin:0 -6% 44px;--slant:perspective(1600px) rotateX(calc(18deg - var(--open) * 6deg + var(--rx))) rotateY(var(--ry)) rotateZ(calc(-6deg + var(--open) * 2deg))}
   .stage{height:92vw}
   .layer{width:84%}.layer[data-win="running"],.themes .theme[data-win="running"]{display:none}
   .layer[data-win="overview"]{left:2%;top:5%}.layer[data-win="session"]{left:10%;top:18%}.layer[data-win="done"]{left:18%;top:31%}

@@ -1,8 +1,10 @@
 // The windows the product page's showcase slants and fans out
 // (sites/public/showcase/): the app at work, recorded against the mock host,
-// each window in a theme of its own and in light or dark. A clip is a short
-// H.264 loop with its first frame as its poster; a still is a JPEG at one
-// and a half times the pixels, so it stays sharp when the page slants it.
+// each window in a theme of its own and in light or dark, at one and a half
+// times the pixels so it stays sharp on a dense screen when the page slants
+// it. A clip is recorded frame by frame without loss and encoded as H.264,
+// which every browser plays (at this quality smaller than VP9 too), with its
+// first frame as its poster; a still is a JPEG.
 //   npm run showcase [name…] writes sites/public/showcase/<name>.{mp4,jpg}
 // Needs ffmpeg with libx264 on PATH.
 import { chromium } from "@playwright/test";
@@ -43,7 +45,7 @@ async function screencast(page) {
     frames.push({ data: Buffer.from(data, "base64"), at: metadata.timestamp });
     cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
   });
-  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: 1480, maxHeight: 940 });
+  await cdp.send("Page.startScreencast", { format: "png", maxWidth: 2220, maxHeight: 1410 });
   return async () => {
     await cdp.send("Page.stopScreencast");
     frames.push({ data: frames.at(-1).data, at: Date.now() / 1000 });
@@ -51,22 +53,24 @@ async function screencast(page) {
   };
 }
 
-/** The frames as an H.264 loop at 30 frames a second, each shown as long as it was on screen. */
+/** The frames as a loop at 30 frames a second, each shown as long as it was on screen. */
 function encode(frames, name, speed = 1) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sterna-showcase-"));
   const list = ["ffconcat version 1.0"];
   frames.forEach((frame, i) => {
-    const file = `f${String(i).padStart(5, "0")}.jpg`;
+    const file = `f${String(i).padStart(5, "0")}.png`;
     fs.writeFileSync(path.join(dir, file), frame.data);
     const next = frames[i + 1];
     list.push(`file '${file}'`, `duration ${next ? Math.max(next.at - frame.at, 0.001).toFixed(4) : "0.04"}`);
   });
   fs.writeFileSync(path.join(dir, "list.txt"), list.join("\n") + "\n");
+  const input = ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"),
+    "-vf", `setpts=PTS/${speed},fps=30,scale=2220:-2:flags=lanczos,format=yuv420p`, "-an"];
   const mp4 = path.join(OUT, `${name}.mp4`);
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"),
-    "-vf", `setpts=PTS/${speed},fps=30,scale=1480:-2:flags=lanczos,format=yuv420p`, "-c:v", "libx264", "-preset", "slow", "-crf", "23",
-    "-movflags", "+faststart", "-an", mp4]);
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-i", mp4, "-frames:v", "1", "-q:v", "3", path.join(OUT, `${name}.jpg`)]);
+  execFileSync("ffmpeg", [...input, "-c:v", "libx264", "-preset", "slow", "-tune", "animation", "-crf", "19",
+    "-profile:v", "high", "-movflags", "+faststart", mp4]);
+  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-i", path.join(dir, "f00000.png"), "-vf", "scale=2220:-2:flags=lanczos",
+    "-q:v", "3", path.join(OUT, `${name}.jpg`)]);
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -74,7 +78,7 @@ const only = process.argv.slice(2);
 for (const win of WINDOWS.filter((w) => !only.length || only.includes(w.name))) {
   const folder = path.join(os.homedir(), "code", "ledger-app");
   const bridge = await startBridge(["--mock", "--scenario", "busy", "--pace", "2", "--any-folder", "--folders", folder, "--origin", "http://127.0.0.1:5298"]);
-  const page = await browser.newPage({ viewport: { width: 1480, height: 940 }, deviceScaleFactor: win.still ? 1.5 : 1, colorScheme: win.scheme });
+  const page = await browser.newPage({ viewport: { width: 1480, height: 940 }, deviceScaleFactor: 1.5, colorScheme: win.scheme });
   await page.addInitScript((s) => localStorage.setItem("sterna.desktop.prefs", JSON.stringify({ appearance: s })), win.scheme);
   const url = `http://127.0.0.1:5298/?bridge=${encodeURIComponent(bridge.url)}`;
   await page.goto(url);

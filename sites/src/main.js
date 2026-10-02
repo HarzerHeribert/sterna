@@ -73,7 +73,8 @@ if (showcase) {
   const layers = [...showcase.querySelectorAll('.layer')];
   const clips = [...showcase.querySelectorAll('video.win')];
   const themes = showcase.querySelectorAll('.theme');
-  const depth = { running: 0.3, overview: 0.55, session: 0.85, done: 1.15 };
+  // How near each window stands: the nearer, the further it travels.
+  const depth = { running: 0.25, overview: 0.6, session: 1, done: 1.45 };
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const still = () => reduced.matches || document.querySelector('.motion-toggle')?.getAttribute('aria-pressed') === 'true';
   let seen = false;
@@ -95,19 +96,42 @@ if (showcase) {
       } else clip.pause();
     }
   };
-  const drift = () => {
+  // One eased loop draws the scroll and the pointer: where the stage stands
+  // in the window (-1 rising in from below, 1 leaving at the top) and how far
+  // the pointer leans it, each followed a little behind, as a camera would.
+  const place = () => {
     const box = stage.getBoundingClientRect();
-    const away = Math.max(-1, Math.min(1, (box.top + box.height / 2 - innerHeight / 2) / innerHeight));
-    for (const layer of layers) {
-      layer.style.setProperty('--py', still() ? '0px' : `${(away * depth[layer.dataset.win] * 80).toFixed(1)}px`);
-    }
+    const middle = box.top + box.height / 2;
+    return Math.max(-1, Math.min(1, (innerHeight / 2 - middle) / (innerHeight / 2 + box.height / 2)));
   };
+  const shown = { open: 0, rx: 0, ry: 0 };
+  const goal = { open: 0, rx: 0, ry: 0 };
   let drawing = false;
-  addEventListener('scroll', () => {
-    if (drawing) return;
-    drawing = true;
-    requestAnimationFrame(() => { drawing = false; drift(); });
-  }, { passive: true });
+  const draw = () => {
+    let moving = false;
+    for (const key of Object.keys(shown)) {
+      shown[key] += (goal[key] - shown[key]) * 0.08;
+      if (Math.abs(goal[key] - shown[key]) < 0.0005) shown[key] = goal[key];
+      else moving = true;
+    }
+    showcase.style.setProperty('--open', shown.open.toFixed(4));
+    showcase.style.setProperty('--rx', `${shown.rx.toFixed(3)}deg`);
+    showcase.style.setProperty('--ry', `${shown.ry.toFixed(3)}deg`);
+    for (const layer of layers) {
+      const near = depth[layer.dataset.win];
+      layer.style.setProperty('--py', `${(-shown.open * near * 170).toFixed(1)}px`);
+      layer.style.setProperty('--px', `${(shown.open * near * 46).toFixed(1)}px`);
+    }
+    drawing = moving;
+    if (moving) requestAnimationFrame(draw);
+  };
+  const aim = () => {
+    if (still()) Object.assign(goal, { open: 0, rx: 0, ry: 0 });
+    else goal.open = place();
+    if (!drawing) { drawing = true; requestAnimationFrame(draw); }
+  };
+  addEventListener('scroll', aim, { passive: true });
+  addEventListener('resize', aim);
 
   showcase.classList.add('ready');
   new IntersectionObserver((entries) => {
@@ -116,23 +140,21 @@ if (showcase) {
     play();
   }, { threshold: 0.15 }).observe(showcase);
   document.addEventListener('visibilitychange', play);
-  reduced.addEventListener('change', () => { play(); drift(); });
+  reduced.addEventListener('change', () => { play(); aim(); });
   // The page's Pause motion button sets its state when it is clicked.
   document.addEventListener('click', (event) => {
-    if (event.target.closest?.('.motion-toggle')) setTimeout(() => { play(); drift(); });
+    if (event.target.closest?.('.motion-toggle')) setTimeout(() => { play(); aim(); });
   });
 
-  const lean = (rx, ry) => {
-    showcase.style.setProperty('--rx', `${rx.toFixed(2)}deg`);
-    showcase.style.setProperty('--ry', `${ry.toFixed(2)}deg`);
-  };
   stage.addEventListener('pointermove', (event) => {
     if (still()) return;
     const box = stage.getBoundingClientRect();
-    lean(-((event.clientY - box.top) / box.height - 0.5) * 3, ((event.clientX - box.left) / box.width - 0.5) * 4);
+    goal.rx = -((event.clientY - box.top) / box.height - 0.5) * 4;
+    goal.ry = ((event.clientX - box.left) / box.width - 0.5) * 6;
+    aim();
   });
-  stage.addEventListener('pointerleave', () => lean(0, 0));
-  drift();
+  stage.addEventListener('pointerleave', () => { goal.rx = 0; goal.ry = 0; aim(); });
+  aim();
 }
 
 const toggle = document.querySelector('.motion-toggle');
