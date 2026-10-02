@@ -106,9 +106,15 @@ fn gateway() -> Result<Process, String> {
 /// models that answer a conversation: an account's list also carries image,
 /// speech, batch and approval-review ids, which a client must not offer as a
 /// session's model (the terminal's picker leaves them out by the same rule).
-pub(crate) fn accounts() -> Result<Value, String> {
-    let output = gateway()?
-        .args(["entitlements", "--json"])
+/// With `refresh` the gateway first reads again a list a day old or missing,
+/// as the terminal's picker has it do on every open.
+pub(crate) fn accounts(refresh: bool) -> Result<Value, String> {
+    let mut command = gateway()?;
+    command.args(["entitlements", "--json"]);
+    if refresh {
+        command.arg("--refresh");
+    }
+    let output = command
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("the gateway could not be run: {e}"))?;

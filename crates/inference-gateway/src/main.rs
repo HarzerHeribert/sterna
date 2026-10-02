@@ -1083,17 +1083,16 @@ fn entitlements(config: &GatewayConfig, data_dir: &Path, json: bool, refresh: bo
     Ok(())
 }
 
-/// Read a model catalogue for every connected subscription account that has
-/// none cached, then every api-key account's list (see [`read_api_catalogue`]).
+/// Read a model catalogue for every connected subscription account, then
+/// every api-key account's list (see [`read_api_catalogue`]).
 ///
-/// **Missing, not stale** for a subscription — the same rule a host applies:
-/// `--refresh` fills a gap, it does not re-fetch what is already known, so
-/// asking twice costs one sidecar start rather than two. An api-key list is
-/// read when none is cached or the cached one is older than
-/// [`API_LIST_MAX_AGE_SECONDS`]: Sterna's model picker refreshes on every
-/// open, and a provider that stalls would hold it for the whole probe
-/// timeout each time, while a list never read again would never route a
-/// model the provider added later. Sequentially rather than in parallel:
+/// Either is read when none is cached or the cached one is older than
+/// [`LIST_MAX_AGE_SECONDS`] ([`wants_reading`]): Sterna's model picker
+/// refreshes on every open, and a broker start or a provider that stalls
+/// would hold it each time, while a list never read again would never show
+/// a model added later -- a subscription's list was read once, by the
+/// broker of that day, and a model its plan gained after stayed off the
+/// picker for good. Sequentially rather than in parallel:
 /// a standalone catalogue is a handful of accounts, and starting several
 /// CLIProxyAPI processes at once to save a second is not a trade worth the
 /// moving parts.
@@ -1102,7 +1101,9 @@ fn entitlements(config: &GatewayConfig, data_dir: &Path, json: bool, refresh: bo
 /// broker will not start must not stop the other three being reported.
 fn refresh_catalogues(config: &GatewayConfig, data_dir: &Path, cache: &ModelCache) {
     for (name, entry) in &config.accounts {
-        if entry.subscription_broker().is_none() || cache.load(name).is_some() {
+        if entry.subscription_broker().is_none()
+            || !wants_reading(cache.load(name).as_ref(), now_unix_seconds())
+        {
             continue;
         }
         let paths = config::broker_paths(data_dir, name);
@@ -1142,13 +1143,8 @@ fn refresh_catalogues(config: &GatewayConfig, data_dir: &Path, cache: &ModelCach
     let providers = config::providers(config);
     let secrets = secret_store(data_dir);
     for (name, entry) in &config.accounts {
-        let fresh = entry
-            .provider()
-            .and_then(|provider| cache.load(provider))
-            .is_some_and(|catalogue| {
-                now_unix_seconds() - catalogue.fetched_at() < API_LIST_MAX_AGE_SECONDS
-            });
-        if fresh {
+        let cached = entry.provider().and_then(|provider| cache.load(provider));
+        if !wants_reading(cached.as_ref(), now_unix_seconds()) {
             continue;
         }
         if let Some(line) = read_api_catalogue(&providers, &secrets, cache, name, entry) {
@@ -1157,9 +1153,15 @@ fn refresh_catalogues(config: &GatewayConfig, data_dir: &Path, cache: &ModelCach
     }
 }
 
-/// How old a cached api-key model list may be before `--refresh` reads it
-/// again: a day.
-const API_LIST_MAX_AGE_SECONDS: i64 = 24 * 60 * 60;
+/// How old a cached model list may be before `--refresh` reads it again: a
+/// day.
+const LIST_MAX_AGE_SECONDS: i64 = 24 * 60 * 60;
+
+/// Whether `--refresh` reads a list again at `now`: none is cached, or the
+/// cached one is [`LIST_MAX_AGE_SECONDS`] old.
+fn wants_reading(cached: Option<&ModelCatalogue>, now: i64) -> bool {
+    cached.is_none_or(|catalogue| now - catalogue.fetched_at() >= LIST_MAX_AGE_SECONDS)
+}
 
 /// Reads an api-key account's model list every known way
 /// ([`discovery::read_model_list`]) and caches it under its provider, which
@@ -2067,6 +2069,21 @@ fn refuse_unless_real_directory_or_absent(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cached list is read again once it is a day old, a subscription's
+    /// as an api key's: a model the plan gained later reaches the picker.
+    #[test]
+    fn a_cached_list_is_read_again_once_it_is_a_day_old() {
+        let read_at = 1_790_000_000;
+        let cached = ModelCatalogue::new("chatgpt-subscription", "", "", read_at, Vec::new());
+        assert!(wants_reading(None, read_at));
+        assert!(!wants_reading(Some(&cached), read_at + 60));
+        assert!(!wants_reading(
+            Some(&cached),
+            read_at + LIST_MAX_AGE_SECONDS - 1
+        ));
+        assert!(wants_reading(Some(&cached), read_at + LIST_MAX_AGE_SECONDS));
+    }
 
     #[test]
     fn storing_a_key_declares_its_providers_account_once() {

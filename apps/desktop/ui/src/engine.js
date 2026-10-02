@@ -130,7 +130,7 @@ export class Engine {
   setSetting(key, value) { return this.ask({ do: "set_setting", key, value: String(value) }); }
   preferences() { return this.ask({ do: "preferences" }); }
   setPreferences(preferences) { return this.ask({ do: "set_preferences", preferences }); }
-  accounts() { return this.ask({ do: "accounts" }, 30000).then((ok) => ok.accounts || []); }
+  accounts(refresh = false) { return this.ask({ do: "accounts", refresh }, refresh ? 90000 : 30000).then((ok) => ok.accounts || []); }
   /** Hands the gateway a provider's key; the key is in this one line and nowhere else. */
   setKey(provider, key) { return this.ask({ do: "set_key", provider, key }, 30000); }
 

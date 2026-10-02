@@ -201,7 +201,7 @@ time it changes.
 | `set_setting` | `key`, `value` | saves one global setting; refused for a key or value that is not one |
 | `preferences` | | the desktop app's own preferences, whole; `{}` before it has any |
 | `set_preferences` | `preferences` | keeps them, whole |
-| `accounts` | | the gateway's accounts: `{"accounts":[{"account","provider","authenticated","models"}]}`, `models` holding only ids that answer a conversation (no image, speech, batch or approval-review ids) |
+| `accounts` | `refresh` (bool: the gateway first reads again a model list a day old or missing) | the gateway's accounts: `{"accounts":[{"account","provider","authenticated","models"}]}`, `models` holding only ids that answer a conversation (no image, speech, batch or approval-review ids) |
 | `set_key` | `provider`, `key` | gives the gateway a provider's key, on its stdin and nowhere else |
 | `sign_in` | `provider` | `{"ok":{}}`, then the sign-in's progress as `{"sign_in":{…}}` lines and `{"done":{"connected":…}}` last; meanwhile the client may send `{"paste":"<address>"}` or `{"cancel":true}` on the same connection |
 

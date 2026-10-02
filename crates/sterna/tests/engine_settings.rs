@@ -145,6 +145,19 @@ fn the_accounts_a_client_is_shown_carry_only_models_a_session_can_run_on() {
         "{answer}"
     );
     assert_eq!(answer["accounts"][0]["account"], "chatgpt-subscription");
+    // Asked to refresh, the gateway reads again what is a day old, as the
+    // terminal's picker has it do; asked plainly, it reads nothing.
+    host.ask(json!({"do":"accounts","refresh":true}));
+    let argv = std::fs::read_to_string(world.base.join("gateway-argv.txt")).unwrap();
+    let runs: Vec<&str> = argv
+        .lines()
+        .filter(|l| l.starts_with("entitlements"))
+        .collect();
+    assert_eq!(
+        runs,
+        ["entitlements --json", "entitlements --json --refresh"],
+        "{argv}"
+    );
 }
 
 /// A key given on the host and a key given in a session's own form reach

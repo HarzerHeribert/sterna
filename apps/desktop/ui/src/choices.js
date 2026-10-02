@@ -4,16 +4,24 @@
 // the theme. With a session open, its own commands change it (and save);
 // with none, the host saves the setting for the sessions to come.
 
-/** The accounts the gateway serves, fetched again. */
+/**
+ * The accounts the gateway serves, fetched again: the lists it holds at
+ * once, then each read again where it is a day old, as the terminal's
+ * picker does -- so a model an account gained later is offered.
+ */
 export async function loadAccounts(app) {
   app.S.accounts = { ...(app.S.accounts || {}), loading: true, error: "" };
   app.changed();
-  try {
-    app.S.accounts = { list: await app.engine.accounts(), loading: false, error: "" };
-  } catch (e) {
-    app.S.accounts = { list: app.S.accounts?.list || [], loading: false, error: String(e?.message || e) };
+  for (const refresh of [false, true]) {
+    try {
+      app.S.accounts = { list: await app.engine.accounts(refresh), loading: !refresh, error: "" };
+    } catch (e) {
+      app.S.accounts = { list: app.S.accounts?.list || [], loading: false, error: String(e?.message || e) };
+      break;
+    } finally {
+      app.changed();
+    }
   }
-  app.changed();
 }
 
 /** The person's saved settings, fetched again. */

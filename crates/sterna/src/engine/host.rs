@@ -371,7 +371,7 @@ fn answer(
         ),
         "preferences" => Ok(super::setup::preferences(folder)),
         "set_preferences" => super::setup::set_preferences(folder, &command["preferences"]),
-        "accounts" => super::setup::accounts(),
+        "accounts" => super::setup::accounts(command["refresh"].as_bool() == Some(true)),
         "set_key" => super::setup::set_key(
             command["provider"].as_str().unwrap_or(""),
             command["key"].as_str().ok_or("set_key needs a key")?,
