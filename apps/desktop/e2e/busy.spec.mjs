@@ -55,29 +55,45 @@ for (const width of [1480, 980]) {
       await app.getByRole("dialog", { name: "Choose a folder" }).getByRole("button", { name: "Cancel" }).click();
       await app.getByRole("button", { name: /^Overview/ }).click();
       await expect(app.locator(".ov .ovrow")).toHaveCount(3);
-      const box = (sel, side) => app.locator(sel).evaluateAll((els, k) => els.map((e) => Math.round(e.getBoundingClientRect()[k])), side);
+      // Every figure from one synchronous read of the page, once the easing
+      // has finished: the overview redraws as its clocks tick, and figures
+      // read across several calls can come from a node already replaced
+      // (a detached node measures 0, its line height nothing).
+      const snapshot = () => app.evaluate(async () => {
+        await Promise.all(document.getAnimations()
+          .filter((a) => a.effect?.getTiming().iterations !== Infinity)
+          .map((a) => a.finished.catch(() => {})));
+        const x = (sel, side) => [...document.querySelectorAll(sel)].map((e) => Math.round(e.getBoundingClientRect()[side]));
+        const heading = document.querySelector(".ovt");
+        return {
+          titles: x(".ov .st", "left"), folders: x(".ov .sf", "left"), glyphs: x(".ov .srow .sg", "left"),
+          metaRight: x(".ov .srow .sm", "right"), metaLeft: x(".ov .srow .sm", "left"),
+          body: x(".ovbody .ask .h, .ovbody .ask .row2", "left"),
+          labels: [...x(".ov .ghd", "left"), ...x(".ov .group, .ov .ovcard", "left")],
+          lines: Math.round(heading.getBoundingClientRect().height / parseFloat(getComputedStyle(heading).lineHeight)),
+          row: [...document.querySelectorAll(".ovbody .ask .row2 button")].map((b) => { const q = b.getBoundingClientRect(); return Math.round(q.top + q.height / 2); }),
+          icons: [...x(".sbnav .navrow > .i", "left"), ...x(".sidebar .sitem .sg", "left"), ...x(".sidebar .fn", "left")],
+          labelsX: [...x(".sbnav .navrow:not(.search) > span:not(.navcount)", "left"), ...x(".sidebar .sitem .t", "left"), ...x(".sbnav .navrow.search input", "left")],
+          heights: [...document.querySelectorAll(".sidebar .sitem, .sbnav .navrow")].map((e) => Math.round(e.getBoundingClientRect().height)),
+        };
+      });
       const one = (xs) => [...new Set(xs)];
-      const titles = await box(".ov .st", "left");
-      expect(titles.length).toBe(4);
-      expect(one(titles), "titles in every section start at one x").toHaveLength(1);
-      expect(one(await box(".ov .sf", "left")), "folder names under them").toEqual(one(titles));
-      expect(one(await box(".ov .srow .sg", "left")), "glyphs in one column").toHaveLength(1);
-      expect(one(await box(".ov .srow .sm", "right")), "the meta column ends at one x").toHaveLength(1);
-      expect(one(await box(".ov .srow .sm", "left")), "and is one width").toHaveLength(1);
-      expect(one(await box(".ovbody .ask .h, .ovbody .ask .row2", "left")), "the waiting card's body is indented to the titles").toEqual(one(titles));
-      // Polled: on a slow runner a section is still easing in when it is first
-      // read; one that never lines up still fails.
-      await expect.poll(async () => one([...await box(".ov .ghd", "left"), ...await box(".ov .group, .ov .ovcard", "left")]).length,
-        { message: "section labels sit at the cards' edge", timeout: 5000 }).toBe(1);
-      const lines = await app.locator(".ovt").evaluate((e) => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)));
-      expect(lines, "the heading is one line").toBe(1);
-      const row = await app.locator(".ovbody .ask .row2").evaluate((r) => [...r.querySelectorAll("button")].map((b) => { const q = b.getBoundingClientRect(); return Math.round(q.top + q.height / 2); }));
-      expect(one(row), "the buttons and Open the session are one row").toHaveLength(1);
+      const at = await snapshot();
+      expect(at.titles.length).toBe(4);
+      expect(one(at.titles), "titles in every section start at one x").toHaveLength(1);
+      expect(one(at.folders), "folder names under them").toEqual(one(at.titles));
+      expect(one(at.glyphs), "glyphs in one column").toHaveLength(1);
+      expect(one(at.metaRight), "the meta column ends at one x").toHaveLength(1);
+      expect(one(at.metaLeft), "and is one width").toHaveLength(1);
+      expect(one(at.body), "the waiting card's body is indented to the titles").toEqual(one(at.titles));
+      expect(one(at.labels), "section labels sit at the cards' edge").toHaveLength(1);
+      expect(at.lines, "the heading is one line").toBe(1);
+      expect(one(at.row), "the buttons and Open the session are one row").toHaveLength(1);
       await expect(app.locator(".ov .progress, .ov .fchip")).toHaveCount(0);
       // The list: icons, glyphs and folder names at one x; labels and titles at the next.
-      expect(one([...await box(".sbnav .navrow > .i", "left"), ...await box(".sidebar .sitem .sg", "left"), ...await box(".sidebar .fn", "left")])).toHaveLength(1);
-      expect(one([...await box(".sbnav .navrow:not(.search) > span:not(.navcount)", "left"), ...await box(".sidebar .sitem .t", "left"), ...await box(".sbnav .navrow.search input", "left")])).toHaveLength(1);
-      expect(one(await app.locator(".sidebar .sitem, .sbnav .navrow").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)))), "every row is one 32 px line").toEqual([32]);
+      expect(one(at.icons)).toHaveLength(1);
+      expect(one(at.labelsX)).toHaveLength(1);
+      expect(one(at.heights), "every row is one 32 px line").toEqual([32]);
       await expect(app.locator(".sidebar .fhead .fc, .sidebar .fhead .fp")).toHaveCount(0);
     });
   });
