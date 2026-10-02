@@ -6,11 +6,29 @@ name: Broker bump
 # so `sterna update` and the installer pick up the new broker, and with it the
 # models it knows. The pin commit is the review trail: every shipped broker
 # is named, with its SHA-256, in this repository's history.
+#
+# Every release this cuts also refreshes the model figures the gateway ships
+# (crates/inference-gateway/data/model-index.json): Artificial Analysis's
+# current intelligence and coding indexes and prices, fetched once with the
+# ARTIFICIAL_ANALYSIS_API_KEY secret and baked in, so "sort by intelligence"
+# stays current for everyone and no install needs a key. Their terms ask for
+# server-side use and cached answers, which this is. Without the secret the
+# figures already shipped stay as they are. The gateway's own check of the
+# shipped snapshot runs before anything is committed.
+#
+# A Sterna release cut by hand goes through here too: run this workflow with
+# `release` set, and it refreshes the figures, commits, tags and builds even
+# when the broker has not changed.
 
 on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Cut a release even when the broker has not changed (the model figures are refreshed)"
+        type: boolean
+        default: false
 
 concurrency:
   group: broker-bump
@@ -27,6 +45,9 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+    env:
+      HAVE_ANALYSIS_KEY: ${{ secrets.ARTIFICIAL_ANALYSIS_API_KEY != '' }}
+      CUT: ${{ inputs.release == true }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
@@ -48,16 +69,68 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The key reaches this one step, as an environment variable: never an
+      # argument, never a log line.
+      - name: Refresh the model figures
+        id: figures
+        if: (steps.pin.outputs.changed == 'true' || env.CUT == 'true') && env.HAVE_ANALYSIS_KEY == 'true'
+        env:
+          ARTIFICIAL_ANALYSIS_API_KEY: ${{ secrets.ARTIFICIAL_ANALYSIS_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/fetch-model-index.py > "$RUNNER_TEMP/catalogue.json"
+          python3 scripts/bake-model-index.py "$RUNNER_TEMP/catalogue.json"
+          if git diff --quiet -- crates/inference-gateway/data/model-index.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Linux build-host packages (libdbus for the gateway's Secret Service backend)
+        if: steps.figures.outputs.changed == 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y -q libdbus-1-dev pkg-config
+
+      - name: Resolve the declared toolchain
+        id: tc
+        if: steps.figures.outputs.changed == 'true'
+        run: |
+          v="$(grep -m1 '^toolchain' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        if: steps.figures.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, pinned 2026-09-06
+        with:
+          toolchain: ${{ steps.tc.outputs.version }}
+
+      # The gateway reads the snapshot it ships: a file it cannot parse would
+      # empty every model's figures, so it is checked before it is committed.
+      - name: The gateway reads the refreshed figures
+        if: steps.figures.outputs.changed == 'true'
+        run: cargo test --locked -p inference-gateway --lib models
+
       - name: Commit, tag and push
         id: release
-        if: steps.pin.outputs.changed == 'true'
+        if: steps.pin.outputs.changed == 'true' || env.CUT == 'true'
+        env:
+          BROKER_CHANGED: ${{ steps.pin.outputs.changed }}
+          BROKER_VERSION: ${{ steps.pin.outputs.version }}
+          FIGURES_CHANGED: ${{ steps.figures.outputs.changed == 'true' }}
         run: |
           set -euo pipefail
           last="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
           tag="$(python3 scripts/release/next-tag.py "$last")"
           git config user.name "sterna-release-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "release: CLIProxyAPI ${{ steps.pin.outputs.version }}" -- release/cliproxyapi.toml
+          what=""
+          if [ "$BROKER_CHANGED" = "true" ]; then what="CLIProxyAPI $BROKER_VERSION"; fi
+          if [ "$FIGURES_CHANGED" = "true" ]; then
+            what="${what:+$what, }model figures of $(date -u +%Y-%m-%d)"
+          fi
+          if [ -n "$what" ]; then
+            git commit -m "release: $what" -- release/cliproxyapi.toml crates/inference-gateway/data/model-index.json
+          fi
           git tag "$tag"
           git push origin HEAD:main "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

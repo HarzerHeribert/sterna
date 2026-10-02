@@ -91,4 +91,14 @@ a child process. Each release pins one CLIProxyAPI version and a SHA-256
 per platform in `release/cliproxyapi.toml`; the installer and `sterna
 update` refuse an asset whose digest differs. A daily workflow
 (`.github/workflows/broker-bump.yml`) pins new upstream releases.
+
+Each release that workflow cuts -- a new broker, or a Sterna release cut by
+hand by running it with `release` set -- also refreshes the published model
+figures the gateway ships (`data/model-index.json`, which `inference-gateway
+models` serves and `/models` sorts by): `scripts/release/fetch-model-index.py`
+fetches Artificial Analysis's current indexes and prices with the repository
+secret `ARTIFICIAL_ANALYSIS_API_KEY`, `scripts/bake-model-index.py` bakes
+them, and the gateway's own check reads the result before it is committed.
+No install needs a key; without the secret the shipped figures stay as they
+are.
 Which subscriptions exist, and the terms risk of each: [subscriptions](subscriptions.md).

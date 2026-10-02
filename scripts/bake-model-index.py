@@ -8,9 +8,10 @@ Reads an Artificial Analysis catalogue -- {"fetched_at", "index_version",
 "models": {slug: facts}}, the shape `inference-gateway models --import`
 takes -- from a path or standard input, and
 rewrites crates/inference-gateway/data/model-index.json with the fields the
-subagent roster and future cost routing need. Run it when a release is cut so
-the published figures ship with the binary; a user's own key overlays this
-copy at run time (`inference-gateway models --import`).
+subagent roster and future cost routing need. The bump workflow runs it for
+every release it cuts, on what `scripts/release/fetch-model-index.py`
+fetched, so the published figures ship with the binary; a user's own key
+overlays this copy at run time (`inference-gateway models --import`).
 
 **Two sources, and the primary always wins.** Artificial Analysis publishes
 what a model is worth -- intelligence, coding, agentic, cost -- and publishes
