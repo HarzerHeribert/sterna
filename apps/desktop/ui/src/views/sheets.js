@@ -18,7 +18,7 @@ function folderSheet(app) {
   const sel = app.S.pickFolder, first = !app.cur() && app.S.view === "nofolder";
   const rows = app.folders().map((f) => {
     const n = f.sessions.length, last = f.sessions[0]?.last_used || f.last_used;
-    const used = n ? `${plural(n, "session", "sessions")} · last used ${agoMs(last)}` : "no sessions yet";
+    const used = n ? `${plural(n, "session", "sessions")}, last used ${agoMs(last)}` : "No sessions yet";
     return `<button class="frow" data-act="pickfolder" data-f="${esc(f.root)}" aria-pressed="${sel === f.root}"><span class="fi">${icon("folder")}</span>` +
       `<span class="fx"><b>${esc(app.folderName(f.root))}</b><span class="p">${esc(app.tilde(f.root))}</span><span class="d">${used}</span></span><span class="ck">${sel === f.root ? icon("check") : ""}</span></button>`;
   }).join("");
@@ -36,10 +36,11 @@ function folderSheet(app) {
 // -- help ------------------------------------------------------------------
 
 function helpSheet() {
-  const K = [["Send", "Enter"], ["New line", "Shift-Enter"], ["Stop after this cell, unless a question or an approval is in focus", "Esc"], ["Cancel the call in flight", "Esc twice"], ["Models", "F3"], ["Settings", "⌘ ,"], ["New session", "⌘ N"], ["Select the previous or next cell", "Alt ↑ ↓"], ["Fold or open the selected cell", "Ctrl O"], ["The selected cell's changes", "F4"], ["With an approval in focus: allow once, for the session, deny", "O · S · D"], ["With an approval in focus: refuse this once", "Esc"]];
+  const K = [["Send", "Enter"], ["New line", "Shift-Enter"], ["Stop after this cell, unless a question or an approval is in focus", "Esc"], ["Cancel the call in flight", "Esc twice"], ["Models", "F3"], ["Settings", "⌘ ,"], ["New session", "⌘ N"], ["Select the previous or next cell", "Alt ↑ ↓"], ["Fold or open the selected cell", "Ctrl O"], ["The selected cell's changes", "F4"], ["With an approval in focus: allow once, for the session, deny", "O S D"], ["With an approval in focus: refuse this once", "Esc"]];
   return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-labelledby="h-t">
     ${head("h-t", "Help", "Everything is a tap or a click. With a keyboard, these do the same.")}
-    <div class="sbd"><div class="group">${K.map(([d, k]) => `<div class="row">${d}<span class="v"><kbd>${k}</kbd></span></div>`).join("")}</div></div>
+    <div class="sbd"><div class="group">${K.map(([d, k]) => `<div class="row">${d}<span class="v"><kbd>${k}</kbd></span></div>`).join("")}</div>
+      <p class="cap2" style="margin-top:14px">Set in Inter, Barlow Condensed and IBM Plex Mono, each under the SIL Open Font License 1.1. The birds are traced from photographs; the credits are in the README.</p></div>
   </div>`;
 }
 
@@ -64,8 +65,8 @@ function settingsPane(app) {
     case "appearance": return `<div class="ghd">Appearance</div>${seg(app, "appearance", [["light", "Light"], ["dark", "Dark"], ["system", "Match the system"]])}
       <div class="ghd">Theme</div>
       <div class="preview">${t.art ? birdArt(t, "idle", app.light, 4) : `<span class="sw" style="width:56px;height:56px;background:var(--accent)"></span>`}
-        <div class="pt"><b>${esc(t.name)}</b><span>${t.art ? `${esc(t.latin)} · ${esc(t.nest)}` : "A palette alone: the accent is the whole of it."}</span>
-        <div class="sample"><span class="pill live"><span class="pulse"></span>Running 0:07</span><span class="pill ok">${icon("check", "s")}Executed</span><span class="pill fail">${icon("x", "s")}Failed</span>${sw(true)}<button class="btn small primary" data-act="noop">Send</button></div></div></div>
+        <div class="pt"><b>${esc(t.name)}</b><span>${t.art ? `${esc(t.latin)}, ${esc(t.nest)}` : "A palette alone: the accent is the whole of it."}</span>
+        <div class="sample"><span class="pill live"><span class="sg run" aria-hidden="true"><i></i></span>Running 0:07</span><span class="pill ok">${icon("check", "s")}Executed</span><span class="pill fail">${icon("x", "s")}Failed</span>${sw(true)}<button class="btn small primary" data-act="noop">Send</button></div></div></div>
       <p class="cap2">Only the accent moves with the theme. Failure, warning and success keep their own colours in every theme, so nothing live can read as an error. The theme is the one /theme sets in the terminal.</p>
       ${FAMILIES.map((fam) => `<div class="ghd">${fam}</div><div class="tiles">${THEMES.filter((x) => x.fam === fam).map((x) => tile(app, x)).join("")}</div>`).join("")}
       <p class="cap2" style="margin-top:14px">The birds are traced from photographs; the credits are in the README.</p>`;

@@ -24,5 +24,5 @@ export function flight(app, now) {
   const tern = document.getElementById("tern"), sea = document.getElementById("sea"), said = document.getElementById("said");
   if (tern) tern.style.transform = `translateY(${(Math.floor(frame / 4) % 2) * 6}px)`;
   if (sea) sea.textContent = Array.from({ length: 64 }, (_, i) => SEA[(frame + i) % SEA.length]).join("");
-  if (said) said.textContent = el < 3000 ? "Starting the model gateway" : `Starting the model gateway · ${Math.floor(el / 1000)} s`;
+  if (said) said.textContent = el < 3000 ? "Starting the model gateway" : `Starting the model gateway, ${Math.floor(el / 1000)} s`;
 }

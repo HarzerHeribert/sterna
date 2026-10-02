@@ -54,7 +54,7 @@ export function callsOf(execution) {
     const tool = at < 0 ? head : head.slice(0, at), arg = at < 0 ? "" : head.slice(at + 1);
     const word = status.trim().toLowerCase();
     const mark = word === "returned" ? "ok" : word === "failed" ? "fail" : word === "denied" ? "deny" : word === "started" ? "run" : "ok";
-    return { tool, arg, word: status.trim(), mark, detail: rest.join(" · ") };
+    return { tool, arg, word: status.trim(), mark, detail: rest.join(", ") };
   });
 }
 

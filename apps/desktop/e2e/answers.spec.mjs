@@ -25,7 +25,7 @@ test("with a question in focus Esc does not stop the turn, and a click answers i
   await expect(ask).toBeVisible({ timeout: 30000 });
   await ask.focus();
   await app.keyboard.press("Escape");
-  await expect(app.locator("#status")).not.toContainText("stop requested");
+  await expect(app.locator("#status")).not.toContainText("Stop requested");
   await expect(ask).toBeVisible();
   await ask.getByRole("button", { name: "copper" }).click();
   await expect(ask).toHaveCount(0);

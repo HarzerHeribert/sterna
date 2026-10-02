@@ -23,9 +23,7 @@ test.describe("with a newer release out", () => {
   test("it is offered at the foot of the sidebar, moved to, and Restart opens it with every session left running", async ({ app }) => {
     await pastTheFolderChoice(app);
     await expect(card(app)).toContainText("Sterna 0.1.0-pre.31 is available");
-    await expect(card(app)).toContainText("This copy is 0.1.0-pre.30.");
     await card(app).getByRole("button", { name: "Update" }).click();
-    await expect(card(app)).toContainText("Updating to Sterna 0.1.0-pre.31…");
     await expect(card(app).getByRole("button", { name: "Updating…" })).toBeDisabled();
     await expect(card(app)).toContainText("Sterna 0.1.0-pre.31 is installed", { timeout: 15000 });
     expect(await hook(app, "test_releases")).toEqual({ moves: 1 });

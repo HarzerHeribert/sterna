@@ -22,7 +22,7 @@ test("with automatic checks off, the card waits for Check now", () => {
 });
 
 test("the move shows its progress, then Restart, or what went wrong with Try again", () => {
-  assert.match(releaseCard(app({ answer: newer, phase: "moving" })), /Updating to Sterna 0\.1\.0-pre\.31….*disabled>Updating…/s);
+  assert.match(releaseCard(app({ answer: newer, phase: "moving" })), /Sterna 0\.1\.0-pre\.31 is available.*disabled>.*Updating…/s);
   assert.match(releaseCard(app({ answer: newer, phase: "moved", moved: "v0.1.0-pre.31" })), /Sterna 0\.1\.0-pre\.31 is installed.*data-act="rel-restart">Restart</s);
   assert.match(releaseCard(app({ answer: newer, phase: "unmoved", error: "x: connection refused" })), /was not installed.*GitHub could not be reached.*data-act="rel-move">Try again</s);
 });

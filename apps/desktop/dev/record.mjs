@@ -56,11 +56,17 @@ function line(v) {
 function answer(ordinal, v) {
   const files = changedFiles(v);
   const [added, removed] = v.changes ? countChanges(v.changes) : [0, 0];
-  const facts = [];
-  if (files > 0) facts.push(`${files} ${files === 1 ? "file" : "files"} · +${added} −${removed}`);
-  if (v.call_count > 0) facts.push(`${v.call_count} ${v.call_count === 1 ? "call" : "calls"}`);
+  const facts = [], parts = [];
+  if (files > 0) {
+    facts.push(`${files} ${files === 1 ? "file" : "files"} · +${added} −${removed}`);
+    parts.push({ text: `${files} ${files === 1 ? "file" : "files"}`, tone: "muted" }, { text: `+${added}`, tone: "added" }, { text: `−${removed}`, tone: "removed" });
+  }
+  if (v.call_count > 0) {
+    facts.push(`${v.call_count} ${v.call_count === 1 ? "call" : "calls"}`);
+    parts.push({ text: `${v.call_count} ${v.call_count === 1 ? "call" : "calls"}`, tone: "muted" });
+  }
   const failed = !!v.error;
-  return { cell: ordinal, mark: failed ? "✕" : "✓", failed, facts: facts.length ? facts.join(" · ") : failed ? "failed." : "complete." };
+  return { cell: ordinal, mark: failed ? "✕" : "✓", failed, facts: facts.length ? facts.join(" · ") : failed ? "failed." : "complete.", parts };
 }
 /** The calls a cell made, as engine/reading.rs::calls reads them from its record. */
 function calls(execution) {

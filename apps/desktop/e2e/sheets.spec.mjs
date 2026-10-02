@@ -16,7 +16,7 @@ test("the models sheet lists the gateway's accounts, and a choice changes the se
   const pill = app.locator(".toolbar .pillbtn").first();
   await expect(pill).toHaveText(/^fixture-two/);
   await sheet.getByRole("button", { name: "high", exact: true }).click();
-  await expect(pill).toHaveText(/^fixture-two·\s*high/);
+  await expect(pill).toHaveText(/^fixture-two\s*high/);
   await expect.poll(async () => (await world.host({ do: "settings" })).values["model.parent"]).toBe("fixture-two");
 });
 

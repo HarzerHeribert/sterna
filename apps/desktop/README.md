@@ -61,6 +61,15 @@ from where the person opens it (`src-tauri/src/restart.rs`). With
 Settings, Updates; a copy the updater does not move says why there, with
 the releases page.
 
+## Type
+
+The window draws with three bundled fonts, so every platform lays out the
+same widths: Inter for the interface (400, 500, 600), Barlow Condensed for
+the folder name and the opening, IBM Plex Mono for code. Each is under the
+SIL Open Font License 1.1 and comes from its `@fontsource` package; the
+system's own font stands behind Inter only as a fallback. Counts and times
+that sit in columns use tabular figures.
+
 ## Run it in a browser
 
 ```sh

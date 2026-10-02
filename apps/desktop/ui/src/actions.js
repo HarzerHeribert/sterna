@@ -80,6 +80,7 @@ export function wire(app) {
     newin: (el) => app.newIn(el.dataset.f),
     open: (el) => { S.sheet = S.sheet === "folder" ? null : S.sheet; app.open(el.dataset.id); },
     fold: (el) => { const f = el.dataset.f; S.folded[f] = !S.folded[f]; redraw(); },
+    allrows: (el) => { const f = el.dataset.f; S.allRows[f] = !S.allRows[f]; redraw(); },
     overview: () => { S.view = "overview"; S.sheet = null; app.pollUsage(); redraw(); $("#scroll").scrollTop = 0; },
     // The conversation
     cell: (el) => { const k = el.dataset.k; S.sel = k; S.open[k] = !(el.getAttribute("aria-expanded") === "true"); redraw(); },
@@ -159,7 +160,7 @@ export function wire(app) {
     "signin-open": (el) => {
       S.signinConfirm = false;
       const url = el.dataset.v;
-      app.bridge.openUrl(url).catch(() => app.say("Could not open the browser · copy the link instead"));
+      app.bridge.openUrl(url).catch(() => app.say("The browser did not open. Copy the link instead."));
       app.say("Opened the sign-in page in your browser");
     },
     copy: (el) => { navigator.clipboard?.writeText(el.dataset.v).then(() => app.say("Sign-in link copied"), () => app.say("Could not copy the link")); },
@@ -171,9 +172,9 @@ export function wire(app) {
       const via = S.signin?.via ? app.sessionById(S.signin.via) : null;
       if (via) via.signInPaste(text);
       else if (app.signInRun) app.signInRun.paste(text);
-      else { app.say("No sign-in is running · start it again"); return; }
+      else { app.say("No sign-in is running. Start it again."); return; }
       if (S.signin) S.signin.notes = [];
-      app.say("Sent · waiting for the account to connect");
+      app.say("Sent. Waiting for the account to connect.");
     },
     "signin-cancel": () => {
       const via = S.signin?.via ? app.sessionById(S.signin.via) : null;

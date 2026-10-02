@@ -27,11 +27,12 @@ test("every folder is listed, the one used last first, with how each session sta
   await page.goto(`/?bridge=${encodeURIComponent(world.bridge.url)}`);
   await pastTheFolderChoice(page);
   await expect(page.locator(".sidebar .fn")).toHaveText(["gamma", "beta", "alpha"]);
-  await expect(page.locator(".sitem", { hasText: "Write note.txt" }).locator(".m")).toHaveText("Waiting for you");
-  const count = page.locator(".fgroup", { hasText: "beta" }).locator(".fc");
-  await expect(count).toHaveText("1");
-  await expect(count).toHaveAttribute("aria-label", "1 session needs you");
-  await expect(page.locator(".navrow .badge")).toHaveText("1 needs you");
+  // A row leads with its state's glyph; its tooltip says the state in words.
+  const waiting = page.locator(".sitem", { hasText: "Write note.txt" });
+  await expect(waiting.locator(".sg.wait")).toHaveCount(1);
+  await expect(waiting).toHaveAttribute("title", /\nWaiting for you/);
+  await expect(page.locator(".sidebar .fgroup .fhead")).toHaveText(["gamma", "beta", "alpha"]);
+  await expect(page.locator(".navrow .navcount")).toHaveAttribute("title", "1 session needs you");
   await expect(page.locator("#status")).toContainText("1 other session needs you");
 });
 
@@ -40,7 +41,7 @@ test("the overview says what it counts and answers a waiting session in place", 
   await page.goto(`/?bridge=${encodeURIComponent(world.bridge.url)}`);
   await pastTheFolderChoice(page);
   await page.getByRole("button", { name: /^Overview/ }).click();
-  await expect(page.locator(".ovt")).toHaveText("1 session waits for you");
+  await expect(page.locator(".ovt")).toHaveText("1 session is waiting for you.");
   const card = page.locator(".ovcard", { hasText: "Write note.txt" });
   await expect(card.locator(".ask")).toContainText("write note.txt");
   await card.getByRole("button", { name: "Allow once" }).click();
@@ -67,11 +68,12 @@ test("a session that finishes while you look at another is marked until you open
   await expect(page.locator(".toolbar .project")).toHaveText("alpha");
   await world.host({ do: "start", root: world.harbor, task: "Take your time with harbor." });
   const row = page.locator(".sitem", { hasText: "Take your time with harbor." });
-  await expect(row.locator(".m")).toContainText("Thinking", { timeout: 30000 });
-  await expect(row.locator(".m")).toHaveText("Finished · not read yet", { timeout: 30000 });
+  await expect(row.locator(".sg.run")).toHaveCount(1, { timeout: 30000 });
+  await expect(row.locator(".sg.unread")).toHaveCount(1, { timeout: 30000 });
+  await expect(row).toHaveAttribute("title", /\nFinished, not read yet/);
   await row.click();
   await expect(page.locator(".answer .first")).toHaveText("Done, in my own time.");
-  await expect(row.locator(".m")).not.toContainText("not read yet");
+  await expect(row.locator(".sg.unread")).toHaveCount(0);
 });
 
 test("a session that no longer runs opens again under its own id, with its record", async ({ page, world }) => {
@@ -83,7 +85,8 @@ test("a session that no longer runs opens again under its own id, with its recor
   await page.goto(`/?bridge=${encodeURIComponent(world.bridge.url)}`);
   await pastTheFolderChoice(page);
   const row = page.locator(".sitem", { hasText: "Answer at once, then rest." });
-  await expect(row.locator(".m")).not.toContainText("Thinking");
+  await expect(row.locator(".sg.run")).toHaveCount(0);
+  await expect(row).toHaveAttribute("title", /\nLast used /);
   await row.click();
   await expect(page.locator(".you .bubble")).toHaveText("Answer at once, then rest.", { timeout: 30000 });
   await expect(page.locator(".answer .first")).toHaveText("Answered at once.");
@@ -98,5 +101,5 @@ test("a new session runs beside the others, in a folder of its own", async ({ pa
   await page.goto(`/?bridge=${encodeURIComponent(world.bridge.url)}`);
   await newSession(page, "harbor");
   await expect(page.locator(".sidebar .fn").first()).toHaveText("harbor");
-  await expect(page.locator(".navrow .badge")).toHaveText("1 needs you");
+  await expect(page.locator(".navrow .navcount")).toHaveAttribute("title", "1 session needs you");
 });

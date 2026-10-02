@@ -40,5 +40,29 @@ test("on the sidebar's own ground every accent reads at 4.5:1, and so does a cou
     assert.ok(contrast(a, sideOf(t, light)) >= 4.5, `${where}: ${contrast(a, sideOf(t, light)).toFixed(2)}`);
     assert.ok(contrast(inkOf(a), a) >= 4.5, `${where}: the count's ink ${contrast(inkOf(a), a).toFixed(2)}`);
   }
-  for (const [warn, ink] of [[0x8a5a00, 0xffffff], [0xffca80, 0x15191f]]) assert.ok(contrast(warn, ink) >= 4.5);
+  for (const [warn, ink] of [[0x7f5300, 0xffffff], [0xffca80, 0x15191f]]) assert.ok(contrast(warn, ink) >= 4.5);
+});
+
+test("the diff stat's added and removed counts read at 4.5:1 on a card, light and dark", () => {
+  // --ok and --fail on --card, as style.css sets them.
+  for (const [ok, fail, card] of [[0x1a6833, 0xb3261e, 0xffffff], [0xa4f1bd, 0xff8494, 0x1c2128]]) {
+    assert.ok(contrast(ok, card) >= 4.5, `added ${contrast(ok, card).toFixed(2)}`);
+    assert.ok(contrast(fail, card) >= 4.5, `removed ${contrast(fail, card).toFixed(2)}`);
+  }
+});
+
+test("the accent as text reads at 4.5:1 on every ground it is drawn on, its own pill tint included", async () => {
+  const { accentTextOf, accentGrounds } = await import("../src/theme.js");
+  for (const light of [true, false]) for (const t of THEMES.filter((x) => x.accent != null)) {
+    const a = accentTextOf(t, light);
+    for (const ground of accentGrounds(accentOf(t, light), light)) assert.ok(contrast(a, ground) >= 4.5, `${t.id} ${light ? "light" : "dark"}: ${contrast(a, ground).toFixed(2)}`);
+  }
+});
+
+test("on light, the state colours read at 4.5:1 on their own pale tint, as a pill draws them", () => {
+  // --ok, --warn and --fail on light, as style.css sets them, on the window and on a card.
+  for (const c of [0x1a6833, 0x7f5300, 0xb3261e]) for (const g of [0xf3f4f6, 0xffffff]) {
+    const tint = [0, 1, 2].map((i) => Math.round(((g >> (16 - 8 * i)) & 255) * 0.86 + ((c >> (16 - 8 * i)) & 255) * 0.14)).reduce((s, v) => s * 256 + v, 0);
+    assert.ok(contrast(c, tint) >= 4.5, `${c.toString(16)} on its tint: ${contrast(c, tint).toFixed(2)}`);
+  }
 });

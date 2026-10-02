@@ -1,4 +1,7 @@
 // The app's start: fonts and styles, the bridge to the machine, the store.
+import "@fontsource/inter/latin-400.css";
+import "@fontsource/inter/latin-500.css";
+import "@fontsource/inter/latin-600.css";
 import "@fontsource/barlow-condensed/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-600.css";

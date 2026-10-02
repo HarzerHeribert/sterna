@@ -95,7 +95,7 @@ export async function startSignIn(app, provider, label) {
     const si = app.S.signin;
     if (done.connected) {
       app.S.signin = null;
-      app.say(`Signed in${si?.account ? ` as ${si.account}` : ""} · ${si?.label || provider}`);
+      app.say(`Signed in to ${si?.label || provider}${si?.account ? ` as ${si.account}` : ""}`);
       if (app.S.sheet === "signin") app.S.sheet = "models";
       loadAccounts(app);
     } else if (si && !si.cancelled) {
@@ -114,7 +114,7 @@ export function cancelSignIn(app, quiet = false) {
   if (run) run.cancel();
   if (app.S.signin) app.S.signin.cancelled = true;
   app.S.signin = null;
-  if (!quiet && run) app.say("Sign-in cancelled · no account was added");
+  if (!quiet && run) app.say("Sign-in cancelled. No account was added.");
 }
 
 /** Hands the gateway a key, read from the field and cleared from it at once. */
@@ -127,7 +127,7 @@ export async function saveKey(app, provider, field) {
   app.changed();
   try {
     const said = await app.engine.setKey(provider, key);
-    app.say(`Key saved for ${provider}${said?.stored_in ? ` · kept in the gateway's ${said.stored_in}` : ""}`);
+    app.say(`Key saved for ${provider}${said?.stored_in ? `, in the gateway's ${said.stored_in}` : ""}`);
     app.S.sheet = "models";
     loadAccounts(app);
   } catch (e) {

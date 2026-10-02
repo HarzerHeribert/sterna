@@ -1,9 +1,9 @@
 // The window's frame: the list of every folder and session, the toolbar,
 // the status line, the composer's buttons, the queue and the toast.
-import { esc, plural, agoMs, pad3, parentPath, clipStart } from "../util.js";
+import { esc, plural, agoMs, clock, timeOf } from "../util.js";
 import { icon } from "../icons.js";
 import { birdArt } from "../birds.js";
-import { liveMeta, levelOf } from "./convo.js";
+import { glyph, stateWords, levelOf } from "./convo.js";
 import { working } from "../session.js";
 
 const lights = (app) => `<div class="lights${app.bridge.os === "macos" ? " space" : ""}" aria-hidden="true"><i></i><i></i><i></i></div>`;
@@ -16,25 +16,36 @@ function counts(app, entries) {
   };
 }
 
+/** How many rows a folder shows before "Show all". */
+export const FOLDER_ROWS = 5;
+
+/** A session's row: its status glyph, its title on one line; the state and the time in its tooltip. */
 function sessionRow(app, x) {
   const cur = app.S.view !== "overview" && app.S.current === x.id;
-  const l = x.fresh ? null : app.liveOf(x);
-  const title = x.fresh ? "New session" : esc(x.title);
-  const meta = x.fresh ? "Nothing asked yet" : l ? liveMeta(l) : agoMs(x.last_used);
-  return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}"><span class="t">${title}</span><span class="m">${meta}</span></button>`;
+  if (x.fresh) return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}" title="New session, nothing asked yet">${glyph(null)}<span class="t">New session</span></button>`;
+  const l = app.liveOf(x), s = app.sessionById(x.id);
+  const when = !l ? `last used ${agoMs(x.last_used)}`
+    : l.kind === "unread" ? (s?.turnEnd ? `finished ${agoMs(s.turnEnd)}` : "")
+    : l.kind === "waiting" ? (s?.state.since ? `since ${timeOf(s.state.since)}` : "")
+    : (s?.turnStart ? `for ${clock(Date.now() - s.turnStart)}` : "");
+  const state = l ? stateWords(l) : "";
+  const said = [state, when].filter(Boolean).join(", ");
+  const tip = [x.title, said && said[0].toUpperCase() + said.slice(1)].filter(Boolean).join("\n");
+  return `<button class="sitem${cur ? " cur" : ""}" data-act="open" data-id="${esc(x.id)}" title="${esc(tip)}">${glyph(l)}<span class="t">${esc(x.title)}</span>${state ? `<span class="vh">${esc(state)}</span>` : ""}</button>`;
 }
 
-/** A folder's header: what it is, where it is, how many of its sessions need you or run, and its New session. */
+/** A folder's header: its name, as named; the path in its tooltip; the caret and New session on hover and focus. */
 function folderHead(app, f, closed) {
-  const name = app.folderName(f.root), c = counts(app, f.sessions);
-  const [n, tone, words] = c.needs ? [c.needs, "warn", plural(c.needs, "session needs", "sessions need") + " you"] : c.busy ? [c.busy, "", plural(c.busy, "session", "sessions") + " running"] : [0];
-  const pill = n ? `<span class="fc${tone ? " " + tone : ""}" title="${words}" aria-label="${words}">${n}</span>` : "";
-  const parent = parentPath(app.tilde(f.root));
-  return `<div class="fhead"><button class="fbtn" data-act="fold" data-f="${esc(f.root)}" aria-expanded="${!closed}" title="${esc(app.tilde(f.root))}"><span class="chev">${icon(closed ? "right" : "down", "s")}</span><span class="fn">${esc(name)}</span><span class="fp" data-path="${esc(parent)}">${esc(parent)}</span>${pill}</button>` +
-    `<button class="iconbtn sm" data-act="newin" data-f="${esc(f.root)}" aria-label="New session in ${esc(name)}" title="New session in ${esc(name)}">${icon("plus")}</button></div>`;
+  const name = app.folderName(f.root);
+  return `<div class="fhead"><button class="fbtn" data-act="fold" data-f="${esc(f.root)}" aria-expanded="${!closed}" title="${esc(app.tilde(f.root))}"><span class="fn">${esc(name)}</span><span class="caret">${icon(closed ? "right" : "down", "s")}</span></button>` +
+    `<button class="fadd" data-act="newin" data-f="${esc(f.root)}" aria-label="New session in ${esc(name)}" title="New session in ${esc(name)}">${icon("plus", "s")}</button></div>`;
 }
 
-/** Every session runs in a folder: listed under it, the folder used last first, and in each folder the session used last first. */
+/**
+ * Every session runs in a folder: listed under it, the folder used last
+ * first, and in each folder the session used last first -- the newest five,
+ * and any other that runs, waits or is open, until "Show all" opens the rest.
+ */
 export function sessionList(app) {
   const q = app.S.sessQ.trim().toLowerCase();
   const folders = app.folders();
@@ -45,29 +56,27 @@ export function sessionList(app) {
     if (q && !rows.length) return "";
     if (!f.sessions.length && !f.fresh) return "";
     const closed = app.S.folded[f.root] && !q;
+    const all = !!q || !!app.S.allRows[f.root] || rows.length <= FOLDER_ROWS;
+    const shown = all ? rows : rows.filter((x, i) => i < FOLDER_ROWS || app.liveOf(x) || x.id === app.S.current);
+    const more = q || rows.length <= FOLDER_ROWS ? ""
+      : `<button class="sitem more" data-act="allrows" data-f="${esc(f.root)}" aria-expanded="${all}">${glyph(null)}<span class="t">${all ? "Show fewer" : `Show all (${rows.length})`}</span></button>`;
     return `<div class="fgroup">${folderHead(app, f, closed)}` +
-      (closed ? "" : (f.fresh ? sessionRow(app, f.fresh) : "") + rows.map((x) => sessionRow(app, x)).join("")) + `</div>`;
+      (closed ? "" : (f.fresh ? sessionRow(app, f.fresh) : "") + shown.map((x) => sessionRow(app, x)).join("") + more) + `</div>`;
   }).join("");
   if (body) return body;
-  return q ? `<p class="cap2" style="padding:8px 12px">No session matches “${esc(app.S.sessQ)}”.</p>`
-    : `<p class="cap2" style="padding:8px 12px">No sessions yet. A session is listed once you ask it something.</p>`;
-}
-
-/** Each folder's parent path, cut at its start until it fits beside the name: measured, as drawn. */
-export function fitPaths(root) {
-  for (const el of root?.querySelectorAll(".fp[data-path]") || []) {
-    el.textContent = clipStart(el.dataset.path, (text) => { el.textContent = text; return el.scrollWidth <= el.clientWidth; });
-  }
+  return q ? `<p class="cap2 sbnote">No session matches “${esc(app.S.sessQ)}”.</p>`
+    : `<p class="cap2 sbnote">No sessions yet. A session is listed once you ask it something.</p>`;
 }
 
 export function sidebarHTML(app) {
-  const c = counts(app, app.listSessions());
-  // One badge: what needs you outranks what runs.
-  const badge = c.needs ? `<span class="badge warn">${c.needs} ${c.needs === 1 ? "needs" : "need"} you</span>` : c.busy ? `<span class="badge">${c.busy} running</span>` : "";
+  const needs = counts(app, app.listSessions()).needs, ov = app.S.view === "overview";
+  const words = plural(needs, "session needs", "sessions need") + " you";
   return `<div class="sbtop" data-tauri-drag-region>${lights(app)}<button class="iconbtn" data-act="pref" data-k="sessions" aria-label="Hide the sessions" title="Hide the sessions">${icon("sidebar")}</button></div>` +
-    `<button class="newbtn" data-act="newsession">${icon("compose")}New session</button>` +
-    `<button class="navrow${app.S.view === "overview" ? " cur" : ""}" data-act="overview">${icon("grid")}<span>Overview</span><span class="grow"></span>${badge}</button>` +
-    `<div class="sbtools"><label class="searchbox">${icon("search", "s")}<input id="sessq" placeholder="Search sessions" value="${esc(app.S.sessQ)}" aria-label="Search sessions"></label></div>` +
+    `<nav class="sbnav" aria-label="Sterna">` +
+    `<button class="navrow newbtn" data-act="newsession">${icon("compose")}<span>New session</span></button>` +
+    `<button class="navrow${ov ? " cur" : ""}" data-act="overview"${ov ? ' aria-current="page"' : ""}>${icon("grid")}<span>Overview</span>${needs ? `<span class="navcount" title="${words}"><span aria-hidden="true">${needs}</span><span class="vh">${words}</span></span>` : ""}</button>` +
+    `<label class="navrow search">${icon("search")}<input id="sessq" placeholder="Search" value="${esc(app.S.sessQ)}" aria-label="Search sessions"></label>` +
+    `</nav>` +
     `<div class="slist" id="slist">${sessionList(app)}</div>` +
     // A newer release, when there is one: filled on every draw (app.render).
     `<div class="sbfoot" id="sbfoot"></div>`;
@@ -81,7 +90,7 @@ export function toolbarHTML(app) {
   else h += `<div class="ttl" data-tauri-drag-region>${birdArt(app.theme, mood, app.light, 3, false)}<span class="project">${esc(app.folderName(s.root))}</span><span class="where">${esc(app.tilde(s.root))}</span></div><span class="grow" data-tauri-drag-region></span>`;
   if (s && v !== "overview" && v !== "nofolder") {
     const f = s.state.facts, [level] = levelOf(f.level), full = String(f.level).toLowerCase().startsWith("full");
-    h += `<button class="pillbtn" data-act="models" title="Models">${esc(f.model || "No model")}${f.effort ? `<span class="mut">· ${esc(f.effort)}</span>` : ""}${icon("down", "s")}</button>`;
+    h += `<button class="pillbtn" data-act="models" title="Models">${esc(f.model || "No model")}${f.effort ? ` <span class="mut">${esc(f.effort)}</span>` : ""}${icon("down", "s")}</button>`;
     if (f.level) h += `<button class="pillbtn${full ? " warn" : ""}" data-act="level" title="Sandbox level">${icon(full ? "warn" : "shield")}${esc(level)}${icon("down", "s")}</button>`;
   }
   h += `<button class="iconbtn" data-act="settings" aria-label="Settings" title="Settings">${icon("settings")}</button>` +
@@ -90,8 +99,6 @@ export function toolbarHTML(app) {
   return h;
 }
 
-const dots = () => `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>`;
-
 export function statusHTML(app) {
   const s = app.cur(), v = app.S.view;
   let left;
@@ -99,10 +106,10 @@ export function statusHTML(app) {
   else if (s.ended && !s.busy) left = `<span>This session has ended</span>`;
   else {
     const act = s.state.activity, n = app.turnsOf(s).cells;
-    if (act === "awaiting_you") left = `<span class="warn">Waiting for you · answer the question above</span>`;
+    if (act === "awaiting_you") left = `${glyph({ kind: "waiting" })}<span class="warn">Waiting for you</span><span class="mut">Answer the question above</span>`;
     else if (working(act)) {
-      const said = act === "streaming" ? (s.state.streaming.tool != null ? `Writing cell ${pad3(n + 1)}` : "Writing") : act === "executing" ? `Executing cell ${pad3(n)}` : act === "compacting" ? "Compacting the context" : "Thinking";
-      left = `${dots()}<span class="live">${said}${s.stopAsked ? " · stop requested" : ""}</span>`;
+      const said = act === "streaming" ? (s.state.streaming.tool != null ? `Writing cell ${n + 1}` : "Writing") : act === "executing" ? `Running cell ${n}` : act === "compacting" ? "Compacting the context" : "Thinking";
+      left = `${glyph({ kind: "running" })}<span class="live">${said}</span>${s.stopAsked ? `<span class="mut">Stop requested</span>` : ""}`;
     } else if (act === "complete") left = `<span class="ok">${icon("check", "s")}</span><span>Complete</span>`;
     else if (act === "failed") left = `<span class="fail">${icon("x", "s")}</span><span>Failed</span>`;
     else if (act === "stopped") left = `<span>Stopped</span>`;
@@ -111,7 +118,7 @@ export function statusHTML(app) {
   }
   const signing = app.S.signin && app.S.sheet !== "signin" ? `<button class="txt" data-act="signin-reopen">Signing in to ${esc(app.S.signin.label)}${icon("right", "s")}</button>` : "";
   // The host went and did not come back: say so, with the way to start it again.
-  const lost = app.S.hostLost ? `<button class="txt warn" data-act="retry-host" title="${esc(app.S.hostLost)}">The engine stopped · Try again${icon("right", "s")}</button>` : "";
+  const lost = app.S.hostLost ? `<button class="txt warn" data-act="retry-host" title="${esc(app.S.hostLost)}">The engine stopped. Try again${icon("right", "s")}</button>` : "";
   const others = app.listSessions().filter((x) => x.id !== s?.id && app.liveOf(x)?.kind === "waiting").length;
   const elsewhere = others ? `<button class="txt warn" data-act="overview">${plural(others, "other session needs", "other sessions need")} you${icon("right", "s")}</button>` : "";
   return `${left}<span class="grow"></span>${lost}${signing}${elsewhere}`;
@@ -137,7 +144,7 @@ export function queueHTML(app) {
   const items = s?.state.queue || [];
   if (!items.length) return "";
   // The session takes back the newest; that one carries the button.
-  return `<div class="queue"><div class="qh">Queued · sent when this turn ends</div>` +
+  return `<div class="queue"><div class="qh">Queued, sent when this turn ends</div>` +
     items.map((q, i) => `<div class="qitem"><span class="qt">${esc(q)}</span>${i === items.length - 1 ? `<button class="btn small" data-act="takeback">Take back</button>` : ""}</div>`).join("") + `</div>`;
 }
 

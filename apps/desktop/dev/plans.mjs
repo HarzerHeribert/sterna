@@ -157,7 +157,7 @@ export const busy = {
   links: [
     doneCell("Find every link in the docs", "rg -o 'https?://[^) ]+' docs", "412 links in 38 files"),
     doneCell("Fix the links that point inside the site", "node scripts/fix-internal-links.mjs", "fixed 9 links"),
-    doneCell("Rebuild the sitemap", "npm run sitemap", "wrote dist/sitemap.xml · 214 pages"),
+    doneCell("Rebuild the sitemap", "npm run sitemap", "wrote dist/sitemap.xml (214 pages)"),
     {
       cell: {
         description: "Check the external links", runFor: 1.5,
@@ -165,11 +165,11 @@ export const busy = {
         approval: {
           tool: "bash", arguments: { command: "node scripts/check-links.mjs" }, label: "bash · node scripts/check-links.mjs",
           target: "node scripts/check-links.mjs", confirmation: "node scripts/check-links.mjs",
-          reason: "Cell 004 runs the docs' link checker, which wants to fetch the external links it found. You chose Sandboxed, which asks only to leave the sandbox.",
+          reason: "Cell 4 runs the docs' link checker, which wants to fetch the external links it found. You chose Sandboxed, which asks only to leave the sandbox.",
           hosts: ["github.com"], leaves_sandbox: true,
         },
         calls: [{ tool: "bash", arg: "node scripts/check-links.mjs", status: "returned" }],
-        stdout: "403 external links · all answer", returned: "The internal links are fixed and the sitemap is rebuilt; every external link answers.",
+        stdout: "403 external links, all answer", returned: "The internal links are fixed and the sitemap is rebuilt; every external link answers.",
         denied: {
           calls: [{ tool: "bash", arg: "node scripts/check-links.mjs", status: "denied · github.com" }],
           error: { class: "Refused", message: "you denied this call for the session. Nothing ran." },

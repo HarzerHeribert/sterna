@@ -1,7 +1,7 @@
 // The app: one store for every session the window knows -- whichever folder
 // it runs in -- the host's list, and what the window shows. Events from the
 // engine change the store; the views draw it; a click becomes a command.
-import { $, baseName, tilde } from "./util.js";
+import { $, baseName, tilde, spaced } from "./util.js";
 import { applyTheme, themeOf } from "./theme.js";
 import { redrawBirds } from "./birds.js";
 import { startingPrefs, fromHost, ownPart, SHARED } from "./prefs.js";
@@ -10,7 +10,7 @@ import { Engine } from "./engine.js";
 import { Session, working, ENDINGS } from "./session.js";
 import { turnsOf } from "./record.js";
 import { recordHTML, liveHTML } from "./views/convo.js";
-import { sidebarHTML, sessionList, fitPaths, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
+import { sidebarHTML, sessionList, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
 import { inspectorHTML } from "./views/inspector.js";
 import { releaseCard } from "./views/releases.js";
 import { overlayHTML } from "./views/sheets.js";
@@ -34,7 +34,7 @@ export class App {
       notice: "", noticeAt: 0, undo: null,
       m: { role: "main", all: true, byScore: false, q: "", focus: -1 },
       catalogue: null, modelsWaiting: false, modelsNote: null, modelRows: [],
-      set: "appearance", sessQ: "", folded: {}, unread: new Set(),
+      set: "appearance", sessQ: "", folded: {}, allRows: {}, unread: new Set(),
       signinConfirm: false, confirmFull: false,
       panel: null, forms: new Map(), follow: true, blink: false, gone: false,
       settings: {}, accounts: null, signin: null, keyProvider: "", keySaving: false,
@@ -157,7 +157,7 @@ export class App {
       this.changed();
     }, () => {
       if (this.S.gone) return;
-      this.say("The engine's host went away · starting it again");
+      this.say("The engine's host went away. Starting it again.");
       setTimeout(() => this.restartHost(), 1000);
     });
     this.S.hostLost = "";
@@ -363,7 +363,7 @@ export class App {
     const words = String(text || "");
     if (session.id === this.S.current && this.S.view !== "overview") return this.say(words[0].toUpperCase() + words.slice(1));
     const title = session.title || this.listSessions().find((x) => x.id === session.id)?.title || "a session";
-    this.say(`${baseName(session.root)} · “${title.length > 48 ? title.slice(0, 47) + "…" : title}”: ${words}`);
+    this.say(`In ${baseName(session.root)}, “${title.length > 48 ? title.slice(0, 47) + "…" : title}”: ${words}`);
   }
 
   noticed(session, text) {
@@ -423,7 +423,7 @@ export class App {
   }
 
   say(text, undo = null, ms = 5000) {
-    this.S.notice = text;
+    this.S.notice = spaced(text);
     this.S.noticeAt = performance.now() - (5000 - ms);
     this.S.undo = undo;
     this.changed();
@@ -527,7 +527,7 @@ export class App {
     const approval = { once: "allow_once", session: hosts ? "allow_host_session" : "allow_for_session", deny: "deny", notnow: "deny_once" }[a];
     s.answer(promptId, { approval });
     const host = (prompt.hosts || []).join(", ");
-    this.say({ once: "Allowed once", session: hosts ? `Allowed ${host} for this session` : "Allowed for this session", deny: "Denied for this session", notnow: "Refused this once · the next identical call asks again" }[a]);
+    this.say({ once: "Allowed once", session: hosts ? `Allowed ${host} for this session` : "Allowed for this session", deny: "Denied for this session", notnow: "Refused this once. The next identical call asks again." }[a]);
   }
 
   /** Leaves: `keep` says what happens to the sessions this app started; null says nothing to the host. */
@@ -601,8 +601,8 @@ export class App {
       const ta = $("#draft"), s = this.cur();
       ta.disabled = S.view === "nofolder" || !s || !!s.ended;
       ta.placeholder = S.view === "nofolder" || !s ? "Choose a folder first" : s.ended ? "This session has ended" : "Describe the next step — a message, or / for commands";
-      const listed = document.activeElement?.id !== "sessq" ? put($("#sidebar"), sidebarHTML(this)) : put($("#slist"), sessionList(this));
-      if (listed) fitPaths($("#slist"));
+      if (document.activeElement?.id !== "sessq") put($("#sidebar"), sidebarHTML(this));
+      else put($("#slist"), sessionList(this));
       put($("#sbfoot"), releaseCard(this));
       put($("#toolbar"), toolbarHTML(this));
       put($("#record"), recordHTML(this));

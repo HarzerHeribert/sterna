@@ -1,9 +1,10 @@
 // Small words and numbers the views share.
 
 export const $ = (s, root = document) => root.querySelector(s);
+/** The engine's own words, which join their parts with the terminal's middle dot: here a dash joins them. */
+export const spaced = (s) => String(s ?? "").replace(/ · /g, " — ");
 export const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 export const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-export const pad3 = (n) => String(n).padStart(3, "0");
 export const secs = (ms) => (ms < 10000 ? (ms / 1000).toFixed(1) + " s" : ms < 60000 ? Math.floor(ms / 1000) + " s" : clock(ms));
 export const clock = (ms) => { const t = Math.max(0, Math.floor(ms / 1000)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
 /** As the resume picker says it. */
@@ -18,33 +19,6 @@ export const baseName = (root) => String(root || "").replace(/[\\/]+$/, "").spli
 export function tilde(root, home) {
   if (home && root && (root === home || root.startsWith(home + "/") || root.startsWith(home + "\\"))) return "~" + root.slice(home.length);
   return root;
-}
-
-/** The folder a path sits in, as written: "~/code" for "~/code/quill"; "" for a root of its own. */
-export function parentPath(path) {
-  const p = String(path || "").replace(/[\\/]+$/, "");
-  const at = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  if (at < 0) return "";
-  return at === 0 ? p[0] : p.slice(0, at);
-}
-
-/**
- * A path that has to fit, cut at its start a whole folder at a time:
- * "…/work/clients" rather than "~/wo…". `fits` says whether a text fits;
- * when not even the last folder does, nothing is shown.
- */
-export function clipStart(path, fits) {
-  const p = String(path || "");
-  if (!p || fits(p)) return p;
-  const sep = p.includes("/") ? "/" : "\\";
-  const parts = p.split(sep);
-  for (let i = 1; i < parts.length; i++) {
-    const rest = parts.slice(i).join(sep);
-    if (!rest) continue;
-    const cut = "…" + sep + rest;
-    if (fits(cut)) return cut;
-  }
-  return "";
 }
 
 /** Does this text look like a relative path to a file, the way answers name them? */

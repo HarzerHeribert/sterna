@@ -55,6 +55,22 @@ export function sideAccentOf(t, light) {
   const a = accentOf(t, light);
   return a == null ? TEXT(light) : readable(a, light, 4.5, sideOf(t, light));
 }
+/**
+ * The accent as text: moved until it reads at 4.5:1 on every ground it is
+ * drawn on in the window -- the window, a card, a sheet's card, and its own
+ * pale tint behind a pill.
+ */
+export function accentTextOf(t, light) {
+  const a = accentOf(t, light);
+  if (a == null) return TEXT(light);
+  let c = a;
+  for (const ground of accentGrounds(a, light)) c = readable(c, light, 4.5, ground);
+  return c;
+}
+export const accentGrounds = (a, light) => {
+  const [win, card, card2] = light ? [0xf3f4f6, 0xffffff, 0xffffff] : [0x15191f, 0x1c2128, 0x242a33];
+  return [win, card, card2, mixHex(card, a, 0.12), mixHex(win, a, 0.12), mixHex(card2, a, 0.12)];
+};
 /** Black or white, whichever reads better on a fill of `rgb`. */
 export const inkOf = (rgb) => (contrast(rgb, 0) >= contrast(rgb, 0xffffff) ? 0 : 0xffffff);
 
@@ -76,6 +92,7 @@ export function applyTheme(prefs) {
   st.setProperty("--accent-ink", hex(inkOf(fill)));
   st.setProperty("--fill", hex(text));
   st.setProperty("--on-fill", hex(card));
+  st.setProperty("--accent-text", hex(accentTextOf(t, light)));
   st.setProperty("--side", hex(sideOf(t, light)));
   st.setProperty("--side-accent", hex(sideAccentOf(t, light)));
   st.setProperty("--side-accent-ink", hex(inkOf(sideAccentOf(t, light))));

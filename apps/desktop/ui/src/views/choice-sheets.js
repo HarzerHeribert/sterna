@@ -35,7 +35,7 @@ function modelRows(app) {
   for (const [ai, a] of (app.S.accounts?.list || []).entries()) {
     const state = accountState(a), avail = state === "signed" || state === "key";
     if (!m.all && !avail) continue;
-    const name = [a.account, a.provider && a.provider !== a.account ? a.provider : null].filter(Boolean).join(" · ");
+    const name = a.provider && a.provider !== a.account ? `${a.account} (${a.provider})` : a.account;
     for (const model of a.models || []) {
       if (q && !lower(model).includes(q) && !lower(name).includes(q)) continue;
       rows.push({ a, ai, name, model, score: score(model), avail, state });
@@ -55,7 +55,7 @@ export function modelsSheet(app) {
   app.S.modelRows = rows;
   const scored = rows.some((r) => r.score != null);
   const mrow = (r, i) => `<button class="mrow${r.avail ? "" : " locked"}${m.focus === i ? " focus" : ""}" data-act="${r.avail ? "model" : "noop"}" data-i="${i}"${r.avail ? "" : ' aria-disabled="true"'}>` +
-    `<span class="nm">${esc(r.model)}</span><span class="sc">${[!r.avail && "Locked", r.score != null && `★ ${Math.round(r.score)}`, m.byScore && r.name].filter(Boolean).join(" · ")}</span>` +
+    `<span class="nm">${esc(r.model)}</span><span class="sc">${[!r.avail && "Locked", r.score != null && `★ ${Math.round(r.score)}`, m.byScore && r.name].filter(Boolean).map((w) => `<span>${esc(w)}</span>`).join(" ")}</span>` +
     `<span class="ck">${r.model === cur && r.avail ? icon("check") : ""}</span></button>`;
   let list = "";
   if (!accounts || (accounts.loading && !accounts.list?.length)) list = `<p class="cap2" style="padding:18px 0">Asking the gateway which accounts it serves…</p>`;
@@ -73,7 +73,7 @@ export function modelsSheet(app) {
       const st = state === "signin" ? `<button class="btn small" data-act="signin" data-v="${esc(a.connect_with)}" data-l="${esc(a.account)}">Sign in</button>`
         : state === "signed" ? `<span class="ok">${icon("check", "s")} Signed in</span>`
         : state === "locked" ? `<span class="mut">${esc(a.unavailable_reason || "Not available")}</span>` : `<span class="mut">Key set</span>`;
-      list += `<div class="ghd"><span>${esc(a.account)}${a.provider && a.provider !== a.account ? ` · ${esc(a.provider)}` : ""} · ${kind}</span>${st}</div>` +
+      list += `<div class="ghd"><span>${esc(a.account)}${a.provider && a.provider !== a.account ? ` <span class="mut">${esc(a.provider)}</span>` : ""} <span class="mut">${kind}</span></span>${st}</div>` +
         (mine.length ? `<div class="group">${mine.map(([r, i]) => mrow(r, i)).join("")}</div>` : `<p class="cap2" style="margin:0 6px">No models listed yet${state === "signin" ? ": sign in first" : ""}.</p>`);
     }
     if (!shown.length) list = `<p class="cap2" style="padding:12px 0">${m.all ? "The gateway has no accounts yet." : "No account is connected yet."} Sign in to a subscription, or add an API key below.</p>`;
@@ -87,7 +87,7 @@ export function modelsSheet(app) {
   return `<div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="m-t">
     ${head("m-t", "Models", `Which model answers, and how hard.${scored ? " ★ is intelligence the gateway measured." : ""}`)}
     <div class="sbd">
-      <div class="segctl full big" style="margin-top:6px"><button data-act="role" data-v="main" aria-pressed="${main}">Main · answers you</button><button data-act="role" data-v="sub" aria-pressed="${!main}">Subagents · work in parallel</button></div>
+      <div class="segctl full big" style="margin-top:6px"><button data-act="role" data-v="main" aria-pressed="${main}">Main, answers you</button><button data-act="role" data-v="sub" aria-pressed="${!main}">Subagents, work in parallel</button></div>
       <div style="margin-top:14px"><label class="searchbox">${icon("search")}<input id="msearch" placeholder="Search models" value="${esc(m.q)}" aria-label="Search models"></label></div>
       <div class="filters">
         <div class="segctl"><button data-act="sources" data-v="0" aria-pressed="${!m.all}">Connected</button><button data-act="sources" data-v="1" aria-pressed="${m.all}">All accounts</button></div>

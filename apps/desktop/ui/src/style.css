@@ -4,10 +4,10 @@
    with it, darkened on light until it reads. Touch first: targets are 36 px
    or more, most 44, and nothing depends on hover. */
 :root{--display:'Barlow Condensed','Arial Narrow',sans-serif;--mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
-  --ui:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',system-ui,Arial,sans-serif;--r:14px}
+  --ui:'Inter',-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',system-ui,Arial,sans-serif;--r:14px}
 /* --faint is drawn as text too (line numbers, hints): it reads at 4.5:1 on every ground. */
 .light{--page:#d5d9de;--win:#f3f4f6;--card:#ffffff;--card2:#ffffff;--sheet:#f3f4f6;--text:#15191f;--faint:#5a636e;--sep:#e1e4e8;--line:#c9ced4;
-  --muted:#56606c;--ok:#1e7b3c;--warn:#8a5a00;--warn-ink:#ffffff;--fail:#b3261e;--evid:#0b6e8a;--you:#5b3fb5;
+  --muted:#56606c;--ok:#1a6833;--warn:#7f5300;--warn-ink:#ffffff;--fail:#b3261e;--evid:#0b6e8a;--you:#5b3fb5;
   --code:#f1f3f5;--hover:rgba(21,25,31,.045);--press:rgba(21,25,31,.08);--scrim:rgba(21,25,31,.26);
   --ring:0 0 0 1px rgba(21,25,31,.06),0 1px 3px rgba(21,25,31,.06);color-scheme:light}
 .dark{--page:#090b0d;--win:#15191f;--card:#1c2128;--card2:#242a33;--sheet:#1a1f26;--text:#eceef1;--faint:#8a939e;--sep:#2a3038;--line:#3a424d;
@@ -22,7 +22,7 @@ button,select{font:inherit;color:inherit;background:none;border:0;padding:0;curs
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .i{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .i.s{width:15px;height:15px}
-.mut{color:var(--muted)} .ok{color:var(--ok)} .fail{color:var(--fail)} .warn{color:var(--warn)} .acc{color:var(--accent)} .evid{color:var(--evid)}
+.mut{color:var(--muted)} .ok{color:var(--ok)} .fail{color:var(--fail)} .warn{color:var(--warn)} .acc{color:var(--accent-text)} .evid{color:var(--evid)}
 .mono{font-family:var(--mono)}
 code{font:.86em var(--mono);background:var(--code);padding:1px 5px;border-radius:5px}
 a.path{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px;cursor:pointer;overflow-wrap:anywhere}
@@ -49,49 +49,63 @@ a.path{color:inherit;text-decoration:underline;text-decoration-color:var(--line)
 .lights{display:flex;gap:8px;height:52px;align-items:center;padding:0 4px}
 .lights i{width:12px;height:12px;border-radius:50%;background:var(--line);display:block}
 
-/* Sidebar */
+/* Sidebar: plain rows, no boxes. Two columns run down it: icons and status
+   glyphs at one x, every label and title at the next (--tx). Type and space
+   do the structuring; colour is only state. */
 /* On the sidebar's ground the accent is the one moved to read there (theme.js). */
-.sidebar{--accent:var(--side-accent);--accent-ink:var(--side-accent-ink);background:var(--side);border-right:1px solid var(--sep);display:flex;flex-direction:column;min-height:0}
+.sidebar{--accent:var(--side-accent);--accent-text:var(--side-accent);--accent-ink:var(--side-accent-ink);--tx:26px;background:var(--side);border-right:1px solid var(--sep);display:flex;flex-direction:column;min-height:0}
 .sbtop{display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 16px}
 .iconbtn{width:38px;height:38px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted)}
 .iconbtn:hover{background:var(--hover);color:var(--text)}
 .iconbtn:active,.iconbtn[aria-pressed=true]{background:var(--press);color:var(--text)}
-.newbtn{margin:6px 12px 14px;min-height:44px;border-radius:12px;background:var(--card);box-shadow:var(--ring);display:flex;align-items:center;gap:10px;padding:0 14px;font-weight:600}
-.newbtn:active{transform:scale(.99)}
-.sbhead{font-size:12px;font-weight:600;color:var(--muted);padding:4px 22px 6px;letter-spacing:.02em}
-.slist{flex:1 1 auto;min-height:0;overflow:auto;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
-/* A newer release: a quiet card at the foot of the list, there only while it has something to say. */
-.sbfoot{flex:none;padding:10px 10px 12px;border-top:1px solid var(--sep)}
+.sbnav{display:flex;flex-direction:column;gap:1px;padding:2px 10px 4px}
+.navrow{display:flex;align-items:center;gap:10px;width:100%;height:32px;padding:0 8px 0 10px;border-radius:8px;font-size:14px;text-align:left;color:var(--text)}
+.navrow .i{flex:none;width:16px;height:16px;color:var(--muted)}
+.navrow:hover{background:var(--hover)}
+.navrow.cur{background:var(--press);font-weight:500}
+.navrow .navcount{margin-left:auto;min-width:18px;height:18px;padding:0 5px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;font-feature-settings:"tnum";color:var(--warn-ink);background:var(--warn)}
+.navrow.search{cursor:text}
+.navrow.search input{flex:1;min-width:0;height:28px;border:0;background:none;outline:none;font:14px var(--ui);color:var(--text)}
+.navrow.search input::placeholder{color:var(--muted)}
+.navrow.search:focus-within{background:var(--card);box-shadow:var(--ring)}
+.slist{flex:1 1 auto;min-height:0;overflow:auto;padding:0 10px 16px;display:flex;flex-direction:column}
+.slist>*{flex-shrink:0}
+.sbnote{padding:8px 10px}
+/* A folder: its name, small and muted; its caret and New session come on hover and focus. */
+.fgroup{margin-top:20px}
+.fhead{display:flex;align-items:center;height:28px;padding:0 2px 0 10px}
+.fbtn{flex:1;min-width:0;height:28px;display:flex;align-items:center;gap:4px;text-align:left}
+.fbtn .fn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600;color:var(--muted)}
+.fbtn .caret{flex:none;display:flex;color:var(--muted);opacity:0}
+.fadd{flex:none;width:26px;height:26px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted);opacity:0}
+.fadd:hover{background:var(--hover);color:var(--text)}
+.fhead:hover .caret,.fhead:focus-within .caret,.fbtn[aria-expanded=false] .caret,.fhead:hover .fadd,.fhead:focus-within .fadd{opacity:1}
+@media (hover:none){.fbtn .caret,.fadd{opacity:1}}
+/* A session: one line, its status glyph before it; the state and the time are in its tooltip. */
+.sitem{display:flex;align-items:center;gap:10px;width:100%;height:32px;padding:0 10px;border-radius:8px;text-align:left;font-size:14px;color:var(--text)}
+.sitem .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sitem:hover{background:var(--hover)}
+.sitem.cur{background:var(--press);font-weight:500}
+.sitem.more{color:var(--muted);font-size:13px}
+/* The status glyphs, the same everywhere: a quiet ring while it works, an amber dot while it waits, an accent dot when it finished unread. */
+.sg{flex:none;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center}
+.sg i{display:block;border-radius:50%}
+.sg.run i{width:12px;height:12px;border:2px solid color-mix(in srgb,var(--accent) 24%,transparent);border-top-color:var(--accent);animation:spin 1.1s linear infinite}
+.sg.wait i{width:8px;height:8px;background:var(--warn)}
+.sg.unread i{width:7px;height:7px;background:var(--accent)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* A newer release: one quiet row at the foot of the list, there only while it has something to say. */
+.sbfoot{flex:none;padding:6px 10px 10px;border-top:1px solid var(--sep)}
 .sbfoot:empty{display:none}
-.relcard{display:flex;align-items:center;gap:10px;padding:10px 10px 10px 14px;border-radius:12px;background:var(--card);box-shadow:var(--ring)}
-.relcard .rx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-.relcard b{font-size:13px;font-weight:650;line-height:1.3}
-.relcard .rx span{font-size:12px;line-height:1.35;color:var(--muted)}
-.relcard.fail b{color:var(--fail)}
+.relcard{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 2px 0 10px;font-size:13px}
+.relcard .rx{flex:1;min-width:0;line-height:1.35}
+.relcard .why{display:block;font-size:12px;color:var(--muted)}
+.relcard.fail .rx>span:first-child{color:var(--fail)}
+.txtbtn{flex:none;height:28px;padding:0 9px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--text)}
+.txtbtn:hover{background:var(--hover)}
+.txtbtn:disabled{color:var(--muted);cursor:default;background:none}
 .relrow .rx{flex:1;min-width:0}
 .relrow .v .btn .i{margin-right:-2px}
-.slist>*{flex-shrink:0}
-/* A folder's rows: indented to the folder name (--fx), the title at most
-   two lines, its status line always under it; the highlight is the full row. */
-.slist{--fx:28px}
-.sitem{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;border-radius:10px;padding:8px 12px 9px var(--fx)}
-.sitem:hover{background:var(--hover)}
-.sitem.cur{background:var(--card);box-shadow:var(--ring)}
-.sitem .t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;font-size:14px;font-weight:500;line-height:1.35}
-.sbtools{padding:0 12px 12px;display:flex;flex-direction:column;gap:8px}
-.sbtools .searchbox{min-height:36px}
-.sbtools .searchbox input{min-height:36px;font-size:14px}
-/* A folder's header: one 36 px line -- chevron, name, its parent path (cut
-   at the start to fit), and at the right the count pill, then New session. */
-.fgroup{margin:4px 0 10px}
-.fhead{display:flex;align-items:center;gap:2px;height:36px}
-.fbtn{flex:1;min-width:0;height:36px;display:flex;align-items:center;gap:6px;padding:0 4px 0 6px;border-radius:9px;text-align:left;line-height:18px}
-.fbtn:active{background:var(--hover)}
-.fbtn .chev{flex:none;width:16px;height:16px;display:flex;align-items:center;justify-content:center;color:var(--faint)}
-.fbtn .fn{flex:none;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:650}
-.fbtn .fp{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;font-size:12px;color:var(--muted)}
-.fbtn .fc{flex:none;margin-left:auto;min-width:22px;height:20px;padding:0 7px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent-ink);background:var(--accent)}
-.fbtn .fc.warn{color:var(--warn-ink);background:var(--warn)}
 .iconbtn.sm{flex:none;width:32px;height:32px;border-radius:9px}
 .frow{display:flex;align-items:center;gap:12px;min-height:68px;padding:10px 14px;width:100%;text-align:left;border-top:1px solid var(--sep)}
 .frow:first-child{border-top:0}
@@ -105,54 +119,49 @@ a.path{color:inherit;text-decoration:underline;text-decoration-color:var(--line)
 .frow .ck{margin-left:auto;color:var(--accent);display:flex}
 .btn:disabled{opacity:.4;cursor:default}
 .dock[hidden]{display:none}
-.navrow{display:flex;align-items:center;gap:10px;margin:-6px 12px 12px;min-height:42px;padding:0 10px 0 12px;border-radius:11px;font-size:14.5px;font-weight:500;width:calc(100% - 24px);text-align:left}
-.navrow .i{color:var(--muted)}
-.navrow:active{background:var(--hover)}
-.navrow.cur{background:var(--card);box-shadow:var(--ring)}
-.badge{font-size:11.5px;font-weight:600;color:var(--muted);background:var(--press);border-radius:10px;padding:2px 8px;white-space:nowrap}
-.badge.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
 .statusline .txt.warn{color:var(--warn)}
-.unread{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;flex:none}
-/* The overview: one row grid for every session in every section. The text
-   column starts at the same x everywhere (--ox); the right column holds a
-   chevron, or in a card's header its badge. */
-.ov{--ox:18px}
-.ov .ovhead{margin:4px 0 0}
-.ov .ovt{font-size:34px;line-height:1.05;margin:0 0 8px}
+/* The overview: one row grid for every session in every section -- the
+   status glyph, the title over its folder, a meta column of fixed width
+   (the state over the time, in tabular figures), the chevron. */
+.ov{--gx:16px;--gw:16px;--gap:12px;--tx:calc(var(--gx) + var(--gw) + var(--gap))}
+.ov .ovhead{margin:8px 0 0}
+.ov .ovt{font:500 27px/1.25 var(--ui);letter-spacing:-.01em;margin:0 0 6px}
 .ov .lead{font-size:15px;color:var(--muted);margin:0}
-.scroll .ov .ghd{margin:28px 0 8px}
-.srow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px;width:100%;min-height:64px;padding:12px 16px 12px var(--ox);text-align:left}
-.srow .sx{display:flex;flex-direction:column;gap:4px;min-width:0}
-.srow .st{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;font-size:15px;font-weight:600;line-height:1.4}
-.srow .sm{display:flex;align-items:center;flex-wrap:wrap;column-gap:7px;row-gap:2px;font-size:13px;line-height:18px;color:var(--muted)}
-.srow .sm .sep{color:var(--faint)}
-.srow .fw{font-weight:600}
-.srow .se{display:flex;align-items:center;justify-content:flex-end}
+.scroll .ov .ghd{font-size:13px;font-weight:500;letter-spacing:0;color:var(--muted);margin:32px 0 8px}
+.srow{display:grid;grid-template-columns:var(--gw) minmax(0,1fr) 150px 16px;align-items:center;column-gap:var(--gap);width:100%;min-height:60px;padding:11px 14px 11px var(--gx);text-align:left}
+.srow .sx{display:flex;flex-direction:column;gap:2px;min-width:0}
+.srow .st{font-size:15px;font-weight:500;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .sf{font-size:13px;line-height:18px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .sm{display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:0;font-size:13px;line-height:18px;text-align:right;font-feature-settings:"tnum"}
+.srow .s1{display:flex;align-items:baseline;justify-content:flex-end;gap:8px;white-space:nowrap}
+.srow .s2{color:var(--muted)}
+.srow .se{display:flex;align-items:center;justify-content:flex-end;color:var(--faint)}
+.ds{font:500 12px/18px var(--mono)}
+.ds.add{color:var(--ok)} .ds.del{color:var(--fail)}
+.ds.add+.ds.del{margin-left:-4px}
 .ovrow{border-top:1px solid var(--sep)}
 .ovrow:first-child{border-top:0}
-.ovrow:active{background:var(--hover)}
-.ovrow .se{width:18px;color:var(--faint)}
-.ovrow .chev{display:flex}
+.ovrow:hover{background:var(--hover)}
 .ovcard{background:var(--card);border-radius:var(--r);box-shadow:0 0 0 1.5px var(--warn);margin:0 0 10px;overflow:hidden}
 .ovcard>.srow{border-bottom:1px solid var(--sep)}
-.ovbody{padding:14px 16px 14px var(--ox)}
+.ovbody{padding:14px 12px 14px var(--tx)}
 .ovbody .ask{margin:0;padding:0;border-radius:0;background:none;box-shadow:none}
-.ovbody .ask .h{font-size:15px;margin-bottom:4px}
+.ovbody .ask .h{font-size:15px;font-weight:600;margin-bottom:4px}
 .ovbody .ask .row2{margin-top:12px}
-.ovbody .ask .btn{min-height:36px;padding:0 12px;font-size:13px;border-radius:10px}
-.ovbody .row2 .plain{margin-left:auto}
-.ovbody .row2{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.ovbody .ask .btn{min-height:36px;padding:0 10px;font-size:13px;border-radius:10px}
+.ovbody .row2,.ovbody .ask .row2{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+/* "Open the session" keeps to the right by its own margin, on the buttons' row or, when it wraps, on its own. */
+.ovbody .row2 .grow{display:none}
+.ovbody .row2 .plain{margin-left:auto;font-size:13px}
 .ovstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}
-.ovstats div{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:14px 16px 14px var(--ox);border-left:1px solid var(--sep);min-width:0}
+.ovstats div{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:14px 16px;border-left:1px solid var(--sep);min-width:0}
 .ovstats div:first-child{border-left:0}
-.ovstats b{font-size:22px;font-weight:650;line-height:1.2;font-variant-numeric:tabular-nums}
-.ovstats span{font-size:12.5px;color:var(--muted)}
+.ovstats b{font-size:22px;font-weight:600;line-height:1.2}
+.ovstats span{font-size:13px;color:var(--muted)}
 .ovtoast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:4}
 .ovtoast .toast{position:static;transform:none}
 .scroll .ghd{margin:22px 4px 8px}
 textarea:disabled{cursor:not-allowed}
-.sitem .m{display:flex;align-items:center;gap:6px;min-height:17px;font-size:12.5px;line-height:17px;color:var(--muted);white-space:nowrap;overflow:hidden}
-.state{display:inline-flex;align-items:center;gap:6px}
 
 /* Content */
 .content{display:grid;grid-template-rows:56px minmax(0,1fr);min-width:0;min-height:0}
@@ -183,14 +192,11 @@ textarea:disabled{cursor:not-allowed}
 
 /* Reasoning */
 .reason{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:4px 2px 18px}
-.reason .rh{font-weight:600;font-size:14.5px;color:var(--accent);white-space:nowrap;display:inline-flex;align-items:center;gap:8px}
+.reason .rh{font-weight:600;font-size:14.5px;color:var(--accent-text);white-space:nowrap;display:inline-flex;align-items:center;gap:8px}
 .reason.done .rh{color:var(--muted);font-weight:500}
 .reason .rs{font-size:14.5px;line-height:1.5;color:var(--muted);flex:1;min-width:260px}
-.dots{display:inline-flex;gap:3px;align-items:center;height:12px}
-.dots i{width:5px;height:5px;border-radius:50%;background:var(--accent);animation:dot 1.1s ease-in-out infinite}
-.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
-@keyframes dot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
-.tnum{font-variant-numeric:tabular-nums}
+.reason .rh .mut{font-weight:500}
+.tnum{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 
 /* Cell cards */
 .cell{background:var(--card);border-radius:var(--r);box-shadow:var(--ring);margin:0 0 16px;overflow:hidden;position:relative}
@@ -203,16 +209,16 @@ textarea:disabled{cursor:not-allowed}
 @keyframes slide{0%{left:-30%}100%{left:100%}}
 .chead{display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;padding:14px 14px 12px 18px;min-height:56px}
 .chead:active{background:var(--hover)}
-.chead .num{font:12.5px/22px var(--mono);color:var(--muted);flex:none}
+.chead .num{font:12.5px/22px var(--mono);color:var(--muted);flex:none;min-width:14px;text-align:right}
 .chead .purpose{flex:1;font-size:15.5px;font-weight:600;line-height:22px}
 .chead .chev{color:var(--faint);height:22px;display:flex;align-items:center}
 .pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:12px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
 .pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 13%,transparent)}
 .pill.fail{color:var(--fail);background:color-mix(in srgb,var(--fail) 12%,transparent)}
 .pill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
-.pill.live{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
-.pill .pulse{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 1.2s ease-in-out infinite}
-@keyframes pulse{50%{opacity:.3}}
+.pill.live{color:var(--accent-text);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.pill .sg{width:12px;height:12px}
+.pill .sg.run i{width:10px;height:10px}
 .calls{padding:0 14px 6px 18px;display:flex;flex-direction:column}
 .call{display:grid;grid-template-columns:22px minmax(0,1fr) auto;column-gap:10px;align-items:start;padding:7px 0;border-top:1px solid var(--sep)}
 .call:first-child{border-top:0}
@@ -227,6 +233,7 @@ textarea:disabled{cursor:not-allowed}
 .note.fail{background:color-mix(in srgb,var(--fail) 9%,transparent);color:var(--fail)}
 .note.live{background:color-mix(in srgb,var(--accent) 8%,transparent);color:var(--text)}
 .note .i{margin-top:1px}
+.note.line{align-items:center;gap:12px}
 .tabs{display:flex;gap:2px;margin:6px 18px 10px;background:var(--press);border-radius:10px;padding:2px;width:max-content;max-width:calc(100% - 36px)}
 .tabs button{min-height:32px;padding:0 13px;border-radius:8px;font-size:13px;color:var(--muted);white-space:nowrap}
 .tabs button[aria-selected=true]{background:var(--card2);color:var(--text);box-shadow:var(--ring);font-weight:600}
@@ -235,23 +242,25 @@ textarea:disabled{cursor:not-allowed}
 .tabbody{padding:0 18px 14px}
 pre.code{margin:0;font:12.5px/1.65 var(--mono);background:var(--code);border-radius:10px;padding:12px 14px;overflow:auto;white-space:pre;tab-size:2}
 pre.code.wrap{white-space:pre-wrap;overflow-wrap:anywhere}
-pre.code .fn{color:var(--accent);font-weight:600}
+pre.code .fn{color:var(--accent-text);font-weight:600}
 pre.code .cm{color:var(--muted)}
 .linkbtn{font-size:13.5px;font-weight:600;color:var(--text);min-height:36px;padding:8px 0 0;display:inline-flex;align-items:center;gap:4px}
 .linkbtn .i{color:var(--muted)}
 .dhead{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:var(--muted);margin:0 2px 8px;flex-wrap:wrap}
+.dhead .mut{margin-left:12px;color:var(--faint)}
 .diff{font:12.5px/1.65 var(--mono);background:var(--code);border-radius:10px;overflow:auto;padding:6px 0}
 .dhunk{padding:2px 12px;color:var(--muted)}
 .dl{display:grid;grid-template-columns:36px 36px 18px minmax(0,1fr);white-space:pre}
 .dl .n{color:var(--faint);text-align:right;padding-right:8px}
 .dl.add{background:color-mix(in srgb,var(--ok) 11%,transparent)} .dl.add .t,.dl.add .s{color:var(--ok)}
 .dl.del{background:color-mix(in srgb,var(--fail) 9%,transparent)} .dl.del .t,.dl.del .s{color:var(--fail)}
-.cfoot{border-top:1px solid var(--sep);padding:10px 18px;min-height:44px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.cfoot{border-top:1px solid var(--sep);padding:10px 18px;min-height:44px;display:flex;align-items:center;gap:6px 12px;font-size:13px;color:var(--muted);flex-wrap:wrap}
 .handles{margin-left:auto;display:flex;gap:5px;align-items:center}
 .handles b{font:12px var(--mono);font-weight:400;color:var(--text);background:var(--code);border-radius:6px;padding:2px 7px}
-.wl{font-size:13px;color:var(--muted);margin:0 18px 10px;display:flex;gap:8px;align-items:center}
+.wl{font-size:13px;color:var(--muted);margin:0 18px 10px;display:flex;gap:10px;align-items:center}
 .acts{display:flex;flex-direction:column;font:13px/1.9 var(--mono)}
-.acts .nm{color:var(--accent);display:inline-block;min-width:56px}
+.acts .nm{color:var(--accent-text);display:inline-block;min-width:56px}
+.acts .n{margin-left:10px}
 .caret{display:inline-block;width:.55em;height:1.05em;background:var(--accent);vertical-align:-2px;border-radius:1px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 
@@ -267,7 +276,7 @@ pre.code .cm{color:var(--muted)}
 .answer{margin:10px 2px 28px}
 .answer .first{font-size:17.5px;font-weight:650;line-height:1.5;margin:0 0 10px}
 .answer .rest{font-size:16px;line-height:1.62;margin:0 0 12px}
-.facts{font-size:13px;color:var(--muted);margin:0 0 14px;display:flex;align-items:center;gap:6px}
+.facts{font-size:13px;color:var(--muted);margin:0 0 14px;display:flex;align-items:center;gap:8px}
 .actions{display:flex;gap:10px;flex-wrap:wrap}
 .btn{min-height:40px;padding:0 16px;border-radius:12px;background:var(--card2);box-shadow:var(--ring);font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 .btn:active{background:var(--press)}
@@ -277,7 +286,7 @@ pre.code .cm{color:var(--muted)}
 /* Opening */
 .opening{padding-top:9vh}
 .perch{display:flex;gap:28px;align-items:flex-end;margin-bottom:26px}
-.greet{font:600 58px/.95 var(--display);text-transform:uppercase;letter-spacing:-.01em;margin:0 0 12px}
+.greet{font:600 56px/1 var(--display);letter-spacing:-.005em;margin:0 0 12px}
 .perch .who{font-size:14.5px;color:var(--muted);line-height:1.5}
 .perch .who a{color:var(--muted)}
 .opening .lead{font-size:16px;color:var(--muted);margin:0 0 14px}
@@ -289,7 +298,7 @@ pre.code .cm{color:var(--muted)}
 /* Dock */
 .dock{padding:6px 0 16px;position:relative}
 .statusline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);min-height:28px;padding:0 6px 4px}
-.statusline .live{color:var(--accent);font-weight:600}
+.statusline .live{color:var(--accent-text);font-weight:600}
 .statusline .txt{color:var(--text);font-weight:600;font-size:13px;display:inline-flex;align-items:center;gap:4px;min-height:28px}
 .queue{background:var(--card);box-shadow:var(--ring);border-radius:var(--r);margin:0 0 10px;padding:4px 6px 4px 14px}
 .qh{font-size:12px;font-weight:600;color:var(--muted);padding:8px 0 2px}
@@ -343,7 +352,7 @@ button.row:active{background:var(--hover)}
 .sheet.narrow{width:min(560px,100%)}
 .sheet.settings{width:min(900px,100%);height:min(700px,100%)}
 .shd{display:flex;align-items:flex-start;gap:12px;padding:20px 20px 10px 24px}
-.shd .t{font:600 34px/1 var(--display);text-transform:uppercase;letter-spacing:.005em}
+.shd .t{font:600 22px/1.2 var(--ui);letter-spacing:-.01em}
 .shd .st{font-size:13.5px;color:var(--muted);margin-top:6px;line-height:1.4}
 .shd .done{margin-left:auto;min-height:36px;padding:0 14px;border-radius:18px;font-weight:600;font-size:14px;background:var(--card2);box-shadow:var(--ring)}
 .sbd{overflow:auto;padding:8px 20px 20px;min-height:0}
@@ -414,11 +423,11 @@ kbd{font:12px var(--mono);border:1px solid var(--line);border-radius:6px;padding
 @keyframes leave{to{opacity:0}}
 
 /* Motion: decoration only; clocks and states stay at every setting */
-.calm .dots i,.calm .pill .pulse,.calm .progress i,.calm .spin,.calm .caret{animation-duration:3.2s}
+.calm .sg.run i,.calm .progress i,.calm .spin,.calm .caret{animation-duration:3.2s}
 .still *,.still *::after{animation:none!important;transition:none!important}
 
 @media (max-width:1200px){.body{--inw:264px}.column{padding:0 24px}}
-@media (prefers-reduced-motion:reduce){.dots i,.pill .pulse,.caret,.progress i,.spin{animation:none}.overlay,.sheet{animation:none}}
+@media (prefers-reduced-motion:reduce){.sg.run i,.caret,.progress i,.spin{animation:none}.overlay,.sheet{animation:none}}
 
 /* ---------- The app's own additions to the mockup ---------- */
 html,body{overflow:hidden}

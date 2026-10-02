@@ -2,13 +2,12 @@
 // answer, and the live edge -- the reasoning row, the cell being written,
 // a question waiting for you -- drawn from the session's events. A cell's
 // state and its line are the engine's words (`reading`).
-import { esc, plural, pad3, clock, secs, prose, splitAnswer, inlineHTML, timeOf, agoMs } from "../util.js";
+import { esc, plural, clock, secs, prose, splitAnswer, inlineHTML, timeOf, agoMs } from "../util.js";
 import { icon } from "../icons.js";
 import { birdArt } from "../birds.js";
 import { noCalls, writing, diffRows, diffFacts, settledCell } from "../record.js";
 import { working } from "../session.js";
 
-const dots = () => `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>`;
 const THINKING = new Set(["thinking", "starting", "waiting", "compacting", "searching"]);
 const CALLS = /\b(bash|read|edit|grep|glob|write|answer|ask|fetch|search|agent\.run)\(/g;
 const LEVEL_WORDS = {
@@ -27,7 +26,7 @@ function hl(code) {
 // folded to its opening words.
 function foldAnswer(code, answered) {
   return hl(String(code).replace(/answer\((["'`])((?:\\.|(?!\1).){0,34})(?:\\.|(?!\1)[\s\S])*\1\);/, (_, q, head) => `answer(${q}${head}…${q});${answered ? "\u0001" : ""}`))
-    .replace("\u0001", '<span class="cm">  · the answer is below</span>');
+    .replace("\u0001", '<span class="cm">  // the answer is below</span>');
 }
 
 function callRow(app, c) {
@@ -46,7 +45,7 @@ function diffHTML(diff) {
   return diffRows(diff).map((f) => {
     const rows = f.rows.map((r) => r.kind === "hunk" ? `<div class="dhunk">${esc(r.text)}</div>`
       : `<div class="dl${r.kind === "add" ? " add" : r.kind === "del" ? " del" : ""}"><span class="n">${r.o}</span><span class="n">${r.n}</span><span class="s">${r.kind === "add" ? "+" : r.kind === "del" ? "−" : " "}</span><span class="t">${esc(r.text)}</span></div>`).join("");
-    return `<div class="dhead"><span>${f.path ? `<a class="path" data-act="path" data-v="${esc(f.path)}">${esc(f.path)}</a>` : ""}</span><span>Before → after this cell · already applied</span></div><div class="diff">${rows}</div>`;
+    return `<div class="dhead"><span>${f.path ? `<a class="path" data-act="path" data-v="${esc(f.path)}">${esc(f.path)}</a>` : ""}</span><span>Before and after this cell<span class="mut">Already applied</span></span></div><div class="diff">${rows}</div>`;
   }).join('<div style="height:10px"></div>');
 }
 
@@ -82,8 +81,8 @@ export function askHTML(app, session, prompt, { overview = false } = {}) {
 }
 
 const pillOf = (mode, reading, since) => ({
-  running: `<span class="pill live"><span class="pulse"></span>Running <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span></span>`,
-  waiting: `<span class="pill warn">Waiting for you <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span></span>`,
+  running: `<span class="pill live">${glyph({ kind: "running" })}Running <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span></span>`,
+  waiting: `<span class="pill warn">${glyph({ kind: "waiting" })}Waiting for you <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span></span>`,
 }[mode] || (() => {
   const tone = { success: "ok", failure: "fail", warning: "warn" }[reading?.tone] || "mut";
   const word = String(reading?.state || "Recorded").toLowerCase();
@@ -107,7 +106,7 @@ function cellHTML(app, session, item, { mode, latest, prompts }) {
   const named = String(view.description || "").trim();
   const purpose = named || plural(lines, "line", "lines");
   let h = `<article class="cell ${cls}${app.S.sel === key ? " sel" : ""}" id="cell-${n}" data-n="${n}">${mode === "running" ? '<div class="progress"><i></i></div>' : ""}` +
-    `<button class="chead" data-act="cell" data-k="${key}" aria-expanded="${open}"><span class="num">${pad3(n)}</span>` +
+    `<button class="chead" data-act="cell" data-k="${key}" aria-expanded="${open}"><span class="num">${n}</span>` +
     `<span class="purpose${named ? "" : " mut"}">${esc(purpose)}</span>${pillOf(mode, reading, since)}<span class="chev">${icon(open ? "up" : "down", "s")}</span></button>`;
   if (!open) return h + "</article>";
   // While a call waits on you, its row says so: the tool and what it acts on, from the prompt.
@@ -119,10 +118,10 @@ function cellHTML(app, session, item, { mode, latest, prompts }) {
   }
   if (calls.length) h += `<div class="calls">${calls.map((c) => callRow(app, c)).join("")}</div>`;
   else if (noCalls(view.execution)) h += `<div class="calls"><div class="call"><span class="ic mut">${icon("ok")}</span><div class="c2" style="line-height:20px;color:var(--muted)">No tool calls ran in this cell</div><span></span></div></div>`;
-  if (view.error) h += `<div class="note fail">${icon("deny", "s")}<span>${esc(view.error.class)}${view.error.message ? `: ${esc(view.error.message)}` : ""}${view.error.line ? ` · line ${view.error.line}` : ""}</span></div>`;
+  if (view.error) h += `<div class="note fail">${icon("deny", "s")}<span>${esc(view.error.class)}${view.error.message ? `: ${esc(view.error.message)}` : ""}${view.error.line ? ` <span class="mut">line ${view.error.line}</span>` : ""}</span></div>`;
   if (view.yield_reason) h += `<div class="note live"><span>${esc(view.yield_reason)}</span></div>`;
   if (view.asked) h += `<div class="note live"><span class="pre-note">${esc(view.asked)}</span></div>`;
-  if (mode === "running") h += `<div class="note live"><span>Executing this cell · <span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span> elapsed · nothing is assumed complete${session.state.facts.model ? ` · <span class="mut">${esc(session.state.facts.model)}</span>` : ""}</span></div>`;
+  if (mode === "running") h += `<div class="note live line">${glyph({ kind: "running" })}<span>Running this cell</span><span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span>${session.state.facts.model ? `<span class="mut">${esc(session.state.facts.model)}</span>` : ""}</div>`;
   if (mode === "waiting") h += prompts.map((p) => askHTML(app, session, p)).join("");
   const out = [view.stdout, view.output].filter((x) => x != null && String(x).trim()).join("\n");
   const tabs = [];
@@ -149,10 +148,10 @@ function cellHTML(app, session, item, { mode, latest, prompts }) {
   }
   if (app.prefs.handles && view.table) h += `<div class="tablebox"><div class="tabcap">Handles kept live</div><pre class="code">${esc(view.table)}</pre></div>`;
   if (mode === "done" && reading) {
-    const tone = { success: "ok", failure: "fail", warning: "warn", muted: "mut", line: "" };
-    const words = (reading.parts?.length ? reading.parts : [{ text: reading.line, tone: "muted" }])
-      .map((p) => `<span class="${tone[p.tone] ?? ""}">${esc(p.text)}</span>`).join("");
-    h += `<div class="cfoot"><span>${words}</span></div>`;
+    // A part of tone `line` is the terminal's separator: here the parts are spaced instead.
+    const tone = { success: "ok", failure: "fail", warning: "warn", muted: "mut" };
+    const words = (reading.parts || []).filter((p) => p.tone !== "line").map((p) => `<span class="${tone[p.tone] ?? ""}">${esc(p.text)}</span>`).join(" ");
+    if (words) h += `<div class="cfoot">${words}</div>`;
   }
   return h + "</article>";
 }
@@ -162,7 +161,7 @@ function answerHTML(app, session, item, turnItems) {
   const changed = turnItems.filter((i) => i.kind === "cell" && i.view.changes && !i.view.rolled_back);
   const facts = item.facts;
   return `<div class="answer"><p class="first">${inlineHTML(first)}</p>${rest ? `<div class="rest md">${prose(rest)}</div>` : ""}` +
-    (facts ? `<div class="facts"><span class="${facts.failed ? "fail" : "ok"}">${icon(facts.failed ? "x" : "check", "s")}</span>${esc(facts.facts)}</div>` : "") +
+    (facts ? `<div class="facts"><span class="${facts.failed ? "fail" : "ok"}">${icon(facts.failed ? "x" : "check", "s")}</span>${factsHTML(facts) || (facts.failed ? "Failed" : "Complete")}</div>` : "") +
     `<div class="actions">${changed.length ? `<button class="btn" data-act="showdiff" data-k="${esc(session.id)}:c${changed[changed.length - 1].n}">Show the diff</button><button class="btn" data-act="insert" data-v="Commit this.">Commit this</button>` : ""}</div></div>`;
 }
 
@@ -179,9 +178,9 @@ function reasonRow(app, session, done) {
   const said = app.prefs.summary && text ? `<span class="rs">${esc(latestSentence(text))}</span>` : "";
   if (done) return asked && session.reasoned ? `<div class="reason done"><span class="rh">Reasoned for ${secs(session.reasoned)}</span>${said}</div>` : "";
   const since = session.thinkingSince || st.since;
-  const clockEl = `<span class="tnum" data-clock="s" data-since="${since}">${secs(Date.now() - since)}</span>`;
+  const clockEl = `<span class="tnum mut" data-clock="s" data-since="${since}">${secs(Date.now() - since)}</span>`;
   const head = st.activity === "compacting" ? "Compacting the context" : asked ? "Reasoning" : "Waiting for the model";
-  return `<div class="reason" id="reasoning"><span class="rh">${dots()}${head} · ${clockEl}</span>${said}</div>`;
+  return `<div class="reason" id="reasoning"><span class="rh">${glyph({ kind: "running" })}${head}${clockEl}</span>${said}</div>`;
 }
 
 function streamBody(app, tool) {
@@ -196,7 +195,7 @@ function streamBody(app, tool) {
       const arg = (seg.match(/["'`]([^"'`]*)["'`]?/) || [])[1] || "";
       rows.push([m[1], arg.length > 46 ? arg.slice(0, 45) + "…" : arg, end - m.index]);
     });
-    return `<div class="acts">${rows.map(([n, a, c], i) => `<div><span class="nm"${n === "code" ? ' style="color:var(--muted)"' : ""}>${n}</span> ${esc(a)} <span class="mut">· ${c} chars</span>${i === rows.length - 1 ? ' <span class="caret"></span>' : ""}</div>`).join("")}</div>`;
+    return `<div class="acts">${rows.map(([n, a, c], i) => `<div><span class="nm"${n === "code" ? ' style="color:var(--muted)"' : ""}>${n}</span> ${esc(a)} <span class="mut n">${c} chars</span>${i === rows.length - 1 ? ' <span class="caret"></span>' : ""}</div>`).join("")}</div>`;
   }
   return `<pre class="code">${hl(code)}<span class="caret"></span></pre>`;
 }
@@ -205,9 +204,9 @@ function writingHTML(app, session, n) {
   const tool = session.state.streaming.tool || "";
   const { code, description } = writing(tool);
   const actions = (code.match(CALLS) || []).length;
-  return `<article class="cell running" id="cell-writing"><div class="chead" style="cursor:default"><span class="num">${pad3(n)}</span>` +
-    `<span class="purpose${description ? "" : " mut"}">${esc(description || plural(code.split("\n").length, "line", "lines"))}</span><span class="pill live"><span class="pulse"></span>Writing <span class="tnum">${plural(code.length, "char", "chars")}</span></span></div>` +
-    `<div class="wl">${dots()}<span>The model is writing this cell · ${plural(actions, "action", "actions")} so far · not executed</span></div>` +
+  return `<article class="cell running" id="cell-writing"><div class="chead" style="cursor:default"><span class="num">${n}</span>` +
+    `<span class="purpose${description ? "" : " mut"}">${esc(description || plural(code.split("\n").length, "line", "lines"))}</span><span class="pill live">${glyph({ kind: "running" })}Writing <span class="tnum">${plural(code.length, "char", "chars")}</span></span></div>` +
+    `<div class="wl">${glyph({ kind: "running" })}<span>The model is writing this cell</span><span class="mut">${plural(actions, "action", "actions")} so far</span></div>` +
     `<div class="tabbody">${streamBody(app, tool)}</div><div class="cfoot">Not executed yet</div></article>`;
 }
 
@@ -218,7 +217,7 @@ function openingHTML(app, session) {
   const [level, asks] = levelOf(session.state.facts.level);
   const chips = (session.state.suggestions || []).slice(0, 3);
   return `<div class="opening"><div class="perch">${birdArt(t, app.mood(), app.light, 7)}<div><h1 class="greet">${greet}What should we build?</h1>` +
-    `<div class="who">${t.art ? `${esc(t.name)} · ${esc(t.nest)}<br>` : ""}${session.state.facts.level ? `<a class="path" data-act="level">${esc(level)} · ${esc(asks.toLowerCase())}</a>` : ""}</div></div></div>` +
+    `<div class="who">${t.art ? `${esc(t.name)}, ${esc(t.nest)}<br>` : ""}${session.state.facts.level ? `<a class="path" data-act="level">${esc(level)}, ${esc(asks.toLowerCase())}</a>` : ""}</div></div></div>` +
     (chips.length
       ? `<p class="lead">Describe a task, or pick one of these:</p><div class="suggest">${chips.map(([label, types]) => `<button data-act="insert" data-v="${esc(types)}">${esc(label)}<span>${esc(types.length > 70 ? types.slice(0, 69) + "…" : types)}</span></button>`).join("")}</div>`
       : `<p class="lead">Describe a task in the box below.</p>`) + `</div>`;
@@ -294,24 +293,47 @@ export function liveHTML(app) {
 
 // -- the overview ---------------------------------------------------------
 
-export function liveMeta(l) {
-  if (!l) return "";
-  if (l.kind === "waiting") return `<span class="state warn">Waiting for you</span>`;
-  if (l.kind === "unread") return `<span class="state"><span class="unread"></span>Finished · not read yet</span>`;
-  const said = { running: l.cell ? `Executing cell ${pad3(l.cell)}` : "Executing", writing: l.cell ? `Writing cell ${pad3(l.cell)}` : "Writing", thinking: "Thinking" }[l.kind];
-  return `<span class="state acc">${dots()}${said}</span>`;
+/** The status glyph a row leads with: a ring while it works, an amber dot while it waits, an accent dot when it finished unread. */
+export function glyph(l) {
+  const kind = !l ? "" : l.kind === "waiting" ? "wait" : l.kind === "unread" ? "unread" : ["running", "writing", "thinking"].includes(l.kind) ? "run" : "";
+  return `<span class="sg${kind ? " " + kind : ""}" aria-hidden="true">${kind ? "<i></i>" : ""}</span>`;
 }
 
-/** A meta line: its parts joined by a middle dot. */
-const metaLine = (...parts) => parts.filter(Boolean).join(`<span class="sep" aria-hidden="true">·</span>`);
+/** How a listed session stands, in words: "Running cell 2", "Waiting for you". */
+export function stateWords(l) {
+  if (!l) return "";
+  return {
+    waiting: "Waiting for you",
+    unread: "Finished, not read yet",
+    running: l.cell ? `Running cell ${l.cell}` : "Running",
+    writing: l.cell ? `Writing cell ${l.cell}` : "Writing",
+    thinking: "Thinking",
+  }[l.kind] || "";
+}
+
+/** The facts under an answer, as the engine's reading parts them: counts muted, the change a small diff stat. */
+export function factsHTML(answer) {
+  const parts = Array.isArray(answer?.parts) ? answer.parts.filter((p) => p.tone !== "line") : null;
+  if (!parts?.length) return "";
+  const cls = { added: "ds add", removed: "ds del" };
+  return parts.map((p) => `<span class="${cls[p.tone] || "mut"}">${esc(p.text)}</span>`).join(" ");
+}
 
 /**
- * One session as a row, the same in every list of the overview: its title
- * (two lines at most) over its folder, its state and its time, in one text
- * column; `end` is the fixed column at the right.
+ * One session as a row, the same in every list of the overview: the status
+ * glyph; the title on one line over its folder; a meta column of fixed
+ * width, the state over the time; the chevron.
  */
-function sessionRowHTML(title, meta, end) {
-  return `<span class="sx"><span class="st">${esc(title)}</span><span class="sm">${meta}</span></span><span class="se">${end}</span>`;
+function sessionRowHTML(l, title, folder, state, time, end) {
+  return `${glyph(l)}<span class="sx"><span class="st">${esc(title)}</span><span class="sf">${esc(folder)}</span></span>` +
+    `<span class="sm"><span class="s1">${state}</span><span class="s2 tnum">${time}</span></span><span class="se">${end}</span>`;
+}
+
+/** What the overview's heading says: only what is true. */
+export function headingOf(working, waiting) {
+  const at = working ? `${working} ${working === 1 ? "session is" : "sessions are"} working.` : "";
+  const wait = !waiting ? "" : working ? `${waiting} ${waiting === 1 ? "is" : "are"} waiting for you.` : `${waiting} ${waiting === 1 ? "session is" : "sessions are"} waiting for you.`;
+  return [at, wait].filter(Boolean).join(" ") || "Nothing is running.";
 }
 
 function overviewHTML(app) {
@@ -321,34 +343,31 @@ function overviewHTML(app) {
   const busy = all.filter((x) => ["running", "writing", "thinking"].includes(of(x)?.kind));
   const unread = all.filter((x) => of(x)?.kind === "unread");
   const nfold = new Set(all.filter((x) => of(x) && of(x).kind !== "unread").map((x) => x.root)).size;
-  const folder = (x) => `<span class="fw">${esc(app.folderName(x.root))}</span>`;
   const chev = `<span class="chev">${icon("right", "s")}</span>`;
-  const ticking = (since) => `<span class="tnum" data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span>`;
-  // The heading says what it counts: sessions at work, and apart from them, the ones waiting for you.
-  const parts = [busy.length && `${plural(busy.length, "session", "sessions")} at work`,
-    waiting.length && (busy.length ? `${waiting.length} ${waiting.length === 1 ? "waits" : "wait"} for you` : `${plural(waiting.length, "session waits", "sessions wait")} for you`)].filter(Boolean);
-  let h = `<div class="ovhead"><h1 class="greet ovt">${parts.length ? parts.join(" · ") : "Nothing is running"}</h1>` +
-    `<p class="lead">${parts.length ? `In ${plural(nfold, "folder", "folders")}. Answer a question here, or open a session to see it.` : "Start a session, or open one from the list."}</p></div>`;
+  const ticking = (since) => `<span data-clock="clock" data-since="${since}">${clock(Date.now() - since)}</span>`;
+  const live = waiting.length + busy.length;
+  let h = `<div class="ovhead"><h1 class="ovt">${headingOf(busy.length, waiting.length)}</h1>` +
+    `<p class="lead">${live ? `In ${plural(nfold, "folder", "folders")}. Answer a question here, or open a session to see it.` : "Start a session, or open one from the list."}</p></div>`;
   if (waiting.length) {
     h += `<div class="ghd">Needs you</div>` + waiting.map((x) => {
       const s = app.sessionById(x.id);
       const prompt = s?.state.prompts.find((p) => p.type === "approval" || p.type === "question");
       const since = s?.state.since || x.live?.since || Date.now();
-      return `<article class="ovcard"><div class="srow">${sessionRowHTML(x.title, metaLine(folder(x)), `<span class="pill warn">Waiting for you ${ticking(since)}</span>`)}</div>` +
-        `<div class="ovbody">${prompt ? askHTML(app, s, prompt, { overview: true }) : `<div class="row2"><span class="grow"></span><button class="plain" data-act="open" data-id="${esc(x.id)}">Open the session${icon("right", "s")}</button></div>`}</div></article>`;
+      return `<article class="ovcard"><div class="srow">${sessionRowHTML(of(x), x.title, app.folderName(x.root), `<span class="warn">Waiting for you</span>`, ticking(since), "")}</div>` +
+        `<div class="ovbody">${prompt ? askHTML(app, s, prompt, { overview: true }) : `<div class="row2"><button class="plain" data-act="open" data-id="${esc(x.id)}">Open the session${icon("right", "s")}</button></div>`}</div></article>`;
     }).join("");
   }
   if (busy.length) {
     h += `<div class="ghd">Running</div><div class="group">` + busy.map((x) => {
-      const since = app.sessionById(x.id)?.turnStart || x.live?.since;
-      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(x.title, metaLine(folder(x), liveMeta(of(x)), since && ticking(since)), chev)}</button>`;
+      const l = of(x), since = app.sessionById(x.id)?.turnStart || x.live?.since;
+      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(l, x.title, app.folderName(x.root), `<span class="acc">${stateWords(l)}</span>`, since ? ticking(since) : "", chev)}</button>`;
     }).join("") + `</div>`;
   }
   if (unread.length) {
     h += `<div class="ghd">Finished, not read yet</div><div class="group">` + unread.map((x) => {
-      const s = app.sessionById(x.id), facts = s?.state.reading?.answer?.facts;
-      const state = `<span class="state"><span class="unread"></span>Finished</span>`;
-      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(x.title, metaLine(folder(x), state, s?.turnEnd && esc(agoMs(s.turnEnd)), ...String(facts || "").split(" · ").map(esc)), chev)}</button>`;
+      const s = app.sessionById(x.id), answer = s?.state.reading?.answer;
+      const facts = answer?.parts?.length ? factsHTML(answer) : answer?.failed ? `<span class="fail">Failed</span>` : "Finished";
+      return `<button class="srow ovrow" data-act="open" data-id="${esc(x.id)}">${sessionRowHTML(of(x), x.title, app.folderName(x.root), facts, s?.turnEnd ? esc(agoMs(s.turnEnd)) : "", chev)}</button>`;
     }).join("") + `</div>`;
   }
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
@@ -356,10 +375,10 @@ function overviewHTML(app) {
   const total = app.S.usage?.total;
   const cells = [...app.S.sessions.values()].reduce((n, s) => n + (s.state.reading?.cells?.length || 0), 0);
   const fmt = (n) => (n == null ? "–" : n >= 1000 ? (n / 1000).toFixed(n >= 100000 ? 0 : 1) + "k" : String(n));
-  h += `<div class="ghd">Today, across every folder</div><div class="group ovstats">` +
-    `<div><b>${today}</b><span>sessions worked in</span></div>` +
-    `<div><b>${cells}</b><span>cells run</span></div>` +
-    `<div><b>${fmt(total ? total.input_tokens + total.output_tokens : null)}</b><span>tokens used</span></div>` +
-    `<div><b>${fmt(total?.requests)}</b><span>requests</span></div></div>`;
+  h += `<div class="ghd">Today</div><div class="group ovstats">` +
+    `<div><b class="tnum">${today}</b><span>Sessions worked in</span></div>` +
+    `<div><b class="tnum">${cells}</b><span>Cells run</span></div>` +
+    `<div><b class="tnum">${fmt(total ? total.input_tokens + total.output_tokens : null)}</b><span>Tokens used</span></div>` +
+    `<div><b class="tnum">${fmt(total?.requests)}</b><span>Requests</span></div></div>`;
   return `<div class="ov">${h}</div>`;
 }

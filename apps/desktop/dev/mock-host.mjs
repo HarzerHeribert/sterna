@@ -765,6 +765,8 @@ class Host {
       ["r2t8yf", "quill", "Rename Ledger to Book across the workspace", 276000],
       ["w5n0gc", "quill", "Bump rust_decimal to 1.36", 527000],
       ["e3s7lu", "notes", "Explain the auth middleware", 648000],
+      ["b8r2mx", "quill", "Why do the snapshot tests flake on CI?", 790000],
+      ["t3k9pv", "quill", "Split report.rs into modules", 1200000],
     ];
     for (const [id, f, title, ago, plan, warm] of SESSIONS) {
       const root = folders[f], lastUsed = t - ago * 1000;

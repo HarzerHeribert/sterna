@@ -7,12 +7,12 @@ test("a turn reads as reasoning, writing, running, waiting for you, then its ans
   await newSession(app, "harbor");
   await say(app, "Fix the note in this folder.");
   await expect(app.locator(".you .bubble")).toHaveText("Fix the note in this folder.");
-  await expect(app.locator(".reason .rh")).toContainText(/Reasoning ·|Waiting for the model ·/);
-  await expect(app.locator(".reason .rh")).toContainText("Reasoning ·");
+  await expect(app.locator(".reason .rh")).toContainText(/Reasoning|Waiting for the model/);
+  await expect(app.locator(".reason .rh")).toContainText("Reasoning");
   await expect(app.locator("#cell-writing .pill")).toContainText("Writing");
-  await expect(app.locator("#status")).toContainText("Writing cell 001");
+  await expect(app.locator("#status")).toContainText("Writing cell 1");
   await expect(app.locator("article.cell.running .pill")).toContainText("Running");
-  await expect(app.locator("#status")).toContainText("Executing cell 001");
+  await expect(app.locator("#status")).toContainText("Running cell 1");
   // The approval waits inline, inside the cell that asked.
   const ask = app.locator("#cell-1 .ask");
   await expect(ask).toContainText("write note.txt", { timeout: 30000 });
@@ -23,7 +23,11 @@ test("a turn reads as reasoning, writing, running, waiting for you, then its ans
   await expect(app.locator("#status")).toContainText("Complete");
   // The card takes the engine's words: its state, its line, its calls.
   await expect(app.locator("#cell-1 .pill")).toHaveText("Executed");
-  await expect(app.locator("#cell-1 .cfoot")).toHaveText("✓ executed · 1 file changed");
+  // A part of tone `line` is the terminal's separator: the window spaces the parts instead.
+  await expect(app.locator("#cell-1 .cfoot")).toHaveText("✓ executed 1 file changed");
+  await expect(app.locator("#cell-1 .cfoot span")).toHaveText(["✓ executed", "1 file changed"]);
+  // The answering cell changed nothing and made no call: its reading has no parts, and the line says so plainly.
+  await expect(app.locator(".answer .facts")).toHaveText("Complete");
   await expect(app.locator("#cell-1 .call .word")).toHaveText(["Returned"]);
   expect(world.read("harbor/note.txt")).toBe("fixed");
 });
@@ -42,7 +46,7 @@ test("a message sent while a turn runs is queued, and Take back puts it back in 
   await say(app, "Take your time over this one.");
   await expect(app.getByRole("button", { name: "Queue" })).toBeVisible();
   await say(app, "And then this.");
-  await expect(app.locator(".queue")).toContainText("Queued · sent when this turn ends");
+  await expect(app.locator(".queue")).toContainText("Queued, sent when this turn ends");
   await expect(app.locator(".queue .qt")).toHaveText("And then this.");
   await app.getByRole("button", { name: "Take back" }).click();
   await expect(app.locator(".queue")).toHaveCount(0);
@@ -54,7 +58,7 @@ test("stop after this cell ends the turn once the cell is done", async ({ app })
   await say(app, "Two steps, please.");
   await expect(app.locator("#status")).toContainText("Thinking");
   await app.getByRole("button", { name: "Stop after this cell" }).click();
-  await expect(app.locator("#status")).toContainText("stop requested");
+  await expect(app.locator("#status")).toContainText("Stop requested");
   await expect(app.locator("#status")).toContainText("Stopped", { timeout: 30000 });
   await expect(app.locator(".answer")).toHaveCount(0);
 });

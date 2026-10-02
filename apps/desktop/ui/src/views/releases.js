@@ -26,14 +26,14 @@ function offered(R) {
   return !!(a?.updates && a.available && (a.automatic !== false || R.asked));
 }
 
-/** The card at the foot of the sidebar; nothing at all while there is nothing new. */
+/** One quiet row at the foot of the sidebar; nothing at all while there is nothing new. */
 export function releaseCard(app) {
   const R = app.S.releases, latest = bare(R.answer?.latest);
-  const card = (title, sub, button, tone = "") => `<div class="relcard${tone}" role="status" aria-label="A newer release"><div class="rx"><b>${title}</b><span>${sub}</span></div>${button}</div>`;
-  if (R.phase === "moving") return card(`Updating to Sterna ${esc(latest)}…`, "The download can take a minute. Every session keeps running.", `<button class="btn small" disabled>Updating…</button>`);
-  if (R.phase === "moved") return card(`Sterna ${esc(bare(R.moved) || latest)} is installed`, "Restart to open it. Every session keeps running.", `<button class="btn small primary" data-act="rel-restart">Restart</button>`);
-  if (R.phase === "unmoved") return card(`Sterna ${esc(latest)} was not installed`, `<span title="${esc(R.error)}">${esc(plainError(R.error))}</span>`, `<button class="btn small" data-act="rel-move">Try again</button>`, " fail");
-  if (R.phase === "checked" && offered(R)) return card(`Sterna ${esc(latest)} is available`, `This copy is ${esc(installedVersion(app) || "older")}.`, `<button class="btn small" data-act="rel-move">Update</button>`);
+  const row = (words, button, why = "", tone = "") => `<div class="relcard${tone}" role="status" aria-label="A newer release"><span class="rx"><span>${words}</span>${why ? `<span class="why">${why}</span>` : ""}</span>${button}</div>`;
+  if (R.phase === "moving") return row(`Sterna ${esc(latest)} is available`, `<button class="txtbtn" disabled><span class="sg run" aria-hidden="true"><i></i></span>Updating…</button>`);
+  if (R.phase === "moved") return row(`Sterna ${esc(bare(R.moved) || latest)} is installed`, `<button class="txtbtn" data-act="rel-restart">Restart</button>`);
+  if (R.phase === "unmoved") return row(`Sterna ${esc(latest)} was not installed`, `<button class="txtbtn" data-act="rel-move">Try again</button>`, `<span title="${esc(R.error)}">${esc(plainError(R.error))}</span>`, " fail");
+  if (R.phase === "checked" && offered(R)) return row(`Sterna ${esc(latest)} is available`, `<button class="txtbtn" data-act="rel-move">Update</button>`);
   return "";
 }
 
@@ -44,7 +44,7 @@ export function releasesPane(app) {
   let found = "";
   if (R.phase === "checking") found = row("Looking for a newer release…", "");
   else if (R.phase === "failed") found = row("The check did not finish", `<span title="${esc(R.error)}">${esc(plainError(R.error))}</span>`, `<button class="btn small" data-act="rel-check">Try again</button>`);
-  else if (R.phase === "moving") found = row(`Updating to Sterna ${esc(latest)}…`, "The download can take a minute. Every session keeps running.", `<button class="btn small" disabled>Updating…</button>`);
+  else if (R.phase === "moving") found = row(`Sterna ${esc(latest)} is available`, "The download can take a minute. Every session keeps running.", `<button class="btn small" disabled>Updating…</button>`);
   else if (R.phase === "moved") found = row(`Sterna ${esc(bare(R.moved) || latest)} is installed`, "Restart to open it. Every session keeps running.", `<button class="btn small primary" data-act="rel-restart">Restart</button>`);
   else if (R.phase === "unmoved") found = row(`Sterna ${esc(latest)} was not installed`, `<span title="${esc(R.error)}">${esc(plainError(R.error))}</span>`, `<button class="btn small" data-act="rel-move">Try again</button>`);
   else if (a && a.updates === false) found = row(esc(a.why || "This copy does not update itself."), "A newer release can be downloaded from the releases page.", `<button class="btn small" data-act="rel-page">${icon("link", "s")}Releases page</button>`);
