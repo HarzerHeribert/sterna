@@ -416,6 +416,26 @@ fn gateway_env(own: Option<&Path>, inherited: bool, debug: bool) -> GatewayEnv<'
     }
 }
 
+/// Waits until a script a test has just written runs. Until then Linux can
+/// refuse it ("text file busy"): a process another test thread forked a
+/// moment ago may still hold it open for writing. `args` keep the run free
+/// of anything the test watches for.
+#[cfg(all(test, unix))]
+pub(crate) fn wait_until_runnable(path: &Path, args: &[&str]) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while Command::new(path)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +622,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, format!("#!/bin/sh\necho 'sterna {version}'\n")).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::wait_until_runnable(path, &["--version"]);
     }
 
     #[cfg(unix)]

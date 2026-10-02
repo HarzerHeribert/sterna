@@ -386,7 +386,23 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let heard = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            // Never asked within the deadline is an empty answer, which the
+            // test's own assertion reports, never a test that waits forever.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => return Vec::new(),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             let mut writer = stream.try_clone().unwrap();
             let mut heard = Vec::new();
             for line in BufReader::new(stream).lines() {
@@ -417,6 +433,7 @@ mod tests {
             echo '{\"listening\":\"127.0.0.1:1\",\"token\":\"new\",\"version\":\"0.2.0\",\"protocol\":1}'\n";
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        engine::wait_until_runnable(&path, &["--version"]);
         Engine::new(Kind::Installed, path)
     }
 
