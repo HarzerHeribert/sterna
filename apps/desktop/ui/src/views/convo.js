@@ -303,7 +303,13 @@ export function liveHTML(app) {
   const loose = st.prompts.filter((p) => (p.type === "approval" || p.type === "question") && !app.S.promptsInCell?.has(p.id));
   h += loose.map((p) => askHTML(app, session, p)).join("");
   if (session.lost) h += `<div class="note fail" style="margin:8px 0 24px">${icon("warn", "s")}<span>This session's connection was lost. ${esc(session.lost)} <button class="btn small" data-act="reattach" data-s="${esc(session.id)}">Try again</button></span></div>`;
-  else if (session.ended && !working(act)) h += `<p class="cap2" style="margin:8px 4px 24px">This session has ended: ${esc(session.ended)}.</p>`;
+  else if (session.ended && !working(act)) {
+    // A listed session opens again with its record; one never asked anything has none, so a new one starts there.
+    const again = app.listSessions().some((x) => x.id === session.id)
+      ? `<button class="btn small" data-act="open" data-id="${esc(session.id)}">Open it again</button>`
+      : `<button class="btn small" data-act="newin" data-f="${esc(session.root)}">New session here</button>`;
+    h += `<div class="note line" style="margin:8px 0 24px"><span class="grow">This session has ended: ${esc(session.ended)}.</span>${again}</div>`;
+  }
   return h;
 }
 

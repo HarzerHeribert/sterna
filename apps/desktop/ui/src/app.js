@@ -4,15 +4,14 @@
 import { $, baseName, morph, tilde, spaced } from "./util.js";
 import { applyTheme, themeOf } from "./theme.js";
 import { redrawBirds } from "./birds.js";
-import { startingPrefs, fromHost, ownPart, SHARED } from "./prefs.js";
+import { startingPrefs, fromHost, ownPart, panelsAt, SHARED } from "./prefs.js";
 import { loadSettings } from "./choices.js";
 import { Engine } from "./engine.js";
 import { Session, working, ENDINGS } from "./session.js";
 import { turnsOf } from "./record.js";
 import { recordHTML, liveHTML } from "./views/convo.js";
-import { sidebarHTML, sessionList, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
+import { sidebarHTML, toolbarHTML, statusHTML, cbarHTML, queueHTML, toastHTML } from "./views/chrome.js";
 import { inspectorHTML } from "./views/inspector.js";
-import { releaseCard } from "./views/releases.js";
 import { overlayHTML } from "./views/sheets.js";
 import { splashHTML, flight } from "./views/splash.js";
 import { clock, secs } from "./util.js";
@@ -28,7 +27,7 @@ export class App {
     this.S = {
       phase: "starting", startError: "", startAt: performance.now(),
       list: { folders: [] }, usage: null,
-      sessions: new Map(), attaching: new Set(), current: null, view: "nofolder",
+      sessions: new Map(), current: null, view: "nofolder",
       fresh: null, sheet: null, pickFolder: null, extraFolders: [], starting: false,
       open: {}, tab: {}, sel: null, raw: {},
       notice: "", noticeAt: 0, undo: null,
@@ -42,8 +41,16 @@ export class App {
       // Releases: `phase` is idle, checking, checked, failed, moving, moved or unmoved (a move that failed).
       releases: { phase: "idle", answer: null, error: "", asked: false, moved: "" },
     };
+    // The side panels shown now: the person's choice, folded while the window is narrow.
+    this.S.shown = panelsAt(this.prefs, innerWidth);
     this.memo = new WeakMap();
     this.dirty = false;
+    // Sessions being opened, those being attached (each to its one attempt), and which choice of the person's is the latest.
+    this.opening = new Set();
+    this.attaching = new Map();
+    this.intent = 0;
+    // When the host went, lately: it is started again by itself only so often.
+    this.hostGone = [];
   }
 
   // -- what the views read ------------------------------------------------
@@ -129,6 +136,7 @@ export class App {
       // The window as it was left: the app's own preferences and the shared settings, from the host.
       const [saved, values] = await Promise.all([this.engine.preferences().catch(() => ({})), this.engine.settings().catch(() => ({}))]);
       this.prefs = fromHost(saved, values);
+      this.S.shown = panelsAt(this.prefs, innerWidth);
       this.S.settings = values;
       await this.watch();
     } catch (e) {
@@ -157,8 +165,15 @@ export class App {
       this.changed();
     }, () => {
       if (this.S.gone) return;
+      // A host that keeps going as soon as it starts is not started again and again: the status line offers Try again.
+      const now = Date.now();
+      this.hostGone = [...this.hostGone.filter((t) => now - t < 60000), now];
+      if (this.hostGone.length > 3) {
+        this.S.hostLost = "The engine's host stopped again as soon as it started.";
+        return this.changed();
+      }
       this.say("The engine's host went away. Starting it again.");
-      setTimeout(() => this.restartHost(), 1000);
+      setTimeout(() => this.restartHost(), 1000 * this.hostGone.length);
     });
     this.S.hostLost = "";
     this.pollUsage();
@@ -191,23 +206,27 @@ export class App {
     for (const x of this.listSessions()) {
       if (!x.live) continue;
       const s = this.S.sessions.get(x.id);
-      if ((s && s.attached && !s.ended) || this.S.attaching.has(x.id)) continue;
+      if ((s && s.attached && !s.ended) || this.attaching.has(x.id)) continue;
       this.attachTo(x).catch(() => {});
     }
   }
 
-  async attachTo(x) {
-    this.S.attaching.add(x.id);
-    try {
-      const where = await this.engine.locate(x.id);
-      let s = this.S.sessions.get(x.id);
-      if (!s || s.ended) { s = new Session(this, { id: x.id, root: x.root, title: x.title }); this.S.sessions.set(x.id, s); }
-      // Again after a drop: from the event after the last one seen.
-      await s.attach(where.listening, where.token, s.lastSeq ? s.lastSeq + 1 : null);
-      return s;
-    } finally {
-      this.S.attaching.delete(x.id);
-    }
+  /** Attaches to a listed session that runs; a second call while one attaches waits for that one. */
+  attachTo(x) {
+    const going = this.attaching.get(x.id);
+    if (going) return going;
+    const run = this.attachOnce(x).finally(() => this.attaching.delete(x.id));
+    this.attaching.set(x.id, run);
+    return run;
+  }
+
+  async attachOnce(x) {
+    const where = await this.engine.locate(x.id);
+    let s = this.S.sessions.get(x.id);
+    if (!s || s.ended) { s = new Session(this, { id: x.id, root: x.root, title: x.title }); this.S.sessions.set(x.id, s); }
+    // Again after a drop: from the event after the last one seen.
+    await s.attach(where.listening, where.token, s.lastSeq ? s.lastSeq + 1 : null);
+    return s;
   }
 
   /** A session's port names it: the window keys it by that id from then on. */
@@ -240,6 +259,8 @@ export class App {
     }
     await new Promise((ok) => setTimeout(ok, 400 * 2 ** (session.drops - 1)));
     if (this.S.sessions.get(session.id) !== session || session.closing) return;
+    // The list's own watch may have attached it again meanwhile.
+    if (session.attached) return this.changed();
     try { this.S.list = await this.engine.list(); } catch { /* the host's own watch says more */ }
     const x = this.listSessions().find((e) => e.id === session.id);
     if (x?.live) {
@@ -247,7 +268,7 @@ export class App {
     } else if (this.S.fresh?.id === session.id) {
       this.S.fresh = null;
     }
-    if (!session.attached && !session.ended) session.ended = "its connection closed and it no longer runs";
+    if (!session.attached && !session.ended) session.gone("its connection closed and it no longer runs");
     this.changed();
   }
 
@@ -256,7 +277,7 @@ export class App {
     session.drops = 0;
     session.lost = "";
     const x = this.listSessions().find((e) => e.id === session.id);
-    if (!x?.live) { session.ended = session.ended || "it no longer runs"; return this.changed(); }
+    if (!x?.live) { session.gone("it no longer runs"); return this.changed(); }
     try { await this.attachTo(x); } catch (e) { this.say(`Not reconnected: ${e.message}`); }
     this.changed();
   }
@@ -457,11 +478,14 @@ export class App {
   }
 
   async newIn(root) {
+    // One start at a time: a second click while one starts would leave a session running unseen.
+    if (this.S.starting) return;
     if (this.S.fresh && this.S.fresh.root === root) { this.S.sheet = null; return this.show(this.S.sessions.get(this.S.fresh.id), "new"); }
-    await this.dropFresh();
     this.S.starting = true;
     this.changed();
+    const mine = ++this.intent;
     try {
+      await this.dropFresh();
       const started = await this.engine.startSession(root);
       const s = new Session(this, { id: started.id, root });
       this.S.sessions.set(started.id, s);
@@ -469,8 +493,11 @@ export class App {
       this.S.fresh = { id: started.id, root, started: Date.now() };
       this.S.extraFolders = this.S.extraFolders.filter((e) => e.root !== root);
       this.S.sheet = null;
-      this.show(s, "new");
-      requestAnimationFrame(() => $("#draft")?.focus());
+      // Another session chosen meanwhile stays on screen; this one waits in the list as New session.
+      if (mine === this.intent) {
+        this.show(s, "new");
+        requestAnimationFrame(() => $("#draft")?.focus());
+      }
     } catch (e) {
       this.say(`Could not start a session in ${baseName(root)}: ${e.message}`);
     } finally {
@@ -480,30 +507,48 @@ export class App {
   }
 
   async open(id) {
-    if (this.S.fresh?.id === id) return this.show(this.S.sessions.get(id), "new");
-    await this.dropFresh(id);
-    const known = this.S.sessions.get(id);
-    if (known && known.attached && !known.ended) return this.show(known);
-    const x = this.listSessions().find((e) => e.id === id);
-    if (!x) { if (known) this.show(known); return; }
+    // The new session, still running, is only shown; one that ended opens again like any other.
+    if (this.S.fresh?.id === id) {
+      if (!this.S.sessions.get(id)?.ended) return this.show(this.S.sessions.get(id), "new");
+      this.S.fresh = null;
+    }
+    // A second click while it opens would start a second process on one record.
+    if (this.opening.has(id)) return;
+    const mine = ++this.intent;
+    // Shown only if nothing else was chosen meanwhile: a slow start never pulls the window back.
+    const show = (s, view) => { if (mine === this.intent) this.show(s, view); };
+    this.opening.add(id);
     try {
-      if (x.live) return this.show(await this.attachTo(x));
-      // A session that is not running opens again in its folder, under its own id, with its record.
-      const started = await this.engine.startSession(x.root, { resume: x.id });
-      const s = new Session(this, { id: x.id, root: x.root, title: x.title });
-      this.S.sessions.set(x.id, s);
-      await s.attach(started.listening, started.token);
-      if (s.id !== x.id) this.say("This engine started a new session in that folder: it cannot reopen one yet");
-      this.show(s, "main");
-    } catch (e) {
-      this.say(`Could not open that session: ${e.message}`);
-      if (known) this.show(known);
+      await this.dropFresh(id);
+      const known = this.S.sessions.get(id);
+      if (known && known.attached && !known.ended) return show(known);
+      const x = this.listSessions().find((e) => e.id === id);
+      if (!x) { if (known) show(known); return; }
+      try {
+        // One this window saw end opens again from its record, whatever a list not yet told says:
+        // the host finds it instead, should it still run.
+        if (x.live && !known?.ended) return show(await this.attachTo(x));
+        // A session that is not running opens again in its folder, under its own id, with its record.
+        const started = await this.engine.startSession(x.root, { resume: x.id });
+        const s = new Session(this, { id: x.id, root: x.root, title: x.title });
+        this.S.sessions.set(x.id, s);
+        await s.attach(started.listening, started.token);
+        if (s.id !== x.id) this.say("This engine started a new session in that folder: it cannot reopen one yet");
+        show(s, "main");
+      } catch (e) {
+        this.say(`Could not open that session: ${e.message}`);
+        if (known) show(known);
+      }
+    } finally {
+      this.opening.delete(id);
     }
   }
 
   send() {
     const ta = $("#draft"), text = ta.value.trim(), s = this.cur();
     if (!text || !s) return;
+    // Nothing would carry it: the words stay in the box.
+    if (!s.connected) return this.say(s.ended ? "This session has ended. Open it again from the list to go on." : "This session is not connected. Your message is still in the box.");
     if (s.busy) this.say("Queued for when this turn ends");
     s.submit(text);
     ta.value = "";
@@ -557,9 +602,33 @@ export class App {
     const ta = $("#draft");
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
+    // An empty field is as tall as its hint, so a narrow window never cuts the hint off.
+    // The hint is measured in a twin: writing the field itself would lose its undo.
+    let h = ta.scrollHeight;
+    if (!ta.value && ta.placeholder) h = Math.max(h, this.hintHeight(ta));
+    ta.style.height = Math.min(h, 220) + "px";
     const b = $("#send");
     if (b) b.disabled = !ta.value.trim();
+  }
+
+  /** How tall `ta` would be holding its hint, from a hidden twin of it. */
+  hintHeight(ta) {
+    const key = `${ta.clientWidth}|${ta.placeholder}`;
+    if (this.hint?.key === key) return this.hint.h;
+    let twin = $("#drafttwin");
+    if (!twin) {
+      twin = document.createElement("textarea");
+      twin.id = "drafttwin";
+      twin.className = "twin";
+      twin.tabIndex = -1;
+      twin.rows = 1;
+      twin.setAttribute("aria-hidden", "true");
+      ta.after(twin);
+    }
+    twin.style.width = ta.clientWidth + "px";
+    twin.value = ta.placeholder;
+    this.hint = { key, h: twin.scrollHeight };
+    return this.hint.h;
   }
 
   scrollBottom() {
@@ -587,43 +656,50 @@ export class App {
     document.body.classList.toggle("web", this.bridge.os === "web");
     document.body.classList.toggle(this.bridge.os, true);
     const put = (el, html) => { if (el && el._html !== html) { el.innerHTML = html; el._html = html; return true; } return false; };
+    // Patched in place, never drawn afresh: a clock ticking in a row or a pill
+    // leaves the list's scroll, the focus on a question, a selection and a
+    // half-made click where they are.
+    const patch = (el, html) => { if (el && el._html !== html) { morph(el, html); el._html = html; } };
     const splash = S.phase !== "ready" && !S.gone ? splashHTML(this) : "";
     if (put($("#splash"), splash) && splash) flight(this, performance.now());
     if (S.gone) { put($("#overlay"), `<div class="gone"><b>${typeof S.gone === "string" ? S.gone : "Sterna has quit."}</b><span>You can close this window.</span></div>`); return; }
     const sc = $("#scroll");
     const atBottom = S.follow;
     if (!liveOnly) {
-      win.classList.toggle("nosb", !p.sessions);
-      win.classList.toggle("noin", !p.card || S.view === "nofolder" || S.view === "overview" || !this.cur());
+      win.classList.toggle("nosb", !S.shown.sessions);
+      win.classList.toggle("noin", !S.shown.card || S.view === "nofolder" || S.view === "overview" || !this.cur());
       win.classList.toggle("calm", p.motion === "calm");
       win.classList.toggle("still", p.motion === "off");
       $("#dock").hidden = S.view === "overview";
       const ta = $("#draft"), s = this.cur();
       ta.disabled = S.view === "nofolder" || !s || !!s.ended;
-      ta.placeholder = S.view === "nofolder" || !s ? "Choose a folder first" : s.ended ? "This session has ended" : "Describe the next step — a message, or / for commands";
-      if (document.activeElement?.id !== "sessq") put($("#sidebar"), sidebarHTML(this));
-      else put($("#slist"), sessionList(this));
-      put($("#sbfoot"), releaseCard(this));
-      put($("#toolbar"), toolbarHTML(this));
-      put($("#record"), recordHTML(this));
-      put($("#inspector"), inspectorHTML(this));
+      const hint = S.view === "nofolder" || !s ? "Choose a folder first" : s.ended ? "This session has ended" : "Describe the next step — a message, or / for commands";
+      if (ta.placeholder !== hint) ta.placeholder = hint;
+      patch($("#sidebar"), sidebarHTML(this));
+      patch($("#toolbar"), toolbarHTML(this));
+      patch($("#record"), recordHTML(this));
+      patch($("#inspector"), inspectorHTML(this));
       put($("#status"), statusHTML(this));
       put($("#queue"), queueHTML(this));
       put($("#cbar"), cbarHTML(this));
-      const toast = toastHTML(this);
-      put($("#toast"), S.view === "overview" ? "" : toast);
-      put($("#ovtoast"), S.view === "overview" ? toast : "");
-      this.renderOverlay();
+      // A word is said where the person is looking: over an open sheet, else over the overview or the composer.
+      const toast = toastHTML(this), where = S.sheet ? "sheet" : S.view === "overview" ? "overview" : "dock";
+      put($("#toast"), where === "dock" ? toast : "");
+      put($("#ovtoast"), where === "overview" ? toast : "");
+      this.renderOverlay(where === "sheet" ? toast : "");
+      // The composer's width follows the panels shown; its height follows its width.
+      this.grow();
     }
-    put($("#live"), liveHTML(this));
-    if (atBottom && sc) sc.scrollTop = sc.scrollHeight;
+    patch($("#live"), liveHTML(this));
+    // Only a conversation follows its newest line; the overview reads from the top.
+    if (atBottom && sc && S.view !== "overview") sc.scrollTop = sc.scrollHeight;
     win.style.setProperty("--dock-h", ($("#dock").offsetHeight || 0) + "px");
     this.tick(true);
   }
 
-  renderOverlay() {
+  renderOverlay(toast = "") {
     const host = $("#overlay"), html = overlayHTML(this);
-    const wrapped = html ? `<div class="overlay" data-act="scrim">${html}</div>` : "";
+    const wrapped = html ? `<div class="overlay" data-act="scrim">${html}${toast ? `<div class="sheettoast">${toast}</div>` : ""}</div>` : "";
     if (host._html === wrapped) return;
     const had = !!host._html;
     const active = document.activeElement, focusId = host.contains(active) ? active.id : null;

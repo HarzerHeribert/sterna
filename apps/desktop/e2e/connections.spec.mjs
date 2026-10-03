@@ -29,6 +29,11 @@ test("a connection that keeps closing is said plainly, and Try again takes the s
   const address = await addressOf(world, "Answer at once, and stay");
   await hook(app, "test_cut", { address });
   await expect(app.locator(".note.fail", { hasText: "connection was lost" })).toBeVisible({ timeout: 30000 });
+  // Sent while nothing carries it, a message stays in the box.
+  await say(app, "Kept for later.");
+  await expect(app.locator("#toast")).toContainText("Your message is still in the box");
+  await expect(app.getByRole("textbox", { name: "Message" })).toHaveValue("Kept for later.");
+  await app.getByRole("textbox", { name: "Message" }).fill("");
   await hook(app, "test_cut", { address, off: true });
   await app.getByRole("button", { name: "Try again" }).click();
   await expect(app.locator(".note.fail", { hasText: "connection was lost" })).toHaveCount(0, { timeout: 30000 });
@@ -48,4 +53,21 @@ test("a new session left with nothing asked is closed on purpose, and not taken 
   const known = await app.evaluate((id) => ({ has: window.__sterna.app.S.sessions.has(id), size: window.__sterna.app.S.sessions.size }), first);
   expect(known).toEqual({ has: false, size: 1 });
   await expect(app.locator(".note.fail", { hasText: "connection was lost" })).toHaveCount(0);
+});
+
+test("a session that ends mid-turn stops working on screen, and opens again from where it ended", async ({ app, world }) => {
+  await newSession(app, "harbor");
+  await say(app, "Take your time, please.");
+  await expect(app.locator("#status")).toContainText("Thinking", { timeout: 30000 });
+  const { id } = await listed(world, "Take your time", (x) => x.live !== null);
+  await world.host({ do: "stop", id });
+  await expect(app.locator("#status")).toHaveText("This session has ended", { timeout: 30000 });
+  await expect(app.locator("#cbar .stop, #cbar [data-act=cancel]")).toHaveCount(0);
+  await expect(app.locator("#live .reason")).toHaveCount(0);
+  await expect(app.getByRole("textbox", { name: "Message" })).toBeDisabled();
+  await app.getByRole("button", { name: "Open it again" }).click();
+  await expect(app.getByRole("textbox", { name: "Message" })).toBeEnabled({ timeout: 30000 });
+  await expect(app.locator(".you .bubble").first()).toHaveText("Take your time, please.");
+  await say(app, "Answer at once, now.");
+  await expect(app.locator(".answer .first").last()).toBeVisible({ timeout: 30000 });
 });

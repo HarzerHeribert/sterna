@@ -44,7 +44,22 @@ export class Session {
 
   get activity() { return this.state.activity; }
   get busy() { return working(this.state.activity); }
+  get connected() { return !!this.conn && !this.conn.closed; }
   get waiting() { return this.state.activity === "awaiting_you" || this.state.prompts.some((p) => p.type !== "form"); }
+
+  /**
+   * The session no longer runs: a turn it was in is over, and nothing it
+   * asked can be answered any more. Said once; the first reason stands.
+   */
+  gone(reason) {
+    this.ended = this.ended || reason;
+    const s = this.state;
+    if (working(s.activity)) this.setActivity("interrupted", Date.now());
+    s.streaming = { text: null, tool: null, reasoning: null };
+    s.prompts = [];
+    s.queue = [];
+    this.app.promptsNow(this);
+  }
 
   /**
    * Attaches to the session's port. A session is known by the id its port
@@ -52,19 +67,29 @@ export class Session {
    * saw, when a connection dropped.
    */
   async attach(address, token, from = null) {
-    this.conn = await this.app.engine.session(address, token);
-    const said = this.conn.welcome?.session;
+    const conn = await this.app.engine.session(address, token);
+    // One connection per session: one it replaces is closed, and its closing is not a drop.
+    const was = this.conn;
+    this.conn = conn;
+    if (was && !was.closed) was.close();
+    const said = conn.welcome?.session;
     if (said && said !== this.id) this.app.rekey(this, said);
-    this.conn.listen((e) => this.event(e));
-    this.conn.onClosed = () => {
+    conn.listen((e) => this.event(e));
+    let heard = false;
+    const closed = () => {
+      if (heard || this.conn !== conn) return;
+      heard = true;
       this.attached = false;
       // A connection this window closed on purpose is not a drop.
       if (this.ended || this.closing) return this.app.sessionChanged(this);
       // A dropped connection is not an ended session: the window looks again.
       this.app.dropped(this);
     };
-    await this.conn.send(from ? { do: "attach", from } : { do: "attach" });
-    this.attached = true;
+    conn.onClosed = closed;
+    await conn.send(from ? { do: "attach", from } : { do: "attach" });
+    // One that closed while it was being taken up is a drop like any other, and never counts as attached.
+    if (conn.closed) closed();
+    else if (this.conn === conn) this.attached = true;
   }
 
   /** Closes this window's connection on purpose: nothing takes it up again. */
@@ -133,7 +158,7 @@ export class Session {
       case "unsuggest": s.suggestions = s.suggestions.filter(([, t]) => t !== e.types); break;
       case "refused": this.app.refused(this, e.to, e.reason); break;
       case "ended":
-        this.ended = e.reason || "ended";
+        this.gone(e.reason || "ended");
         break;
       default: break;
     }

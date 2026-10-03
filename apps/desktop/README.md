@@ -101,10 +101,14 @@ The checks use Chromium from Playwright's own cache. They run the real
 their own (`e2e/world.mjs`): scratch data and settings folders,
 `dev/provider.mjs` as the model, a fake gateway script that records what it
 is handed, and no credential, the way the engine's own checks do. Without
-that binary they fail and say what to build. Two specs use
+that binary they fail and say what to build. Three specs use
 the mock host: `e2e/busy.spec.mjs`, for several sessions held at once in
 states the real engine passes through in a moment (a cell being written, a
-cell running) and the one row grid they are drawn in, and
+cell running) and the one row grid they are drawn in;
+`e2e/window.spec.mjs`, for the window's shape at any width (the side
+panels hidden, or folded below 860 and 1100 px without the person's choice
+changing, long names and words, clocks that tick without redrawing what is
+around them) and a button pressed twice; and
 `e2e/versions.spec.mjs`, for plan goal 17 in the window: a newer release
 offered, moved to, failing and tried again, and Restart, which the browser
 bridge only counts. A copy that does not move itself is checked on the real

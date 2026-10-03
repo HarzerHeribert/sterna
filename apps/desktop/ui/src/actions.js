@@ -5,6 +5,7 @@ import { RELEASES_PAGE } from "./views/releases.js";
 import { cellStates } from "./views/convo.js";
 import { actionOf, kindOf } from "./views/panel-sheets.js";
 import { loadAccounts, loadSettings, chooseModel, chooseEffort, chooseLevel, startSignIn, cancelSignIn, saveKey, saveSetting } from "./choices.js";
+import { FOLD, panelsAt } from "./prefs.js";
 
 export function wire(app) {
   const S = app.S;
@@ -19,7 +20,16 @@ export function wire(app) {
     if (back) perform(back, { closing: true });
     redraw();
   };
-  const togglePref = (k) => { app.prefs[k] = !app.prefs[k]; app.savePref(k); redraw(); };
+  const togglePref = (k) => {
+    // A side panel's button turns over what is shown, and that becomes the person's choice.
+    // A window too narrow for both holds one at a time: showing one folds the other, unsaved.
+    if (k in S.shown) {
+      S.shown[k] = !S.shown[k];
+      app.prefs[k] = S.shown[k];
+      if (S.shown[k] && innerWidth < FOLD.card) for (const other of Object.keys(FOLD)) if (other !== k) S.shown[other] = false;
+    } else app.prefs[k] = !app.prefs[k];
+    app.savePref(k); redraw();
+  };
   const TABS = { code: "program", diff: "changes", output: "output" };
 
   /** A session-built row's action, as far as a client can take it: commands go to the session, the rest open what they name. */
@@ -82,7 +92,7 @@ export function wire(app) {
     open: (el) => { S.sheet = S.sheet === "folder" ? null : S.sheet; app.open(el.dataset.id); },
     fold: (el) => { const f = el.dataset.f; S.folded[f] = !S.folded[f]; redraw(); },
     allrows: (el) => { const f = el.dataset.f; S.allRows[f] = !S.allRows[f]; redraw(); },
-    overview: () => { S.view = "overview"; S.sheet = null; app.pollUsage(); redraw(); $("#scroll").scrollTop = 0; },
+    overview: () => { S.view = "overview"; S.sheet = null; app.pollUsage(); redraw(); requestAnimationFrame(() => { $("#scroll").scrollTop = 0; }); },
     // The conversation
     cell: (el) => { const k = el.dataset.k; S.sel = k; S.open[k] = !(el.getAttribute("aria-expanded") === "true"); redraw(); },
     tab: (el) => { S.tab[el.dataset.k] = el.dataset.v; S.sel = el.dataset.k; redraw(); },
@@ -301,6 +311,12 @@ export function wire(app) {
       if (S.sheet === "form" && e.key === "Enter" && e.target.dataset.form != null) { e.preventDefault(); A.formsubmit(); return; }
       return;
     }
+    // Esc in the search leaves it: the search is cleared, and nothing else is stopped.
+    if (e.target.id === "sessq" && e.key === "Escape") {
+      e.preventDefault();
+      e.target.value = ""; S.sessQ = ""; e.target.blur(); redraw();
+      return;
+    }
     const s = cur();
     // A question waits: with it in focus, the keyboard answers it too, though
     // nothing on screen asks for a key. Elsewhere a letter is only a letter.
@@ -335,13 +351,13 @@ export function wire(app) {
     if (e.target.id === "draft" && e.key === "?" && !e.target.value) { e.preventDefault(); A.help(); }
   });
 
-  // Like an iPad split view: a narrow window folds the side panels away, and
-  // the toolbar buttons bring them back.
+  // Like an iPad split view: a window made narrow folds the side panels away,
+  // made wide again it shows those the person keeps, and the toolbar buttons
+  // bring one back meanwhile. Only crossing a width changes what is shown.
   let lastW = innerWidth;
   addEventListener("resize", () => {
-    const w = innerWidth;
-    if ((w < 1100) !== (lastW < 1100)) app.prefs.card = w >= 1100;
-    if ((w < 860) !== (lastW < 860)) app.prefs.sessions = w >= 860;
+    const w = innerWidth, now = panelsAt(app.prefs, w);
+    for (const k of Object.keys(FOLD)) if ((w < FOLD[k]) !== (lastW < FOLD[k])) S.shown[k] = now[k];
     lastW = w;
     redraw();
   });

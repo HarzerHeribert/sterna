@@ -15,9 +15,21 @@ export const DEFAULTS = {
 /** The app's keys that are the person's shared settings, by their dotted key. */
 export const SHARED = { theme: "ui.theme", motion: "ui.motion", stream: "ui.stream" };
 
-/** The preferences before the host has answered: the defaults, panels by the window's width. */
+/** The preferences before the host has answered. */
 export function startingPrefs() {
-  return { ...DEFAULTS, sessions: innerWidth > 860, card: innerWidth > 1120 };
+  return { ...DEFAULTS };
+}
+
+/** The width below which a side panel folds away, as in an iPad's split view; its button brings it back. */
+export const FOLD = { sessions: 860, card: 1100 };
+
+/**
+ * The side panels a window this wide shows: those the person keeps, while
+ * there is room for them. Folding is the window's, never saved: `sessions`
+ * and `card` in the preferences stay what the person last chose.
+ */
+export function panelsAt(prefs, width) {
+  return { sessions: prefs.sessions && width >= FOLD.sessions, card: prefs.card && width >= FOLD.card };
 }
 
 /** The preferences from the host's `preferences` and `settings` answers. */

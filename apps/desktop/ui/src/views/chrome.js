@@ -5,6 +5,7 @@ import { icon } from "../icons.js";
 import { birdArt } from "../birds.js";
 import { glyph, stateWords, levelOf, cellStates } from "./convo.js";
 import { working } from "../session.js";
+import { releaseCard } from "./releases.js";
 
 const lights = (app) => `<div class="lights${app.bridge.os === "macos" ? " space" : ""}" aria-hidden="true"><i></i><i></i><i></i></div>`;
 
@@ -46,7 +47,7 @@ function folderHead(app, f, closed) {
  * first, and in each folder the session used last first -- the newest five,
  * and any other that runs, waits or is open, until "Show all" opens the rest.
  */
-export function sessionList(app) {
+function sessionList(app) {
   const q = app.S.sessQ.trim().toLowerCase();
   const folders = app.folders();
   const body = folders.map((f) => {
@@ -78,24 +79,25 @@ export function sidebarHTML(app) {
     `<label class="navrow search">${icon("search")}<input id="sessq" placeholder="Search" value="${esc(app.S.sessQ)}" aria-label="Search sessions"></label>` +
     `</nav>` +
     `<div class="slist" id="slist">${sessionList(app)}</div>` +
-    // A newer release, when there is one: filled on every draw (app.render).
-    `<div class="sbfoot" id="sbfoot"></div>`;
+    // A newer release, when there is one.
+    `<div class="sbfoot" id="sbfoot">${releaseCard(app)}</div>`;
 }
 
 export function toolbarHTML(app) {
   const s = app.cur(), v = app.S.view, mood = app.mood();
-  let h = app.prefs.sessions ? "" : `${lights(app)}<button class="iconbtn" data-act="pref" data-k="sessions" aria-label="Show the sessions" title="Show the sessions">${icon("sidebar")}</button>`;
+  let h = app.S.shown.sessions ? "" : `${lights(app)}<button class="iconbtn" data-act="pref" data-k="sessions" aria-label="Show the sessions" title="Show the sessions">${icon("sidebar")}</button>`;
   if (v === "overview") h += `<div class="ttl" data-tauri-drag-region>${birdArt(app.theme, mood, app.light, 3, false)}<span class="project">Overview</span><span class="where">every session, in every folder</span></div><span class="grow" data-tauri-drag-region></span>`;
   else if (v === "nofolder" || !s) h += `<div class="ttl" data-tauri-drag-region>${birdArt(app.theme, mood, app.light, 3, false)}<button class="pillbtn" data-act="newsession">${icon("folder")}Choose a folder</button></div><span class="grow" data-tauri-drag-region></span>`;
-  else h += `<div class="ttl" data-tauri-drag-region>${birdArt(app.theme, mood, app.light, 3, false)}<span class="project">${esc(app.folderName(s.root))}</span><span class="where">${esc(app.tilde(s.root))}</span></div><span class="grow" data-tauri-drag-region></span>`;
+  else h += `<div class="ttl" data-tauri-drag-region>${birdArt(app.theme, mood, app.light, 3, false)}<span class="project" title="${esc(app.tilde(s.root))}">${esc(app.folderName(s.root))}</span><span class="where">${esc(app.tilde(s.root))}</span></div><span class="grow" data-tauri-drag-region></span>`;
   if (s && v !== "overview" && v !== "nofolder") {
     const f = s.state.facts, [level] = levelOf(f.level), full = String(f.level).toLowerCase().startsWith("full");
-    h += `<button class="pillbtn" data-act="models" title="Models">${esc(f.model || "No model")}${f.effort ? ` <span class="mut">${esc(f.effort)}</span>` : ""}${icon("down", "s")}</button>`;
+    const model = `${f.model || "No model"}${f.effort ? ` ${f.effort}` : ""}`;
+    h += `<button class="pillbtn model" data-act="models" title="${esc(model)}"><span class="pl">${esc(f.model || "No model")}</span>${f.effort ? `<span class="mut">${esc(f.effort)}</span>` : ""}${icon("down", "s")}</button>`;
     if (f.level) h += `<button class="pillbtn${full ? " warn" : ""}" data-act="level" title="Sandbox level">${icon(full ? "warn" : "shield")}${esc(level)}${icon("down", "s")}</button>`;
   }
   h += `<button class="iconbtn" data-act="settings" aria-label="Settings" title="Settings">${icon("settings")}</button>` +
     `<button class="iconbtn" data-act="help" aria-label="Help" title="Help">${icon("help")}</button>`;
-  if (v !== "overview" && v !== "nofolder") h += `<button class="iconbtn" data-act="pref" data-k="card" aria-pressed="${app.prefs.card}" aria-label="${app.prefs.card ? "Hide" : "Show"} the session card" title="Session card">${icon("inspector")}</button>`;
+  if (v !== "overview" && v !== "nofolder") h += `<button class="iconbtn" data-act="pref" data-k="card" aria-pressed="${app.S.shown.card}" aria-label="${app.S.shown.card ? "Hide" : "Show"} the session card" title="Session card">${icon("inspector")}</button>`;
   return h;
 }
 
@@ -152,7 +154,7 @@ export function queueHTML(app) {
 }
 
 export function toastHTML(app) {
-  if (!app.noticeOn() || (app.S.sheet && app.S.sheet !== "quit")) return "";
+  if (!app.noticeOn()) return "";
   const u = app.S.undo;
   return `<div class="toast${u ? "" : " solo"}" role="status">${esc(app.S.notice)}${u ? `<button data-act="undo">${esc(u.label || "Undo")}</button>` : ""}</div>`;
 }

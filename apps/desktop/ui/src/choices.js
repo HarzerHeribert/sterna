@@ -128,9 +128,10 @@ export function cancelSignIn(app, quiet = false) {
 /** Hands the gateway a key, read from the field and cleared from it at once. */
 export async function saveKey(app, provider, field) {
   const key = field?.value?.trim() || "";
-  if (field) field.value = "";
-  if (!provider) { app.say("Name the provider the key is for"); return; }
   if (!key) { app.say("Paste the key first"); return; }
+  // Asked for the provider, the key stays where it was pasted; once sent, it is gone from the field.
+  if (!provider) { app.say("Name the provider the key is for"); return; }
+  if (field) field.value = "";
   app.S.keySaving = true;
   app.changed();
   try {

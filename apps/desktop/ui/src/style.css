@@ -44,6 +44,11 @@ a.path{color:inherit;text-decoration:underline;text-decoration-color:var(--line)
   display:grid;grid-template-columns:var(--sbw,272px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);}
 .window.nosb{--sbw:0px}
 .window.nosb .sidebar{display:none}
+/* Each pane keeps its own column, so a hidden sidebar never moves the content into its place. */
+.window>.sidebar{grid-area:1/1}
+.window>.content{grid-area:1/2}
+/* The start's own box only: the window's grid never places it over the content. */
+#splash{display:contents}
 #overlay{position:absolute;inset:0;z-index:20;pointer-events:none}
 #overlay>*{pointer-events:auto}
 .lights{display:flex;gap:8px;height:52px;align-items:center;padding:0 4px}
@@ -159,8 +164,11 @@ a.path{color:inherit;text-decoration:underline;text-decoration-color:var(--line)
 .ovstats div:first-child{border-left:0}
 .ovstats b{font-size:22px;font-weight:600;line-height:1.2}
 .ovstats span{font-size:13px;color:var(--muted)}
-.ovtoast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:4}
-.ovtoast .toast{position:static;transform:none}
+.ovtoast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:4;width:max-content;max-width:calc(100% - 32px)}
+.ovtoast .toast{position:static;transform:none;max-width:100%}
+/* Over an open sheet a word sits at the window's foot, above the scrim. */
+.sheettoast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:2;width:max-content;max-width:calc(100% - 32px)}
+.sheettoast .toast{position:static;transform:none;max-width:100%}
 .scroll .ghd{margin:22px 4px 8px}
 textarea:disabled{cursor:not-allowed}
 
@@ -175,7 +183,9 @@ textarea:disabled{cursor:not-allowed}
 .pillbtn:active{background:var(--press)}
 .pillbtn.warn{color:var(--warn)}
 .pillbtn .i{color:var(--muted)}
-.body{display:grid;grid-template-columns:minmax(0,1fr) var(--inw,296px);min-height:0}
+.body{display:grid;grid-template-columns:minmax(0,1fr) var(--inw,296px);min-height:0;min-width:0}
+.body>.centre{grid-column:1}
+.body>.inspector{grid-column:2}
 .window.noin .body{--inw:0px}
 .window.noin .inspector{display:none}
 
@@ -301,7 +311,7 @@ pre.code .cm{color:var(--muted)}
 .dock{padding:6px 0 16px;position:relative}
 .statusline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);min-height:28px;padding:0 6px 4px}
 .statusline .live{color:var(--accent-text);font-weight:600}
-.statusline .txt{color:var(--text);font-weight:600;font-size:13px;display:inline-flex;align-items:center;gap:4px;min-height:28px}
+.statusline .txt{color:var(--text);font-weight:600;font-size:13px;display:inline-flex;align-items:center;gap:4px;min-height:28px;white-space:nowrap}
 .queue{background:var(--card);box-shadow:var(--ring);border-radius:var(--r);margin:0 0 10px;padding:4px 6px 4px 14px}
 .qh{font-size:12px;font-weight:600;color:var(--muted);padding:8px 0 2px}
 .qitem{display:flex;align-items:center;gap:10px;padding:4px 0 6px;min-height:44px}
@@ -315,6 +325,8 @@ pre.code .cm{color:var(--muted)}
 .att button{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
 textarea{display:block;width:100%;border:0;background:none;color:var(--text);font:16px/1.5 var(--ui);padding:10px 12px 4px;resize:none;outline:none;min-height:48px;max-height:220px}
 textarea::placeholder{color:var(--muted)}
+/* The composer's twin, where its hint is measured: laid out, never seen. */
+textarea.twin{position:absolute;left:0;top:0;visibility:hidden;pointer-events:none;height:auto;min-height:0}
 .cbar{display:flex;align-items:center;gap:6px;padding:0 2px}
 .round{width:38px;height:38px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:var(--muted)}
 .round:hover{background:var(--hover);color:var(--text)}
@@ -322,7 +334,8 @@ textarea::placeholder{color:var(--muted)}
 .round.primary:disabled,.sendlabel:disabled{opacity:.35;cursor:default}
 .round.stop{background:var(--press);color:var(--text)}
 .sendlabel{min-height:38px;padding:0 14px 0 12px;border-radius:19px;background:var(--accent);color:var(--accent-ink);display:inline-flex;align-items:center;gap:6px;font-size:13.5px;font-weight:600}
-.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);z-index:4;background:var(--fill);color:var(--on-fill);border-radius:20px;min-height:40px;padding:0 6px 0 16px;display:flex;align-items:center;gap:10px;font-size:13.5px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);z-index:4;background:var(--fill);color:var(--on-fill);border-radius:20px;min-height:40px;padding:8px 6px 8px 16px;display:flex;align-items:center;gap:10px;font-size:13.5px;line-height:1.4;width:max-content;max-width:min(640px,calc(100% - 16px));overflow-wrap:anywhere;box-shadow:0 6px 20px rgba(0,0,0,.2)}
+.toast button{flex:none}
 .toast.solo{padding-right:16px}
 .toast button{min-height:30px;padding:0 12px;border-radius:15px;background:color-mix(in srgb,var(--on-fill) 16%,transparent);font-weight:600;font-size:13px}
 
@@ -490,8 +503,13 @@ body.windows .toolbar .lights,body.linux .toolbar .lights{display:none}
 .tablebox .tabcap{margin:0 2px 6px}
 /* The composer's ring is the focus mark; the field inside it draws none. */
 textarea:focus-visible{outline:none}
-/* A narrow window keeps the toolbar on one line: the path gives way first. */
-.project{white-space:nowrap}
+/* A narrow window keeps the toolbar on one line: the path gives way first,
+   then a long folder or model name, never the buttons after them. */
+.project{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .toolbar>.iconbtn,.toolbar>.pillbtn{flex:none}
+.toolbar>.pillbtn.model{flex:0 1 auto;min-width:0;max-width:320px}
+.pillbtn .pl{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ttl{flex:0 1 auto}
+/* A path or a link with no space in it wraps inside its column, never past it. */
+.column,.sheet,.inspector{overflow-wrap:break-word}
 @media (max-width:1100px){.toolbar .where{display:none}}

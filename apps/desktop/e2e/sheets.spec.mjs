@@ -86,8 +86,13 @@ test("an API key reaches the gateway on its stdin, and never the page", async ({
   await app.locator(".toolbar .pillbtn").first().click();
   await app.getByRole("dialog", { name: "Models" }).getByRole("button", { name: "Add an API key" }).click();
   const sheet = app.getByRole("dialog", { name: "Add an API key" });
-  await sheet.getByRole("button", { name: "OpenAI" }).click();
+  // Saved before its provider is named, the key stays in its field, and the window says what is missing over the sheet.
   await sheet.getByLabel("API key").fill(KEY);
+  await sheet.getByRole("button", { name: "Save the key" }).click();
+  await expect(app.locator(".overlay .toast")).toHaveText("Name the provider the key is for");
+  await expect(sheet.getByLabel("API key")).toHaveValue(KEY);
+  expect(world.handed()).toBe("");
+  await sheet.getByRole("button", { name: "OpenAI" }).click();
   expect(await app.content()).not.toContain(KEY);
   await sheet.getByRole("button", { name: "Save the key" }).click();
   await expect(app.getByRole("dialog", { name: "Models" })).toBeVisible();

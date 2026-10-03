@@ -49,7 +49,8 @@ function helpSheet() {
 const SECTIONS = [["appearance", "Appearance", "palette"], ["sessions", "Sessions", "shield"], ["window", "Window", "window"], ["notify", "Notifications", "bell"], ["cells", "Cells", "cell"], ["motion", "Motion", "motion"], ["instruments", "Instruments", "gauge"], ["releases", "Updates", "release"]];
 
 function toggleRow(app, k, label, sub, disabled) {
-  const on = app.prefs[k];
+  // A side panel's switch says whether it is shown, as its toolbar button does.
+  const on = k in app.S.shown ? app.S.shown[k] : app.prefs[k];
   return `<button class="row" data-act="${disabled ? "noop" : "pref"}" data-k="${k}" role="switch" aria-checked="${on && !disabled}"${disabled ? ' aria-disabled="true"' : ""}><span>${label}${sub ? `<span class="sub">${sub}</span>` : ""}</span>${sw(on && !disabled)}</button>`;
 }
 const seg = (app, k, opts) => `<div class="segctl full big">${opts.map(([v, l]) => `<button data-act="setpref" data-k="${k}" data-v="${v}" aria-pressed="${app.prefs[k] === v}">${l}</button>`).join("")}</div>`;
