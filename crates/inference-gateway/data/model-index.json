@@ -1,9 +1,9 @@
 {
  "source": "Artificial Analysis (artificialanalysis.ai)",
  "index_version": 4.3,
- "captured": "2026-10-04",
+ "captured": "2026-10-05",
  "limits_source": "LiteLLM model_prices_and_context_window.json (MIT)",
- "limits_captured": "2026-10-04",
+ "limits_captured": "2026-10-05",
  "limits_fields": ["context_window_tokens", "max_output_tokens"],
  "models": {
   "QwQ-32B-Preview": {"input_usd_per_million":0,"intelligence":7.6,"name":"QwQ 32B-Preview","output_usd_per_million":0},
