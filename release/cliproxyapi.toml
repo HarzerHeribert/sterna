@@ -3,12 +3,12 @@
 # broker-bump workflow); the installer and `sterna update` download the named
 # upstream asset and refuse it unless its SHA-256 matches the one pinned here.
 repository = "router-for-me/CLIProxyAPI"
-version = "8.0.60"
+version = "8.0.61"
 
 [assets]
-aarch64-apple-darwin = { name = "CLIProxyAPI_8.0.60_darwin_aarch64.tar.gz", sha256 = "9be68e64fc614a5474b98d310bb9057d6bdecb619cedec01febbb4073fdb19df" }
-x86_64-apple-darwin = { name = "CLIProxyAPI_8.0.60_darwin_amd64.tar.gz", sha256 = "8892224d75f3d29a33efd0e4b8a00bb97505266cf2b9bc80d1adb3a787d89910" }
-x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.60_linux_amd64.tar.gz", sha256 = "34720cd10deef235481e80625e0c02dee934eefdd03dc8bc4f327156fa766211" }
-aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.60_linux_aarch64.tar.gz", sha256 = "1c45a42770b5307a52599a2668645face8fb95c0f2dc6ee610e0992592c643d8" }
-x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.60_windows_amd64.zip", sha256 = "c81a2c51aeab819c6e4840ad62f8d8f4143706b9fa7682f4a769683e0044fff1" }
-aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.60_windows_aarch64.zip", sha256 = "e265ba0088fe3f504e5e80d0aaa49d7272f9d3d1431ba03ee46df9583831504c" }
+aarch64-apple-darwin = { name = "CLIProxyAPI_8.0.61_darwin_aarch64.tar.gz", sha256 = "ed73b4e3e9a71c524c54ecb64da3235a48de5f233aabccc58c43259ac6b1392f" }
+x86_64-apple-darwin = { name = "CLIProxyAPI_8.0.61_darwin_amd64.tar.gz", sha256 = "6d60879a83f2a18dc5af37ee93a571c7f524fac9a664cb0b6080ccf11126c6e6" }
+x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.61_linux_amd64.tar.gz", sha256 = "9d0af252b7eca7b9f670f15cd0d369b20a3bb14523b474a00b1ea334a2220078" }
+aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.61_linux_aarch64.tar.gz", sha256 = "ca1ba77c8140c875c66d5cb470cd6aba421f6ef71fede54e8e34703a46be5731" }
+x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.61_windows_amd64.zip", sha256 = "e6dbe1337d17b993c6fa6d75d71f2e98db6ea3653af73a4217956f0c53e025b5" }
+aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.61_windows_aarch64.zip", sha256 = "877878538504ff58469081392ec17143d9ad1d9f20042ff5a902a05f5733261c" }
