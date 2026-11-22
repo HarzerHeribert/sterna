@@ -3,12 +3,12 @@
 # broker-bump workflow); the installer and `sterna update` download the named
 # upstream asset and refuse it unless its SHA-256 matches the one pinned here.
 repository = "router-for-me/CLIProxyAPI"
-version = "8.0.80"
+version = "8.1.0"
 
 [assets]
-aarch64-apple-darwin = { name = "CLIProxyAPI_8.0.80_darwin_aarch64.tar.gz", sha256 = "c22e3b15a0d4395e779dc70b6e4ea78bdf3053c93c06fe9a15e96161d4ed46d3" }
-x86_64-apple-darwin = { name = "CLIProxyAPI_8.0.80_darwin_amd64.tar.gz", sha256 = "764f28c6b8271f8ea3e606f32e71ae5a4442a97ddf6fc23ca452f93d274624c3" }
-x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.80_linux_amd64.tar.gz", sha256 = "74ea0252f18f12332d10709d6f196558c72c56429265f05142ab241749a61c16" }
-aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.0.80_linux_aarch64.tar.gz", sha256 = "c016b9238858fb01d0e720331ed8962df88fa7b635cad9bc5707b857fe82ec5a" }
-x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.80_windows_amd64.zip", sha256 = "13d3d9ef6528e5fcfee0d17195936a3332f542d565a96db3f33a9944a57b107f" }
-aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.0.80_windows_aarch64.zip", sha256 = "d12ed70cf9a9709b5a0d1f8b9affdb5e0252a3387e1bd842e4eeef0744c54bb6" }
+aarch64-apple-darwin = { name = "CLIProxyAPI_8.1.0_darwin_aarch64.tar.gz", sha256 = "b8c45266738972bdb109f3484a3b8e8af9d70c5fa72abe08c832a65b1d9c6421" }
+x86_64-apple-darwin = { name = "CLIProxyAPI_8.1.0_darwin_amd64.tar.gz", sha256 = "53534ef90ae261cf4daa518164a743174ed7eb752a7d2a79bfb35a175241c126" }
+x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.0_linux_amd64.tar.gz", sha256 = "09492d9a338eb2d84b5e86f5456af0ff1fa951ad266c3df78e7db571e8ec41b1" }
+aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.0_linux_aarch64.tar.gz", sha256 = "614b264d97eb0ca8e7ad39ba327847191aa0c43a2537042ffad5af66687e77a7" }
+x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.0_windows_amd64.zip", sha256 = "1497d7dea44e2097c0bbe9c8fa37f99a9b84efcc3485369ee3e7b5a504cd4ea3" }
+aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.0_windows_aarch64.zip", sha256 = "6c26406c64bc27d6d0d14c8001de289d817268503bff4463985da497e1e58e3d" }
