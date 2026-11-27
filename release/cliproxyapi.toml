@@ -3,12 +3,12 @@
 # broker-bump workflow); the installer and `sterna update` download the named
 # upstream asset and refuse it unless its SHA-256 matches the one pinned here.
 repository = "router-for-me/CLIProxyAPI"
-version = "8.1.4"
+version = "8.1.7"
 
 [assets]
-aarch64-apple-darwin = { name = "CLIProxyAPI_8.1.4_darwin_aarch64.tar.gz", sha256 = "9d9e2350d4af9c2cd1c3636a5892e3b669829284f3a54b252fe1bdfb6b49d93a" }
-x86_64-apple-darwin = { name = "CLIProxyAPI_8.1.4_darwin_amd64.tar.gz", sha256 = "733f276d73df67724f5dee338a0e8db552d308525d27e614984b372061aec37f" }
-x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.4_linux_amd64.tar.gz", sha256 = "d36d5304eded3884cd0c4168c41a7638a3234631a64a54644069b963ae287cea" }
-aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.4_linux_aarch64.tar.gz", sha256 = "1ac19c4468969a3fa85c483ef7e34c5646d6e0d610a520a0dd51af13613d6619" }
-x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.4_windows_amd64.zip", sha256 = "665b670d42a5ceeadd33a6f03dffaa362cde920b726ab6b117c4def94ff81b09" }
-aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.4_windows_aarch64.zip", sha256 = "7fe1c3259c88e9bd0b4a7dfdad67105a1dc43ddca0896ce94c7d648ec1364713" }
+aarch64-apple-darwin = { name = "CLIProxyAPI_8.1.7_darwin_aarch64.tar.gz", sha256 = "667e6f2473e898ac3a6d16c01c9ce5cdf739a13b528cc80d328651a350691a2c" }
+x86_64-apple-darwin = { name = "CLIProxyAPI_8.1.7_darwin_amd64.tar.gz", sha256 = "7086c5f04a2182bfdd1dee6c5c145d59725cef31d8bc37e3a613f346fe1352cc" }
+x86_64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.7_linux_amd64.tar.gz", sha256 = "c2ffd3845c15a100a6ac5e2a2c192aca81d617033652bf2499e40783029de149" }
+aarch64-unknown-linux-gnu = { name = "CLIProxyAPI_8.1.7_linux_aarch64.tar.gz", sha256 = "4f0a0feae11c1c9f9d50b7a561ec0f1a17f1b851a4222d07a949aeaeedb3c3a1" }
+x86_64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.7_windows_amd64.zip", sha256 = "e28705a0ba0ee6485310270612f0214d9522bad7d2b3027272e9a935c27faccc" }
+aarch64-pc-windows-msvc = { name = "CLIProxyAPI_8.1.7_windows_aarch64.zip", sha256 = "9484b6544dba84f376fc57086a3ec4ea240808b820ed19e626b1ed421d8d9c61" }
